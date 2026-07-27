@@ -263,14 +263,15 @@ export function Transfers() {
           const source = warehouses.find(w => w.id === t.sourceWarehouseId);
           const dest = warehouses.find(w => w.id === t.destinationWarehouseId);
           return (
-            <div key={t.id} className="bg-card border border-border rounded-xl p-4 space-y-3">
+            <div 
+              key={t.id} 
+              className="bg-card border border-border rounded-xl p-4 space-y-3 cursor-pointer hover:border-blue-500/50 transition-colors"
+              onClick={() => setSelectedTransfer(t)}
+            >
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
                   <p className="text-xs font-black text-foreground">{product?.name || 'Unknown'}</p>
-                  <p 
-                    className="text-[10px] font-mono text-blue-500 hover:text-blue-600 hover:underline cursor-pointer uppercase tracking-tighter"
-                    onClick={() => setSelectedTransfer(t)}
-                  >
+                  <p className="text-[10px] font-mono text-zinc-400 uppercase tracking-tighter">
                     TFR-{t.id.slice(-6)}
                   </p>
                 </div>
@@ -293,12 +294,12 @@ export function Transfers() {
               </div>
               <div className="flex justify-end gap-2">
                 {t.status === 'pending' && (
-                  <Button size="sm" variant="ghost" className="text-xs font-bold h-8" onClick={() => updateStatus(t, 'in_transit')}>
+                  <Button size="sm" variant="ghost" className="text-xs font-bold h-8 z-10 relative" onClick={(e) => { e.stopPropagation(); updateStatus(t, 'in_transit'); }}>
                     Dispatch
                   </Button>
                 )}
                 {t.status === 'in_transit' && (
-                  <Button size="sm" variant="ghost" className="text-xs font-bold h-8 text-emerald-500 hover:bg-emerald-500/10" onClick={() => updateStatus(t, 'received')}>
+                  <Button size="sm" variant="ghost" className="text-xs font-bold h-8 text-emerald-500 hover:bg-emerald-500/10 z-10 relative" onClick={(e) => { e.stopPropagation(); updateStatus(t, 'received'); }}>
                     Confirm Arrival
                   </Button>
                 )}
@@ -333,14 +334,13 @@ export function Transfers() {
                 const source = warehouses.find(w => w.id === t.sourceWarehouseId);
                 const dest = warehouses.find(w => w.id === t.destinationWarehouseId);
                 return (
-                  <TableRow key={t.id} className="group">
+                  <TableRow 
+                    key={t.id} 
+                    className="group cursor-pointer hover:bg-muted/50 transition-colors"
+                    onClick={() => setSelectedTransfer(t)}
+                  >
                     <TableCell className="font-mono text-[10px] text-zinc-400 font-bold uppercase tracking-tighter">
-                      <span 
-                        className="cursor-pointer text-blue-500 hover:text-blue-600 hover:underline"
-                        onClick={() => setSelectedTransfer(t)}
-                      >
-                        TFR-{t.id.slice(-6)}
-                      </span>
+                      TFR-{t.id.slice(-6)}
                     </TableCell>
                     <TableCell>
                       <div className="flex flex-col">
@@ -369,12 +369,12 @@ export function Transfers() {
                     </TableCell>
                     <TableCell className="text-right">
                       {t.status === 'pending' && (
-                        <Button size="sm" variant="ghost" className="text-xs font-bold h-8" onClick={() => updateStatus(t, 'in_transit')}>
+                        <Button size="sm" variant="ghost" className="text-xs font-bold h-8 relative z-10" onClick={(e) => { e.stopPropagation(); updateStatus(t, 'in_transit'); }}>
                           Dispatch
                         </Button>
                       )}
                       {t.status === 'in_transit' && (
-                        <Button size="sm" variant="ghost" className="text-xs font-bold h-8 text-emerald-500 hover:bg-emerald-500/10" onClick={() => updateStatus(t, 'received')}>
+                        <Button size="sm" variant="ghost" className="text-xs font-bold h-8 text-emerald-500 hover:bg-emerald-500/10 relative z-10" onClick={(e) => { e.stopPropagation(); updateStatus(t, 'received'); }}>
                           Confirm Arrival
                         </Button>
                       )}
