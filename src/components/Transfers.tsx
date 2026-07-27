@@ -23,6 +23,9 @@ export function Transfers() {
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
   const [isAddTransferOpen, setIsAddTransferOpen] = useState(false);
   const [transferItems, setTransferItems] = useState([{ id: Date.now(), productName: '', quantity: 1 }]);
+  const [selectedTransfer, setSelectedTransfer] = useState<Transfer | null>(null);
+
+  const canManageTransfer = profile?.role === 'admin' || profile?.role === 'secretary' || profile?.role === 'staff';
 
   useEffect(() => {
     const unsubTransfers = onSnapshot(query(collection(db, 'transfers'), orderBy('createdAt', 'desc')), (snap) => {
@@ -264,7 +267,12 @@ export function Transfers() {
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
                   <p className="text-xs font-black text-foreground">{product?.name || 'Unknown'}</p>
-                  <p className="text-[10px] font-mono text-zinc-400 uppercase tracking-tighter">TFR-{t.id.slice(-6)}</p>
+                  <p 
+                    className="text-[10px] font-mono text-blue-500 hover:text-blue-600 hover:underline cursor-pointer uppercase tracking-tighter"
+                    onClick={() => setSelectedTransfer(t)}
+                  >
+                    TFR-{t.id.slice(-6)}
+                  </p>
                 </div>
                 <Badge variant="outline" className={`shrink-0 gap-1.5 h-6 capitalize text-[10px] font-black ${
                   t.status === 'received' ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/30' :
@@ -327,7 +335,12 @@ export function Transfers() {
                 return (
                   <TableRow key={t.id} className="group">
                     <TableCell className="font-mono text-[10px] text-zinc-400 font-bold uppercase tracking-tighter">
-                      TFR-{t.id.slice(-6)}
+                      <span 
+                        className="cursor-pointer text-blue-500 hover:text-blue-600 hover:underline"
+                        onClick={() => setSelectedTransfer(t)}
+                      >
+                        TFR-{t.id.slice(-6)}
+                      </span>
                     </TableCell>
                     <TableCell>
                       <div className="flex flex-col">
@@ -383,6 +396,68 @@ export function Transfers() {
           </Table>
         </div>
       </div>
+
+      <Dialog open={!!selectedTransfer} onOpenChange={(open) => !open && setSelectedTransfer(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Transfer Details</DialogTitle>
+            <DialogDescription>
+              Movement ID: TFR-{selectedTransfer?.id.slice(-6)}
+            </DialogDescription>
+          </DialogHeader>
+          {selectedTransfer && (
+            <div className="space-y-4 pt-4">
+              <div className="grid grid-cols-2 gap-4 text-sm">
+                <div>
+                  <span className="text-muted-foreground block text-xs">Product</span>
+                  <span className="font-bold">{products.find(p => p.id === selectedTransfer.productId)?.name || 'Unknown'}</span>
+                </div>
+                <div>
+                  <span className="text-muted-foreground block text-xs">Quantity</span>
+                  <span className="font-bold">{selectedTransfer.quantity}</span>
+                </div>
+                <div>
+                  <span className="text-muted-foreground block text-xs">Source Warehouse</span>
+                  <span className="font-bold">{warehouses.find(w => w.id === selectedTransfer.sourceWarehouseId)?.name || 'Unknown'}</span>
+                </div>
+                <div>
+                  <span className="text-muted-foreground block text-xs">Destination Warehouse</span>
+                  <span className="font-bold">{warehouses.find(w => w.id === selectedTransfer.destinationWarehouseId)?.name || 'Unknown'}</span>
+                </div>
+                <div>
+                  <span className="text-muted-foreground block text-xs">Status</span>
+                  <Badge variant="outline" className={`mt-1 capitalize text-[10px] font-black ${
+                    selectedTransfer.status === 'received' ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/30' :
+                    selectedTransfer.status === 'in_transit' ? 'bg-blue-500/10 text-blue-400 border-blue-500/30' :
+                    'bg-amber-500/10 text-amber-500 border-amber-500/30'
+                  }`}>
+                    {selectedTransfer.status.replace('_', ' ')}
+                  </Badge>
+                </div>
+                <div>
+                  <span className="text-muted-foreground block text-xs">Initiated By</span>
+                  <span className="font-bold truncate max-w-full block" title={selectedTransfer.initiatedBy}>{selectedTransfer.initiatedBy || 'Unknown'}</span>
+                </div>
+              </div>
+
+              {canManageTransfer && selectedTransfer.status !== 'received' && (
+                <div className="flex justify-end gap-2 pt-4 border-t border-border mt-4">
+                  {selectedTransfer.status === 'pending' && (
+                    <Button onClick={() => { updateStatus(selectedTransfer, 'in_transit'); setSelectedTransfer(null); }}>
+                      Dispatch Transfer
+                    </Button>
+                  )}
+                  {selectedTransfer.status === 'in_transit' && (
+                    <Button onClick={() => { updateStatus(selectedTransfer, 'received'); setSelectedTransfer(null); }} className="bg-emerald-600 hover:bg-emerald-700">
+                      Confirm Arrival
+                    </Button>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
