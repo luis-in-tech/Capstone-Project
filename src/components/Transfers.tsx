@@ -10,7 +10,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter, DialogDescription } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Truck, ArrowRightLeft, Clock, CheckCircle2, History, Plus } from 'lucide-react';
+import { Truck, ArrowRightLeft, Clock, CheckCircle2, History, Plus, X } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { useAuth } from '../hooks/useAuth';
 import { toast } from 'sonner';
@@ -22,6 +22,7 @@ export function Transfers() {
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
   const [isAddTransferOpen, setIsAddTransferOpen] = useState(false);
+  const [transferItems, setTransferItems] = useState([{ id: Date.now(), productName: '', quantity: 1 }]);
 
   useEffect(() => {
     const unsubTransfers = onSnapshot(query(collection(db, 'transfers'), orderBy('createdAt', 'desc')), (snap) => {
@@ -58,39 +59,48 @@ export function Transfers() {
     const formData = new FormData(e.currentTarget);
     const sourceWhName = formData.get('sourceWh') as string;
     const destWhName = formData.get('destWh') as string;
-    const prodName = formData.get('productId') as string;
-    const qty = Number(formData.get('quantity'));
 
     const sourceWh = warehouses.find(w => w.name === sourceWhName)?.id || sourceWhName;
     const destWh = warehouses.find(w => w.name === destWhName)?.id || destWhName;
-    const prodId = products.find(p => p.name === prodName)?.id || prodName;
 
     if (sourceWh === destWh) {
       toast.error('Source and destination warehouses must be different');
       return;
     }
 
-    // Check availability
-    const sourceInv = inventory.find(i => i.productId === prodId && i.warehouseId === sourceWh);
-    if (!sourceInv || sourceInv.quantity < qty) {
-      toast.error('Insufficient stock in source warehouse');
+    const validItems = transferItems.filter(item => item.productName);
+    if (validItems.length === 0) {
+      toast.error('Please select at least one product to transfer');
       return;
     }
 
-    const newTransfer = {
-      sourceWarehouseId: sourceWh,
-      destinationWarehouseId: destWh,
-      productId: prodId,
-      quantity: qty,
-      status: 'pending',
-      initiatedBy: profile?.uid,
-      createdAt: serverTimestamp()
-    };
+    // Check availability
+    for (const item of validItems) {
+      const prodId = products.find(p => p.name === item.productName)?.id || item.productName;
+      const sourceInv = inventory.find(i => i.productId === prodId && i.warehouseId === sourceWh);
+      if (!sourceInv || sourceInv.quantity < item.quantity) {
+        toast.error(`Insufficient stock for ${item.productName} in source warehouse`);
+        return;
+      }
+    }
 
     try {
-      await addDoc(collection(db, 'transfers'), newTransfer);
+      for (const item of validItems) {
+        const prodId = products.find(p => p.name === item.productName)?.id || item.productName;
+        const newTransfer = {
+          sourceWarehouseId: sourceWh,
+          destinationWarehouseId: destWh,
+          productId: prodId,
+          quantity: item.quantity,
+          status: 'pending',
+          initiatedBy: profile?.uid,
+          createdAt: serverTimestamp()
+        };
+        await addDoc(collection(db, 'transfers'), newTransfer);
+      }
       setIsAddTransferOpen(false);
-      toast.success('Warehouse transfer request initiated');
+      setTransferItems([{ id: Date.now(), productName: '', quantity: 1 }]);
+      toast.success('Warehouse transfer requests initiated');
     } catch (err) {
       handleSupabaseError(err, OperationType.CREATE, 'transfers');
     }
@@ -133,7 +143,10 @@ export function Transfers() {
           <h2 className="text-xl font-bold tracking-tight text-foreground">Warehouse Transfer Log</h2>
           <p className="text-xs text-muted-foreground font-medium tracking-tight">Managing stock movement between Valenzuela facilities</p>
         </div>
-        <Dialog open={isAddTransferOpen} onOpenChange={setIsAddTransferOpen}>
+        <Dialog open={isAddTransferOpen} onOpenChange={(open) => {
+          setIsAddTransferOpen(open);
+          if (!open) setTransferItems([{ id: Date.now(), productName: '', quantity: 1 }]);
+        }}>
           <DialogTrigger className="h-9 gap-2 px-4 bg-[#1A2332] text-white rounded-lg inline-flex items-center justify-center font-medium transition-all hover:bg-[#1A2332]/90">
             <ArrowRightLeft className="w-4 h-4" /> New Transfer Request
           </DialogTrigger>
@@ -171,22 +184,66 @@ export function Transfers() {
                   </Select>
                 </div>
               </div>
-              <div className="space-y-2">
-                <Label>Configuration Item (Product)</Label>
-                <Select name="productId" required>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select product..." />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {products.map(p => (
-                      <SelectItem key={p.id} value={p.name}>{p.name} ({p.sku})</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-2">
-                <Label>Quantity to Transfer</Label>
-                <Input name="quantity" type="number" required min="1" defaultValue="1" />
+              <div className="space-y-4">
+                <Label>Configuration Items (Products)</Label>
+                {transferItems.map((item, index) => (
+                  <div key={item.id} className="flex gap-2 items-end">
+                    <div className="flex-1 space-y-2">
+                      <Select 
+                        value={item.productName} 
+                        onValueChange={(val) => {
+                          const newItems = [...transferItems];
+                          newItems[index].productName = val;
+                          setTransferItems(newItems);
+                        }} 
+                        required
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder="Select product..." />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {products.map(p => (
+                            <SelectItem key={p.id} value={p.name}>{p.name} ({p.sku})</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="w-24 space-y-2">
+                      <Label className={index > 0 ? "sr-only" : ""}>Qty</Label>
+                      <Input 
+                        type="number" 
+                        required 
+                        min="1" 
+                        value={item.quantity}
+                        onChange={(e) => {
+                          const newItems = [...transferItems];
+                          newItems[index].quantity = Number(e.target.value);
+                          setTransferItems(newItems);
+                        }}
+                      />
+                    </div>
+                    {transferItems.length > 1 && (
+                      <Button 
+                        type="button" 
+                        variant="ghost" 
+                        size="icon"
+                        className={`text-red-500 hover:bg-red-500/10 hover:text-red-600 shrink-0 ${index === 0 ? 'mb-[2px]' : ''}`}
+                        onClick={() => setTransferItems(transferItems.filter((_, i) => i !== index))}
+                      >
+                        <X className="w-4 h-4" />
+                      </Button>
+                    )}
+                  </div>
+                ))}
+                <Button 
+                  type="button" 
+                  variant="outline" 
+                  size="sm" 
+                  className="w-full text-xs border-dashed"
+                  onClick={() => setTransferItems([...transferItems, { id: Date.now(), productName: '', quantity: 1 }])}
+                >
+                  <Plus className="w-4 h-4 mr-2" /> Add Another Item
+                </Button>
               </div>
               <DialogFooter>
                 <Button type="submit" className="w-full">Confirm</Button>
