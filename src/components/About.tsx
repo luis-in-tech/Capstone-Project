@@ -12,7 +12,7 @@ export const About = () => {
         <div className="max-w-7xl mx-auto flex justify-between items-center">
           <Link to="/" className="flex items-center gap-2">
             <Package className="w-5 h-5 text-zinc-900" />
-            <span className="font-black tracking-tighter text-zinc-900">VMSPRO</span>
+            <span className="font-black tracking-tighter text-zinc-900">Active Pro</span>
           </Link>
           <Link to="/login">
             <Button variant="outline" size="sm" className="text-[10px] font-black uppercase tracking-widest">Login / Join</Button>
@@ -35,7 +35,7 @@ export const About = () => {
               <section>
                 <h2 className="text-xs font-black uppercase tracking-[0.3em] text-zinc-400 mb-6 underline decoration-2 underline-offset-8">The Philosophy</h2>
                 <p className="text-xl text-zinc-600 font-medium leading-relaxed">
-                  VMSPRO was born out of a simple observation: the tools used to manage multi-warehousing 
+                  Active Pro was born out of a simple observation: the tools used to manage multi-warehousing 
                   are often either too simplistic for growth or too complex for agility. We've built 
                   a system that bridges that gap, providing enterprise-grade power with a consumer-grade experience.
                 </p>

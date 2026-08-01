@@ -10,7 +10,7 @@ export const Privacy = () => {
       <nav className="border-b border-zinc-100 py-4 px-6 sticky top-0 bg-white/80 backdrop-blur-md z-50">
         <div className="max-w-7xl mx-auto flex justify-between items-center">
           <Link to="/" className="flex items-center gap-2">
-            <span className="font-black tracking-tighter text-zinc-900">VMSPRO</span>
+            <span className="font-black tracking-tighter text-zinc-900">Active Pro</span>
           </Link>
           <Link to="/">
             <Button variant="ghost" size="sm" className="text-[10px] font-black uppercase tracking-widest gap-2">
@@ -38,7 +38,7 @@ export const Privacy = () => {
             <section>
               <h2 className="text-xl font-black tracking-tight text-zinc-900 mb-4">1. DATA ENCAPSULATION</h2>
               <p className="text-zinc-600 leading-relaxed font-medium">
-                VMSPRO ("The System") prioritizes the absolute integrity of your logistics data. We operate on a principle of "Zero-Knowledge" for your proprietary supply chain data. All warehouse records, agent details, and financialTrajectories are stored using enterprise-grade encryption.
+                Active Pro ("The System") prioritizes the absolute integrity of your logistics data. We operate on a principle of "Zero-Knowledge" for your proprietary supply chain data. All warehouse records, agent details, and financialTrajectories are stored using enterprise-grade encryption.
               </p>
             </section>
 
@@ -61,7 +61,7 @@ export const Privacy = () => {
               <p className="text-zinc-600 leading-relaxed font-medium">
                 For GDPR or CCPA inquiries regarding data deletion or extraction, please contact our compliance department at:
                 <br />
-                <span className="text-zinc-900 font-black block mt-2 text-sm uppercase tracking-widest">compliance@vmspro.edge</span>
+                <span className="text-zinc-900 font-black block mt-2 text-sm uppercase tracking-widest">compliance@activepro.edge</span>
               </p>
             </section>
           </div>

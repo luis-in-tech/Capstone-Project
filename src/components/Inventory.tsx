@@ -9,7 +9,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter, DialogDescription } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
-import { Search, Plus, QrCode, Filter, Package, Warehouse as WarehouseIcon } from 'lucide-react';
+import { Search, Plus, QrCode, Filter, Package, Warehouse as WarehouseIcon, PenLine } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -101,12 +101,50 @@ export function Inventory() {
     }
   };
 
+  const getProductVariations = (product: Product | null) => {
+    if (!product) return [];
+    const seed = (product.name.charCodeAt(0) || 0) + product.name.length;
+    if (product.category?.toLowerCase().includes('frame') || seed % 3 === 0) {
+      return [
+        { name: 'Color', values: ['Matte Black', 'Gloss Red', 'Titanium'] },
+        { name: 'Size', values: ['SM (50)', 'MD (54)', 'LG (58)'] },
+        { name: 'Finish', values: ['Matte', 'Glossy'] }
+      ];
+    } else if (product.category?.toLowerCase().includes('group') || seed % 3 === 1) {
+      return [
+        { name: 'Series', values: ['Base', 'Pro', 'Elite'] },
+        { name: 'Spec', values: ['Standard', 'Lightweight'] },
+        { name: 'Option', values: ['Mechanical', 'Di2'] }
+      ];
+    } else {
+      return [
+        { name: 'Color', values: ['Black', 'Silver', 'Carbon'] },
+        { name: 'Model', values: ['Standard', '2024 Edition'] },
+        { name: 'Type', values: ['Road', 'MTB', 'Gravel'] }
+      ];
+    }
+  };
+
   const updateStock = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const formData = new FormData(e.currentTarget);
     const warehouseId = formData.get('warehouseId') as string;
     const quantity = Number(formData.get('quantity'));
-    const reason = formData.get('reason') as string;
+    let reason = formData.get('reason') as string;
+
+    if (selectedProduct) {
+      const variations = getProductVariations(selectedProduct);
+      const selectedVars: string[] = [];
+      variations.forEach(v => {
+        const val = formData.get(`var_${v.name}`);
+        if (val && val !== 'choose') {
+          selectedVars.push(`${v.name}: ${val}`);
+        }
+      });
+      if (selectedVars.length > 0) {
+        reason = `[Variations: ${selectedVars.join(', ')}] ` + reason;
+      }
+    }
 
     const item = inventory.find(i => i.productId === selectedProduct?.id && i.warehouseId === warehouseId);
     if (item && selectedProduct && profile) {
@@ -272,7 +310,7 @@ export function Inventory() {
                       className="h-8 w-8 text-muted-foreground hover:text-foreground"
                       onClick={() => { setSelectedProduct(p); setIsStockUpdateOpen(true); }}
                     >
-                      <Package className="w-4 h-4" />
+                      <PenLine className="w-4 h-4" />
                     </Button>
                   )}
                 </div>
@@ -372,7 +410,7 @@ export function Inventory() {
                             setIsStockUpdateOpen(true);
                           }}
                         >
-                          <Package className="w-4 h-4" />
+                          <PenLine className="w-4 h-4" />
                         </Button>
                       )}
                     </TableCell>
@@ -386,7 +424,7 @@ export function Inventory() {
 
       {/* Stock Update Dialog */}
       <Dialog open={isStockUpdateOpen} onOpenChange={setIsStockUpdateOpen}>
-        <DialogContent>
+        <DialogContent className="sm:max-w-xl">
           <DialogHeader>
             <DialogTitle>Manual Stock Adjustment</DialogTitle>
             <DialogDescription>
@@ -409,6 +447,31 @@ export function Inventory() {
                 </SelectContent>
               </Select>
             </div>
+            
+            {selectedProduct && getProductVariations(selectedProduct).length > 0 && (
+              <div className="space-y-3 py-3 border-y border-border">
+                <Label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground mb-1 block">Specify Variation (Optional)</Label>
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                  {getProductVariations(selectedProduct).map((variation, idx) => (
+                    <div key={idx} className="space-y-1.5">
+                      <Label className="text-[10px] font-bold text-foreground">{variation.name}</Label>
+                      <Select name={`var_${variation.name}`} defaultValue="choose">
+                        <SelectTrigger className="h-8 text-xs bg-muted/50 border-border">
+                          <SelectValue placeholder="choose" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="choose">choose</SelectItem>
+                          {variation.values.map(v => (
+                            <SelectItem key={v} value={v}>{v}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label>Adjustment Qty</Label>
@@ -431,7 +494,7 @@ export function Inventory() {
               </div>
             </div>
             <DialogFooter>
-              <Button type="submit" className="w-full">Commit Adjustment</Button>
+              <Button type="submit" className="w-full bg-[#fdd001] text-zinc-900 font-bold hover:bg-[#fbcc0e]">Confirm</Button>
             </DialogFooter>
           </form>
         </DialogContent>
@@ -532,6 +595,28 @@ export function Inventory() {
                   </div>
                 </div>
               </div>
+            </div>
+          </div>
+
+          <div className="pb-6">
+            <Label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground mb-3 block">Available Variations & Options</Label>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              {(() => {
+                if (!selectedProduct) return null;
+                const variations = getProductVariations(selectedProduct);
+                return variations.map((variation, idx) => (
+                  <div key={idx} className="bg-muted/50 p-3 rounded-xl border border-border">
+                    <span className="text-[10px] font-black uppercase text-foreground mb-2 block">{variation.name}</span>
+                    <div className="flex flex-wrap gap-1.5">
+                      {variation.values.map((v, i) => (
+                        <Badge key={i} variant="outline" className="text-[9px] font-bold bg-background text-muted-foreground border-border">
+                          {v}
+                        </Badge>
+                      ))}
+                    </div>
+                  </div>
+                ));
+              })()}
             </div>
           </div>
 

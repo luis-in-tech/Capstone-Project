@@ -48,7 +48,6 @@ export function Transfers() {
     }, (error) => {
       handleSupabaseError(error, OperationType.GET, 'inventory');
     });
-
     return () => {
       unsubTransfers();
       unsubProducts();
@@ -103,7 +102,7 @@ export function Transfers() {
       }
       setIsAddTransferOpen(false);
       setTransferItems([{ id: Date.now(), productName: '', quantity: 1 }]);
-      toast.success('Warehouse transfer requests initiated');
+      toast.success('Warehouse transport requests initiated');
     } catch (err) {
       handleSupabaseError(err, OperationType.CREATE, 'transfers');
     }
@@ -133,7 +132,7 @@ export function Transfers() {
          status: newStatus,
          updatedAt: serverTimestamp()
       });
-      toast.success(`Transfer status updated to ${newStatus}`);
+      toast.success(`Transport status updated to ${newStatus}`);
     } catch (err) {
       handleSupabaseError(err, OperationType.UPDATE, `transfers/${transfer.id}`);
     }
@@ -143,7 +142,7 @@ export function Transfers() {
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3">
         <div className="flex flex-col">
-          <h2 className="text-xl font-bold tracking-tight text-foreground">Warehouse Transfer Log</h2>
+          <h2 className="text-xl font-bold tracking-tight text-foreground">Warehouse Transport Log</h2>
           <p className="text-xs text-muted-foreground font-medium tracking-tight">Managing stock movement between Valenzuela facilities</p>
         </div>
         <Dialog open={isAddTransferOpen} onOpenChange={(open) => {
@@ -151,12 +150,12 @@ export function Transfers() {
           if (!open) setTransferItems([{ id: Date.now(), productName: '', quantity: 1 }]);
         }}>
           <DialogTrigger className="h-9 gap-2 px-4 bg-[#1A2332] text-white rounded-lg inline-flex items-center justify-center font-medium transition-all hover:bg-[#1A2332]/90">
-            <ArrowRightLeft className="w-4 h-4" /> New Transfer Request
+            <ArrowRightLeft className="w-4 h-4" /> New Transport Request
           </DialogTrigger>
           <DialogContent>
             <DialogHeader>
               <DialogTitle>Initiate Stock Movement</DialogTitle>
-              <DialogDescription>Request a transfer of inventory items between warehouse locations.</DialogDescription>
+              <DialogDescription>Request a transport of inventory items between warehouse locations.</DialogDescription>
             </DialogHeader>
             <form onSubmit={handleInitiateTransfer} className="space-y-4 pt-4">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -387,7 +386,7 @@ export function Transfers() {
                   <TableCell colSpan={5} className="text-center h-32">
                      <div className="flex flex-col items-center justify-center gap-2">
                        <History className="w-8 h-8 text-muted-foreground/30" />
-                       <p className="text-xs font-medium text-muted-foreground">No active transfers tracked</p>
+                       <p className="text-xs font-medium text-muted-foreground">No active transports tracked</p>
                      </div>
                   </TableCell>
                 </TableRow>
@@ -400,7 +399,7 @@ export function Transfers() {
       <Dialog open={!!selectedTransfer} onOpenChange={(open) => !open && setSelectedTransfer(null)}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Transfer Details</DialogTitle>
+            <DialogTitle>Transport Details</DialogTitle>
             <DialogDescription>
               Movement ID: TFR-{selectedTransfer?.id.slice(-6)}
             </DialogDescription>
@@ -444,7 +443,7 @@ export function Transfers() {
                 <div className="flex justify-end gap-2 pt-4 border-t border-border mt-4">
                   {selectedTransfer.status === 'pending' && (
                     <Button onClick={() => { updateStatus(selectedTransfer, 'in_transit'); setSelectedTransfer(null); }}>
-                      Dispatch Transfer
+                      Dispatch Transport
                     </Button>
                   )}
                   {selectedTransfer.status === 'in_transit' && (
