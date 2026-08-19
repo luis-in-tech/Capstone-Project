@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { db } from '../lib/supabaseAdapter';
 import { collection, onSnapshot, query, where, addDoc, updateDoc, doc, serverTimestamp } from '../lib/supabaseAdapter';
 import { Product, InventoryItem, Warehouse, StaffDelegation } from '../types';
@@ -9,15 +10,17 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter, DialogDescription } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
-import { Search, Plus, QrCode, Filter, Package, Warehouse as WarehouseIcon } from 'lucide-react';
+import { Search, Plus, QrCode, Filter, Package, Warehouse as WarehouseIcon, Tag, Check, Building2, ChevronDown, Layers } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { useAuth } from '../hooks/useAuth';
 import { toast } from 'sonner';
 
 export function Inventory() {
   const { profile } = useAuth();
+  const navigate = useNavigate();
   const [products, setProducts] = useState<Product[]>([]);
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
@@ -27,6 +30,14 @@ export function Inventory() {
   const [isStockUpdateOpen, setIsStockUpdateOpen] = useState(false);
   const [isDetailOpen, setIsDetailOpen] = useState(false);
   const [selectedWarehouseId, setSelectedWarehouseId] = useState('');
+  
+  // Warehouse Filter State (for filtering inventory view)
+  const [warehouseFilter, setWarehouseFilter] = useState<string>('all');
+  const [isWarehouseFilterOpen, setIsWarehouseFilterOpen] = useState(false);
+  const [isAddWarehouseOpen, setIsAddWarehouseOpen] = useState(false);
+  const [newWarehouseName, setNewWarehouseName] = useState('');
+  const [newWarehouseLocation, setNewWarehouseLocation] = useState('');
+  const [isCreatingWarehouse, setIsCreatingWarehouse] = useState(false);
 
   const [hasDelegatedAccess, setHasDelegatedAccess] = useState(false);
 
@@ -70,15 +81,25 @@ export function Inventory() {
   const handleAddProduct = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const formData = new FormData(e.currentTarget);
+    const basePrice = Number(formData.get('basePrice')) || 0;
+    const mmPrice = Number(formData.get('mmPrice')) || Number(formData.get('wholesalePrice')) || 0;
+    const provincialPrice = Number(formData.get('provincialPrice')) || Number(formData.get('dealerPrice')) || 0;
+    const costPrice = Number(formData.get('costPrice')) || 0;
+    const supplier = (formData.get('supplier') as string)?.trim() || 'Supplier';
+
     const newProduct = {
       sku: formData.get('sku'),
       name: formData.get('name'),
       category: formData.get('category'),
-      basePrice: Number(formData.get('basePrice')),
-      wholesalePrice: Number(formData.get('wholesalePrice')),
-      dealerPrice: Number(formData.get('dealerPrice')),
-      minStockLevel: Number(formData.get('minStockLevel')),
-      reorderPoint: Number(formData.get('reorderPoint')),
+      supplier,
+      basePrice,
+      wholesalePrice: mmPrice,
+      dealerPrice: provincialPrice,
+      mmPrice,
+      provincialPrice,
+      costPrice,
+      minStockLevel: Number(formData.get('minStockLevel')) || 0,
+      reorderPoint: Number(formData.get('reorderPoint')) || 0,
       createdAt: new Date(),
       updatedAt: new Date(),
     };
@@ -98,6 +119,40 @@ export function Inventory() {
       toast.success('Product added to CI catalog');
     } catch (err) {
       handleSupabaseError(err, OperationType.CREATE, 'products');
+    }
+  };
+
+  const handleAddWarehouse = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    if (!newWarehouseName.trim()) return;
+    setIsCreatingWarehouse(true);
+    try {
+      const newWh = {
+        name: newWarehouseName.trim(),
+        location: newWarehouseLocation.trim() || 'Warehouse Facility',
+      };
+      const docRef = await addDoc(collection(db, 'warehouses'), newWh);
+      
+      // Initialize inventory for all existing products in this new warehouse
+      for (const p of products) {
+        await addDoc(collection(db, 'inventory'), {
+          productId: p.id,
+          warehouseId: docRef.id,
+          quantity: 0,
+          lastUpdated: serverTimestamp()
+        });
+      }
+
+      setWarehouseFilter(docRef.id);
+      setIsAddWarehouseOpen(false);
+      setIsWarehouseFilterOpen(false);
+      setNewWarehouseName('');
+      setNewWarehouseLocation('');
+      toast.success(`Warehouse "${newWarehouseName}" added successfully`);
+    } catch (err) {
+      handleSupabaseError(err, OperationType.CREATE, 'warehouses');
+    } finally {
+      setIsCreatingWarehouse(false);
     }
   };
 
@@ -135,22 +190,41 @@ export function Inventory() {
     }
   };
 
-  const filteredProducts = products.filter(p => 
-    p.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
-    p.sku.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  // Filter products by Name, SKU, Category, and Supplier
+  const filteredProducts = products.filter(p => {
+    const searchLower = searchTerm.toLowerCase();
+    const nameMatch = p.name?.toLowerCase().includes(searchLower);
+    const skuMatch = p.sku?.toLowerCase().includes(searchLower);
+    const supplierMatch = (p.supplier || '').toLowerCase().includes(searchLower);
+    const categoryMatch = (p.category || '').toLowerCase().includes(searchLower);
+    return nameMatch || skuMatch || supplierMatch || categoryMatch;
+  });
 
   const getStockCount = (productId: string, warehouseId?: string) => {
     const items = inventory.filter(i => i.productId === productId);
-    if (warehouseId) {
+    if (warehouseId && warehouseId !== 'all') {
       return items.find(i => i.warehouseId === warehouseId)?.quantity || 0;
     }
     return items.reduce((sum, i) => sum + i.quantity, 0);
   };
 
+  const getTotalWarehouseStock = (warehouseId?: string) => {
+    if (!warehouseId || warehouseId === 'all') {
+      return inventory.reduce((sum, i) => sum + i.quantity, 0);
+    }
+    return inventory.filter(i => i.warehouseId === warehouseId).reduce((sum, i) => sum + i.quantity, 0);
+  };
+
+  const activeWarehouseObj = warehouses.find(w => w.id === warehouseFilter);
+  const activeWarehouseLabel = warehouseFilter === 'all' 
+    ? 'All Warehouse' 
+    : (activeWarehouseObj?.name || 'Warehouse Filter');
+
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 pb-20">
+      {/* Top Action Bar */}
       <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center justify-between">
+        {/* Search Bar - searches by Name, SKU, Supplier */}
         <div className="relative w-full max-w-sm">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-400" />
           <Input 
@@ -160,7 +234,19 @@ export function Inventory() {
             onChange={(e) => setSearchTerm(e.target.value)}
           />
         </div>
-        <div className="flex items-center gap-2 w-full sm:w-auto">
+
+        {/* Top Right Action Buttons: +Pricelist and + Add Product */}
+        <div className="flex items-center gap-2.5 w-full sm:w-auto">
+          {/* +Pricelist button */}
+          <Button
+            type="button"
+            onClick={() => navigate('/pricelist')}
+            className="h-10 bg-[#FF2D20] hover:bg-[#E02619] text-white font-bold rounded-lg px-4 flex items-center gap-1.5 shadow-md hover:shadow-lg transition-all"
+          >
+            +Pricelist
+          </Button>
+
+          {/* + Add Product button */}
           {isAdmin && (
             <Dialog open={isAddProductOpen} onOpenChange={setIsAddProductOpen}>
               <DialogTrigger className="h-10 gap-2 px-4 bg-[#1A2332] text-white rounded-lg inline-flex items-center justify-center font-medium transition-all hover:bg-[#1A2332]/90">
@@ -186,24 +272,32 @@ export function Inventory() {
                       <Input id="category" name="category" placeholder="Groupsets" />
                     </div>
                     <div className="space-y-2">
-                      <Label htmlFor="basePrice">Base Cost (₱)</Label>
-                      <Input id="basePrice" name="basePrice" type="number" step="0.01" required />
+                      <Label htmlFor="supplier">Supplier Name</Label>
+                      <Input id="supplier" name="supplier" placeholder="e.g. Shimano Phils" defaultValue="Supplier" />
                     </div>
                     <div className="space-y-2">
-                      <Label htmlFor="wholesalePrice">Wholesale (₱)</Label>
-                      <Input id="wholesalePrice" name="wholesalePrice" type="number" step="0.01" />
+                      <Label htmlFor="basePrice">Base Price / Retail (₱)</Label>
+                      <Input id="basePrice" name="basePrice" type="number" step="0.01" required placeholder="0.00" />
                     </div>
                     <div className="space-y-2">
-                      <Label htmlFor="dealerPrice">Dealer (₱)</Label>
-                      <Input id="dealerPrice" name="dealerPrice" type="number" step="0.01" />
+                      <Label htmlFor="mmPrice">MM Price (₱)</Label>
+                      <Input id="mmPrice" name="mmPrice" type="number" step="0.01" placeholder="0.00" />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="provincialPrice">Provincial Price (₱)</Label>
+                      <Input id="provincialPrice" name="provincialPrice" type="number" step="0.01" placeholder="0.00" />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="costPrice">Cost (₱)</Label>
+                      <Input id="costPrice" name="costPrice" type="number" step="0.01" placeholder="0.00" />
                     </div>
                     <div className="space-y-2">
                       <Label htmlFor="minStockLevel">Min Stock Level</Label>
-                      <Input id="minStockLevel" name="minStockLevel" type="number" />
+                      <Input id="minStockLevel" name="minStockLevel" type="number" defaultValue="0" />
                     </div>
                     <div className="space-y-2">
                       <Label htmlFor="reorderPoint">Reorder Point</Label>
-                      <Input id="reorderPoint" name="reorderPoint" type="number" required />
+                      <Input id="reorderPoint" name="reorderPoint" type="number" required defaultValue="0" />
                     </div>
                   </div>
                   <DialogFooter>
@@ -216,66 +310,112 @@ export function Inventory() {
         </div>
       </div>
 
+      {/* Active Warehouse Filter Banner / Indicator */}
+      {warehouseFilter !== 'all' && activeWarehouseObj && (
+        <div className="flex items-center justify-between bg-red-500/10 border border-red-500/30 rounded-xl px-4 py-2.5 text-xs text-red-500 font-semibold">
+          <div className="flex items-center gap-2">
+            <Building2 className="w-4 h-4 text-red-500" />
+            <span>Viewing inventory filtered by warehouse: <strong className="text-red-600 dark:text-red-400">{activeWarehouseObj.name}</strong></span>
+          </div>
+          <Button 
+            variant="ghost" 
+            size="sm" 
+            onClick={() => setWarehouseFilter('all')}
+            className="h-7 text-[11px] font-bold text-red-600 hover:text-red-700 hover:bg-red-500/20"
+          >
+            Reset to All Warehouses
+          </Button>
+        </div>
+      )}
+
       {/* Mobile Card View */}
       <div className="lg:hidden space-y-3">
         {filteredProducts.map((p) => {
-          const totalStock = getStockCount(p.id);
-          const isLow = totalStock <= p.reorderPoint;
+          const stock = getStockCount(p.id, warehouseFilter);
+          const isLow = stock <= (p.reorderPoint || 0);
+          const mmVal = p.mmPrice ?? p.wholesalePrice ?? 0;
+          const provVal = p.provincialPrice ?? p.dealerPrice ?? 0;
+          const costVal = p.costPrice ?? 0;
+          const supplierName = p.supplier || 'Supplier';
+
           return (
             <div
               key={p.id}
-              className="bg-card border border-border rounded-xl p-4 cursor-pointer hover:border-foreground/20 transition-all"
+              className="bg-card border border-border rounded-xl p-4 cursor-pointer hover:border-foreground/20 transition-all space-y-3"
               onClick={() => { setSelectedProduct(p); setIsDetailOpen(true); }}
             >
-              <div className="flex items-start justify-between gap-2 mb-3">
+              <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
                   <p className="text-sm font-bold text-foreground leading-tight">{p.name}</p>
-                  <p className="text-[10px] text-zinc-400 font-medium uppercase mt-0.5">{p.category}</p>
+                  <p className="text-[10px] text-zinc-400 font-medium uppercase mt-0.5">{p.category || 'Accessories'}</p>
                   <p className="text-[10px] font-mono text-zinc-500 mt-0.5">{p.sku}</p>
                 </div>
-                <Badge
-                  variant="outline"
-                  className={`shrink-0 h-6 font-bold text-[10px] ${isLow ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200'}`}
-                >
-                  {totalStock} units
-                </Badge>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-sm font-black text-foreground">₱{p.basePrice.toLocaleString()}</span>
-                <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
-                  <Dialog>
-                    <DialogTrigger className="inline-flex items-center justify-center h-8 w-8 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-all">
-                      <QrCode className="w-4 h-4" />
-                    </DialogTrigger>
-                    <DialogContent className="sm:max-w-xs text-center">
-                      <DialogHeader>
-                        <DialogTitle className="text-center">Asset QR Label</DialogTitle>
-                      </DialogHeader>
-                      <div className="flex flex-col items-center gap-4 py-8">
-                        <div className="p-4 bg-card border-2 border-primary rounded-2xl">
-                          <QRCodeSVG value={p.id} size={180} />
-                        </div>
-                        <div className="space-y-1">
-                          <p className="text-sm font-black">{p.name}</p>
-                          <p className="text-xs font-mono text-muted-foreground">{p.sku}</p>
-                        </div>
-                      </div>
-                      <Button className="w-full gap-2" variant="outline" onClick={() => window.print()}>
-                        Print Label
-                      </Button>
-                    </DialogContent>
-                  </Dialog>
-                  {canAdjustStock && (
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-8 w-8 text-muted-foreground hover:text-foreground"
-                      onClick={() => { setSelectedProduct(p); setIsStockUpdateOpen(true); }}
-                    >
-                      <Package className="w-4 h-4" />
-                    </Button>
-                  )}
+                <div className="flex flex-col items-end gap-1.5 shrink-0">
+                  <Badge
+                    variant="outline"
+                    className={`h-6 font-bold text-[10px] ${isLow ? 'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/40 dark:text-amber-400 dark:border-amber-800' : 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-400 dark:border-emerald-800'}`}
+                  >
+                    {stock} units
+                  </Badge>
+                  <span className="bg-[#FF2D20] text-white text-[10px] font-bold px-2.5 py-0.5 rounded-full shadow-sm">
+                    {supplierName}
+                  </span>
                 </div>
+              </div>
+
+              {/* 4 Price Points Grid */}
+              <div className="grid grid-cols-4 gap-2 pt-2 border-t border-border/60 text-center">
+                <div>
+                  <p className="text-[9px] font-bold text-zinc-400 uppercase tracking-wider">Price</p>
+                  <p className="text-xs font-black text-foreground">₱{(p.basePrice || 0).toLocaleString()}</p>
+                </div>
+                <div>
+                  <p className="text-[9px] font-bold text-zinc-400 uppercase tracking-wider">MM</p>
+                  <p className="text-xs font-bold text-zinc-300">₱{mmVal.toLocaleString()}</p>
+                </div>
+                <div>
+                  <p className="text-[9px] font-bold text-zinc-400 uppercase tracking-wider">Provincial</p>
+                  <p className="text-xs font-bold text-zinc-300">₱{provVal.toLocaleString()}</p>
+                </div>
+                <div>
+                  <p className="text-[9px] font-bold text-zinc-400 uppercase tracking-wider">Cost</p>
+                  <p className="text-xs font-bold text-zinc-400">₱{costVal.toLocaleString()}</p>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-end gap-1 pt-1" onClick={(e) => e.stopPropagation()}>
+                <Dialog>
+                  <DialogTrigger className="inline-flex items-center justify-center h-8 w-8 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-all">
+                    <QrCode className="w-4 h-4" />
+                  </DialogTrigger>
+                  <DialogContent className="sm:max-w-xs text-center">
+                    <DialogHeader>
+                      <DialogTitle className="text-center">Asset QR Label</DialogTitle>
+                    </DialogHeader>
+                    <div className="flex flex-col items-center gap-4 py-8">
+                      <div className="p-4 bg-card border-2 border-primary rounded-2xl">
+                        <QRCodeSVG value={p.id} size={180} />
+                      </div>
+                      <div className="space-y-1">
+                        <p className="text-sm font-black">{p.name}</p>
+                        <p className="text-xs font-mono text-muted-foreground">{p.sku}</p>
+                      </div>
+                    </div>
+                    <Button className="w-full gap-2" variant="outline" onClick={() => window.print()}>
+                      Print Label
+                    </Button>
+                  </DialogContent>
+                </Dialog>
+                {canAdjustStock && (
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8 text-muted-foreground hover:text-foreground"
+                    onClick={() => { setSelectedProduct(p); setIsStockUpdateOpen(true); }}
+                  >
+                    <Package className="w-4 h-4" />
+                  </Button>
+                )}
               </div>
             </div>
           );
@@ -285,24 +425,34 @@ export function Inventory() {
         )}
       </div>
 
-      {/* Desktop Table View */}
-      <div className="hidden lg:block bg-card border border-border rounded-xl overflow-hidden">
+      {/* Desktop Table View - 4 Price Columns, Stock, Supplier, Actions */}
+      <div className="hidden lg:block bg-card border border-border rounded-xl overflow-hidden shadow-sm">
         <div className="overflow-x-auto w-full">
           <Table>
             <TableHeader className="bg-muted/50">
               <TableRow>
                 <TableHead className="w-[100px] text-[10px] font-bold uppercase tracking-widest min-w-[100px]">SKU</TableHead>
-                <TableHead className="text-[10px] font-bold uppercase tracking-widest text-foreground min-w-[200px]">Item Details</TableHead>
-                <TableHead className="text-[10px] font-bold uppercase tracking-widest min-w-[120px]">Pricing (Base)</TableHead>
-                <TableHead className="text-[10px] font-bold uppercase tracking-widest text-center min-w-[120px]">Total Stock</TableHead>
-                <TableHead className="text-[10px] font-bold uppercase tracking-widest min-w-[150px]">Warehouse Sync</TableHead>
-                <TableHead className="text-right text-[10px] font-bold uppercase tracking-widest min-w-[100px]">Actions</TableHead>
+                <TableHead className="text-[10px] font-bold uppercase tracking-widest text-foreground min-w-[180px]">Item Details</TableHead>
+                <TableHead className="text-[10px] font-bold uppercase tracking-widest min-w-[110px]">Pricing (Base)</TableHead>
+                <TableHead className="text-[10px] font-bold uppercase tracking-widest min-w-[100px]">Price (MM)</TableHead>
+                <TableHead className="text-[10px] font-bold uppercase tracking-widest min-w-[110px]">Price (Provincial)</TableHead>
+                <TableHead className="text-[10px] font-bold uppercase tracking-widest min-w-[100px]">Cost</TableHead>
+                <TableHead className="text-[10px] font-bold uppercase tracking-widest text-center min-w-[120px]">
+                  {warehouseFilter === 'all' ? 'Total Stock' : `${activeWarehouseObj?.name || 'Warehouse'} Stock`}
+                </TableHead>
+                <TableHead className="text-center text-[10px] font-bold uppercase tracking-widest min-w-[110px]">Supplier</TableHead>
+                <TableHead className="text-right text-[10px] font-bold uppercase tracking-widest min-w-[90px]">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {filteredProducts.map((p) => {
-                const totalStock = getStockCount(p.id);
-                const isLow = totalStock <= p.reorderPoint;
+                const stock = getStockCount(p.id, warehouseFilter);
+                const isLow = stock <= (p.reorderPoint || 0);
+                const mmVal = p.mmPrice ?? p.wholesalePrice ?? 0;
+                const provVal = p.provincialPrice ?? p.dealerPrice ?? 0;
+                const costVal = p.costPrice ?? 0;
+                const supplierName = p.supplier || 'Supplier';
+
                 return (
                   <TableRow 
                     key={p.id} 
@@ -316,27 +466,25 @@ export function Inventory() {
                     <TableCell>
                       <div className="flex flex-col">
                         <span className="text-sm font-bold text-foreground">{p.name}</span>
-                        <span className="text-[10px] text-zinc-400 font-medium uppercase">{p.category}</span>
+                        <span className="text-[10px] text-zinc-400 font-medium uppercase">{p.category || 'Accessories'}</span>
                       </div>
                     </TableCell>
-                    <TableCell className="text-sm font-medium">₱{p.basePrice.toLocaleString()}</TableCell>
+                    <TableCell className="text-sm font-bold text-foreground">₱{(p.basePrice || 0).toLocaleString()}</TableCell>
+                    <TableCell className="text-sm font-medium text-zinc-300">₱{mmVal.toLocaleString()}</TableCell>
+                    <TableCell className="text-sm font-medium text-zinc-300">₱{provVal.toLocaleString()}</TableCell>
+                    <TableCell className="text-sm font-medium text-zinc-400">₱{costVal.toLocaleString()}</TableCell>
                     <TableCell className="text-center">
                       <Badge 
                         variant="outline" 
-                        className={`h-6 font-bold ${isLow ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200'}`}
+                        className={`h-6 font-bold ${isLow ? 'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/40 dark:text-amber-400 dark:border-amber-800' : 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-400 dark:border-emerald-800'}`}
                       >
-                        {totalStock} units
+                        {stock} units
                       </Badge>
                     </TableCell>
-                    <TableCell>
-                      <div className="flex flex-col gap-1">
-                        {warehouses.map(wh => (
-                          <div key={wh.id} className="flex items-center justify-between text-[10px] font-medium text-zinc-500">
-                            <span>{wh.name}:</span>
-                            <span className="font-bold text-zinc-700">{getStockCount(p.id, wh.id)}</span>
-                          </div>
-                        ))}
-                      </div>
+                    <TableCell className="text-center" onClick={(e) => e.stopPropagation()}>
+                      <span className="inline-block bg-[#FF2D20] text-white text-[11px] font-bold px-3 py-1 rounded-full shadow-sm">
+                        {supplierName}
+                      </span>
                     </TableCell>
                     <TableCell className="text-right space-x-1" onClick={(e) => e.stopPropagation()}>
                       <Dialog>
@@ -383,6 +531,149 @@ export function Inventory() {
           </Table>
         </div>
       </div>
+
+      {/* Bottom Section: "All Warehouse" Filter Button with scalable popup/menu */}
+      <div className="pt-2 flex items-center justify-between">
+        <Popover open={isWarehouseFilterOpen} onOpenChange={setIsWarehouseFilterOpen}>
+          <PopoverTrigger asChild>
+            <Button 
+              type="button"
+              className="h-11 bg-[#FF2D20] hover:bg-[#E02619] text-white font-extrabold px-5 rounded-xl shadow-lg hover:shadow-xl flex items-center gap-2 text-xs uppercase tracking-wider transition-all"
+            >
+              <Building2 className="w-4 h-4" />
+              <span>{activeWarehouseLabel}</span>
+              <ChevronDown className="w-3.5 h-3.5 opacity-80" />
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent 
+            align="start" 
+            side="top" 
+            className="w-72 p-0 bg-[#FF2D20] text-white border-0 shadow-2xl rounded-2xl overflow-hidden"
+          >
+            {/* Filter Header */}
+            <div className="p-3.5 border-b border-white/20">
+              <p className="text-xs font-black uppercase tracking-widest text-white/90 text-center">Filter:</p>
+            </div>
+
+            {/* Warehouse List */}
+            <div className="p-2 space-y-1 max-h-60 overflow-y-auto">
+              {/* Option 1: All Warehouses */}
+              <button
+                type="button"
+                onClick={() => {
+                  setWarehouseFilter('all');
+                  setIsWarehouseFilterOpen(false);
+                }}
+                className={`w-full text-left px-3.5 py-2.5 rounded-xl text-xs font-bold flex items-center justify-between transition-colors ${
+                  warehouseFilter === 'all' 
+                    ? 'bg-white text-[#FF2D20] shadow-sm' 
+                    : 'text-white hover:bg-white/15'
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  <Layers className="w-3.5 h-3.5" />
+                  <span>All Warehouses</span>
+                </div>
+                <span className={`text-[10px] font-mono font-black px-2 py-0.5 rounded-full ${warehouseFilter === 'all' ? 'bg-[#FF2D20]/10 text-[#FF2D20]' : 'bg-black/20 text-white'}`}>
+                  {getTotalWarehouseStock('all')} units
+                </span>
+              </button>
+
+              {/* Dynamic Warehouses */}
+              {warehouses.map((wh) => {
+                const isSelected = warehouseFilter === wh.id;
+                const whStock = getTotalWarehouseStock(wh.id);
+                return (
+                  <button
+                    key={wh.id}
+                    type="button"
+                    onClick={() => {
+                      setWarehouseFilter(wh.id);
+                      setIsWarehouseFilterOpen(false);
+                    }}
+                    className={`w-full text-left px-3.5 py-2.5 rounded-xl text-xs font-bold flex items-center justify-between transition-colors ${
+                      isSelected 
+                        ? 'bg-white text-[#FF2D20] shadow-sm' 
+                        : 'text-white hover:bg-white/15'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2 min-w-0">
+                      <Building2 className="w-3.5 h-3.5 shrink-0" />
+                      <span className="truncate">{wh.name}</span>
+                    </div>
+                    <span className={`text-[10px] font-mono font-black px-2 py-0.5 rounded-full shrink-0 ${isSelected ? 'bg-[#FF2D20]/10 text-[#FF2D20]' : 'bg-black/20 text-white'}`}>
+                      {whStock} units
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Scalability Feature: + Add Warehouse Option */}
+            <div className="p-2 border-t border-white/20 bg-black/10">
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => {
+                  setIsWarehouseFilterOpen(false);
+                  setIsAddWarehouseOpen(true);
+                }}
+                className="w-full text-white hover:text-white hover:bg-white/20 text-xs font-black uppercase tracking-wider h-9 rounded-xl flex items-center justify-center gap-1.5"
+              >
+                <Plus className="w-3.5 h-3.5" /> + Warehouse
+              </Button>
+            </div>
+          </PopoverContent>
+        </Popover>
+
+        {/* Scalability note indicator */}
+        <p className="text-[11px] text-zinc-500 font-medium hidden sm:block">
+          {warehouses.length} warehouse facility nodes active
+        </p>
+      </div>
+
+      {/* Add New Warehouse Dialog (Scalability) */}
+      <Dialog open={isAddWarehouseOpen} onOpenChange={setIsAddWarehouseOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Building2 className="w-5 h-5 text-[#FF2D20]" /> Add New Warehouse Facility
+            </DialogTitle>
+            <DialogDescription>
+              Expand infrastructure by registering a new warehouse node. Inventory tracking will automatically initialize for all catalog items.
+            </DialogDescription>
+          </DialogHeader>
+          <form onSubmit={handleAddWarehouse} className="space-y-4 pt-3">
+            <div className="space-y-2">
+              <Label htmlFor="warehouseName">Warehouse Name</Label>
+              <Input 
+                id="warehouseName" 
+                name="warehouseName" 
+                required 
+                placeholder="e.g., Warehouse C (Cebu Hub)"
+                value={newWarehouseName}
+                onChange={(e) => setNewWarehouseName(e.target.value)}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="warehouseLocation">Location / Address</Label>
+              <Input 
+                id="warehouseLocation" 
+                name="warehouseLocation" 
+                placeholder="e.g., Cebu City, Central Visayas"
+                value={newWarehouseLocation}
+                onChange={(e) => setNewWarehouseLocation(e.target.value)}
+              />
+            </div>
+            <DialogFooter className="gap-2">
+              <Button type="button" variant="outline" onClick={() => setIsAddWarehouseOpen(false)}>Cancel</Button>
+              <Button type="submit" disabled={isCreatingWarehouse} className="bg-[#FF2D20] hover:bg-[#E02619] text-white">
+                {isCreatingWarehouse ? 'Creating...' : 'Create Warehouse'}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
 
       {/* Stock Update Dialog */}
       <Dialog open={isStockUpdateOpen} onOpenChange={setIsStockUpdateOpen}>
@@ -437,7 +728,7 @@ export function Inventory() {
         </DialogContent>
       </Dialog>
 
-      {/* Product Detail Dialog */}
+      {/* Product Detail Dialog (Double-click / row click modal with per-warehouse breakdown) */}
       <Dialog open={isDetailOpen} onOpenChange={setIsDetailOpen}>
         <DialogContent className="max-w-[95vw] sm:max-w-5xl w-full rounded-[2rem]">
           <DialogHeader className="pb-4 border-b border-border">
@@ -463,7 +754,13 @@ export function Inventory() {
                   </div>
                   <div className="flex justify-between items-center text-sm">
                     <span className="text-muted-foreground font-medium">Classification</span>
-                    <Badge variant="outline" className="font-black uppercase text-[9px] tracking-widest py-0 h-5">{selectedProduct?.category}</Badge>
+                    <Badge variant="outline" className="font-black uppercase text-[9px] tracking-widest py-0 h-5">{selectedProduct?.category || 'Accessories'}</Badge>
+                  </div>
+                  <div className="flex justify-between items-center text-sm">
+                    <span className="text-muted-foreground font-medium">Supplier</span>
+                    <span className="font-bold text-foreground bg-[#FF2D20]/10 text-[#FF2D20] px-2.5 py-0.5 rounded-full text-xs">
+                      {selectedProduct?.supplier || 'Supplier'}
+                    </span>
                   </div>
                   <div className="flex justify-between items-center text-sm">
                     <span className="text-muted-foreground font-medium">Min Threshold</span>
@@ -480,16 +777,20 @@ export function Inventory() {
                 <Label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground mb-2 block">Pricing Tiers (₱)</Label>
                 <div className="bg-muted rounded-2xl p-4 border border-border text-foreground space-y-3">
                   <div className="flex justify-between items-center text-sm">
-                    <span className="text-muted-foreground font-medium">Base Acquisition</span>
-                    <span className="font-black">₱{selectedProduct?.basePrice.toLocaleString()}</span>
+                    <span className="text-muted-foreground font-medium">Base Price / Retail</span>
+                    <span className="font-black">₱{(selectedProduct?.basePrice || 0).toLocaleString()}</span>
                   </div>
                   <div className="flex justify-between items-center text-sm">
-                    <span className="text-muted-foreground font-medium">Wholesale Rate</span>
-                    <span className="font-black text-emerald-400">₱{selectedProduct?.wholesalePrice.toLocaleString()}</span>
+                    <span className="text-muted-foreground font-medium">MM Rate</span>
+                    <span className="font-black text-emerald-400">₱{((selectedProduct?.mmPrice ?? selectedProduct?.wholesalePrice) || 0).toLocaleString()}</span>
                   </div>
                   <div className="flex justify-between items-center text-sm">
-                    <span className="text-muted-foreground font-medium">Dealer Agreement</span>
-                    <span className="font-black text-blue-400">₱{selectedProduct?.dealerPrice.toLocaleString()}</span>
+                    <span className="text-muted-foreground font-medium">Provincial Rate</span>
+                    <span className="font-black text-blue-400">₱{((selectedProduct?.provincialPrice ?? selectedProduct?.dealerPrice) || 0).toLocaleString()}</span>
+                  </div>
+                  <div className="flex justify-between items-center text-sm">
+                    <span className="text-muted-foreground font-medium">Cost</span>
+                    <span className="font-black text-zinc-400">₱{(selectedProduct?.costPrice || 0).toLocaleString()}</span>
                   </div>
                 </div>
               </div>
@@ -498,7 +799,7 @@ export function Inventory() {
             <div className="space-y-6">
               <div>
                 <Label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground mb-2 block">Warehouse Deployment</Label>
-                <div className="space-y-2">
+                <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
                   {warehouses.map(wh => {
                     const count = getStockCount(selectedProduct?.id || '', wh.id);
                     return (
