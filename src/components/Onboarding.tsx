@@ -18,7 +18,7 @@ import { Button } from '@/components/ui/button';
 const STEPS = [
   {
     id: 'welcome',
-    title: 'Welcome to VMSPRO',
+    title: 'Welcome to Active Pro',
     description: 'The next generation of warehouse management and supply chain synchronization.',
     icon: <Package className="w-12 h-12 text-zinc-900" />,
     color: 'bg-zinc-100'
@@ -142,7 +142,7 @@ export const Onboarding = () => {
 
       {/* Decorative Branding */}
       <div className="fixed bottom-8 left-1/2 -translate-x-1/2 pointer-events-none opacity-10">
-        <span className="text-8xl font-black tracking-[1em] text-zinc-900 select-none">VMSPRO</span>
+        <span className="text-8xl font-black tracking-[1em] text-zinc-900 select-none">ACTIVE PRO</span>
       </div>
     </div>
   );

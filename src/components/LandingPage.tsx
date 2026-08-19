@@ -76,7 +76,7 @@ export const LandingPage = () => {
                   MANAGEMENT.
                 </h1>
                 <p className="text-lg text-zinc-500 font-medium max-w-xl mb-10 leading-relaxed">
-                  Streamline your entire supply chain with VMSPRO. Advanced inventory tracking, 
+                  Streamline your entire supply chain with Active Pro. Advanced inventory tracking, 
                   real-time financial analytics, and automated order fulfillment in one powerful dashboard.
                 </p>
                 <div className="flex flex-col sm:flex-row gap-4">
@@ -210,7 +210,7 @@ export const LandingPage = () => {
                   ELIMINATING THE CHAOS IN SUPPLY CHAIN.
                 </h3>
                 <p className="text-lg text-zinc-500 font-medium leading-relaxed mb-10">
-                  VMSPRO was founded on the belief that enterprise-grade logistics software should be intuitive, 
+                  Active Pro was founded on the belief that enterprise-grade logistics software should be intuitive, 
                   fast, and accessible. We help businesses transition from chaotic spreadsheets to 
                   integrated data systems that drive growth and reduce operational waste.
                 </p>
@@ -266,7 +266,7 @@ export const LandingPage = () => {
           </div>
           
           <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">
-            © 2024 VMSPRO LOGISTICS SYSTEMS. ALL RIGHTS RESERVED.
+            © 2024 ACTIVE PRO LOGISTICS SYSTEMS. ALL RIGHTS RESERVED.
           </p>
 
           <div className="flex items-center gap-6">
@@ -353,7 +353,7 @@ export const LandingPage = () => {
                <DialogHeader className="mb-12">
                   <DialogTitle className="text-3xl font-black tracking-tighter text-zinc-900 mb-2 uppercase">Platform Showcase</DialogTitle>
                   <DialogDescription className="text-zinc-500 font-medium">
-                     Experience the core engines powering VMSPRO enterprises.
+                     Experience the core engines powering Active Pro enterprises.
                   </DialogDescription>
                </DialogHeader>
 

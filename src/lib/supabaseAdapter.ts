@@ -23,14 +23,31 @@ export function limit(n: number) {
   return { type: 'limit', n };
 }
 
-export function doc(db: any, path: string, ...rest: string[]) {
-  // path might be 'orders', id might be in rest[0]
-  // or path might be 'users/user123'
-  if (rest.length > 0) {
-    return { path, id: rest[0] };
+export function doc(dbOrCol: any, pathOrId?: string, ...rest: string[]) {
+  // Check if the first argument is a collection reference (e.g. doc(collection(db, 'orders')))
+  if (dbOrCol && typeof dbOrCol.path === 'string') {
+    // Generate a random ID if one isn't provided
+    const autoId = crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2, 15);
+    return { path: dbOrCol.path, id: pathOrId || autoId };
   }
-  const parts = path.split('/');
-  return { path: parts[0], id: parts[1] };
+
+  // If pathOrId is provided and rest contains the ID (e.g. doc(db, 'orders', '123'))
+  if (rest.length > 0) {
+    return { path: pathOrId, id: rest[0] };
+  }
+
+  // If path contains the ID (e.g. doc(db, 'orders/123'))
+  if (pathOrId) {
+    const parts = pathOrId.split('/');
+    if (parts.length > 1) {
+      return { path: parts[0], id: parts[1] };
+    }
+    // Fallback for doc(db, 'orders') - implicitly generate ID
+    const autoId = crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2, 15);
+    return { path: pathOrId, id: autoId };
+  }
+
+  throw new Error("Invalid arguments to doc()");
 }
 
 export function serverTimestamp() {

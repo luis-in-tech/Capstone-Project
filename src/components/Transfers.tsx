@@ -10,7 +10,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter, DialogDescription } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Truck, ArrowRightLeft, Clock, CheckCircle2, History, Plus } from 'lucide-react';
+import { Truck, ArrowRightLeft, Clock, CheckCircle2, History, Plus, X } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { useAuth } from '../hooks/useAuth';
 import { toast } from 'sonner';
@@ -22,6 +22,10 @@ export function Transfers() {
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
   const [isAddTransferOpen, setIsAddTransferOpen] = useState(false);
+  const [transferItems, setTransferItems] = useState([{ id: Date.now(), productName: '', quantity: 1 }]);
+  const [selectedTransfer, setSelectedTransfer] = useState<Transfer | null>(null);
+
+  const canManageTransfer = profile?.role === 'admin' || profile?.role === 'secretary' || profile?.role === 'staff';
 
   useEffect(() => {
     const unsubTransfers = onSnapshot(query(collection(db, 'transfers'), orderBy('createdAt', 'desc')), (snap) => {
@@ -44,7 +48,6 @@ export function Transfers() {
     }, (error) => {
       handleSupabaseError(error, OperationType.GET, 'inventory');
     });
-
     return () => {
       unsubTransfers();
       unsubProducts();
@@ -56,37 +59,50 @@ export function Transfers() {
   const handleInitiateTransfer = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const formData = new FormData(e.currentTarget);
-    const sourceWh = formData.get('sourceWh') as string;
-    const destWh = formData.get('destWh') as string;
-    const prodId = formData.get('productId') as string;
-    const qty = Number(formData.get('quantity'));
+    const sourceWhName = formData.get('sourceWh') as string;
+    const destWhName = formData.get('destWh') as string;
+
+    const sourceWh = warehouses.find(w => w.name === sourceWhName)?.id || sourceWhName;
+    const destWh = warehouses.find(w => w.name === destWhName)?.id || destWhName;
 
     if (sourceWh === destWh) {
       toast.error('Source and destination warehouses must be different');
       return;
     }
 
-    // Check availability
-    const sourceInv = inventory.find(i => i.productId === prodId && i.warehouseId === sourceWh);
-    if (!sourceInv || sourceInv.quantity < qty) {
-      toast.error('Insufficient stock in source warehouse');
+    const validItems = transferItems.filter(item => item.productName);
+    if (validItems.length === 0) {
+      toast.error('Please select at least one product to transfer');
       return;
     }
 
-    const newTransfer = {
-      sourceWarehouseId: sourceWh,
-      destinationWarehouseId: destWh,
-      productId: prodId,
-      quantity: qty,
-      status: 'pending',
-      initiatedBy: profile?.uid,
-      createdAt: serverTimestamp()
-    };
+    // Check availability
+    for (const item of validItems) {
+      const prodId = products.find(p => p.name === item.productName)?.id || item.productName;
+      const sourceInv = inventory.find(i => i.productId === prodId && i.warehouseId === sourceWh);
+      if (!sourceInv || sourceInv.quantity < item.quantity) {
+        toast.error(`Insufficient stock for ${item.productName} in source warehouse`);
+        return;
+      }
+    }
 
     try {
-      await addDoc(collection(db, 'transfers'), newTransfer);
+      for (const item of validItems) {
+        const prodId = products.find(p => p.name === item.productName)?.id || item.productName;
+        const newTransfer = {
+          sourceWarehouseId: sourceWh,
+          destinationWarehouseId: destWh,
+          productId: prodId,
+          quantity: item.quantity,
+          status: 'pending',
+          initiatedBy: profile?.uid,
+          createdAt: serverTimestamp()
+        };
+        await addDoc(collection(db, 'transfers'), newTransfer);
+      }
       setIsAddTransferOpen(false);
-      toast.success('Warehouse transfer request initiated');
+      setTransferItems([{ id: Date.now(), productName: '', quantity: 1 }]);
+      toast.success('Warehouse transport requests initiated');
     } catch (err) {
       handleSupabaseError(err, OperationType.CREATE, 'transfers');
     }
@@ -116,7 +132,7 @@ export function Transfers() {
          status: newStatus,
          updatedAt: serverTimestamp()
       });
-      toast.success(`Transfer status updated to ${newStatus}`);
+      toast.success(`Transport status updated to ${newStatus}`);
     } catch (err) {
       handleSupabaseError(err, OperationType.UPDATE, `transfers/${transfer.id}`);
     }
@@ -126,17 +142,20 @@ export function Transfers() {
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3">
         <div className="flex flex-col">
-          <h2 className="text-xl font-bold tracking-tight text-foreground">Warehouse Transfer Log</h2>
+          <h2 className="text-xl font-bold tracking-tight text-foreground">Warehouse Transport Log</h2>
           <p className="text-xs text-muted-foreground font-medium tracking-tight">Managing stock movement between Valenzuela facilities</p>
         </div>
-        <Dialog open={isAddTransferOpen} onOpenChange={setIsAddTransferOpen}>
+        <Dialog open={isAddTransferOpen} onOpenChange={(open) => {
+          setIsAddTransferOpen(open);
+          if (!open) setTransferItems([{ id: Date.now(), productName: '', quantity: 1 }]);
+        }}>
           <DialogTrigger className="h-9 gap-2 px-4 bg-[#1A2332] text-white rounded-lg inline-flex items-center justify-center font-medium transition-all hover:bg-[#1A2332]/90">
-            <ArrowRightLeft className="w-4 h-4" /> New Transfer Request
+            <ArrowRightLeft className="w-4 h-4" /> New Transport Request
           </DialogTrigger>
           <DialogContent>
             <DialogHeader>
               <DialogTitle>Initiate Stock Movement</DialogTitle>
-              <DialogDescription>Request a transfer of inventory items between warehouse locations.</DialogDescription>
+              <DialogDescription>Request a transport of inventory items between warehouse locations.</DialogDescription>
             </DialogHeader>
             <form onSubmit={handleInitiateTransfer} className="space-y-4 pt-4">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -148,7 +167,7 @@ export function Transfers() {
                     </SelectTrigger>
                     <SelectContent>
                       {warehouses.map(wh => (
-                        <SelectItem key={wh.id} value={wh.id}>{wh.name}</SelectItem>
+                        <SelectItem key={wh.id} value={wh.name}>{wh.name}</SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
@@ -161,31 +180,75 @@ export function Transfers() {
                     </SelectTrigger>
                     <SelectContent>
                       {warehouses.map(wh => (
-                        <SelectItem key={wh.id} value={wh.id}>{wh.name}</SelectItem>
+                        <SelectItem key={wh.id} value={wh.name}>{wh.name}</SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
                 </div>
               </div>
-              <div className="space-y-2">
-                <Label>Configuration Item (Product)</Label>
-                <Select name="productId" required>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select product..." />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {products.map(p => (
-                      <SelectItem key={p.id} value={p.id}>{p.name} ({p.sku})</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-2">
-                <Label>Quantity to Transfer</Label>
-                <Input name="quantity" type="number" required min="1" defaultValue="1" />
+              <div className="space-y-4">
+                <Label>Configuration Items (Products)</Label>
+                {transferItems.map((item, index) => (
+                  <div key={item.id} className="flex gap-2 items-end">
+                    <div className="flex-1 space-y-2">
+                      <Select 
+                        value={item.productName} 
+                        onValueChange={(val) => {
+                          const newItems = [...transferItems];
+                          newItems[index].productName = val;
+                          setTransferItems(newItems);
+                        }} 
+                        required
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder="Select product..." />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {products.map(p => (
+                            <SelectItem key={p.id} value={p.name}>{p.name} ({p.sku})</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="w-24 space-y-2">
+                      <Label className={index > 0 ? "sr-only" : ""}>Qty</Label>
+                      <Input 
+                        type="number" 
+                        required 
+                        min="1" 
+                        value={item.quantity}
+                        onChange={(e) => {
+                          const newItems = [...transferItems];
+                          newItems[index].quantity = Number(e.target.value);
+                          setTransferItems(newItems);
+                        }}
+                      />
+                    </div>
+                    {transferItems.length > 1 && (
+                      <Button 
+                        type="button" 
+                        variant="ghost" 
+                        size="icon"
+                        className={`text-red-500 hover:bg-red-500/10 hover:text-red-600 shrink-0 ${index === 0 ? 'mb-[2px]' : ''}`}
+                        onClick={() => setTransferItems(transferItems.filter((_, i) => i !== index))}
+                      >
+                        <X className="w-4 h-4" />
+                      </Button>
+                    )}
+                  </div>
+                ))}
+                <Button 
+                  type="button" 
+                  variant="outline" 
+                  size="sm" 
+                  className="w-full text-xs border-dashed"
+                  onClick={() => setTransferItems([...transferItems, { id: Date.now(), productName: '', quantity: 1 }])}
+                >
+                  <Plus className="w-4 h-4 mr-2" /> Add Another Item
+                </Button>
               </div>
               <DialogFooter>
-                <Button type="submit" className="w-full">Initiate Pipeline Movement</Button>
+                <Button type="submit" className="w-full">Confirm</Button>
               </DialogFooter>
             </form>
           </DialogContent>
@@ -199,11 +262,17 @@ export function Transfers() {
           const source = warehouses.find(w => w.id === t.sourceWarehouseId);
           const dest = warehouses.find(w => w.id === t.destinationWarehouseId);
           return (
-            <div key={t.id} className="bg-card border border-border rounded-xl p-4 space-y-3">
+            <div 
+              key={t.id} 
+              className="bg-card border border-border rounded-xl p-4 space-y-3 cursor-pointer hover:border-blue-500/50 transition-colors"
+              onClick={() => setSelectedTransfer(t)}
+            >
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
                   <p className="text-xs font-black text-foreground">{product?.name || 'Unknown'}</p>
-                  <p className="text-[10px] font-mono text-zinc-400 uppercase tracking-tighter">TFR-{t.id.slice(-6)}</p>
+                  <p className="text-[10px] font-mono text-zinc-400 uppercase tracking-tighter">
+                    TFR-{t.id.slice(-6)}
+                  </p>
                 </div>
                 <Badge variant="outline" className={`shrink-0 gap-1.5 h-6 capitalize text-[10px] font-black ${
                   t.status === 'received' ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/30' :
@@ -224,12 +293,12 @@ export function Transfers() {
               </div>
               <div className="flex justify-end gap-2">
                 {t.status === 'pending' && (
-                  <Button size="sm" variant="ghost" className="text-xs font-bold h-8" onClick={() => updateStatus(t, 'in_transit')}>
+                  <Button size="sm" variant="ghost" className="text-xs font-bold h-8 z-10 relative" onClick={(e) => { e.stopPropagation(); updateStatus(t, 'in_transit'); }}>
                     Dispatch
                   </Button>
                 )}
                 {t.status === 'in_transit' && (
-                  <Button size="sm" variant="ghost" className="text-xs font-bold h-8 text-emerald-500 hover:bg-emerald-500/10" onClick={() => updateStatus(t, 'received')}>
+                  <Button size="sm" variant="ghost" className="text-xs font-bold h-8 text-emerald-500 hover:bg-emerald-500/10 z-10 relative" onClick={(e) => { e.stopPropagation(); updateStatus(t, 'received'); }}>
                     Confirm Arrival
                   </Button>
                 )}
@@ -264,7 +333,11 @@ export function Transfers() {
                 const source = warehouses.find(w => w.id === t.sourceWarehouseId);
                 const dest = warehouses.find(w => w.id === t.destinationWarehouseId);
                 return (
-                  <TableRow key={t.id} className="group">
+                  <TableRow 
+                    key={t.id} 
+                    className="group cursor-pointer hover:bg-muted/50 transition-colors"
+                    onClick={() => setSelectedTransfer(t)}
+                  >
                     <TableCell className="font-mono text-[10px] text-zinc-400 font-bold uppercase tracking-tighter">
                       TFR-{t.id.slice(-6)}
                     </TableCell>
@@ -295,12 +368,12 @@ export function Transfers() {
                     </TableCell>
                     <TableCell className="text-right">
                       {t.status === 'pending' && (
-                        <Button size="sm" variant="ghost" className="text-xs font-bold h-8" onClick={() => updateStatus(t, 'in_transit')}>
+                        <Button size="sm" variant="ghost" className="text-xs font-bold h-8 relative z-10" onClick={(e) => { e.stopPropagation(); updateStatus(t, 'in_transit'); }}>
                           Dispatch
                         </Button>
                       )}
                       {t.status === 'in_transit' && (
-                        <Button size="sm" variant="ghost" className="text-xs font-bold h-8 text-emerald-500 hover:bg-emerald-500/10" onClick={() => updateStatus(t, 'received')}>
+                        <Button size="sm" variant="ghost" className="text-xs font-bold h-8 text-emerald-500 hover:bg-emerald-500/10 relative z-10" onClick={(e) => { e.stopPropagation(); updateStatus(t, 'received'); }}>
                           Confirm Arrival
                         </Button>
                       )}
@@ -313,7 +386,7 @@ export function Transfers() {
                   <TableCell colSpan={5} className="text-center h-32">
                      <div className="flex flex-col items-center justify-center gap-2">
                        <History className="w-8 h-8 text-muted-foreground/30" />
-                       <p className="text-xs font-medium text-muted-foreground">No active transfers tracked</p>
+                       <p className="text-xs font-medium text-muted-foreground">No active transports tracked</p>
                      </div>
                   </TableCell>
                 </TableRow>
@@ -322,6 +395,68 @@ export function Transfers() {
           </Table>
         </div>
       </div>
+
+      <Dialog open={!!selectedTransfer} onOpenChange={(open) => !open && setSelectedTransfer(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Transport Details</DialogTitle>
+            <DialogDescription>
+              Movement ID: TFR-{selectedTransfer?.id.slice(-6)}
+            </DialogDescription>
+          </DialogHeader>
+          {selectedTransfer && (
+            <div className="space-y-4 pt-4">
+              <div className="grid grid-cols-2 gap-4 text-sm">
+                <div>
+                  <span className="text-muted-foreground block text-xs">Product</span>
+                  <span className="font-bold">{products.find(p => p.id === selectedTransfer.productId)?.name || 'Unknown'}</span>
+                </div>
+                <div>
+                  <span className="text-muted-foreground block text-xs">Quantity</span>
+                  <span className="font-bold">{selectedTransfer.quantity}</span>
+                </div>
+                <div>
+                  <span className="text-muted-foreground block text-xs">Source Warehouse</span>
+                  <span className="font-bold">{warehouses.find(w => w.id === selectedTransfer.sourceWarehouseId)?.name || 'Unknown'}</span>
+                </div>
+                <div>
+                  <span className="text-muted-foreground block text-xs">Destination Warehouse</span>
+                  <span className="font-bold">{warehouses.find(w => w.id === selectedTransfer.destinationWarehouseId)?.name || 'Unknown'}</span>
+                </div>
+                <div>
+                  <span className="text-muted-foreground block text-xs">Status</span>
+                  <Badge variant="outline" className={`mt-1 capitalize text-[10px] font-black ${
+                    selectedTransfer.status === 'received' ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/30' :
+                    selectedTransfer.status === 'in_transit' ? 'bg-blue-500/10 text-blue-400 border-blue-500/30' :
+                    'bg-amber-500/10 text-amber-500 border-amber-500/30'
+                  }`}>
+                    {selectedTransfer.status.replace('_', ' ')}
+                  </Badge>
+                </div>
+                <div>
+                  <span className="text-muted-foreground block text-xs">Initiated By</span>
+                  <span className="font-bold truncate max-w-full block" title={selectedTransfer.initiatedBy}>{selectedTransfer.initiatedBy || 'Unknown'}</span>
+                </div>
+              </div>
+
+              {canManageTransfer && selectedTransfer.status !== 'received' && (
+                <div className="flex justify-end gap-2 pt-4 border-t border-border mt-4">
+                  {selectedTransfer.status === 'pending' && (
+                    <Button onClick={() => { updateStatus(selectedTransfer, 'in_transit'); setSelectedTransfer(null); }}>
+                      Dispatch Transport
+                    </Button>
+                  )}
+                  {selectedTransfer.status === 'in_transit' && (
+                    <Button onClick={() => { updateStatus(selectedTransfer, 'received'); setSelectedTransfer(null); }} className="bg-emerald-600 hover:bg-emerald-700">
+                      Confirm Arrival
+                    </Button>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
