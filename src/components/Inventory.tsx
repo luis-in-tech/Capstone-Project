@@ -243,7 +243,7 @@ export function Inventory() {
             onClick={() => navigate('/pricelist')}
             className="h-10 bg-[#FF2D20] hover:bg-[#E02619] text-white font-bold rounded-lg px-4 flex items-center gap-1.5 shadow-md hover:shadow-lg transition-all"
           >
-            +Pricelist
+            + Pricelist
           </Button>
 
           {/* + Add Product button */}

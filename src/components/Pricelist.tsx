@@ -134,7 +134,7 @@ export function Pricelist() {
       <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center justify-between">
         <h2 className="text-2xl font-bold tracking-tight text-foreground uppercase">Pricelist</h2>
         <div className="flex items-center gap-2 w-full sm:w-auto">
-          <div className="relative w-full max-w-sm">
+          <div className="relative w-full sm:w-96">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-400" />
             <Input 
               placeholder="Search by product name or Item Code..." 

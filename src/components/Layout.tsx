@@ -87,12 +87,6 @@ export function Layout({ children }: { children: React.ReactNode }) {
             >
               <item.icon className={`w-4 h-4 flex-shrink-0 ${isActive ? 'text-sidebar-primary-foreground' : ''}`} />
               {!isCollapsed && <span className="flex-1">{item.name}</span>}
-              {isActive && !isCollapsed && (
-                <motion.div
-                  layoutId="active-pill"
-                  className="w-1.5 h-1.5 rounded-full bg-sidebar-primary-foreground"
-                />
-              )}
             </Link>
           );
         })}
@@ -180,7 +174,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
       {/* Main Content */}
       <div className={`flex-1 flex flex-col min-w-0 transition-all duration-300 ${isCollapsed ? 'lg:pl-20' : 'lg:pl-64'}`}>
         {/* Top Header */}
-        <header className="sticky top-0 z-40 flex items-center justify-between px-4 py-3 bg-background/90 backdrop-blur-md border-b border-border lg:px-8">
+        <header className="sticky top-0 z-40 flex items-center justify-between px-4 py-3 bg-background/90 backdrop-blur-md border-b border-border lg:hidden">
           {/* Mobile menu */}
           <div className="lg:hidden">
             <Sheet open={isMobileMenuOpen} onOpenChange={setIsMobileMenuOpen}>
