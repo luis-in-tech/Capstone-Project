@@ -56,16 +56,16 @@ const TUTORIAL_PAGES = [
   },
   {
     id: 'dashboard',
-    title: 'Dashboard',
+    title: 'Analytics',
     icon: <BarChart3 className="w-8 h-8 text-zinc-900" />,
-    content: 'The Dashboard gives you a real-time operational snapshot. Track total revenue, active orders, SLA breaches, and pending transports. View revenue trajectory charts, recent order activity, and low-stock product alerts — all updating live.',
+    content: 'Analytics provides historical Active Pro order and revenue trends. Compare periods, filter by delivery region and fulfillment status, review operational breakdowns, and download the filtered report as a CSV file.',
     highlights: [
       'Revenue Trajectory Chart',
       'Active Orders & SLA Monitoring',
       'Low-Stock Alerts',
       'Recent Order Activity Feed'
     ],
-    videoLabel: 'Dashboard Walkthrough'
+    videoLabel: 'Analytics Walkthrough'
   },
   {
     id: 'inventory',
@@ -262,7 +262,7 @@ export const TutorialOverlay = ({ open, onOpenChange }: { open: boolean, onOpenC
                        <p className="text-xs text-zinc-500 font-medium">
                           {current.id === 'intro' && 'Active Pro uses role-based access control. Admins have full access, while Secretaries, Agents, and Staff see only the modules relevant to their responsibilities.'}
                           {current.id === 'admin' && 'Only users with the Admin role can access the Admin Panel. This provides system-wide visibility and management controls.'}
-                          {current.id === 'dashboard' && 'The Dashboard is accessible to Admin users. Data shown is scoped to the user\'s role and assigned warehouse network.'}
+                          {current.id === 'dashboard' && 'Analytics is accessible to Admin users and reports on Active Pro order and fulfillment performance.'}
                           {current.id === 'inventory' && 'Inventory is visible to all roles. Stock adjustments require Admin access or a specific delegation from the Staff Delegation panel.'}
                           {current.id === 'orders' && 'Order Entry is available to all roles. Agents can create and manage their own orders, while Admins and Secretaries can view all orders system-wide.'}
                           {current.id === 'transport' && 'Transport management is restricted to Admin and Secretary roles for initiating and tracking warehouse-to-warehouse stock movements.'}

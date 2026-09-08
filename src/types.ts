@@ -32,6 +32,7 @@ export interface Product {
   mmPrice?: number;
   provincialPrice?: number;
   costPrice?: number;
+  promoPrice?: number;
   supplier?: string;
   photoUrl?: string;
   minStockLevel: number;
@@ -46,6 +47,7 @@ export interface Warehouse {
   id: string;
   name: string;
   location: string;
+  active?: boolean;
 }
 
 export interface InventoryItem {
