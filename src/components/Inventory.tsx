@@ -442,7 +442,28 @@ export function Inventory() {
     if (warehouseId && warehouseId !== 'all') {
       return items.find(i => i.warehouseId === warehouseId)?.quantity || 0;
     }
-    return items.reduce((sum, i) => sum + i.quantity, 0);
+    // Clamp per-warehouse quantities at 0 to prevent negative stock in one
+    // warehouse from masking deficits when aggregating across all warehouses.
+    // e.g. Warehouse A: 10,050 + Warehouse B: -600 should show 10,050 not 9,450
+    return items.reduce((sum, i) => sum + Math.max(0, i.quantity), 0);
+  };
+
+  // Check if any individual warehouse has stock at or below zero for a product
+  const hasAnyWarehouseDeficit = (productId: string) => {
+    return warehouses.some(wh => {
+      const item = inventory.find(i => i.productId === productId && i.warehouseId === wh.id);
+      return item !== undefined && item.quantity <= 0;
+    });
+  };
+
+  // Check if any individual warehouse has low stock for a product
+  const hasAnyWarehouseLowStock = (productId: string, product: Product) => {
+    const threshold = product.reorderPoint || product.minStockLevel || 0;
+    return warehouses.some(wh => {
+      const item = inventory.find(i => i.productId === productId && i.warehouseId === wh.id);
+      const qty = item?.quantity || 0;
+      return qty > 0 && qty <= threshold;
+    });
   };
 
   const getWarehouseStock = (warehouseId: string) =>
@@ -457,8 +478,10 @@ export function Inventory() {
 
   const categories = Array.from(new Set([...managedCategories.map(item => item.name), ...products.map(product => product.category).filter(Boolean)])).sort();
   const suppliers = Array.from(new Set([...managedSuppliers.map(item => item.name), ...products.map(product => product.supplier).filter(Boolean) as string[]])).sort();
-  const getProductStatus = (product: Product, stock: number) => {
+  const getProductStatus = (product: Product, stock: number, checkWarehouseId?: string) => {
     if (stock <= 0) return 'out';
+    // When viewing "All Warehouses", also flag if any individual warehouse has deficits
+    if ((!checkWarehouseId || checkWarehouseId === 'all') && hasAnyWarehouseDeficit(product.id)) return 'low';
     if (stock <= (product.reorderPoint || product.minStockLevel || 0)) return 'low';
     return 'in';
   };
@@ -470,17 +493,34 @@ export function Inventory() {
     return matchesSearch
       && (categoryFilter === 'all' || product.category === categoryFilter)
       && (supplierFilter === 'all' || product.supplier === supplierFilter)
-      && (stockFilter === 'all' || getProductStatus(product, stock) === stockFilter)
+      && (stockFilter === 'all' || getProductStatus(product, stock, warehouseFilter) === stockFilter)
       && (!hideZeroStock || stock > 0);
   });
 
   const totalProducts = products.length;
   const lowStockProducts = products.filter(product => {
     const stock = getStockCount(product.id, warehouseFilter);
-    return stock > 0 && getProductStatus(product, stock) === 'low';
+    if (stock <= 0) return false;
+    // When viewing "All Warehouses", count products that have low stock in ANY warehouse
+    if (warehouseFilter === 'all') {
+      return hasAnyWarehouseLowStock(product.id, product) || hasAnyWarehouseDeficit(product.id)
+        || stock <= (product.reorderPoint || product.minStockLevel || 0);
+    }
+    return getProductStatus(product, stock, warehouseFilter) === 'low';
   }).length;
-  const outOfStockProducts = products.filter(product => getStockCount(product.id, warehouseFilter) <= 0).length;
-  const inventoryValue = products.reduce((total, product) => total + (product.costPrice || 0) * getStockCount(product.id, warehouseFilter), 0);
+  const outOfStockProducts = (() => {
+    if (warehouseFilter === 'all') {
+      // Count products where ANY warehouse has stock <= 0
+      return products.filter(product => {
+        const items = inventory.filter(i => i.productId === product.id);
+        // If no inventory records exist at all, count as out of stock
+        if (items.length === 0) return true;
+        return items.some(i => i.quantity <= 0);
+      }).length;
+    }
+    return products.filter(product => getStockCount(product.id, warehouseFilter) <= 0).length;
+  })();
+  const inventoryValue = products.reduce((total, product) => total + (product.costPrice || 0) * Math.max(0, getStockCount(product.id, warehouseFilter)), 0);
 
 
   return (
@@ -541,7 +581,7 @@ export function Inventory() {
             <TableBody>
               {filteredProducts.map(product => {
                 const stock = getStockCount(product.id, warehouseFilter);
-                const status = getProductStatus(product, stock);
+                const status = getProductStatus(product, stock, warehouseFilter);
                 const statusClass = status === 'out' ? 'border-red-200 bg-red-50 text-red-600' : status === 'low' ? 'border-amber-200 bg-amber-50 text-amber-600' : 'border-emerald-200 bg-emerald-50 text-emerald-600';
                 return (
                   <TableRow key={product.id} className="cursor-pointer hover:bg-muted/30" onClick={() => { setSelectedProduct(product); setIsDetailOpen(true); }}>

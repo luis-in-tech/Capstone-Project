@@ -216,10 +216,17 @@ export function Transfers() {
                         type="number" 
                         required 
                         min="1" 
-                        value={item.quantity}
+                        value={item.quantity === 0 ? '' : item.quantity}
                         onChange={(e) => {
+                          const val = e.target.value.replace(/^0+(?=\d)/, '');
                           const newItems = [...transferItems];
-                          newItems[index].quantity = Number(e.target.value);
+                          newItems[index].quantity = val === '' ? 0 : Number(val);
+                          setTransferItems(newItems);
+                        }}
+                        onBlur={(e) => {
+                          const cleaned = Math.max(1, parseInt(e.target.value, 10) || 1);
+                          const newItems = [...transferItems];
+                          newItems[index].quantity = cleaned;
                           setTransferItems(newItems);
                         }}
                       />
