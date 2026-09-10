@@ -46,7 +46,7 @@ export function Inventory() {
   const [isStockUpdateOpen, setIsStockUpdateOpen] = useState(false);
   const [isDetailOpen, setIsDetailOpen] = useState(false);
   const [selectedWarehouseId, setSelectedWarehouseId] = useState('');
-  
+
   // Warehouse Filter State (for filtering inventory view)
   const [warehouseFilter, setWarehouseFilter] = useState<string>('all');
   const [isWarehouseManagerOpen, setIsWarehouseManagerOpen] = useState(false);
@@ -279,7 +279,7 @@ export function Inventory() {
         location: newWarehouseLocation.trim() || 'Warehouse Facility',
       };
       const docRef = await addDoc(collection(db, 'warehouses'), newWh);
-      
+
       // Initialize inventory for all existing products in this new warehouse
       for (const p of products) {
         await addDoc(collection(db, 'inventory'), {
@@ -388,12 +388,15 @@ export function Inventory() {
   };
 
   const handleDeleteReference = async (name: string) => {
+    //⚠️ 1. Native browser alert!
     if (!referenceManager || !window.confirm(`Delete "${name}"? Products using it will be reassigned.`)) return;
     setReferenceAction(name);
     try {
       const records = referenceManager === 'category' ? managedCategories : managedSuppliers;
       const record = records.find(item => item.name === name);
       if (record) await deleteDoc(doc(db, referenceManager === 'category' ? 'productCategories' : 'suppliers', record.id));
+
+      // ⚠️ 2. Mass reassignment of all products to 'Uncategorized'!
       for (const product of products.filter(item => referenceManager === 'category' ? item.category === name : item.supplier === name)) {
         await updateDoc(doc(db, 'products', product.id), { [referenceManager === 'category' ? 'category' : 'supplier']: referenceManager === 'category' ? 'Uncategorized' : 'N/A', updatedAt: new Date() });
       }
@@ -478,11 +481,10 @@ export function Inventory() {
 
   const categories = Array.from(new Set([...managedCategories.map(item => item.name), ...products.map(product => product.category).filter(Boolean)])).sort();
   const suppliers = Array.from(new Set([...managedSuppliers.map(item => item.name), ...products.map(product => product.supplier).filter(Boolean) as string[]])).sort();
-  const getProductStatus = (product: Product, stock: number, checkWarehouseId?: string) => {
+  const getProductStatus = (product: Product, stock: number, _checkWarehouseId?: string) => {
     if (stock <= 0) return 'out';
-    // When viewing "All Warehouses", also flag if any individual warehouse has deficits
-    if ((!checkWarehouseId || checkWarehouseId === 'all') && hasAnyWarehouseDeficit(product.id)) return 'low';
-    if (stock <= (product.reorderPoint || product.minStockLevel || 0)) return 'low';
+    const threshold = product.reorderPoint || product.minStockLevel || 0;
+    if (stock <= threshold) return 'low';
     return 'in';
   };
   const filteredProducts = products.filter(product => {
@@ -500,27 +502,18 @@ export function Inventory() {
   const totalProducts = products.length;
   const lowStockProducts = products.filter(product => {
     const stock = getStockCount(product.id, warehouseFilter);
-    if (stock <= 0) return false;
-    // When viewing "All Warehouses", count products that have low stock in ANY warehouse
-    if (warehouseFilter === 'all') {
-      return hasAnyWarehouseLowStock(product.id, product) || hasAnyWarehouseDeficit(product.id)
-        || stock <= (product.reorderPoint || product.minStockLevel || 0);
-    }
     return getProductStatus(product, stock, warehouseFilter) === 'low';
   }).length;
-  const outOfStockProducts = (() => {
-    if (warehouseFilter === 'all') {
-      // Count products where ANY warehouse has stock <= 0
-      return products.filter(product => {
-        const items = inventory.filter(i => i.productId === product.id);
-        // If no inventory records exist at all, count as out of stock
-        if (items.length === 0) return true;
-        return items.some(i => i.quantity <= 0);
-      }).length;
-    }
-    return products.filter(product => getStockCount(product.id, warehouseFilter) <= 0).length;
-  })();
-  const inventoryValue = products.reduce((total, product) => total + (product.costPrice || 0) * Math.max(0, getStockCount(product.id, warehouseFilter)), 0);
+
+  const outOfStockProducts = products.filter(product => {
+    const stock = getStockCount(product.id, warehouseFilter);
+    return getProductStatus(product, stock, warehouseFilter) === 'out';
+  }).length;
+
+  const inventoryValue = products.reduce((total, product) => {
+    const unitVal = (product.costPrice && product.costPrice > 0) ? product.costPrice : (product.basePrice || 0);
+    return total + unitVal * Math.max(0, getStockCount(product.id, warehouseFilter));
+  }, 0);
 
 
   return (
@@ -673,8 +666,8 @@ export function Inventory() {
       <Dialog open={Boolean(editingProduct)} onOpenChange={(open) => { if (!open) setEditingProduct(null); }}>
         <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-3xl"><DialogHeader><DialogTitle>Edit Product</DialogTitle><DialogDescription>Updates will be used by future pricelists. Existing saved pricelists remain unchanged.</DialogDescription></DialogHeader>
           {editingProduct && <form onSubmit={handleEditProduct} className="space-y-4"><div className="grid gap-4 sm:grid-cols-2">{[
-            ['sku','SKU Code','text',editingProduct.sku],['name','Item Name','text',editingProduct.name],['category','Category','text',editingProduct.category],['supplier','Supplier Name','text',editingProduct.supplier || ''],['basePrice','Base Price / Retail Price','number',editingProduct.basePrice],['mmPrice','Metro Manila Price','number',editingProduct.mmPrice ?? editingProduct.wholesalePrice ?? 0],['provincialPrice','Provincial Price','number',editingProduct.provincialPrice ?? editingProduct.dealerPrice ?? 0],['costPrice','Cost','number',editingProduct.costPrice || 0],['minStockLevel','Minimum Stock Level','number',editingProduct.minStockLevel],['reorderPoint','Reorder Point','number',editingProduct.reorderPoint],
-          ].map(([name,label,type,value]) => <div className="space-y-2" key={String(name)}><Label htmlFor={`edit-${name}`}>{label}</Label><Input id={`edit-${name}`} name={String(name)} type={String(type)} step={type === 'number' ? '0.01' : undefined} min={type === 'number' ? '0' : undefined} defaultValue={String(value)} required={name === 'sku' || name === 'name'} /></div>)}</div><DialogFooter><Button type="button" variant="outline" onClick={() => setEditingProduct(null)}>Cancel</Button><Button type="submit">Save Changes</Button></DialogFooter></form>}
+            ['sku', 'SKU Code', 'text', editingProduct.sku], ['name', 'Item Name', 'text', editingProduct.name], ['category', 'Category', 'text', editingProduct.category], ['supplier', 'Supplier Name', 'text', editingProduct.supplier || ''], ['basePrice', 'Base Price / Retail Price', 'number', editingProduct.basePrice], ['mmPrice', 'Metro Manila Price', 'number', editingProduct.mmPrice ?? editingProduct.wholesalePrice ?? 0], ['provincialPrice', 'Provincial Price', 'number', editingProduct.provincialPrice ?? editingProduct.dealerPrice ?? 0], ['costPrice', 'Cost', 'number', editingProduct.costPrice || 0], ['minStockLevel', 'Minimum Stock Level', 'number', editingProduct.minStockLevel], ['reorderPoint', 'Reorder Point', 'number', editingProduct.reorderPoint],
+          ].map(([name, label, type, value]) => <div className="space-y-2" key={String(name)}><Label htmlFor={`edit-${name}`}>{label}</Label><Input id={`edit-${name}`} name={String(name)} type={String(type)} step={type === 'number' ? '0.01' : undefined} min={type === 'number' ? '0' : undefined} defaultValue={String(value)} required={name === 'sku' || name === 'name'} /></div>)}</div><DialogFooter><Button type="button" variant="outline" onClick={() => setEditingProduct(null)}>Cancel</Button><Button type="submit">Save Changes</Button></DialogFooter></form>}
         </DialogContent>
       </Dialog>
 
@@ -884,17 +877,17 @@ export function Inventory() {
                   <p className="mt-3 flex items-center gap-2 text-xs text-muted-foreground"><Info className="h-4 w-4 shrink-0" />Current stock is {totalStock > (selectedProduct.minStockLevel || 0) ? 'above' : 'at or below'} the critical level.</p>
                 </section>
 
-              <section className="flex flex-col rounded-xl border border-border/80 p-4 shadow-sm">
-                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                  <div className="flex items-start gap-3"><span className="font-mono text-sm font-black text-muted-foreground">05</span><QrCode className="mt-0.5 h-5 w-5" /><div><h3 className="text-base font-bold uppercase tracking-wider">Asset Traceability</h3></div></div>
-                </div>
-                <p className="mt-4 text-xs text-muted-foreground">Scan or print the product identity record associated with this item.</p>
-                <div className="mt-4 flex flex-1 flex-col items-center justify-center gap-4 rounded-lg border border-border p-5">
-                  <div className="rounded-lg bg-white p-2"><QRCodeSVG value={selectedProduct.id} size={150} /></div>
-                  <div className="text-center"><p className="text-xs uppercase tracking-wider text-muted-foreground">SKU</p><p className="font-bold">{selectedProduct.sku}</p><p className="mt-4 text-xs uppercase tracking-wider text-muted-foreground">Unique node ID</p><p className="mt-1 break-all font-mono text-xs">{selectedProduct.id}</p></div>
-                </div>
-                <Button variant="outline" className="mt-4 h-11" onClick={() => window.print()}><Printer className="mr-2 h-4 w-4" />Print Label</Button>
-              </section>
+                <section className="flex flex-col rounded-xl border border-border/80 p-4 shadow-sm">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="flex items-start gap-3"><span className="font-mono text-sm font-black text-muted-foreground">05</span><QrCode className="mt-0.5 h-5 w-5" /><div><h3 className="text-base font-bold uppercase tracking-wider">Asset Traceability</h3></div></div>
+                  </div>
+                  <p className="mt-4 text-xs text-muted-foreground">Scan or print the product identity record associated with this item.</p>
+                  <div className="mt-4 flex flex-1 flex-col items-center justify-center gap-4 rounded-lg border border-border p-5">
+                    <div className="rounded-lg bg-white p-2"><QRCodeSVG value={selectedProduct.id} size={150} /></div>
+                    <div className="text-center"><p className="text-xs uppercase tracking-wider text-muted-foreground">SKU</p><p className="font-bold">{selectedProduct.sku}</p><p className="mt-4 text-xs uppercase tracking-wider text-muted-foreground">Unique node ID</p><p className="mt-1 break-all font-mono text-xs">{selectedProduct.id}</p></div>
+                  </div>
+                  <Button variant="outline" className="mt-4 h-11" onClick={() => window.print()}><Printer className="mr-2 h-4 w-4" />Print Label</Button>
+                </section>
               </div>
             </div>;
           })()}
@@ -904,135 +897,135 @@ export function Inventory() {
 
       {/* Previous product detail layout retained temporarily for reference */}
       {false && (
-      <Dialog open={isDetailOpen} onOpenChange={setIsDetailOpen}>
-        <DialogContent className="max-w-[95vw] sm:max-w-5xl w-full rounded-[2rem]">
-          <DialogHeader className="pb-4 border-b border-border">
-            <div className="flex items-center gap-3 mb-2">
-              <div className="p-2 bg-primary rounded-xl">
-                <Package className="w-5 h-5 text-primary-foreground" />
+        <Dialog open={isDetailOpen} onOpenChange={setIsDetailOpen}>
+          <DialogContent className="max-w-[95vw] sm:max-w-5xl w-full rounded-[2rem]">
+            <DialogHeader className="pb-4 border-b border-border">
+              <div className="flex items-center gap-3 mb-2">
+                <div className="p-2 bg-primary rounded-xl">
+                  <Package className="w-5 h-5 text-primary-foreground" />
+                </div>
+                <div>
+                  <DialogTitle className="text-2xl font-black uppercase tracking-tighter">Configuration Item: {selectedProduct?.name}</DialogTitle>
+                  <DialogDescription className="text-muted-foreground font-medium">Service catalog specification and inventory node status.</DialogDescription>
+                </div>
               </div>
-              <div>
-                <DialogTitle className="text-2xl font-black uppercase tracking-tighter">Configuration Item: {selectedProduct?.name}</DialogTitle>
-                <DialogDescription className="text-muted-foreground font-medium">Service catalog specification and inventory node status.</DialogDescription>
-              </div>
-            </div>
-          </DialogHeader>
+            </DialogHeader>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-8 py-6">
-            <div className="space-y-6">
-              <div>
-                <Label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground mb-2 block">Technical Specifications</Label>
-                <div className="bg-muted rounded-2xl p-4 border border-border space-y-3">
-                  <div className="flex justify-between items-center text-sm">
-                    <span className="text-muted-foreground font-medium">SKU Node</span>
-                    <span className="font-mono font-bold text-foreground">{selectedProduct?.sku}</span>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-8 py-6">
+              <div className="space-y-6">
+                <div>
+                  <Label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground mb-2 block">Technical Specifications</Label>
+                  <div className="bg-muted rounded-2xl p-4 border border-border space-y-3">
+                    <div className="flex justify-between items-center text-sm">
+                      <span className="text-muted-foreground font-medium">SKU Node</span>
+                      <span className="font-mono font-bold text-foreground">{selectedProduct?.sku}</span>
+                    </div>
+                    <div className="flex justify-between items-center text-sm">
+                      <span className="text-muted-foreground font-medium">Classification</span>
+                      <Badge variant="outline" className="font-black uppercase text-[9px] tracking-widest py-0 h-5">{selectedProduct?.category || 'Accessories'}</Badge>
+                    </div>
+                    <div className="flex justify-between items-center text-sm">
+                      <span className="text-muted-foreground font-medium">Supplier</span>
+                      <span className="font-bold bg-[#FF2D20]/10 text-[#FF2D20] px-2.5 py-0.5 rounded-full text-xs">
+                        {selectedProduct?.supplier || 'Supplier'}
+                      </span>
+                    </div>
+                    <div className="flex justify-between items-center text-sm">
+                      <span className="text-muted-foreground font-medium">Min Threshold</span>
+                      <span className="font-bold text-foreground">{selectedProduct?.minStockLevel || 0} units</span>
+                    </div>
+                    <div className="flex justify-between items-center text-sm">
+                      <span className="text-muted-foreground font-medium">Reorder Point</span>
+                      <span className="font-bold text-foreground">{selectedProduct?.reorderPoint || 0} units</span>
+                    </div>
                   </div>
-                  <div className="flex justify-between items-center text-sm">
-                    <span className="text-muted-foreground font-medium">Classification</span>
-                    <Badge variant="outline" className="font-black uppercase text-[9px] tracking-widest py-0 h-5">{selectedProduct?.category || 'Accessories'}</Badge>
-                  </div>
-                  <div className="flex justify-between items-center text-sm">
-                    <span className="text-muted-foreground font-medium">Supplier</span>
-                    <span className="font-bold bg-[#FF2D20]/10 text-[#FF2D20] px-2.5 py-0.5 rounded-full text-xs">
-                      {selectedProduct?.supplier || 'Supplier'}
-                    </span>
-                  </div>
-                  <div className="flex justify-between items-center text-sm">
-                    <span className="text-muted-foreground font-medium">Min Threshold</span>
-                    <span className="font-bold text-foreground">{selectedProduct?.minStockLevel || 0} units</span>
-                  </div>
-                  <div className="flex justify-between items-center text-sm">
-                    <span className="text-muted-foreground font-medium">Reorder Point</span>
-                    <span className="font-bold text-foreground">{selectedProduct?.reorderPoint || 0} units</span>
+                </div>
+
+                <div>
+                  <Label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground mb-2 block">Pricing Tiers (₱)</Label>
+                  <div className="bg-muted rounded-2xl p-4 border border-border text-foreground space-y-3">
+                    <div className="flex justify-between items-center text-sm">
+                      <span className="text-muted-foreground font-medium">Base Price / Retail</span>
+                      <span className="font-black">₱{(selectedProduct?.basePrice || 0).toLocaleString()}</span>
+                    </div>
+                    <div className="flex justify-between items-center text-sm">
+                      <span className="text-muted-foreground font-medium">MM Rate</span>
+                      <span className="font-black text-emerald-400">₱{((selectedProduct?.mmPrice ?? selectedProduct?.wholesalePrice) || 0).toLocaleString()}</span>
+                    </div>
+                    <div className="flex justify-between items-center text-sm">
+                      <span className="text-muted-foreground font-medium">Provincial Rate</span>
+                      <span className="font-black text-blue-400">₱{((selectedProduct?.provincialPrice ?? selectedProduct?.dealerPrice) || 0).toLocaleString()}</span>
+                    </div>
+                    <div className="flex justify-between items-center text-sm">
+                      <span className="text-muted-foreground font-medium">Cost</span>
+                      <span className="font-black text-zinc-400">₱{(selectedProduct?.costPrice || 0).toLocaleString()}</span>
+                    </div>
                   </div>
                 </div>
               </div>
 
-              <div>
-                <Label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground mb-2 block">Pricing Tiers (₱)</Label>
-                <div className="bg-muted rounded-2xl p-4 border border-border text-foreground space-y-3">
-                  <div className="flex justify-between items-center text-sm">
-                    <span className="text-muted-foreground font-medium">Base Price / Retail</span>
-                    <span className="font-black">₱{(selectedProduct?.basePrice || 0).toLocaleString()}</span>
-                  </div>
-                  <div className="flex justify-between items-center text-sm">
-                    <span className="text-muted-foreground font-medium">MM Rate</span>
-                    <span className="font-black text-emerald-400">₱{((selectedProduct?.mmPrice ?? selectedProduct?.wholesalePrice) || 0).toLocaleString()}</span>
-                  </div>
-                  <div className="flex justify-between items-center text-sm">
-                    <span className="text-muted-foreground font-medium">Provincial Rate</span>
-                    <span className="font-black text-blue-400">₱{((selectedProduct?.provincialPrice ?? selectedProduct?.dealerPrice) || 0).toLocaleString()}</span>
-                  </div>
-                  <div className="flex justify-between items-center text-sm">
-                    <span className="text-muted-foreground font-medium">Cost</span>
-                    <span className="font-black text-zinc-400">₱{(selectedProduct?.costPrice || 0).toLocaleString()}</span>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div className="space-y-6">
-              <div>
-                <Label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground mb-2 block">Warehouse Deployment</Label>
-                <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
-                  {warehouses.map(wh => {
-                    const count = getStockCount(selectedProduct?.id || '', wh.id);
-                    return (
-                      <div key={wh.id} className="flex items-center justify-between p-3 bg-muted rounded-xl border border-border hover:border-foreground/20 transition-colors">
-                        <div className="flex items-center gap-2">
-                          <WarehouseIcon className="w-4 h-4 text-muted-foreground" />
-                          <span className="text-xs font-bold text-foreground">{wh.name}</span>
+              <div className="space-y-6">
+                <div>
+                  <Label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground mb-2 block">Warehouse Deployment</Label>
+                  <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
+                    {warehouses.map(wh => {
+                      const count = getStockCount(selectedProduct?.id || '', wh.id);
+                      return (
+                        <div key={wh.id} className="flex items-center justify-between p-3 bg-muted rounded-xl border border-border hover:border-foreground/20 transition-colors">
+                          <div className="flex items-center gap-2">
+                            <WarehouseIcon className="w-4 h-4 text-muted-foreground" />
+                            <span className="text-xs font-bold text-foreground">{wh.name}</span>
+                          </div>
+                          <Badge variant="secondary" className="font-black rounded-lg">{count} units</Badge>
                         </div>
-                        <Badge variant="secondary" className="font-black rounded-lg">{count} units</Badge>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-
-              <div className="pt-4 border-t border-dashed border-border">
-                <div className="flex items-center justify-between mb-4">
-                  <span className="text-xs font-black uppercase tracking-widest text-foreground">Aggregate Global Inventory</span>
-                  <Badge className="bg-emerald-500 font-black h-8 px-4 rounded-xl">
-                    {getStockCount(selectedProduct?.id || '')} UNITS TOTAL
-                  </Badge>
-                </div>
-                
-                <div className="flex items-center gap-3">
-                  <div className="p-3 bg-muted rounded-xl">
-                     <QrCode className="w-8 h-8 text-zinc-400" />
+                      );
+                    })}
                   </div>
-                  <div className="flex-1">
-                    <p className="text-[10px] font-black uppercase text-zinc-500 mb-1">Asset Traceability</p>
-                    <p className="text-[10px] text-zinc-400 font-medium italic">Unique node ID: {selectedProduct?.id}</p>
+                </div>
+
+                <div className="pt-4 border-t border-dashed border-border">
+                  <div className="flex items-center justify-between mb-4">
+                    <span className="text-xs font-black uppercase tracking-widest text-foreground">Aggregate Global Inventory</span>
+                    <Badge className="bg-emerald-500 font-black h-8 px-4 rounded-xl">
+                      {getStockCount(selectedProduct?.id || '')} UNITS TOTAL
+                    </Badge>
+                  </div>
+
+                  <div className="flex items-center gap-3">
+                    <div className="p-3 bg-muted rounded-xl">
+                      <QrCode className="w-8 h-8 text-zinc-400" />
+                    </div>
+                    <div className="flex-1">
+                      <p className="text-[10px] font-black uppercase text-zinc-500 mb-1">Asset Traceability</p>
+                      <p className="text-[10px] text-zinc-400 font-medium italic">Unique node ID: {selectedProduct?.id}</p>
+                    </div>
                   </div>
                 </div>
               </div>
             </div>
-          </div>
 
-          <DialogFooter className="pt-4 border-t border-border">
-            <Button 
-              variant="outline" 
-              onClick={() => setIsDetailOpen(false)}
-              className="h-12 px-8 rounded-xl font-black uppercase tracking-widest text-[10px]"
-            >
-              Close
-            </Button>
-            {canAdjustStock && (
-              <Button 
-                onClick={() => {
-                  setIsDetailOpen(false);
-                  setIsStockUpdateOpen(true);
-                }}
-                className="h-12 px-8 bg-[#1A2332] text-white rounded-xl font-black uppercase tracking-widest text-[10px]"
+            <DialogFooter className="pt-4 border-t border-border">
+              <Button
+                variant="outline"
+                onClick={() => setIsDetailOpen(false)}
+                className="h-12 px-8 rounded-xl font-black uppercase tracking-widest text-[10px]"
               >
-                Adjust Stock <Plus className="ml-2 w-3 h-3" />
+                Close
               </Button>
-            )}
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>)}
+              {canAdjustStock && (
+                <Button
+                  onClick={() => {
+                    setIsDetailOpen(false);
+                    setIsStockUpdateOpen(true);
+                  }}
+                  className="h-12 px-8 bg-[#1A2332] text-white rounded-xl font-black uppercase tracking-widest text-[10px]"
+                >
+                  Adjust Stock <Plus className="ml-2 w-3 h-3" />
+                </Button>
+              )}
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>)}
     </div>
   );
 }
