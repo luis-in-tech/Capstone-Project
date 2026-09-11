@@ -116,15 +116,27 @@ export interface ExpenseCategory {
   createdAt: any;
 }
 
+export type TransferStatus = 'pending' | 'in_transit' | 'received' | 'cancelled';
+
 export interface Transfer {
   id: string;
   sourceWarehouseId: string;
   destinationWarehouseId: string;
   productId: string;
   quantity: number;
-  status: 'pending' | 'in_transit' | 'received';
+  status: TransferStatus;
   initiatedBy: string;
+  driverName?: string;
+  vehiclePlate?: string;
+  dispatchedAt?: any;
+  dispatchedBy?: string;
+  receivedAt?: any;
+  receivedBy?: string;
+  cancelledAt?: any;
+  cancelledBy?: string;
+  cancellationReason?: string;
   createdAt: any;
+  updatedAt?: any;
 }
 
 export interface StockAdjustment {

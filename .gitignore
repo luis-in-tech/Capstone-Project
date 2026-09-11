@@ -32,3 +32,4 @@ run_tests.py
 docs/SELENIUM_TESTING_GUIDE.md
 Capstone 2 Tracker - QA.csv
 tests/test_orders_stock_logic.py
+tests/test_transfers_stock_logic.py

@@ -10,7 +10,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Card, CardContent } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter, DialogDescription } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
-import { Search, Plus, QrCode, Package, Warehouse as WarehouseIcon, Building2, AlertTriangle, Eye, CircleDollarSign, SlidersHorizontal, Tag, Pencil, Trash2, MapPin, ImagePlus, X, Download, Upload, FileSpreadsheet, FileText, BarChart3, Info, Printer } from 'lucide-react';
+import { Search, Plus, QrCode, Package, Warehouse as WarehouseIcon, Building2, AlertTriangle, Eye, CircleDollarSign, SlidersHorizontal, Tag, Pencil, Trash2, MapPin, ImagePlus, X, Download, Upload, FileSpreadsheet, FileText, BarChart3, Info, Printer, CheckCircle2 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -76,6 +76,12 @@ export function Inventory() {
   const [editingReferenceName, setEditingReferenceName] = useState<string | null>(null);
   const [referenceDraft, setReferenceDraft] = useState('');
   const [referenceAction, setReferenceAction] = useState<string | null>(null);
+  const [deletingReference, setDeletingReference] = useState<{
+    name: string;
+    type: 'category' | 'supplier';
+    affectedCount: number;
+    affectedItems: Product[];
+  } | null>(null);
 
   const [hasDelegatedAccess, setHasDelegatedAccess] = useState(false);
 
@@ -474,23 +480,47 @@ export function Inventory() {
     } finally { setReferenceAction(null); }
   };
 
-  const handleDeleteReference = async (name: string) => {
-    //⚠️ 1. Native browser alert!
-    if (!referenceManager || !window.confirm(`Delete "${name}"? Products using it will be reassigned.`)) return;
+  const handleDeleteReference = (name: string) => {
+    if (!referenceManager) return;
+    const affected = products.filter(item => referenceManager === 'category' ? item.category === name : item.supplier === name);
+    setDeletingReference({
+      name,
+      type: referenceManager,
+      affectedCount: affected.length,
+      affectedItems: affected
+    });
+  };
+
+  const confirmDeleteReference = async () => {
+    if (!deletingReference) return;
+    const { name, type, affectedCount } = deletingReference;
     setReferenceAction(name);
     try {
-      const records = referenceManager === 'category' ? managedCategories : managedSuppliers;
+      const records = type === 'category' ? managedCategories : managedSuppliers;
       const record = records.find(item => item.name === name);
-      if (record) await deleteDoc(doc(db, referenceManager === 'category' ? 'productCategories' : 'suppliers', record.id));
-
-      // ⚠️ 2. Mass reassignment of all products to 'Uncategorized'!
-      for (const product of products.filter(item => referenceManager === 'category' ? item.category === name : item.supplier === name)) {
-        await updateDoc(doc(db, 'products', product.id), { [referenceManager === 'category' ? 'category' : 'supplier']: referenceManager === 'category' ? 'Uncategorized' : 'N/A', updatedAt: new Date() });
+      if (record) {
+        await deleteDoc(doc(db, type === 'category' ? 'productCategories' : 'suppliers', record.id));
       }
-      toast.success(`${referenceManager === 'category' ? 'Category' : 'Supplier'} deleted`);
+
+      // Reassign all affected products to 'Uncategorized' (or 'N/A')
+      for (const product of products.filter(item => type === 'category' ? item.category === name : item.supplier === name)) {
+        await updateDoc(doc(db, 'products', product.id), {
+          [type === 'category' ? 'category' : 'supplier']: type === 'category' ? 'Uncategorized' : 'N/A',
+          updatedAt: new Date()
+        });
+      }
+
+      toast.success(
+        type === 'category'
+          ? `Category "${name}" deleted. ${affectedCount} product(s) moved to Uncategorized.`
+          : `Supplier "${name}" deleted. ${affectedCount} product(s) updated.`
+      );
     } catch (error) {
-      handleSupabaseError(error, OperationType.DELETE, referenceManager === 'category' ? 'productCategories' : 'suppliers');
-    } finally { setReferenceAction(null); }
+      handleSupabaseError(error, OperationType.DELETE, type === 'category' ? 'productCategories' : 'suppliers');
+    } finally {
+      setReferenceAction(null);
+      setDeletingReference(null);
+    }
   };
 
   const updateStock = async (e: React.FormEvent<HTMLFormElement>) => {
@@ -620,6 +650,144 @@ export function Inventory() {
     return total + unitVal * Math.max(0, getStockCount(product.id, warehouseFilter));
   }, 0);
 
+  const printThermalLabel = (product: Product, svgContainerId?: string) => {
+    let svgHtml = '';
+    if (svgContainerId) {
+      const container = document.getElementById(svgContainerId);
+      const svg = container?.querySelector('svg');
+      if (svg) svgHtml = svg.outerHTML;
+    }
+    if (!svgHtml) {
+      const anySvg = document.querySelector('[role="dialog"] svg');
+      if (anySvg) svgHtml = anySvg.outerHTML;
+    }
+
+    const priceFormatted = (product.wholesalePrice || product.basePrice || 0).toLocaleString();
+    const printFrame = document.createElement('iframe');
+    printFrame.style.position = 'fixed';
+    printFrame.style.right = '0';
+    printFrame.style.bottom = '0';
+    printFrame.style.width = '0';
+    printFrame.style.height = '0';
+    printFrame.style.border = '0';
+    document.body.appendChild(printFrame);
+
+    const htmlContent = `
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <title>Label - ${product.sku}</title>
+          <style>
+            @page {
+              size: 50mm 30mm;
+              margin: 0;
+            }
+            @media print {
+              html, body {
+                width: 50mm;
+                height: 30mm;
+                margin: 0;
+                padding: 0;
+              }
+            }
+            body {
+              margin: 0;
+              padding: 2mm 3mm;
+              font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+              width: 50mm;
+              height: 30mm;
+              box-sizing: border-box;
+              display: flex;
+              align-items: center;
+              justify-content: space-between;
+              background: #fff;
+              color: #000;
+              overflow: hidden;
+            }
+            .qr-side {
+              width: 22mm;
+              height: 22mm;
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              flex-shrink: 0;
+            }
+            .qr-side svg {
+              width: 100% !important;
+              height: 100% !important;
+              display: block;
+            }
+            .info-side {
+              flex: 1;
+              display: flex;
+              flex-direction: column;
+              justify-content: center;
+              padding-left: 2mm;
+              overflow: hidden;
+            }
+            .brand {
+              font-size: 5.5pt;
+              font-weight: 800;
+              text-transform: uppercase;
+              letter-spacing: 0.5px;
+              color: #555;
+              margin-bottom: 0.5mm;
+            }
+            .prod-name {
+              font-size: 7.5pt;
+              font-weight: 800;
+              line-height: 1.15;
+              color: #000;
+              margin-bottom: 1mm;
+              word-break: break-word;
+              display: -webkit-box;
+              -webkit-line-clamp: 2;
+              -webkit-box-orient: vertical;
+              overflow: hidden;
+            }
+            .prod-sku {
+              font-family: "Courier New", Courier, monospace;
+              font-size: 6.5pt;
+              font-weight: 700;
+              color: #222;
+            }
+            .prod-price {
+              font-size: 7.5pt;
+              font-weight: 800;
+              color: #000;
+              margin-top: 1mm;
+            }
+          </style>
+        </head>
+        <body>
+          <div class="qr-side">${svgHtml}</div>
+          <div class="info-side">
+            <div class="brand">ActivePro Asset</div>
+            <div class="prod-name">${product.name}</div>
+            <div class="prod-sku">${product.sku}</div>
+            <div class="prod-price">₱${priceFormatted}</div>
+          </div>
+        </body>
+      </html>
+    `;
+
+    const frameDoc = printFrame.contentWindow?.document || printFrame.contentDocument;
+    if (frameDoc) {
+      frameDoc.open();
+      frameDoc.write(htmlContent);
+      frameDoc.close();
+      setTimeout(() => {
+        printFrame.contentWindow?.focus();
+        printFrame.contentWindow?.print();
+        setTimeout(() => {
+          if (document.body.contains(printFrame)) {
+            document.body.removeChild(printFrame);
+          }
+        }, 1500);
+      }, 250);
+    }
+  };
+
 
   return (
     <div className="space-y-5 pb-20">
@@ -695,7 +863,7 @@ export function Inventory() {
                       <div className="flex justify-end gap-1">
                         <Button variant="outline" size="icon" className="h-9 w-9" title="View product" onClick={() => { setSelectedProduct(product); setIsDetailOpen(true); }}><Eye className="h-4 w-4" /></Button>
                         {isAdmin && <Button variant="outline" size="icon" className="h-9 w-9" title="Edit product" onClick={() => setEditingProduct(product)}><Pencil className="h-4 w-4" /></Button>}
-                        <Dialog><DialogTrigger className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-border hover:bg-muted"><QrCode className="h-4 w-4" /></DialogTrigger><DialogContent className="text-center sm:max-w-xs"><DialogHeader><DialogTitle className="text-center">Asset QR Label</DialogTitle></DialogHeader><div className="flex flex-col items-center gap-4 py-8"><div className="rounded-2xl border-2 border-primary p-4"><QRCodeSVG value={product.id} size={180} /></div><div><p className="font-black">{product.name}</p><p className="font-mono text-xs text-muted-foreground">{product.sku}</p></div></div><Button variant="outline" onClick={() => window.print()}>Print Label</Button></DialogContent></Dialog>
+                        <Dialog><DialogTrigger className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-border hover:bg-muted"><QrCode className="h-4 w-4" /></DialogTrigger><DialogContent className="text-center sm:max-w-xs"><DialogHeader><DialogTitle className="text-center">Asset QR Label</DialogTitle></DialogHeader><div className="flex flex-col items-center gap-4 py-8"><div id={`qr-svg-table-${product.id}`} className="rounded-2xl border-2 border-primary p-4"><QRCodeSVG value={product.id} size={180} /></div><div><p className="font-black">{product.name}</p><p className="font-mono text-xs text-muted-foreground">{product.sku}</p></div></div><Button variant="outline" onClick={() => printThermalLabel(product, `qr-svg-table-${product.id}`)}><Printer className="mr-2 h-4 w-4" />Print Label</Button></DialogContent></Dialog>
                         {canAdjustStock && <Button variant="outline" size="icon" className="h-9 w-9" title="Adjust stock" onClick={() => { setSelectedProduct(product); setIsStockUpdateOpen(true); }}><SlidersHorizontal className="h-4 w-4" /></Button>}
                       </div>
                     </TableCell>
@@ -1027,6 +1195,77 @@ export function Inventory() {
         </DialogContent>
       </Dialog>
 
+      {/* Destructive Reference Deletion Confirmation Dialog */}
+      <Dialog open={deletingReference !== null} onOpenChange={(open) => { if (!open && referenceAction === null) setDeletingReference(null); }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-red-600">
+              <AlertTriangle className="h-5 w-5" />
+              Delete {deletingReference?.type === 'category' ? 'Category' : 'Supplier'}
+            </DialogTitle>
+            <DialogDescription>
+              Are you sure you want to remove <span className="font-bold text-foreground">"{deletingReference?.name}"</span> from the catalog?
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-2">
+            {deletingReference && deletingReference.affectedCount > 0 ? (
+              <div className="rounded-xl border border-amber-200 bg-amber-50/50 p-4 space-y-3 dark:border-amber-900/50 dark:bg-amber-950/20">
+                <div className="flex items-start gap-3">
+                  <AlertTriangle className="h-5 w-5 text-amber-600 shrink-0 mt-0.5" />
+                  <div className="space-y-1">
+                    <p className="text-xs font-bold text-amber-900 dark:text-amber-200">
+                      {deletingReference.affectedCount} Product{deletingReference.affectedCount > 1 ? 's' : ''} Will Be Affected
+                    </p>
+                    <p className="text-xs text-amber-700 dark:text-amber-300">
+                      Deleting this {deletingReference.type} will automatically wipe its assignment and reassign all affected products to <span className="font-mono font-bold">{deletingReference.type === 'category' ? 'Uncategorized' : 'N/A'}</span>.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="max-h-36 overflow-y-auto space-y-1.5 rounded-lg border border-amber-200/60 bg-white/80 p-2 dark:border-amber-900/30 dark:bg-zinc-900/80">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Affected Items:</p>
+                  {deletingReference.affectedItems.map(item => (
+                    <div key={item.id} className="flex items-center justify-between text-xs py-0.5">
+                      <span className="font-semibold truncate max-w-[200px]">{item.name}</span>
+                      <span className="font-mono text-[10px] text-muted-foreground">{item.sku}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <div className="rounded-xl border border-emerald-200 bg-emerald-50/50 p-4 flex items-center gap-3 dark:border-emerald-900/50 dark:bg-emerald-950/20">
+                <CheckCircle2 className="h-5 w-5 text-emerald-600 shrink-0" />
+                <p className="text-xs text-emerald-800 dark:text-emerald-200">
+                  No products are currently using this {deletingReference?.type}. It is safe to delete without reassigning any products.
+                </p>
+              </div>
+            )}
+          </div>
+
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setDeletingReference(null)}
+              disabled={referenceAction !== null}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              onClick={confirmDeleteReference}
+              disabled={referenceAction !== null}
+              className="gap-2"
+            >
+              <Trash2 className="h-4 w-4" />
+              {referenceAction !== null ? 'Deleting...' : deletingReference && deletingReference.affectedCount > 0 ? `Reassign ${deletingReference.affectedCount} & Delete` : `Delete ${deletingReference?.type === 'category' ? 'Category' : 'Supplier'}`}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* Stock Update Dialog */}
       <Dialog open={isStockUpdateOpen} onOpenChange={setIsStockUpdateOpen}>
         <DialogContent>
@@ -1151,10 +1390,10 @@ export function Inventory() {
                   </div>
                   <p className="mt-4 text-xs text-muted-foreground">Scan or print the product identity record associated with this item.</p>
                   <div className="mt-4 flex flex-1 flex-col items-center justify-center gap-4 rounded-lg border border-border p-5">
-                    <div className="rounded-lg bg-white p-2"><QRCodeSVG value={selectedProduct.id} size={150} /></div>
+                    <div id={`qr-svg-detail-${selectedProduct.id}`} className="rounded-lg bg-white p-2"><QRCodeSVG value={selectedProduct.id} size={150} /></div>
                     <div className="text-center"><p className="text-xs uppercase tracking-wider text-muted-foreground">SKU</p><p className="font-bold">{selectedProduct.sku}</p><p className="mt-4 text-xs uppercase tracking-wider text-muted-foreground">Unique node ID</p><p className="mt-1 break-all font-mono text-xs">{selectedProduct.id}</p></div>
                   </div>
-                  <Button variant="outline" className="mt-4 h-11" onClick={() => window.print()}><Printer className="mr-2 h-4 w-4" />Print Label</Button>
+                  <Button variant="outline" className="mt-4 h-11" onClick={() => printThermalLabel(selectedProduct, `qr-svg-detail-${selectedProduct.id}`)}><Printer className="mr-2 h-4 w-4" />Print Label</Button>
                 </section>
               </div>
             </div>;
