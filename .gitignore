@@ -31,3 +31,4 @@ run_tests.py
 .agents/skills/qa-reporter/SKILL.md
 docs/SELENIUM_TESTING_GUIDE.md
 Capstone 2 Tracker - QA.csv
+tests/test_orders_stock_logic.py
