@@ -31,6 +31,7 @@ import {
   CheckCircle2, 
   Camera, 
   AlertCircle,
+  AlertTriangle,
   ChevronRight,
   FileText,
   Eye,
@@ -39,6 +40,8 @@ import {
   User as UserIcon,
   Upload,
   X as XIcon,
+  XCircle,
+  RotateCcw,
   ImageIcon,
   ScanBarcode,
   ListPlus
@@ -196,6 +199,17 @@ export function Orders() {
     const quantity = Number(row.quantity);
     if (!Number.isInteger(quantity) || quantity < 1) {
       toast.error('Quantity must be at least 1.');
+      quantityInputRefs.current[rowId]?.focus();
+      return;
+    }
+    const totalStock = getProductStock(product.id);
+    if (totalStock <= 0) {
+      toast.error(`${product.name} is currently out of stock.`);
+      quantityInputRefs.current[rowId]?.focus();
+      return;
+    }
+    if (quantity > totalStock) {
+      toast.error(`Cannot order ${quantity} units. Only ${totalStock} available in stock.`);
       quantityInputRefs.current[rowId]?.focus();
       return;
     }
@@ -380,25 +394,28 @@ export function Orders() {
           .filter(inv => inv.productId === productId)
           .sort((a, b) => b.quantity - a.quantity);
 
-        if (warehouseOptions.length === 0) {
-          const totalAvail = currentInventory
-            .filter(inv => inv.productId === productId)
-            .reduce((sum, inv) => sum + inv.quantity, 0);
-          insufficient.push(`${demand.name} (${demand.quantity} needed, ${totalAvail} available)`);
+        const totalAvail = warehouseOptions.reduce((sum, inv) => sum + Math.max(0, inv.quantity), 0);
+
+        if (warehouseOptions.length === 0 || totalAvail < demand.quantity) {
+          insufficient.push(`${demand.name} (${demand.quantity} requested, ${totalAvail} available across warehouses)`);
         } else {
           const best = warehouseOptions[0];
-          stockUpdates.push({
-            inventoryId: best.id,
-            newQuantity: best.quantity - demand.quantity,
-            adjustment: {
-              productId,
-              warehouseId: best.warehouseId,
-              adjustmentAmount: -demand.quantity,
-              reason: `Order placement deduction`,
-              recordedBy: profile?.uid || 'system',
-              timestamp: serverTimestamp()
-            }
-          });
+          if (best.quantity < demand.quantity) {
+            insufficient.push(`${demand.name} (${demand.quantity} requested, but largest facility only has ${best.quantity} available)`);
+          } else {
+            stockUpdates.push({
+              inventoryId: best.id,
+              newQuantity: best.quantity - demand.quantity,
+              adjustment: {
+                productId,
+                warehouseId: best.warehouseId,
+                adjustmentAmount: -demand.quantity,
+                reason: `Auto-deduction: Order ${orderNumber}`,
+                recordedBy: profile?.uid || 'system',
+                timestamp: serverTimestamp()
+              }
+            });
+          }
         }
       }
 
@@ -442,9 +459,11 @@ export function Orders() {
       const itemsBatch = writeBatch(db);
       for (const item of cart) {
         const itemRef = doc(collection(db, `orders/${orderRef.id}/items`));
+        const assignedUpdate = stockUpdates.find(u => u.adjustment.productId === item.productId);
         itemsBatch.set(itemRef, {
           orderId: orderRef.id,
           productId: item.productId,
+          warehouseId: assignedUpdate?.adjustment.warehouseId || '',
           sku: item.sku,
           name: item.name,
           quantity: item.quantity,
@@ -490,6 +509,81 @@ export function Orders() {
 
   const updateOrderStatus = async (order: Order, newStatus: OrderStatus) => {
     try {
+      // Stock restoration on cancellation or escalation:
+      if ((newStatus === 'cancelled' || newStatus === 'escalated') && order.status !== 'cancelled' && order.status !== 'escalated') {
+        const itemsSnap = await getDocs(collection(db, 'orders', order.id, 'items'));
+        const items = itemsSnap.docs.map(d => ({ id: d.id, ...d.data() } as OrderItem));
+
+        let totalRestoredUnits = 0;
+        if (items.length > 0) {
+          const productIds = Array.from(new Set(items.map(i => i.productId)));
+          const currentInventory: InventoryItem[] = [];
+          for (let i = 0; i < productIds.length; i += 10) {
+            const chunk = productIds.slice(i, i + 10);
+            const invSnap = await getDocs(query(collection(db, 'inventory'), where('productId', 'in', chunk)));
+            currentInventory.push(...invSnap.docs.map(d => ({ id: d.id, ...d.data() } as InventoryItem)));
+          }
+
+          const invBatch = writeBatch(db);
+
+          for (const item of items) {
+            let targetInv = currentInventory.find(inv => 
+              inv.productId === item.productId && item.warehouseId && inv.warehouseId === item.warehouseId
+            );
+
+            if (!targetInv) {
+              const matches = currentInventory.filter(inv => inv.productId === item.productId);
+              if (matches.length > 0) {
+                targetInv = matches[0];
+              }
+            }
+
+            if (targetInv) {
+              invBatch.update(doc(db, 'inventory', targetInv.id), {
+                quantity: targetInv.quantity + item.quantity,
+                lastUpdated: serverTimestamp()
+              });
+              invBatch.set(doc(collection(db, 'stockAdjustments')), {
+                productId: item.productId,
+                warehouseId: targetInv.warehouseId,
+                adjustmentAmount: item.quantity,
+                reason: `Order ${order.orderNumber} ${newStatus}: stock replenishment`,
+                recordedBy: profile?.uid || 'system',
+                timestamp: serverTimestamp()
+              });
+              totalRestoredUnits += item.quantity;
+            }
+          }
+
+          try {
+            await invBatch.commit();
+          } catch (invErr) {
+            console.warn('Inventory replenishment write failed:', invErr);
+          }
+        }
+
+        await updateDoc(doc(db, 'orders', order.id), {
+          status: newStatus,
+          updatedAt: serverTimestamp(),
+          statusHistory: arrayUnion({
+            status: newStatus,
+            changedBy: profile?.displayName || profile?.email || 'Unknown',
+            timestamp: new Date(),
+            note: `Order marked as ${newStatus.replace('_', ' ')} — ${totalRestoredUnits} unit(s) restored to inventory`
+          })
+        });
+
+        toast.success(`Order ${order.orderNumber} ${newStatus}. ${totalRestoredUnits} unit(s) restored to stock.`, {
+          icon: <RotateCcw className="text-emerald-500" />,
+          duration: 5000
+        });
+
+        if (selectedOrder && selectedOrder.id === order.id) {
+          setSelectedOrder(prev => prev ? { ...prev, status: newStatus } : null);
+        }
+        return;
+      }
+
       // Stock was already deducted at order placement — skip re-deduction here.
       // Just transition the status for pending → preparing.
       if (newStatus === 'preparing' && order.status === 'pending') {
@@ -591,6 +685,9 @@ export function Orders() {
       case 'preparing': return <ShoppingCart className="w-3 h-3" />;
       case 'out_for_delivery': return <Truck className="w-3 h-3" />;
       case 'delivered': return <CheckCircle2 className="w-3 h-3" />;
+      case 'completed': return <CheckCircle2 className="w-3 h-3" />;
+      case 'escalated': return <AlertTriangle className="w-3 h-3 text-purple-500" />;
+      case 'cancelled': return <XCircle className="w-3 h-3 text-red-500" />;
       default: return null;
     }
   };
@@ -983,6 +1080,37 @@ export function Orders() {
                       />
                     </div>
                   )}
+
+                  {selectedOrder && profile?.role !== 'agent' && !['delivered', 'completed', 'cancelled', 'escalated'].includes(selectedOrder.status) && (
+                    <div className="pt-4 border-t border-border flex items-center justify-end gap-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="text-amber-600 border-amber-200 hover:bg-amber-50 gap-1.5 text-xs font-bold"
+                        onClick={() => {
+                          if (window.confirm(`Escalate order ${selectedOrder.orderNumber}? Stock will be returned to inventory.`)) {
+                            updateOrderStatus(selectedOrder, 'escalated');
+                          }
+                        }}
+                      >
+                        <AlertTriangle className="w-3.5 h-3.5" /> Escalate Order
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="text-red-600 border-red-200 hover:bg-red-50 gap-1.5 text-xs font-bold"
+                        onClick={() => {
+                          if (window.confirm(`Cancel order ${selectedOrder.orderNumber}? Stock will be restored to inventory.`)) {
+                            updateOrderStatus(selectedOrder, 'cancelled');
+                          }
+                        }}
+                      >
+                        <XCircle className="w-3.5 h-3.5" /> Cancel Order
+                      </Button>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
@@ -1098,7 +1226,8 @@ export function Orders() {
         </Dialog>
 
       </div>
-      <div className="flex items-center gap-2 bg-card p-3 border border-border rounded-xl">
+
+      <div className="flex items-center gap-2 bg-card p-3 border border-border rounded-xl">
         <ShoppingCart className="w-4 h-4 text-zinc-400 ml-1" />
         <Input 
           placeholder="Filter by Order #, or Client..." 
@@ -1132,8 +1261,10 @@ export function Orders() {
                   <p className="text-[10px] text-zinc-400 uppercase font-bold tracking-tighter">{order.deliveryRegion}</p>
                 </div>
                 <Badge variant="outline" className={`shrink-0 gap-1.5 h-6 capitalize text-[10px] font-bold ${
-                  order.status === 'delivered' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
+                  order.status === 'delivered' || order.status === 'completed' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
                   order.status === 'out_for_delivery' ? 'bg-blue-50 text-blue-700 border-blue-200' :
+                  order.status === 'cancelled' ? 'bg-red-50 text-red-700 border-red-200' :
+                  order.status === 'escalated' ? 'bg-purple-50 text-purple-700 border-purple-200' :
                   'bg-amber-50 text-amber-700 border-amber-200'
                 }`}>
                   {getStatusIcon(order.status)}
@@ -1156,19 +1287,49 @@ export function Orders() {
                 {profile?.role !== 'agent' && (
                   <>
                     {order.status === 'pending' && (
-                      <Button size="icon" variant="ghost" className="h-7 w-7 text-zinc-400 hover:text-zinc-900" onClick={() => updateOrderStatus(order, 'preparing')}>
+                      <Button size="icon" variant="ghost" className="h-7 w-7 text-zinc-400 hover:text-zinc-900" onClick={() => updateOrderStatus(order, 'preparing')} title="Move to Preparing">
                         <ChevronRight className="w-4 h-4" />
                       </Button>
                     )}
                     {order.status === 'preparing' && (
-                      <Button size="icon" variant="ghost" className="h-7 w-7 text-blue-500 hover:bg-blue-50" onClick={() => updateOrderStatus(order, 'out_for_delivery')}>
+                      <Button size="icon" variant="ghost" className="h-7 w-7 text-blue-500 hover:bg-blue-50" onClick={() => updateOrderStatus(order, 'out_for_delivery')} title="Dispatch Order">
                         <Camera className="w-4 h-4" />
                       </Button>
                     )}
                     {order.status === 'out_for_delivery' && (
-                      <Button size="icon" variant="ghost" className="h-7 w-7 text-emerald-500 hover:bg-emerald-50" onClick={() => updateOrderStatus(order, 'delivered')}>
+                      <Button size="icon" variant="ghost" className="h-7 w-7 text-emerald-500 hover:bg-emerald-50" onClick={() => updateOrderStatus(order, 'delivered')} title="Confirm Delivery">
                         <CheckCircle2 className="w-4 h-4" />
                       </Button>
+                    )}
+                    {order.status !== 'delivered' && order.status !== 'completed' && order.status !== 'cancelled' && order.status !== 'escalated' && (
+                      <>
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          className="h-7 w-7 text-amber-500 hover:bg-amber-50"
+                          onClick={() => {
+                            if (window.confirm(`Escalate order ${order.orderNumber}? Reserved stock will be replenished to inventory.`)) {
+                              updateOrderStatus(order, 'escalated');
+                            }
+                          }}
+                          title="Escalate Order (Restores Stock)"
+                        >
+                          <AlertTriangle className="w-4 h-4" />
+                        </Button>
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          className="h-7 w-7 text-red-500 hover:bg-red-50"
+                          onClick={() => {
+                            if (window.confirm(`Cancel order ${order.orderNumber}? Deducted stock will be restored to inventory.`)) {
+                              updateOrderStatus(order, 'cancelled');
+                            }
+                          }}
+                          title="Cancel Order (Restores Stock)"
+                        >
+                          <XCircle className="w-4 h-4" />
+                        </Button>
+                      </>
                     )}
                   </>
                 )}
@@ -1220,8 +1381,10 @@ export function Orders() {
                     </TableCell>
                     <TableCell>
                       <Badge variant="outline" className={`gap-1.5 h-6 capitalize text-[10px] font-bold ${
-                        order.status === 'delivered' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
+                        order.status === 'delivered' || order.status === 'completed' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
                         order.status === 'out_for_delivery' ? 'bg-blue-50 text-blue-700 border-blue-200' :
+                        order.status === 'cancelled' ? 'bg-red-50 text-red-700 border-red-200' :
+                        order.status === 'escalated' ? 'bg-purple-50 text-purple-700 border-purple-200' :
                         'bg-amber-50 text-amber-700 border-amber-200'
                       }`}>
                         {getStatusIcon(order.status)}
@@ -1250,19 +1413,49 @@ export function Orders() {
                       {profile?.role !== 'agent' && (
                         <>
                           {order.status === 'pending' && (
-                            <Button size="icon" variant="ghost" className="h-7 w-7 text-zinc-400 hover:text-zinc-900" onClick={() => updateOrderStatus(order, 'preparing')}>
+                            <Button size="icon" variant="ghost" className="h-7 w-7 text-zinc-400 hover:text-zinc-900" onClick={() => updateOrderStatus(order, 'preparing')} title="Move to Preparing">
                               <ChevronRight className="w-4 h-4" />
                             </Button>
                           )}
                           {order.status === 'preparing' && (
-                            <Button size="icon" variant="ghost" className="h-7 w-7 text-blue-500 hover:bg-blue-50" onClick={() => updateOrderStatus(order, 'out_for_delivery')}>
+                            <Button size="icon" variant="ghost" className="h-7 w-7 text-blue-500 hover:bg-blue-50" onClick={() => updateOrderStatus(order, 'out_for_delivery')} title="Dispatch Order">
                               <Camera className="w-4 h-4" />
                             </Button>
                           )}
                           {order.status === 'out_for_delivery' && (
-                            <Button size="icon" variant="ghost" className="h-7 w-7 text-emerald-500 hover:bg-emerald-50" onClick={() => updateOrderStatus(order, 'delivered')}>
+                            <Button size="icon" variant="ghost" className="h-7 w-7 text-emerald-500 hover:bg-emerald-50" onClick={() => updateOrderStatus(order, 'delivered')} title="Confirm Delivery">
                               <CheckCircle2 className="w-4 h-4" />
                             </Button>
+                          )}
+                          {order.status !== 'delivered' && order.status !== 'completed' && order.status !== 'cancelled' && order.status !== 'escalated' && (
+                            <>
+                              <Button
+                                size="icon"
+                                variant="ghost"
+                                className="h-7 w-7 text-amber-500 hover:bg-amber-50"
+                                onClick={() => {
+                                  if (window.confirm(`Escalate order ${order.orderNumber}? Reserved stock will be replenished to inventory.`)) {
+                                    updateOrderStatus(order, 'escalated');
+                                  }
+                                }}
+                                title="Escalate Order (Restores Stock)"
+                              >
+                                <AlertTriangle className="w-4 h-4" />
+                              </Button>
+                              <Button
+                                size="icon"
+                                variant="ghost"
+                                className="h-7 w-7 text-red-500 hover:bg-red-50"
+                                onClick={() => {
+                                  if (window.confirm(`Cancel order ${order.orderNumber}? Deducted stock will be restored to inventory.`)) {
+                                    updateOrderStatus(order, 'cancelled');
+                                  }
+                                }}
+                                title="Cancel Order (Restores Stock)"
+                              >
+                                <XCircle className="w-4 h-4" />
+                              </Button>
+                            </>
                           )}
                         </>
                       )}

@@ -58,7 +58,7 @@ export interface InventoryItem {
   lastUpdated: any;
 }
 
-export type OrderStatus = 'pending' | 'preparing' | 'out_for_delivery' | 'delivered' | 'completed' | 'escalated';
+export type OrderStatus = 'pending' | 'preparing' | 'out_for_delivery' | 'delivered' | 'completed' | 'escalated' | 'cancelled';
 export type PaymentStatus = 'unpaid' | 'partially_paid' | 'paid' | 'defaulted';
 
 export interface StatusHistoryEntry {
@@ -90,6 +90,7 @@ export interface OrderItem {
   id: string;
   orderId: string;
   productId: string;
+  warehouseId?: string;
   sku: string;
   name: string;
   quantity: number;
