@@ -42,6 +42,18 @@ export function Inventory() {
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [productImage, setProductImage] = useState<File | null>(null);
   const [productImagePreview, setProductImagePreview] = useState('');
+
+  // Add Product form state for uniqueness and select tracking
+  const [addSku, setAddSku] = useState('');
+  const [addName, setAddName] = useState('');
+  const [addCategory, setAddCategory] = useState('Uncategorized');
+  const [addSupplier, setAddSupplier] = useState('N/A');
+
+  // Edit Product form state for uniqueness and select tracking
+  const [editSku, setEditSku] = useState('');
+  const [editName, setEditName] = useState('');
+  const [editCategory, setEditCategory] = useState('Uncategorized');
+  const [editSupplier, setEditSupplier] = useState('N/A');
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [isStockUpdateOpen, setIsStockUpdateOpen] = useState(false);
   const [isDetailOpen, setIsDetailOpen] = useState(false);
@@ -80,6 +92,24 @@ export function Inventory() {
     setProductImagePreview(previewUrl);
     return () => URL.revokeObjectURL(previewUrl);
   }, [productImage]);
+
+  useEffect(() => {
+    if (editingProduct) {
+      setEditSku(editingProduct.sku || '');
+      setEditName(editingProduct.name || '');
+      setEditCategory(editingProduct.category || 'Uncategorized');
+      setEditSupplier(editingProduct.supplier || 'N/A');
+    }
+  }, [editingProduct]);
+
+  useEffect(() => {
+    if (!isAddProductOpen) {
+      setAddSku('');
+      setAddName('');
+      setAddCategory('Uncategorized');
+      setAddSupplier('N/A');
+    }
+  }, [isAddProductOpen]);
 
   useEffect(() => {
     if (!profile || profile.role !== 'staff') return;
@@ -126,17 +156,38 @@ export function Inventory() {
   const handleAddProduct = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const formData = new FormData(e.currentTarget);
+    const sku = String(formData.get('sku') || addSku || '').trim();
+    const name = String(formData.get('name') || addName || '').trim();
+    const category = String(addCategory || formData.get('category') || 'Uncategorized').trim() || 'Uncategorized';
+    const supplier = String(addSupplier || formData.get('supplier') || 'N/A').trim() || 'N/A';
+
+    if (!sku) {
+      toast.error('SKU Code is required.');
+      return;
+    }
+    if (products.some(p => p.sku.trim().toLowerCase() === sku.toLowerCase())) {
+      toast.error(`SKU Code must be unique. A product with SKU "${sku}" already exists.`);
+      return;
+    }
+    if (!name) {
+      toast.error('Item Name is required.');
+      return;
+    }
+    if (products.some(p => p.name.trim().toLowerCase() === name.toLowerCase())) {
+      toast.error(`Item Name must be unique. A product named "${name}" already exists.`);
+      return;
+    }
+
     const basePrice = Number(formData.get('basePrice')) || 0;
     const mmPrice = Number(formData.get('mmPrice')) || Number(formData.get('wholesalePrice')) || 0;
     const provincialPrice = Number(formData.get('provincialPrice')) || Number(formData.get('dealerPrice')) || 0;
     const costPrice = Number(formData.get('costPrice')) || 0;
     const promoPriceValue = formData.get('promoPrice');
-    const supplier = (formData.get('supplier') as string)?.trim() || 'N/A';
 
     const newProduct = {
-      sku: formData.get('sku'),
-      name: formData.get('name'),
-      category: formData.get('category'),
+      sku,
+      name,
+      category,
       supplier,
       basePrice,
       wholesalePrice: mmPrice,
@@ -188,6 +239,8 @@ export function Inventory() {
       const rows = XLSX.utils.sheet_to_json<ImportRow>(sheet, { defval: '' });
       const existingSkus = new Set(products.map((product) => product.sku.trim().toLowerCase()));
       const fileSkus = new Set<string>();
+      const existingNames = new Set(products.map((product) => product.name.trim().toLowerCase()));
+      const fileNames = new Set<string>();
       const preview = rows.map((row, index) => {
         const sku = String(row['SKU Code'] ?? '').trim();
         const name = String(row['Item Name'] ?? '').trim();
@@ -198,6 +251,10 @@ export function Inventory() {
         if (sku && existingSkus.has(normalizedSku)) errors.push('SKU already exists in Inventory');
         if (sku && fileSkus.has(normalizedSku)) errors.push('Duplicate SKU in file');
         if (sku) fileSkus.add(normalizedSku);
+        const normalizedName = name.toLowerCase();
+        if (name && existingNames.has(normalizedName)) errors.push('Item Name already exists in Inventory');
+        if (name && fileNames.has(normalizedName)) errors.push('Duplicate Item Name in file');
+        if (name) fileNames.add(normalizedName);
         const numericHeaders = ['Base Price / Retail Price', 'Metro Manila Price', 'Provincial Price', 'Cost', 'Minimum Stock Level', 'Reorder Point'];
         numericHeaders.forEach((header) => {
           const value = row[header];
@@ -253,20 +310,50 @@ export function Inventory() {
     event.preventDefault();
     if (!editingProduct) return;
     const form = new FormData(event.currentTarget);
-    const sku = String(form.get('sku') || '').trim();
-    if (products.some((product) => product.id !== editingProduct.id && product.sku.toLowerCase() === sku.toLowerCase())) {
-      toast.error('That SKU Code already exists.'); return;
+    const sku = String(editSku || form.get('sku') || '').trim();
+    const name = String(editName || form.get('name') || '').trim();
+    const category = String(editCategory || form.get('category') || 'Uncategorized').trim() || 'Uncategorized';
+    const supplier = String(editSupplier || form.get('supplier') || 'N/A').trim() || 'N/A';
+
+    if (!sku) {
+      toast.error('SKU Code is required.');
+      return;
+    }
+    if (products.some((product) => product.id !== editingProduct.id && product.sku.trim().toLowerCase() === sku.toLowerCase())) {
+      toast.error(`SKU Code must be unique. A product with SKU "${sku}" already exists.`);
+      return;
+    }
+    if (!name) {
+      toast.error('Item Name is required.');
+      return;
+    }
+    if (products.some((product) => product.id !== editingProduct.id && product.name.trim().toLowerCase() === name.toLowerCase())) {
+      toast.error(`Item Name must be unique. A product named "${name}" already exists.`);
+      return;
     }
     try {
       const mmPrice = Number(form.get('mmPrice')) || 0;
       const provincialPrice = Number(form.get('provincialPrice')) || 0;
       await updateDoc(doc(db, 'products', editingProduct.id), {
-        sku, name: String(form.get('name') || '').trim(), category: String(form.get('category') || '').trim(), supplier: String(form.get('supplier') || '').trim(),
-        basePrice: Number(form.get('basePrice')) || 0, mmPrice, wholesalePrice: mmPrice, provincialPrice, dealerPrice: provincialPrice,
-        costPrice: Number(form.get('costPrice')) || 0, minStockLevel: Number(form.get('minStockLevel')) || 0, reorderPoint: Number(form.get('reorderPoint')) || 0, updatedAt: new Date(),
+        sku,
+        name,
+        category,
+        supplier,
+        basePrice: Number(form.get('basePrice')) || 0,
+        mmPrice,
+        wholesalePrice: mmPrice,
+        provincialPrice,
+        dealerPrice: provincialPrice,
+        costPrice: Number(form.get('costPrice')) || 0,
+        minStockLevel: Number(form.get('minStockLevel')) || 0,
+        reorderPoint: Number(form.get('reorderPoint')) || 0,
+        updatedAt: new Date(),
       });
-      setEditingProduct(null); toast.success('Product updated successfully');
-    } catch (error) { handleSupabaseError(error, OperationType.UPDATE, `products/${editingProduct.id}`); }
+      setEditingProduct(null);
+      toast.success('Product updated successfully');
+    } catch (error) {
+      handleSupabaseError(error, OperationType.UPDATE, `products/${editingProduct.id}`);
+    }
   };
 
   const handleAddWarehouse = async (e: React.FormEvent<HTMLFormElement>) => {
@@ -481,6 +568,24 @@ export function Inventory() {
 
   const categories = Array.from(new Set([...managedCategories.map(item => item.name), ...products.map(product => product.category).filter(Boolean)])).sort();
   const suppliers = Array.from(new Set([...managedSuppliers.map(item => item.name), ...products.map(product => product.supplier).filter(Boolean) as string[]])).sort();
+  const categoryOptions = Array.from(new Set(['Uncategorized', ...categories])).filter(Boolean).sort();
+  const supplierOptions = Array.from(new Set(['N/A', ...suppliers])).filter(Boolean).sort();
+
+  const isAddSkuDuplicate = Boolean(
+    addSku.trim() && products.some(p => p.sku.trim().toLowerCase() === addSku.trim().toLowerCase())
+  );
+  const isAddNameDuplicate = Boolean(
+    addName.trim() && products.some(p => p.name.trim().toLowerCase() === addName.trim().toLowerCase())
+  );
+
+  const isEditSkuDuplicate = Boolean(
+    editingProduct && editSku.trim() &&
+    products.some(p => p.id !== editingProduct.id && p.sku.trim().toLowerCase() === editSku.trim().toLowerCase())
+  );
+  const isEditNameDuplicate = Boolean(
+    editingProduct && editName.trim() &&
+    products.some(p => p.id !== editingProduct.id && p.name.trim().toLowerCase() === editName.trim().toLowerCase())
+  );
   const getProductStatus = (product: Product, stock: number, _checkWarehouseId?: string) => {
     if (stock <= 0) return 'out';
     const threshold = product.reorderPoint || product.minStockLevel || 0;
@@ -624,10 +729,68 @@ export function Inventory() {
               <section className="space-y-3 rounded-xl border border-border p-4 md:col-span-2">
                 <h3 className="border-b border-border pb-2 text-sm font-bold">Product Information</h3>
                 <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                  <div className="space-y-2"><Label htmlFor="sku">SKU Code</Label><Input id="sku" name="sku" required placeholder="AP-XYZ-123" /></div>
-                  <div className="space-y-2"><Label htmlFor="name">Item Name</Label><Input id="name" name="name" required /></div>
-                  <div className="space-y-2"><Label htmlFor="category">Category</Label><Select name="category"><SelectTrigger id="category"><SelectValue placeholder="Select category" /></SelectTrigger><SelectContent className="max-h-60 overflow-y-auto">{categories.map(category => <SelectItem key={category} value={category}>{category}</SelectItem>)}</SelectContent></Select></div>
-                  <div className="space-y-2"><Label htmlFor="supplier">Preferred Supplier</Label><Select name="supplier" defaultValue="N/A"><SelectTrigger id="supplier"><SelectValue /></SelectTrigger><SelectContent className="max-h-60 overflow-y-auto"><SelectItem value="N/A">N/A</SelectItem>{suppliers.filter(supplier => supplier !== 'N/A').map(supplier => <SelectItem key={supplier} value={supplier}>{supplier}</SelectItem>)}</SelectContent></Select></div>
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <Label htmlFor="sku">SKU Code</Label>
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Must be unique</span>
+                    </div>
+                    <Input
+                      id="sku"
+                      name="sku"
+                      required
+                      placeholder="e.g. AP-XYZ-123"
+                      value={addSku}
+                      onChange={(e) => setAddSku(e.target.value)}
+                      className={isAddSkuDuplicate ? 'border-red-500 focus-visible:ring-red-500' : ''}
+                    />
+                    {isAddSkuDuplicate && (
+                      <p className="text-xs font-semibold text-red-500">⚠️ SKU Code is already in use by another product.</p>
+                    )}
+                  </div>
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <Label htmlFor="name">Item Name</Label>
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Must be unique</span>
+                    </div>
+                    <Input
+                      id="name"
+                      name="name"
+                      required
+                      placeholder="e.g. Mountain Bike"
+                      value={addName}
+                      onChange={(e) => setAddName(e.target.value)}
+                      className={isAddNameDuplicate ? 'border-red-500 focus-visible:ring-red-500' : ''}
+                    />
+                    {isAddNameDuplicate && (
+                      <p className="text-xs font-semibold text-red-500">⚠️ Item Name is already in use by another product.</p>
+                    )}
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="category">Category</Label>
+                    <Select name="category" value={addCategory} onValueChange={setAddCategory}>
+                      <SelectTrigger id="category">
+                        <SelectValue placeholder="Select category" />
+                      </SelectTrigger>
+                      <SelectContent className="max-h-60 overflow-y-auto">
+                        {categoryOptions.map(category => (
+                          <SelectItem key={category} value={category}>{category}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="supplier">Preferred Supplier</Label>
+                    <Select name="supplier" value={addSupplier} onValueChange={setAddSupplier}>
+                      <SelectTrigger id="supplier">
+                        <SelectValue placeholder="Select supplier" />
+                      </SelectTrigger>
+                      <SelectContent className="max-h-60 overflow-y-auto">
+                        {supplierOptions.map(supplier => (
+                          <SelectItem key={supplier} value={supplier}>{supplier}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
                 </div>
               </section>
             </div>
@@ -648,7 +811,7 @@ export function Inventory() {
                 <div className="space-y-2"><Label htmlFor="reorderPoint">Restock Level</Label><Input id="reorderPoint" name="reorderPoint" type="number" min="0" defaultValue="0" /></div>
               </div>
             </section>
-            <DialogFooter><Button type="submit">Add Product</Button></DialogFooter>
+            <DialogFooter><Button type="submit" disabled={isAddSkuDuplicate || isAddNameDuplicate}>Add Product</Button></DialogFooter>
           </form>
         </DialogContent>
       </Dialog>
@@ -664,10 +827,115 @@ export function Inventory() {
       </Dialog>
 
       <Dialog open={Boolean(editingProduct)} onOpenChange={(open) => { if (!open) setEditingProduct(null); }}>
-        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-3xl"><DialogHeader><DialogTitle>Edit Product</DialogTitle><DialogDescription>Updates will be used by future pricelists. Existing saved pricelists remain unchanged.</DialogDescription></DialogHeader>
-          {editingProduct && <form onSubmit={handleEditProduct} className="space-y-4"><div className="grid gap-4 sm:grid-cols-2">{[
-            ['sku', 'SKU Code', 'text', editingProduct.sku], ['name', 'Item Name', 'text', editingProduct.name], ['category', 'Category', 'text', editingProduct.category], ['supplier', 'Supplier Name', 'text', editingProduct.supplier || ''], ['basePrice', 'Base Price / Retail Price', 'number', editingProduct.basePrice], ['mmPrice', 'Metro Manila Price', 'number', editingProduct.mmPrice ?? editingProduct.wholesalePrice ?? 0], ['provincialPrice', 'Provincial Price', 'number', editingProduct.provincialPrice ?? editingProduct.dealerPrice ?? 0], ['costPrice', 'Cost', 'number', editingProduct.costPrice || 0], ['minStockLevel', 'Minimum Stock Level', 'number', editingProduct.minStockLevel], ['reorderPoint', 'Reorder Point', 'number', editingProduct.reorderPoint],
-          ].map(([name, label, type, value]) => <div className="space-y-2" key={String(name)}><Label htmlFor={`edit-${name}`}>{label}</Label><Input id={`edit-${name}`} name={String(name)} type={String(type)} step={type === 'number' ? '0.01' : undefined} min={type === 'number' ? '0' : undefined} defaultValue={String(value)} required={name === 'sku' || name === 'name'} /></div>)}</div><DialogFooter><Button type="button" variant="outline" onClick={() => setEditingProduct(null)}>Cancel</Button><Button type="submit">Save Changes</Button></DialogFooter></form>}
+        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-3xl">
+          <DialogHeader>
+            <DialogTitle>Edit Product</DialogTitle>
+            <DialogDescription>Updates will be used by future pricelists. Existing saved pricelists remain unchanged.</DialogDescription>
+          </DialogHeader>
+          {editingProduct && (
+            <form onSubmit={handleEditProduct} className="space-y-4">
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <Label htmlFor="edit-sku">SKU Code</Label>
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Must be unique</span>
+                  </div>
+                  <Input
+                    id="edit-sku"
+                    name="sku"
+                    value={editSku}
+                    onChange={(e) => setEditSku(e.target.value)}
+                    required
+                    className={isEditSkuDuplicate ? 'border-red-500 focus-visible:ring-red-500' : ''}
+                  />
+                  {isEditSkuDuplicate && (
+                    <p className="text-xs font-semibold text-red-500">⚠️ SKU Code is already in use by another product.</p>
+                  )}
+                </div>
+
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <Label htmlFor="edit-name">Item Name</Label>
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Must be unique</span>
+                  </div>
+                  <Input
+                    id="edit-name"
+                    name="name"
+                    value={editName}
+                    onChange={(e) => setEditName(e.target.value)}
+                    required
+                    className={isEditNameDuplicate ? 'border-red-500 focus-visible:ring-red-500' : ''}
+                  />
+                  {isEditNameDuplicate && (
+                    <p className="text-xs font-semibold text-red-500">⚠️ Item Name is already in use by another product.</p>
+                  )}
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="edit-category">Category</Label>
+                  <Select name="category" value={editCategory} onValueChange={setEditCategory}>
+                    <SelectTrigger id="edit-category">
+                      <SelectValue placeholder="Select category" />
+                    </SelectTrigger>
+                    <SelectContent className="max-h-60 overflow-y-auto">
+                      {Array.from(new Set([...categoryOptions, editCategory])).filter(Boolean).sort().map(category => (
+                        <SelectItem key={category} value={category}>{category}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="edit-supplier">Supplier Name</Label>
+                  <Select name="supplier" value={editSupplier} onValueChange={setEditSupplier}>
+                    <SelectTrigger id="edit-supplier">
+                      <SelectValue placeholder="Select supplier" />
+                    </SelectTrigger>
+                    <SelectContent className="max-h-60 overflow-y-auto">
+                      {Array.from(new Set([...supplierOptions, editSupplier])).filter(Boolean).sort().map(supplier => (
+                        <SelectItem key={supplier} value={supplier}>{supplier}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="edit-basePrice">Base Price / Retail Price</Label>
+                  <Input id="edit-basePrice" name="basePrice" type="number" step="0.01" min="0" defaultValue={editingProduct.basePrice} />
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="edit-mmPrice">Metro Manila Price</Label>
+                  <Input id="edit-mmPrice" name="mmPrice" type="number" step="0.01" min="0" defaultValue={editingProduct.mmPrice ?? editingProduct.wholesalePrice ?? 0} />
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="edit-provincialPrice">Provincial Price</Label>
+                  <Input id="edit-provincialPrice" name="provincialPrice" type="number" step="0.01" min="0" defaultValue={editingProduct.provincialPrice ?? editingProduct.dealerPrice ?? 0} />
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="edit-costPrice">Cost</Label>
+                  <Input id="edit-costPrice" name="costPrice" type="number" step="0.01" min="0" defaultValue={editingProduct.costPrice || 0} />
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="edit-minStockLevel">Minimum Stock Level</Label>
+                  <Input id="edit-minStockLevel" name="minStockLevel" type="number" min="0" defaultValue={editingProduct.minStockLevel} />
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="edit-reorderPoint">Reorder Point</Label>
+                  <Input id="edit-reorderPoint" name="reorderPoint" type="number" min="0" defaultValue={editingProduct.reorderPoint} />
+                </div>
+              </div>
+
+              <DialogFooter>
+                <Button type="button" variant="outline" onClick={() => setEditingProduct(null)}>Cancel</Button>
+                <Button type="submit" disabled={isEditSkuDuplicate || isEditNameDuplicate || !editSku.trim() || !editName.trim()}>Save Changes</Button>
+              </DialogFooter>
+            </form>
+          )}
         </DialogContent>
       </Dialog>
 

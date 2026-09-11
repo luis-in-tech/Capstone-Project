@@ -6,3 +6,28 @@ coverage/
 *.log
 .env*
 !.env.example
+__pycache__/
+*.pyc
+.pytest_cache/
+reports/
+AP Front-End Bugs.md
+tests/conftest.py
+tests/requirements-test.txt
+tests/test_advanced_qa_dimensions.py
+tests/test_auth.py
+tests/test_business_logic.py
+tests/test_inventory_interactions.py
+tests/test_navigation.py
+tests/test_roles.py
+tests/test_smoke.py
+tests/pages/__init__.py
+tests/pages/base_page.py
+tests/pages/inventory_page.py
+tests/pages/login_page.py
+tests/pages/sidebar_page.py
+pytest.ini
+run_tests.py
+.agents/rules/qa-mindset.md
+.agents/skills/qa-reporter/SKILL.md
+docs/SELENIUM_TESTING_GUIDE.md
+Capstone 2 Tracker - QA.csv
