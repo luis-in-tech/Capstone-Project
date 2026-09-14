@@ -37,7 +37,7 @@ const navigation = [
   { name: 'Financials', href: '/finance', icon: DollarSign, roles: ['admin'] },
   { name: 'Logistics Optimizer', href: '/logistics', icon: Activity, roles: ['admin', 'secretary'] },
   { name: 'Pricelist', href: '/pricelist', icon: Tag, roles: ['admin', 'secretary', 'agent', 'staff'] },
-  { name: 'Staff Delegation', href: '/delegation', icon: UserCog, roles: ['admin'] },
+  { name: 'Staff Delegation', href: '/delegation', icon: UserCog, roles: ['admin', 'agent'] },
   { name: 'Settings', href: '/settings', icon: Settings, roles: ['admin', 'secretary', 'agent', 'staff'] },
 ];
 
@@ -79,6 +79,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
             <Link
               key={item.name}
               to={item.href}
+              onClick={() => setIsMobileMenuOpen(false)}
               className={`flex items-center ${isCollapsed ? 'justify-center px-0' : 'gap-3 px-3'} py-2.5 text-sm font-medium rounded-lg transition-all group ${isActive
                   ? 'bg-sidebar-primary text-sidebar-primary-foreground shadow-md'
                   : 'text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent'
@@ -189,10 +190,23 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
           {/* Page title */}
           <div className="flex flex-col">
+            <span style={{ fontFamily: "'Anton', sans-serif" }} className="text-lg tracking-tight text-foreground leading-none italic">
+              Active <span className="text-primary">Pro</span>
+            </span>
+            <span className="text-[9px] uppercase font-black tracking-widest text-muted-foreground mt-0.5">
+              {filteredNavigation.find(item => item.href === location.pathname)?.name || 'Portal'}
+            </span>
           </div>
 
           {/* Header right */}
           <div className="flex items-center gap-3">
+            <button
+              onClick={() => setTheme(isDark ? 'light' : 'dark')}
+              className="inline-flex items-center justify-center rounded-lg h-9 w-9 bg-muted text-muted-foreground hover:text-foreground transition-all"
+              title="Toggle theme"
+            >
+              {isDark ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+            </button>
           </div>
         </header>
 

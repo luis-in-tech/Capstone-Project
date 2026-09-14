@@ -388,6 +388,9 @@ export function Orders() {
       const stockUpdates: { inventoryId: string; newQuantity: number; adjustment: any }[] = [];
       const insufficient: string[] = [];
 
+      // 4. Generate order number first so it can be referenced in stock adjustment logs
+      const orderNumber = `ORD-${Date.now().toString().slice(-6)}`;
+
       for (const productId in consolidatedDemand) {
         const demand = consolidatedDemand[productId];
         const warehouseOptions = currentInventory
@@ -428,8 +431,7 @@ export function Orders() {
         return;
       }
 
-      // 4. Commit Order first so that Firestore rules can see it
-      const orderNumber = `ORD-${Date.now().toString().slice(-6)}`;
+      // 5. Commit Order first so that Firestore rules can see it
       const orderRef = doc(collection(db, 'orders'));
       const orderData = {
         orderNumber,

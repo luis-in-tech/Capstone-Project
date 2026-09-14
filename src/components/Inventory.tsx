@@ -351,6 +351,7 @@ export function Inventory() {
         provincialPrice,
         dealerPrice: provincialPrice,
         costPrice: Number(form.get('costPrice')) || 0,
+        promoPrice: form.get('promoPrice') !== '' ? Number(form.get('promoPrice')) : null,
         minStockLevel: Number(form.get('minStockLevel')) || 0,
         reorderPoint: Number(form.get('reorderPoint')) || 0,
         updatedAt: new Date(),
@@ -531,13 +532,23 @@ export function Inventory() {
     const reason = formData.get('reason') as string;
 
     const item = inventory.find(i => i.productId === selectedProduct?.id && i.warehouseId === warehouseId);
-    if (item && selectedProduct && profile) {
+    if (selectedProduct && profile) {
       try {
-        // 1. Update the inventory level
-        await updateDoc(doc(db, 'inventory', item.id), {
-          quantity: item.quantity + quantity,
-          lastUpdated: serverTimestamp()
-        });
+        if (item) {
+          // 1a. Existing row — update the inventory level
+          await updateDoc(doc(db, 'inventory', item.id), {
+            quantity: item.quantity + quantity,
+            lastUpdated: serverTimestamp()
+          });
+        } else {
+          // 1b. No row for this product+warehouse yet — insert one
+          await addDoc(collection(db, 'inventory'), {
+            productId: selectedProduct.id,
+            warehouseId,
+            quantity,
+            lastUpdated: serverTimestamp()
+          });
+        }
 
         // 2. Log the adjustment for auditing
         await addDoc(collection(db, 'stockAdjustments'), {
@@ -552,7 +563,7 @@ export function Inventory() {
         setIsStockUpdateOpen(false);
         toast.success('Inventory balance synchronized and adjustment logged');
       } catch (err) {
-        handleSupabaseError(err, OperationType.UPDATE, `inventory/${item.id}`);
+        handleSupabaseError(err, OperationType.UPDATE, `inventory/${item?.id || 'new'}`);
       }
     }
   };
@@ -1085,6 +1096,11 @@ export function Inventory() {
                 <div className="space-y-2">
                   <Label htmlFor="edit-costPrice">Cost</Label>
                   <Input id="edit-costPrice" name="costPrice" type="number" step="0.01" min="0" defaultValue={editingProduct.costPrice || 0} />
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="edit-promoPrice">Promo Price (optional)</Label>
+                  <Input id="edit-promoPrice" name="promoPrice" type="number" step="0.01" min="0" defaultValue={editingProduct.promoPrice ?? ''} placeholder="Leave blank to clear" />
                 </div>
 
                 <div className="space-y-2">

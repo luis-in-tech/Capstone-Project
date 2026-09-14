@@ -12,7 +12,8 @@ CREATE TABLE IF NOT EXISTS "order_items" (
   "name"        TEXT NOT NULL,
   "quantity"    INTEGER NOT NULL DEFAULT 1,
   "unitPrice"   NUMERIC(12,2) NOT NULL DEFAULT 0,
-  "subtotal"    NUMERIC(12,2) NOT NULL DEFAULT 0
+  "subtotal"    NUMERIC(12,2) NOT NULL DEFAULT 0,
+  "warehouseId" TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_order_items_orderId ON "order_items" ("orderId");

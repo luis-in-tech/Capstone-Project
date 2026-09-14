@@ -60,7 +60,7 @@ export function isPathSafe(absolutePath: string): boolean {
   const normalised = path.normalize(absolutePath);
   const isInsideFrontend = normalised.startsWith(FRONTEND_ROOT + path.sep) || normalised === FRONTEND_ROOT;
   const isInsideBackend = normalised.startsWith(BACKEND_ROOT + path.sep) || normalised === BACKEND_ROOT;
-  return isInsideFrontend && isInsideBackend;
+  return isInsideFrontend && !isInsideBackend;
 }
 
 /**
@@ -78,4 +78,5 @@ export function resolveAndValidate(relativePath: string): string {
       `Path traversal detected: "${relativePath}" resolves outside the allowed directory.`
     );
   }
-
+  return absolute;
+}

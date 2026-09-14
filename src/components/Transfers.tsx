@@ -414,7 +414,7 @@ export function Transfers() {
                         }} 
                         required
                       >
-                        <SelectTrigger>
+                        <SelectTrigger className="w-full">
                           <SelectValue placeholder="Select product..." />
                         </SelectTrigger>
                         <SelectContent>

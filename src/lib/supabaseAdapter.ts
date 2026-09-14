@@ -91,7 +91,7 @@ export function serverTimestamp() {
 }
 
 export async function getDocs(q: any) {
-  let builder = supabase.from(q.path).select('*');
+  let builder: any = supabase.from(q.path).select('*');
   if (q.isSubcollection && q.parentField && q.parentId) {
     builder = builder.eq(q.parentField, q.parentId);
   }

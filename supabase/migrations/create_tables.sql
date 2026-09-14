@@ -113,7 +113,7 @@ CREATE TABLE IF NOT EXISTS "orders" (
   "clientId"            TEXT DEFAULT '',
   "clientName"          TEXT DEFAULT '',
   "status"              TEXT NOT NULL DEFAULT 'pending'
-                          CHECK ("status" IN ('pending', 'preparing', 'out_for_delivery', 'delivered', 'completed', 'escalated')),
+                          CHECK ("status" IN ('pending', 'preparing', 'out_for_delivery', 'delivered', 'completed', 'escalated', 'cancelled')),
   "skus"                JSONB DEFAULT '[]'::jsonb,
   "totalAmount"         NUMERIC(12,2) DEFAULT 0,
   "paymentStatus"       TEXT DEFAULT 'unpaid'
@@ -164,7 +164,7 @@ CREATE TABLE IF NOT EXISTS "transfers" (
   "productId"              TEXT NOT NULL,
   "quantity"               INTEGER NOT NULL CHECK ("quantity" > 0),
   "status"                 TEXT NOT NULL DEFAULT 'pending'
-                             CHECK ("status" IN ('pending', 'in_transit', 'received')),
+                             CHECK ("status" IN ('pending', 'in_transit', 'received', 'cancelled')),
   "initiatedBy"            TEXT NOT NULL,
   "createdAt"              TIMESTAMPTZ DEFAULT now(),
   "updatedAt"              TIMESTAMPTZ DEFAULT now()
