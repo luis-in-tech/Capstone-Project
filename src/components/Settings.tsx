@@ -80,7 +80,7 @@ export function Settings() {
 
       <div className="grid gap-6 md:grid-cols-2">
         <Card className="border-border overflow-hidden group hover:border-primary/40 transition-colors">
-          <CardHeader className="bg-muted/30">
+          <CardHeader>
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <User className="w-4 h-4 text-foreground" />
@@ -88,7 +88,7 @@ export function Settings() {
               </div>
               <Dialog open={isEditProfileOpen} onOpenChange={setIsEditProfileOpen}>
                 <DialogTrigger render={
-                  <Button variant="ghost" size="sm" className="h-8 gap-2 text-[10px] font-black uppercase tracking-widest hover:bg-foreground hover:text-background transition-all">
+                  <Button variant="ghost" size="sm" className="h-8 gap-2 text-[10px] font-black uppercase tracking-widest hover:bg-foreground hover:text-background dark:hover:bg-foreground dark:hover:text-background transition-all">
                     <Edit2 className="w-3 h-3" /> Edit Profile
                   </Button>
                 } />
