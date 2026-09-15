@@ -42,6 +42,9 @@ export function Inventory() {
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [productImage, setProductImage] = useState<File | null>(null);
   const [productImagePreview, setProductImagePreview] = useState('');
+  const [editProductImage, setEditProductImage] = useState<File | null>(null);
+  const [editProductImagePreview, setEditProductImagePreview] = useState('');
+  const [isSubmittingProduct, setIsSubmittingProduct] = useState(false);
 
   // Add Product form state for uniqueness and select tracking
   const [addSku, setAddSku] = useState('');
@@ -100,11 +103,26 @@ export function Inventory() {
   }, [productImage]);
 
   useEffect(() => {
+    if (!editProductImage) {
+      return;
+    }
+
+    const previewUrl = URL.createObjectURL(editProductImage);
+    setEditProductImagePreview(previewUrl);
+    return () => URL.revokeObjectURL(previewUrl);
+  }, [editProductImage]);
+
+  useEffect(() => {
     if (editingProduct) {
       setEditSku(editingProduct.sku || '');
       setEditName(editingProduct.name || '');
       setEditCategory(editingProduct.category || 'Uncategorized');
       setEditSupplier(editingProduct.supplier || 'N/A');
+      setEditProductImage(null);
+      setEditProductImagePreview(editingProduct.photoUrl || '');
+    } else {
+      setEditProductImage(null);
+      setEditProductImagePreview('');
     }
   }, [editingProduct]);
 
@@ -159,6 +177,65 @@ export function Inventory() {
     };
   }, []);
 
+  const uploadProductImage = async (file: File): Promise<string> => {
+    // 1. Try Supabase Storage upload if available
+    try {
+      const { storage, ref, uploadBytes, getDownloadURL } = await import('../lib/supabaseAdapter');
+      const safeName = file.name.replace(/[^a-zA-Z0-9.-]/g, '_');
+      const filePath = `products/${Date.now()}_${safeName}`;
+      const storageRef = ref(storage, filePath);
+      await uploadBytes(storageRef, file);
+      const downloadUrl = await getDownloadURL(storageRef);
+      if (downloadUrl) return downloadUrl;
+    } catch (storageErr) {
+      console.warn('Storage upload unavailable or failed, falling back to optimized data URL:', storageErr);
+    }
+
+    // 2. Client-side fallback: Convert to an optimized data URL (max 600px, 85% quality)
+    return new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const img = new Image();
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          const MAX_DIM = 600;
+          let width = img.width;
+          let height = img.height;
+          if (width > height) {
+            if (width > MAX_DIM) {
+              height = Math.round((height * MAX_DIM) / width);
+              width = MAX_DIM;
+            }
+          } else {
+            if (height > MAX_DIM) {
+              width = Math.round((width * MAX_DIM) / height);
+              height = MAX_DIM;
+            }
+          }
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          if (!ctx) {
+            resolve(e.target?.result as string);
+            return;
+          }
+          ctx.drawImage(img, 0, 0, width, height);
+          try {
+            const dataUrl = canvas.toDataURL('image/webp', 0.85);
+            resolve(dataUrl);
+          } catch {
+            const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+            resolve(dataUrl);
+          }
+        };
+        img.onerror = () => resolve(e.target?.result as string);
+        img.src = e.target?.result as string;
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  };
+
   const handleAddProduct = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const formData = new FormData(e.currentTarget);
@@ -190,25 +267,32 @@ export function Inventory() {
     const costPrice = Number(formData.get('costPrice')) || 0;
     const promoPriceValue = formData.get('promoPrice');
 
-    const newProduct = {
-      sku,
-      name,
-      category,
-      supplier,
-      basePrice,
-      wholesalePrice: mmPrice,
-      dealerPrice: provincialPrice,
-      mmPrice,
-      provincialPrice,
-      costPrice,
-      promoPrice: promoPriceValue ? Number(promoPriceValue) : undefined,
-      minStockLevel: Number(formData.get('minStockLevel')) || 0,
-      reorderPoint: Number(formData.get('reorderPoint')) || 0,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
-
+    setIsSubmittingProduct(true);
     try {
+      let photoUrl = '';
+      if (productImage) {
+        photoUrl = await uploadProductImage(productImage);
+      }
+
+      const newProduct = {
+        sku,
+        name,
+        category,
+        supplier,
+        basePrice,
+        wholesalePrice: mmPrice,
+        dealerPrice: provincialPrice,
+        mmPrice,
+        provincialPrice,
+        costPrice,
+        promoPrice: promoPriceValue ? Number(promoPriceValue) : undefined,
+        photoUrl,
+        minStockLevel: Number(formData.get('minStockLevel')) || 0,
+        reorderPoint: Number(formData.get('reorderPoint')) || 0,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+
       const docRef = await addDoc(collection(db, 'products'), newProduct);
       // Initialize inventory for all warehouses
       for (const wh of warehouses) {
@@ -220,10 +304,13 @@ export function Inventory() {
         });
       }
       setProductImage(null);
+      setProductImagePreview('');
       setIsAddProductOpen(false);
       toast.success('Product added to CI catalog');
     } catch (err) {
       handleSupabaseError(err, OperationType.CREATE, 'products');
+    } finally {
+      setIsSubmittingProduct(false);
     }
   };
 
@@ -337,10 +424,20 @@ export function Inventory() {
       toast.error(`Item Name must be unique. A product named "${name}" already exists.`);
       return;
     }
+    setIsSubmittingProduct(true);
     try {
+      let photoUrl = editingProduct.photoUrl || '';
+      if (editProductImage) {
+        photoUrl = await uploadProductImage(editProductImage);
+      } else if (!editProductImagePreview) {
+        photoUrl = '';
+      }
+
       const mmPrice = Number(form.get('mmPrice')) || 0;
       const provincialPrice = Number(form.get('provincialPrice')) || 0;
-      await updateDoc(doc(db, 'products', editingProduct.id), {
+      const promoVal = form.get('promoPrice');
+      const promoPrice = promoVal !== '' && promoVal != null ? Number(promoVal) : null;
+      const updatedData = {
         sku,
         name,
         category,
@@ -351,15 +448,27 @@ export function Inventory() {
         provincialPrice,
         dealerPrice: provincialPrice,
         costPrice: Number(form.get('costPrice')) || 0,
-        promoPrice: form.get('promoPrice') !== '' ? Number(form.get('promoPrice')) : null,
+        promoPrice,
+        photoUrl,
         minStockLevel: Number(form.get('minStockLevel')) || 0,
         reorderPoint: Number(form.get('reorderPoint')) || 0,
         updatedAt: new Date(),
-      });
+      };
+
+      await updateDoc(doc(db, 'products', editingProduct.id), updatedData);
+
+      if (selectedProduct && selectedProduct.id === editingProduct.id) {
+        setSelectedProduct(prev => prev ? { ...prev, ...updatedData } : null);
+      }
+
       setEditingProduct(null);
+      setEditProductImage(null);
+      setEditProductImagePreview('');
       toast.success('Product updated successfully');
     } catch (error) {
       handleSupabaseError(error, OperationType.UPDATE, `products/${editingProduct.id}`);
+    } finally {
+      setIsSubmittingProduct(false);
     }
   };
 
@@ -863,7 +972,7 @@ export function Inventory() {
                 return (
                   <TableRow key={product.id} className="cursor-pointer hover:bg-muted/30" onClick={() => { setSelectedProduct(product); setIsDetailOpen(true); }}>
                     <TableCell className="font-mono text-xs text-muted-foreground">{product.sku}</TableCell>
-                    <TableCell><div className="flex items-center gap-3"><div className="flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-border bg-muted">{product.photoUrl ? <img src={product.photoUrl} alt="" className="h-full w-full object-contain" /> : <Package className="h-5 w-5 text-muted-foreground" />}</div><div className="min-w-0"><p className="truncate text-sm font-bold">{product.name}</p><p className="truncate text-xs text-muted-foreground">{product.category || 'Uncategorized'}</p></div></div></TableCell>
+                    <TableCell><div className="flex items-center gap-3"><div className="flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-border bg-muted">{product.photoUrl ? <img src={product.photoUrl} alt={product.name} className="h-full w-full object-cover" /> : <Package className="h-5 w-5 text-muted-foreground" />}</div><div className="min-w-0"><p className="truncate text-sm font-bold">{product.name}</p><p className="truncate text-xs text-muted-foreground">{product.category || 'Uncategorized'}</p></div></div></TableCell>
                     <TableCell><div className="grid grid-cols-[2.75rem_auto] text-xs"><span className="text-muted-foreground">Retail:</span><strong>₱{(product.basePrice || 0).toLocaleString()}</strong><span className="text-muted-foreground">MM:</span><strong>₱{(product.mmPrice ?? product.wholesalePrice ?? 0).toLocaleString()}</strong><span className="text-muted-foreground">Prov.:</span><strong>₱{(product.provincialPrice ?? product.dealerPrice ?? 0).toLocaleString()}</strong></div></TableCell>
                     <TableCell className="text-sm font-semibold">₱{(product.costPrice || 0).toLocaleString()}</TableCell>
                     <TableCell className="text-center"><Badge variant="outline" className={'rounded-full px-3 ' + statusClass}>{stock.toLocaleString()} units</Badge></TableCell>
@@ -990,7 +1099,11 @@ export function Inventory() {
                 <div className="space-y-2"><Label htmlFor="reorderPoint">Restock Level</Label><Input id="reorderPoint" name="reorderPoint" type="number" min="0" defaultValue="0" /></div>
               </div>
             </section>
-            <DialogFooter><Button type="submit" disabled={isAddSkuDuplicate || isAddNameDuplicate}>Add Product</Button></DialogFooter>
+            <DialogFooter>
+              <Button type="submit" disabled={isSubmittingProduct || isAddSkuDuplicate || isAddNameDuplicate}>
+                {isSubmittingProduct ? 'Adding...' : 'Add Product'}
+              </Button>
+            </DialogFooter>
           </form>
         </DialogContent>
       </Dialog>
@@ -1005,118 +1118,166 @@ export function Inventory() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={Boolean(editingProduct)} onOpenChange={(open) => { if (!open) setEditingProduct(null); }}>
-        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-3xl">
+      <Dialog open={Boolean(editingProduct)} onOpenChange={(open) => { if (!open) { setEditingProduct(null); setEditProductImage(null); setEditProductImagePreview(''); } }}>
+        <DialogContent className="max-h-[90vh] w-[95vw] overflow-y-auto sm:max-w-4xl">
           <DialogHeader>
             <DialogTitle>Edit Product</DialogTitle>
             <DialogDescription>Updates will be used by future pricelists. Existing saved pricelists remain unchanged.</DialogDescription>
           </DialogHeader>
           {editingProduct && (
-            <form onSubmit={handleEditProduct} className="space-y-4">
-              <div className="grid gap-4 sm:grid-cols-2">
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <Label htmlFor="edit-sku">SKU Code</Label>
-                    <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Must be unique</span>
+            <form onSubmit={handleEditProduct} className="space-y-5 pt-2">
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+                <section className="space-y-3 rounded-xl border border-border p-4">
+                  <h3 className="border-b border-border pb-2 text-sm font-bold">Product Image</h3>
+                  <div className="space-y-2">
+                    <Label htmlFor="editProductImage">Product Image</Label>
+                    <div className="space-y-3 rounded-xl border border-dashed border-border p-3">
+                      {editProductImagePreview ? (
+                        <img src={editProductImagePreview} alt="Product preview" className="aspect-square w-full rounded-lg border border-border object-cover" />
+                      ) : (
+                        <div className="flex aspect-square w-full items-center justify-center rounded-lg bg-muted">
+                          <ImagePlus className="h-10 w-10 text-muted-foreground" />
+                        </div>
+                      )}
+                      <div className="flex items-center gap-2">
+                        <Input
+                          id="editProductImage"
+                          name="editProductImage"
+                          type="file"
+                          accept="image/*"
+                          onChange={(event) => setEditProductImage(event.target.files?.[0] ?? null)}
+                          className="min-w-0 cursor-pointer"
+                        />
+                        {(editProductImage || editProductImagePreview) && (
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            title="Remove image"
+                            onClick={() => { setEditProductImage(null); setEditProductImagePreview(''); }}
+                          >
+                            <X className="h-4 w-4" />
+                          </Button>
+                        )}
+                      </div>
+                    </div>
                   </div>
-                  <Input
-                    id="edit-sku"
-                    name="sku"
-                    value={editSku}
-                    onChange={(e) => setEditSku(e.target.value)}
-                    required
-                    className={isEditSkuDuplicate ? 'border-red-500 focus-visible:ring-red-500' : ''}
-                  />
-                  {isEditSkuDuplicate && (
-                    <p className="text-xs font-semibold text-red-500">⚠️ SKU Code is already in use by another product.</p>
-                  )}
-                </div>
+                </section>
+                <section className="space-y-3 rounded-xl border border-border p-4 md:col-span-2">
+                  <h3 className="border-b border-border pb-2 text-sm font-bold">Product Information</h3>
+                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <Label htmlFor="edit-sku">SKU Code</Label>
+                        <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Must be unique</span>
+                      </div>
+                      <Input
+                        id="edit-sku"
+                        name="sku"
+                        value={editSku}
+                        onChange={(e) => setEditSku(e.target.value)}
+                        required
+                        className={isEditSkuDuplicate ? 'border-red-500 focus-visible:ring-red-500' : ''}
+                      />
+                      {isEditSkuDuplicate && (
+                        <p className="text-xs font-semibold text-red-500">⚠️ SKU Code is already in use by another product.</p>
+                      )}
+                    </div>
 
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <Label htmlFor="edit-name">Item Name</Label>
-                    <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Must be unique</span>
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <Label htmlFor="edit-name">Item Name</Label>
+                        <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Must be unique</span>
+                      </div>
+                      <Input
+                        id="edit-name"
+                        name="name"
+                        value={editName}
+                        onChange={(e) => setEditName(e.target.value)}
+                        required
+                        className={isEditNameDuplicate ? 'border-red-500 focus-visible:ring-red-500' : ''}
+                      />
+                      {isEditNameDuplicate && (
+                        <p className="text-xs font-semibold text-red-500">⚠️ Item Name is already in use by another product.</p>
+                      )}
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label htmlFor="edit-category">Category</Label>
+                      <Select name="category" value={editCategory} onValueChange={setEditCategory}>
+                        <SelectTrigger id="edit-category">
+                          <SelectValue placeholder="Select category" />
+                        </SelectTrigger>
+                        <SelectContent className="max-h-60 overflow-y-auto">
+                          {Array.from(new Set([...categoryOptions, editCategory])).filter(Boolean).sort().map(category => (
+                            <SelectItem key={category} value={category}>{category}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label htmlFor="edit-supplier">Supplier Name</Label>
+                      <Select name="supplier" value={editSupplier} onValueChange={setEditSupplier}>
+                        <SelectTrigger id="edit-supplier">
+                          <SelectValue placeholder="Select supplier" />
+                        </SelectTrigger>
+                        <SelectContent className="max-h-60 overflow-y-auto">
+                          {Array.from(new Set([...supplierOptions, editSupplier])).filter(Boolean).sort().map(supplier => (
+                            <SelectItem key={supplier} value={supplier}>{supplier}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
                   </div>
-                  <Input
-                    id="edit-name"
-                    name="name"
-                    value={editName}
-                    onChange={(e) => setEditName(e.target.value)}
-                    required
-                    className={isEditNameDuplicate ? 'border-red-500 focus-visible:ring-red-500' : ''}
-                  />
-                  {isEditNameDuplicate && (
-                    <p className="text-xs font-semibold text-red-500">⚠️ Item Name is already in use by another product.</p>
-                  )}
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="edit-category">Category</Label>
-                  <Select name="category" value={editCategory} onValueChange={setEditCategory}>
-                    <SelectTrigger id="edit-category">
-                      <SelectValue placeholder="Select category" />
-                    </SelectTrigger>
-                    <SelectContent className="max-h-60 overflow-y-auto">
-                      {Array.from(new Set([...categoryOptions, editCategory])).filter(Boolean).sort().map(category => (
-                        <SelectItem key={category} value={category}>{category}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="edit-supplier">Supplier Name</Label>
-                  <Select name="supplier" value={editSupplier} onValueChange={setEditSupplier}>
-                    <SelectTrigger id="edit-supplier">
-                      <SelectValue placeholder="Select supplier" />
-                    </SelectTrigger>
-                    <SelectContent className="max-h-60 overflow-y-auto">
-                      {Array.from(new Set([...supplierOptions, editSupplier])).filter(Boolean).sort().map(supplier => (
-                        <SelectItem key={supplier} value={supplier}>{supplier}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="edit-basePrice">Base Price / Retail Price</Label>
-                  <Input id="edit-basePrice" name="basePrice" type="number" step="0.01" min="0" defaultValue={editingProduct.basePrice} />
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="edit-mmPrice">Metro Manila Price</Label>
-                  <Input id="edit-mmPrice" name="mmPrice" type="number" step="0.01" min="0" defaultValue={editingProduct.mmPrice ?? editingProduct.wholesalePrice ?? 0} />
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="edit-provincialPrice">Provincial Price</Label>
-                  <Input id="edit-provincialPrice" name="provincialPrice" type="number" step="0.01" min="0" defaultValue={editingProduct.provincialPrice ?? editingProduct.dealerPrice ?? 0} />
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="edit-costPrice">Cost</Label>
-                  <Input id="edit-costPrice" name="costPrice" type="number" step="0.01" min="0" defaultValue={editingProduct.costPrice || 0} />
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="edit-promoPrice">Promo Price (optional)</Label>
-                  <Input id="edit-promoPrice" name="promoPrice" type="number" step="0.01" min="0" defaultValue={editingProduct.promoPrice ?? ''} placeholder="Leave blank to clear" />
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="edit-minStockLevel">Minimum Stock Level</Label>
-                  <Input id="edit-minStockLevel" name="minStockLevel" type="number" min="0" defaultValue={editingProduct.minStockLevel} />
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="edit-reorderPoint">Reorder Point</Label>
-                  <Input id="edit-reorderPoint" name="reorderPoint" type="number" min="0" defaultValue={editingProduct.reorderPoint} />
-                </div>
+                </section>
               </div>
 
+              <section className="space-y-3">
+                <h3 className="border-b border-border pb-2 text-sm font-bold">Pricing</h3>
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+                  <div className="space-y-2">
+                    <Label htmlFor="edit-basePrice">Price (₱)</Label>
+                    <Input id="edit-basePrice" name="basePrice" type="number" step="0.01" min="0" defaultValue={editingProduct.basePrice} required />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="edit-costPrice">Cost (₱)</Label>
+                    <Input id="edit-costPrice" name="costPrice" type="number" step="0.01" min="0" defaultValue={editingProduct.costPrice || 0} />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="edit-promoPrice">Promo Price (₱)</Label>
+                    <Input id="edit-promoPrice" name="promoPrice" type="number" step="0.01" min="0" defaultValue={editingProduct.promoPrice ?? ''} placeholder="Leave blank to clear" />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="edit-mmPrice">Metro Manila Wholesale (₱)</Label>
+                    <Input id="edit-mmPrice" name="mmPrice" type="number" step="0.01" min="0" defaultValue={editingProduct.mmPrice ?? editingProduct.wholesalePrice ?? 0} />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="edit-provincialPrice">Provincial Wholesale (₱)</Label>
+                    <Input id="edit-provincialPrice" name="provincialPrice" type="number" step="0.01" min="0" defaultValue={editingProduct.provincialPrice ?? editingProduct.dealerPrice ?? 0} />
+                  </div>
+                </div>
+              </section>
+
+              <section className="space-y-3">
+                <h3 className="border-b border-border pb-2 text-sm font-bold">Stock Controls</h3>
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+                  <div className="space-y-2">
+                    <Label htmlFor="edit-minStockLevel">Critical Stock Level</Label>
+                    <Input id="edit-minStockLevel" name="minStockLevel" type="number" min="0" defaultValue={editingProduct.minStockLevel} />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="edit-reorderPoint">Restock Level</Label>
+                    <Input id="edit-reorderPoint" name="reorderPoint" type="number" min="0" defaultValue={editingProduct.reorderPoint} />
+                  </div>
+                </div>
+              </section>
+
               <DialogFooter>
-                <Button type="button" variant="outline" onClick={() => setEditingProduct(null)}>Cancel</Button>
-                <Button type="submit" disabled={isEditSkuDuplicate || isEditNameDuplicate || !editSku.trim() || !editName.trim()}>Save Changes</Button>
+                <Button type="button" variant="outline" onClick={() => { setEditingProduct(null); setEditProductImage(null); setEditProductImagePreview(''); }}>Cancel</Button>
+                <Button type="submit" disabled={isSubmittingProduct || isEditSkuDuplicate || isEditNameDuplicate || !editSku.trim() || !editName.trim()}>
+                  {isSubmittingProduct ? 'Saving...' : 'Save Changes'}
+                </Button>
               </DialogFooter>
             </form>
           )}
@@ -1350,8 +1511,12 @@ export function Inventory() {
             return <div className="space-y-3 px-4 pb-5 sm:px-6">
               <section className="flex flex-col gap-5 px-2 py-2 sm:flex-row sm:items-end sm:justify-between">
                 <div className="flex min-w-0 flex-1 items-center gap-4">
-                  <div className="flex h-24 w-24 shrink-0 items-center justify-center rounded-xl border border-border bg-muted" aria-label="Product image placeholder">
-                    <Package className="h-10 w-10 text-muted-foreground" />
+                  <div className="flex h-24 w-24 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-border bg-muted" aria-label="Product image">
+                    {selectedProduct.photoUrl ? (
+                      <img src={selectedProduct.photoUrl} alt={selectedProduct.name} className="h-full w-full object-cover" />
+                    ) : (
+                      <Package className="h-10 w-10 text-muted-foreground" />
+                    )}
                   </div>
                   <div className="min-w-0">
                     <div className="mb-2 flex flex-wrap items-center gap-2"><Badge className="rounded-md border border-emerald-200 bg-emerald-50 px-3 uppercase text-emerald-700 hover:bg-emerald-50"><span className="mr-2 h-2 w-2 rounded-full bg-emerald-500" />Active</Badge><Badge variant="outline" className="rounded-md px-3">{selectedProduct.category || 'Uncategorized'}</Badge></div>
@@ -1424,8 +1589,12 @@ export function Inventory() {
           <DialogContent className="max-w-[95vw] sm:max-w-5xl w-full rounded-[2rem]">
             <DialogHeader className="pb-4 border-b border-border">
               <div className="flex items-center gap-3 mb-2">
-                <div className="p-2 bg-primary rounded-xl">
-                  <Package className="w-5 h-5 text-primary-foreground" />
+                <div className="flex h-9 w-9 items-center justify-center overflow-hidden rounded-xl bg-primary">
+                  {selectedProduct?.photoUrl ? (
+                    <img src={selectedProduct.photoUrl} alt={selectedProduct?.name} className="h-full w-full object-cover" />
+                  ) : (
+                    <Package className="w-5 h-5 text-primary-foreground" />
+                  )}
                 </div>
                 <div>
                   <DialogTitle className="text-2xl font-black uppercase tracking-tighter">Configuration Item: {selectedProduct?.name}</DialogTitle>

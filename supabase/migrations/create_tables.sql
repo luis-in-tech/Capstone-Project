@@ -311,3 +311,22 @@ DROP POLICY IF EXISTS "Anon order_items policy" ON "order_items";
 CREATE POLICY "Anon order_items policy" ON "order_items"
   FOR ALL TO anon USING (true) WITH CHECK (true);
 
+-- ─── 13. Storage Bucket: activepro_assets ──────────────────────────────────
+-- Bucket used for product images, dispatch photos, and avatar assets
+INSERT INTO storage.buckets (id, name, public)
+VALUES ('activepro_assets', 'activepro_assets', true)
+ON CONFLICT (id) DO NOTHING;
+
+DROP POLICY IF EXISTS "Public access to activepro_assets" ON storage.objects;
+CREATE POLICY "Public access to activepro_assets" ON storage.objects
+  FOR SELECT USING (bucket_id = 'activepro_assets');
+
+DROP POLICY IF EXISTS "Authenticated upload to activepro_assets" ON storage.objects;
+CREATE POLICY "Authenticated upload to activepro_assets" ON storage.objects
+  FOR INSERT TO authenticated WITH CHECK (bucket_id = 'activepro_assets');
+
+DROP POLICY IF EXISTS "Authenticated update to activepro_assets" ON storage.objects;
+CREATE POLICY "Authenticated update to activepro_assets" ON storage.objects
+  FOR UPDATE TO authenticated USING (bucket_id = 'activepro_assets');
+
+
