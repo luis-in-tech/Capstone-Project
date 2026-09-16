@@ -71,8 +71,10 @@ export function AdminPanel() {
       const deadline = toDate(order.deliveryDeadline);
       return deadline && deadline < new Date() && !['completed', 'delivered'].includes(order.status);
     });
-    return { todaysOrders, todaysRevenue, stockAlerts, pendingOrders, pendingTransfers, overdueOrders,
-      pendingActions: pendingOrders.length + pendingTransfers.length + overdueOrders.length };
+    return {
+      todaysOrders, todaysRevenue, stockAlerts, pendingOrders, pendingTransfers, overdueOrders,
+      pendingActions: pendingOrders.length + pendingTransfers.length + overdueOrders.length
+    };
   }, [inventory, orders, products, transfers]);
 
   if (loading) return (
@@ -87,8 +89,6 @@ export function AdminPanel() {
     <div className="space-y-8 animate-in fade-in duration-500">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <div className="mb-2 flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.22em] text-primary"><Activity className="h-3.5 w-3.5" /> Admin workspace</div>
-          <h1 className="text-3xl font-black tracking-tight text-foreground">Overview</h1>
           <p className="mt-1 text-sm text-muted-foreground">Today’s operational pulse for Active Pro inventory and fulfillment.</p>
         </div>
         <button type="button" onClick={loadOverview} className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-border bg-card px-3 text-xs font-bold text-foreground hover:bg-muted">

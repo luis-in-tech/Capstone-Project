@@ -913,7 +913,6 @@ export function Inventory() {
     <div className="space-y-5 pb-20">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
         <div>
-          <h1 className="text-3xl font-black tracking-tight text-foreground">Inventory</h1>
           <p className="mt-1 text-sm text-muted-foreground">Manage products, stock levels, suppliers, and warehouse inventory.</p>
         </div>
         <div className="flex flex-wrap gap-2">

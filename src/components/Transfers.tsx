@@ -356,8 +356,8 @@ export function Transfers() {
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3">
         <div className="flex flex-col">
-          <h2 className="text-xl font-bold tracking-tight text-foreground">Warehouse Transport Log</h2>
-          <p className="text-xs text-muted-foreground font-medium tracking-tight">Managing stock movement between Valenzuela facilities</p>
+
+          <p className="text-xs text-muted-foreground font-medium tracking-tight">Managing stock movement between facilities</p>
         </div>
         <Dialog open={isAddTransferOpen} onOpenChange={(open) => {
           setIsAddTransferOpen(open);
@@ -405,13 +405,13 @@ export function Transfers() {
                 {transferItems.map((item, index) => (
                   <div key={item.id} className="flex gap-2 items-end">
                     <div className="flex-1 space-y-2">
-                      <Select 
-                        value={item.productName} 
+                      <Select
+                        value={item.productName}
                         onValueChange={(val) => {
                           const newItems = [...transferItems];
                           newItems[index].productName = val;
                           setTransferItems(newItems);
-                        }} 
+                        }}
                         required
                       >
                         <SelectTrigger className="w-full">
@@ -426,10 +426,10 @@ export function Transfers() {
                     </div>
                     <div className="w-24 space-y-2">
                       <Label className={index > 0 ? "sr-only" : ""}>Qty</Label>
-                      <Input 
-                        type="number" 
-                        required 
-                        min="1" 
+                      <Input
+                        type="number"
+                        required
+                        min="1"
                         value={item.quantity === 0 ? '' : item.quantity}
                         onChange={(e) => {
                           const val = e.target.value.replace(/^0+(?=\d)/, '');
@@ -446,9 +446,9 @@ export function Transfers() {
                       />
                     </div>
                     {transferItems.length > 1 && (
-                      <Button 
-                        type="button" 
-                        variant="ghost" 
+                      <Button
+                        type="button"
+                        variant="ghost"
                         size="icon"
                         className={`text-red-500 hover:bg-red-500/10 hover:text-red-600 shrink-0 ${index === 0 ? 'mb-[2px]' : ''}`}
                         onClick={() => setTransferItems(transferItems.filter((_, i) => i !== index))}
@@ -458,10 +458,10 @@ export function Transfers() {
                     )}
                   </div>
                 ))}
-                <Button 
-                  type="button" 
-                  variant="outline" 
-                  size="sm" 
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
                   className="w-full text-xs border-dashed"
                   onClick={() => setTransferItems([...transferItems, { id: Date.now(), productName: '', quantity: 1 }])}
                 >
@@ -556,8 +556,8 @@ export function Transfers() {
           const source = warehouses.find(w => w.id === t.sourceWarehouseId);
           const dest = warehouses.find(w => w.id === t.destinationWarehouseId);
           return (
-            <div 
-              key={t.id} 
+            <div
+              key={t.id}
               className="bg-card border border-border rounded-xl p-4 space-y-3 cursor-pointer hover:border-blue-500/50 transition-colors"
               onClick={() => setSelectedTransfer(t)}
             >
@@ -568,12 +568,11 @@ export function Transfers() {
                     TFR-{t.id.slice(-6)}
                   </p>
                 </div>
-                <Badge variant="outline" className={`shrink-0 gap-1.5 h-6 capitalize text-[10px] font-black ${
-                  t.status === 'received' ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/30' :
-                  t.status === 'in_transit' ? 'bg-blue-500/10 text-blue-400 border-blue-500/30' :
-                  t.status === 'cancelled' ? 'bg-red-500/10 text-red-500 border-red-500/30' :
-                  'bg-amber-500/10 text-amber-500 border-amber-500/30'
-                }`}>
+                <Badge variant="outline" className={`shrink-0 gap-1.5 h-6 capitalize text-[10px] font-black ${t.status === 'received' ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/30' :
+                    t.status === 'in_transit' ? 'bg-blue-500/10 text-blue-400 border-blue-500/30' :
+                      t.status === 'cancelled' ? 'bg-red-500/10 text-red-500 border-red-500/30' :
+                        'bg-amber-500/10 text-amber-500 border-amber-500/30'
+                  }`}>
                   {t.status === 'pending' && <Clock className="w-3 h-3" />}
                   {t.status === 'in_transit' && <Truck className="w-3 h-3" />}
                   {t.status === 'received' && <CheckCircle2 className="w-3 h-3" />}
@@ -683,8 +682,8 @@ export function Transfers() {
                 const source = warehouses.find(w => w.id === t.sourceWarehouseId);
                 const dest = warehouses.find(w => w.id === t.destinationWarehouseId);
                 return (
-                  <TableRow 
-                    key={t.id} 
+                  <TableRow
+                    key={t.id}
                     className="group cursor-pointer hover:bg-muted/50 transition-colors"
                     onClick={() => setSelectedTransfer(t)}
                   >
@@ -700,8 +699,8 @@ export function Transfers() {
                     <TableCell>
                       <div className="flex items-center gap-2 text-[10px] font-bold text-foreground">
                         <span className="bg-muted text-muted-foreground px-1.5 py-0.5 rounded">{source?.name}</span>
-                         <ArrowRightLeft className="w-3 h-3 text-muted-foreground/40" />
-                         <span className="bg-[#1A2332] text-white px-1.5 py-0.5 rounded">{dest?.name}</span>
+                        <ArrowRightLeft className="w-3 h-3 text-muted-foreground/40" />
+                        <span className="bg-[#1A2332] text-white px-1.5 py-0.5 rounded">{dest?.name}</span>
                       </div>
                     </TableCell>
                     <TableCell>
@@ -715,12 +714,11 @@ export function Transfers() {
                       )}
                     </TableCell>
                     <TableCell>
-                      <Badge variant="outline" className={`gap-1.5 h-6 capitalize text-[10px] font-black ${
-                        t.status === 'received' ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/30' :
-                        t.status === 'in_transit' ? 'bg-blue-500/10 text-blue-400 border-blue-500/30' :
-                        t.status === 'cancelled' ? 'bg-red-500/10 text-red-500 border-red-500/30' :
-                        'bg-amber-500/10 text-amber-500 border-amber-500/30'
-                      }`}>
+                      <Badge variant="outline" className={`gap-1.5 h-6 capitalize text-[10px] font-black ${t.status === 'received' ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/30' :
+                          t.status === 'in_transit' ? 'bg-blue-500/10 text-blue-400 border-blue-500/30' :
+                            t.status === 'cancelled' ? 'bg-red-500/10 text-red-500 border-red-500/30' :
+                              'bg-amber-500/10 text-amber-500 border-amber-500/30'
+                        }`}>
                         {t.status === 'pending' && <Clock className="w-3 h-3" />}
                         {t.status === 'in_transit' && <Truck className="w-3 h-3" />}
                         {t.status === 'received' && <CheckCircle2 className="w-3 h-3" />}
@@ -798,10 +796,10 @@ export function Transfers() {
               {filteredTransfers.length === 0 && (
                 <TableRow>
                   <TableCell colSpan={6} className="text-center h-32">
-                     <div className="flex flex-col items-center justify-center gap-2">
-                       <History className="w-8 h-8 text-muted-foreground/30" />
-                       <p className="text-xs font-medium text-muted-foreground">No matching transports found</p>
-                     </div>
+                    <div className="flex flex-col items-center justify-center gap-2">
+                      <History className="w-8 h-8 text-muted-foreground/30" />
+                      <p className="text-xs font-medium text-muted-foreground">No matching transports found</p>
+                    </div>
                   </TableCell>
                 </TableRow>
               )}
@@ -978,12 +976,11 @@ export function Transfers() {
                 </div>
                 <div>
                   <span className="text-muted-foreground block text-xs font-medium">Operational Status</span>
-                  <Badge variant="outline" className={`mt-1 capitalize text-[10px] font-black ${
-                    selectedTransfer.status === 'received' ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/30' :
-                    selectedTransfer.status === 'in_transit' ? 'bg-blue-500/10 text-blue-400 border-blue-500/30' :
-                    selectedTransfer.status === 'cancelled' ? 'bg-red-500/10 text-red-500 border-red-500/30' :
-                    'bg-amber-500/10 text-amber-500 border-amber-500/30'
-                  }`}>
+                  <Badge variant="outline" className={`mt-1 capitalize text-[10px] font-black ${selectedTransfer.status === 'received' ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/30' :
+                      selectedTransfer.status === 'in_transit' ? 'bg-blue-500/10 text-blue-400 border-blue-500/30' :
+                        selectedTransfer.status === 'cancelled' ? 'bg-red-500/10 text-red-500 border-red-500/30' :
+                          'bg-amber-500/10 text-amber-500 border-amber-500/30'
+                    }`}>
                     {selectedTransfer.status.replace('_', ' ')}
                   </Badge>
                 </div>

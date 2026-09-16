@@ -2,12 +2,12 @@ import React, { useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { 
-  Activity, 
-  Map as MapIcon, 
-  Truck, 
-  Zap, 
-  TrendingUp, 
+import {
+  Activity,
+  Map as MapIcon,
+  Truck,
+  Zap,
+  TrendingUp,
   CheckCircle2,
   AlertTriangle,
   RefreshCw,
@@ -47,7 +47,7 @@ export function LogisticsOptimizer() {
   const [overallEfficiency, setOverallEfficiency] = useState(84);
 
   const applyOptimization = (id: number) => {
-    setActiveRecommendations(prev => prev.map(rec => 
+    setActiveRecommendations(prev => prev.map(rec =>
       rec.id === id ? { ...rec, status: 'applying' } : rec
     ));
 
@@ -72,10 +72,9 @@ export function LogisticsOptimizer() {
     <div className="space-y-8 pb-12">
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
-          <h2 className="text-3xl font-black tracking-tighter text-foreground uppercase">Logistics Optimizer</h2>
           <p className="text-muted-foreground font-medium">AI-driven route telemetry and fleet management.</p>
         </div>
-        <Button 
+        <Button
           onClick={handleGlobalSync}
           disabled={isOptimizing}
           className="bg-[#1A2332] text-white hover:bg-[#1A2332]/90 font-black uppercase tracking-widest text-xs h-12 px-6 rounded-xl group"
@@ -153,16 +152,16 @@ export function LogisticsOptimizer() {
           <CardContent className="p-0 flex-1 relative bg-[#0a0f18] min-h-[400px] overflow-hidden">
             {/* Grid Background */}
             <div className="absolute inset-0 opacity-20" style={{ backgroundImage: 'linear-gradient(#302f2f 1px, transparent 1px), linear-gradient(90deg, #302f2f 1px, transparent 1px)', backgroundSize: '40px 40px' }} />
-            
+
             {/* Central Hub Node */}
-            <motion.div 
+            <motion.div
               className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-16 h-16 rounded-full bg-[#fdd001]/20 border border-[#fdd001] flex items-center justify-center z-20"
               animate={{ boxShadow: ['0 0 0 0 rgba(253,208,1,0.4)', '0 0 0 20px rgba(253,208,1,0)'] }}
               transition={{ repeat: Infinity, duration: 2 }}
             >
               <Box className="w-6 h-6 text-[#fdd001]" />
             </motion.div>
-            
+
             {/* Delivery Nodes & Lines */}
             {[
               { x: 20, y: 30, delay: 0 },
@@ -191,7 +190,7 @@ export function LogisticsOptimizer() {
                     transition={{ duration: 3, delay: pos.delay, repeat: Infinity, ease: "linear" }}
                   />
                 </svg>
-                <motion.div 
+                <motion.div
                   className="absolute w-8 h-8 rounded-full bg-[#1A2332] border-2 border-sky-400 flex items-center justify-center z-20"
                   style={{ left: `calc(${pos.x}% - 16px)`, top: `calc(${pos.y}% - 16px)` }}
                   initial={{ scale: 0 }}
@@ -204,7 +203,7 @@ export function LogisticsOptimizer() {
             ))}
 
             {/* Scanning Line Effect */}
-            <motion.div 
+            <motion.div
               className="absolute left-0 right-0 h-1 bg-emerald-400/50 blur-[2px] z-30"
               animate={{ top: ['0%', '100%'] }}
               transition={{ repeat: Infinity, duration: 4, ease: "linear" }}
@@ -223,7 +222,7 @@ export function LogisticsOptimizer() {
           <CardContent className="p-4 flex-1 flex flex-col gap-4">
             <AnimatePresence>
               {activeRecommendations.length === 0 ? (
-                <motion.div 
+                <motion.div
                   initial={{ opacity: 0 }} animate={{ opacity: 1 }}
                   className="flex flex-col items-center justify-center h-full text-center p-8 text-muted-foreground space-y-4 border border-dashed border-border rounded-xl"
                 >
@@ -233,7 +232,7 @@ export function LogisticsOptimizer() {
                 </motion.div>
               ) : (
                 activeRecommendations.map(rec => (
-                  <motion.div 
+                  <motion.div
                     key={rec.id}
                     layout
                     initial={{ opacity: 0, scale: 0.95 }}
@@ -242,21 +241,20 @@ export function LogisticsOptimizer() {
                     className="p-4 rounded-xl border border-border bg-card shadow-sm hover:border-primary/50 transition-colors"
                   >
                     <div className="flex items-start gap-3 mb-3">
-                      <div className={`p-2 rounded-lg shrink-0 ${
-                        rec.type === 'efficiency' ? 'bg-emerald-500/10 text-emerald-600' :
-                        rec.type === 'alert' ? 'bg-amber-500/10 text-amber-600' :
-                        'bg-blue-500/10 text-blue-600'
-                      }`}>
+                      <div className={`p-2 rounded-lg shrink-0 ${rec.type === 'efficiency' ? 'bg-emerald-500/10 text-emerald-600' :
+                          rec.type === 'alert' ? 'bg-amber-500/10 text-amber-600' :
+                            'bg-blue-500/10 text-blue-600'
+                        }`}>
                         {rec.type === 'efficiency' ? <TrendingUp className="w-4 h-4" /> :
-                         rec.type === 'alert' ? <AlertTriangle className="w-4 h-4" /> :
-                         <Box className="w-4 h-4" />}
+                          rec.type === 'alert' ? <AlertTriangle className="w-4 h-4" /> :
+                            <Box className="w-4 h-4" />}
                       </div>
                       <div>
                         <h4 className="text-xs font-black uppercase tracking-wider text-foreground">{rec.title}</h4>
                         <p className="text-xs text-muted-foreground font-medium mt-1 leading-relaxed">{rec.description}</p>
                       </div>
                     </div>
-                    <Button 
+                    <Button
                       className="w-full h-8 text-[10px] font-black uppercase tracking-widest bg-primary text-primary-foreground"
                       onClick={() => applyOptimization(rec.id)}
                       disabled={rec.status === 'applying'}
