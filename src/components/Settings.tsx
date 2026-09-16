@@ -1,15 +1,15 @@
 import React, { useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
-import { 
-  Settings as SettingsIcon, 
-  User, 
-  Bell, 
-  Shield, 
-  Database, 
-  Users, 
-  Cpu, 
-  ToggleLeft, 
-  ToggleRight, 
+import {
+  Settings as SettingsIcon,
+  User,
+  Bell,
+  Shield,
+  Database,
+  Users,
+  Cpu,
+  ToggleLeft,
+  ToggleRight,
   CheckCircle2,
   Edit2,
   Image as ImageIcon,
@@ -55,21 +55,20 @@ export function Settings() {
     <div className="space-y-8 pb-12">
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
-          <h2 className="text-3xl font-black tracking-tighter text-foreground uppercase">System Settings</h2>
           <p className="text-muted-foreground font-medium">Manage your personal preferences and baseline configurations.</p>
         </div>
         <div className="flex items-center gap-2 self-start md:self-center bg-muted/50 p-1.5 rounded-2xl border border-border">
-          <Button 
-            variant={theme === 'light' ? 'default' : 'ghost'} 
-            size="sm" 
+          <Button
+            variant={theme === 'light' ? 'default' : 'ghost'}
+            size="sm"
             onClick={() => setTheme('light')}
             className={`h-8 px-4 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${theme === 'light' ? 'shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
           >
             <Sun className="w-3.5 h-3.5 mr-2" /> Light
           </Button>
-          <Button 
-            variant={theme === 'dark' ? 'default' : 'ghost'} 
-            size="sm" 
+          <Button
+            variant={theme === 'dark' ? 'default' : 'ghost'}
+            size="sm"
             onClick={() => setTheme('dark')}
             className={`h-8 px-4 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${theme === 'dark' ? 'shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
           >
@@ -80,7 +79,7 @@ export function Settings() {
 
       <div className="grid gap-6 md:grid-cols-2">
         <Card className="border-border overflow-hidden group hover:border-primary/40 transition-colors">
-          <CardHeader className="bg-muted/30">
+          <CardHeader>
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <User className="w-4 h-4 text-foreground" />
@@ -88,7 +87,7 @@ export function Settings() {
               </div>
               <Dialog open={isEditProfileOpen} onOpenChange={setIsEditProfileOpen}>
                 <DialogTrigger render={
-                  <Button variant="ghost" size="sm" className="h-8 gap-2 text-[10px] font-black uppercase tracking-widest hover:bg-foreground hover:text-background transition-all">
+                  <Button variant="ghost" size="sm" className="h-8 gap-2 text-[10px] font-black uppercase tracking-widest hover:bg-foreground hover:text-background dark:hover:bg-foreground dark:hover:text-background transition-all">
                     <Edit2 className="w-3 h-3" /> Edit Profile
                   </Button>
                 } />
@@ -111,7 +110,7 @@ export function Settings() {
 
                     <DialogFooter className="pt-4">
                       <Button type="submit" className="w-full h-14 bg-primary text-primary-foreground font-black uppercase tracking-widest text-xs rounded-2xl group">
-                       Confirm <CheckCircle className="w-4 h-4 ml-2 group-hover:scale-110 transition-transform" />
+                        Confirm <CheckCircle className="w-4 h-4 ml-2 group-hover:scale-110 transition-transform" />
                       </Button>
                     </DialogFooter>
                   </form>
@@ -140,7 +139,7 @@ export function Settings() {
                 <p className="text-xs font-medium text-muted-foreground mt-1">{profile?.email || 'N/A'}</p>
               </div>
             </div>
-            
+
             <div className="grid grid-cols-2 gap-4">
               <div className="bg-muted/40 p-3 rounded-xl border border-border">
                 <p className="text-[9px] font-black uppercase text-muted-foreground mb-1">First Name</p>
@@ -170,8 +169,8 @@ export function Settings() {
           </CardHeader>
           <CardContent>
             <div className="bg-muted/40 p-4 rounded-xl border border-border">
-               <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground mb-2">Notice</p>
-               <p className="text-xs text-muted-foreground font-medium leading-relaxed">Alert thresholds are currently controlled at the organizational level to maintain system-wide sync stability.</p>
+              <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground mb-2">Notice</p>
+              <p className="text-xs text-muted-foreground font-medium leading-relaxed">Alert thresholds are currently controlled at the organizational level to maintain system-wide sync stability.</p>
             </div>
           </CardContent>
         </Card>

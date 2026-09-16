@@ -31,10 +31,10 @@ export function DelegationPanel() {
   useEffect(() => {
     if (!profile || profile.role !== 'admin') return;
 
-    const q = profile.role === 'admin' 
+    const q = profile.role === 'admin'
       ? query(collection(db, 'delegations'))
       : query(collection(db, 'delegations'), where('agentId', '==', profile.uid));
-      
+
     const unsub = onSnapshot(q, (snap) => {
       setDelegations(snap.docs.map(d => ({ id: d.id, ...d.data() } as StaffDelegation)));
     }, (error) => {
@@ -47,7 +47,7 @@ export function DelegationPanel() {
   const handleAddDelegation = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!profile) return;
-    
+
     if (!email.trim()) {
       setError('Please fill out this field.');
       return;
@@ -134,7 +134,6 @@ export function DelegationPanel() {
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-1">
-        <h1 className="text-3xl font-black tracking-tighter text-foreground uppercase">Staff Delegation</h1>
         <p className="text-xs text-muted-foreground font-medium uppercase tracking-widest flex items-center gap-2">
           <Key className="w-3 h-3 text-primary" /> Manage access rights for your localized team members
         </p>
@@ -154,10 +153,10 @@ export function DelegationPanel() {
             <form onSubmit={handleAddDelegation} className="space-y-4" noValidate>
               <div className="space-y-2">
                 <Label htmlFor="staffEmail" className="text-[10px] font-black uppercase tracking-widest">Staff Email</Label>
-                <Input 
-                  id="staffEmail" 
-                  type="email" 
-                  placeholder="staff@example.com" 
+                <Input
+                  id="staffEmail"
+                  type="email"
+                  placeholder="staff@example.com"
                   value={email}
                   onChange={(e) => {
                     setEmail(e.target.value);
@@ -167,13 +166,13 @@ export function DelegationPanel() {
                 />
                 {error && <p className="text-[10px] text-red-500 font-bold mt-1">{error}</p>}
               </div>
-              
+
               <div className="space-y-3 pt-2">
                 <Label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Permissions</Label>
                 <div className="flex items-center space-x-2 bg-muted/50 p-3 rounded-lg border border-border">
-                  <input 
-                    type="checkbox" 
-                    id="invAccess" 
+                  <input
+                    type="checkbox"
+                    id="invAccess"
                     checked={canAdjustInventory}
                     onChange={(e) => setCanAdjustInventory(e.target.checked)}
                     className="rounded border-gray-300 text-primary focus:ring-primary w-4 h-4"
@@ -181,9 +180,9 @@ export function DelegationPanel() {
                   <Label htmlFor="invAccess" className="text-xs font-bold cursor-pointer">Can Adjust Inventory</Label>
                 </div>
                 <div className="flex items-center space-x-2 bg-muted/50 p-3 rounded-lg border border-border">
-                  <input 
-                    type="checkbox" 
-                    id="priceAccess" 
+                  <input
+                    type="checkbox"
+                    id="priceAccess"
                     checked={canAdjustPricelist}
                     onChange={(e) => setCanAdjustPricelist(e.target.checked)}
                     className="rounded border-gray-300 text-primary focus:ring-primary w-4 h-4"
@@ -238,17 +237,17 @@ export function DelegationPanel() {
                       </TableCell>
                       <TableCell className="text-right">
                         <div className="flex items-center justify-end gap-1">
-                          <Button 
-                            variant="ghost" 
-                            size="sm" 
+                          <Button
+                            variant="ghost"
+                            size="sm"
                             onClick={() => openEdit(d)}
                             className="text-muted-foreground hover:text-foreground h-8 text-[10px] font-black uppercase tracking-widest"
                           >
                             <Pencil className="w-3 h-3 mr-2" /> Edit
                           </Button>
-                          <Button 
-                            variant="ghost" 
-                            size="sm" 
+                          <Button
+                            variant="ghost"
+                            size="sm"
                             onClick={() => handleRevoke(d.id)}
                             className="text-red-500 hover:text-red-600 hover:bg-red-500/10 h-8 text-[10px] font-black uppercase tracking-widest"
                           >
@@ -287,9 +286,9 @@ export function DelegationPanel() {
           <div className="space-y-3 py-4">
             <Label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Permissions</Label>
             <div className="flex items-center space-x-2 bg-muted/50 p-3 rounded-lg border border-border">
-              <input 
-                type="checkbox" 
-                id="editInvAccess" 
+              <input
+                type="checkbox"
+                id="editInvAccess"
                 checked={editInventory}
                 onChange={(e) => setEditInventory(e.target.checked)}
                 className="rounded border-gray-300 text-primary focus:ring-primary w-4 h-4"
@@ -297,9 +296,9 @@ export function DelegationPanel() {
               <Label htmlFor="editInvAccess" className="text-xs font-bold cursor-pointer">Can Adjust Inventory</Label>
             </div>
             <div className="flex items-center space-x-2 bg-muted/50 p-3 rounded-lg border border-border">
-              <input 
-                type="checkbox" 
-                id="editPriceAccess" 
+              <input
+                type="checkbox"
+                id="editPriceAccess"
                 checked={editPricelist}
                 onChange={(e) => setEditPricelist(e.target.checked)}
                 className="rounded border-gray-300 text-primary focus:ring-primary w-4 h-4"

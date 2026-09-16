@@ -1,354 +1,86 @@
-import React, { useState, useEffect, useMemo } from 'react';
-import { db } from '../lib/supabaseAdapter';
-import { collection, onSnapshot, query, where, addDoc, getDocs, serverTimestamp, updateDoc, doc } from '../lib/supabaseAdapter';
+import React, { useEffect, useMemo, useState } from 'react';
+import { collection, db, onSnapshot, query, where } from '../lib/supabaseAdapter';
 import { Product } from '../types';
 import { handleSupabaseError, OperationType } from '../lib/supabaseErrorHandler';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { Search, Plus, Pencil } from 'lucide-react';
-import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter, DialogDescription } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { Check, Download, Eye, FileText, Loader2, Pencil, Plus, RotateCcw, Search, Trash2, X } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
 import { toast } from 'sonner';
 
+type PriceType = 'base' | 'metroManila' | 'provincial' | 'promo';
+interface PricelistItem { productId: string; sku: string; name: string; category: string; priceType: PriceType; price: number; }
+interface SavedPricelist { id: string; name: string; createdAt: string; updatedAt?: string; lastPdfGeneratedAt?: string; items: PricelistItem[]; }
+const KEY = 'activepro.savedPricelists';
+const typeLabel = (type: PriceType) => type === 'metroManila' ? 'Metro Manila' : type === 'provincial' ? 'Provincial' : type === 'promo' ? 'Promo' : 'Regular';
+const schemeLabel = (type: PriceType) => `${typeLabel(type)} Price`;
+const price = (p: Product, type: PriceType) => Number(type === 'metroManila' ? p.mmPrice ?? p.wholesalePrice ?? 0 : type === 'provincial' ? p.provincialPrice ?? p.dealerPrice ?? 0 : type === 'promo' ? p.promoPrice ?? 0 : p.basePrice || 0);
+const dateLabel = (value?: string) => value ? new Date(value).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }) : '—';
+const listType = (p: SavedPricelist) => { const types = [...new Set(p.items.map(i => i.priceType))]; return types.length === 1 ? typeLabel(types[0]) : 'Mixed'; };
+const escapeHtml = (value: unknown) => String(value ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
+function readSaved(): SavedPricelist[] { try { const data = JSON.parse(localStorage.getItem(KEY) || '[]'); return Array.isArray(data) ? data.map((p: SavedPricelist & { exportedAt?: string; products?: Product[] }) => ({ ...p, createdAt: p.createdAt || p.exportedAt || new Date().toISOString(), items: p.items || (p.products || []).map(x => ({ productId: x.id, sku: x.sku, name: x.name, category: x.category, priceType: 'base', price: Number(x.basePrice || 0) })) })) : []; } catch { return []; } }
+
 export function Pricelist() {
-  const [products, setProducts] = useState<Product[]>([]);
-  const [searchTerm, setSearchTerm] = useState('');
-  const [loading, setLoading] = useState(true);
-  const [isAddProductOpen, setIsAddProductOpen] = useState(false);
   const { profile } = useAuth();
-  const [hasDelegatedAccess, setHasDelegatedAccess] = useState(false);
-
-  // Edit dialog state
-  const [editProduct, setEditProduct] = useState<Product | null>(null);
-  const [isSaving, setIsSaving] = useState(false);
-
-  const isAdmin = profile?.role === 'admin';
-  const canEditPricelist = isAdmin || hasDelegatedAccess;
-
-  useEffect(() => {
-    if (!profile || profile.role !== 'staff') return;
-    const q = query(collection(db, 'delegations'), where('staffEmail', '==', profile.email.toLowerCase()));
-    const unsub = onSnapshot(q, (snap) => {
-      const hasAccess = snap.docs.some(d => d.data().canAdjustPricelist === true);
-      setHasDelegatedAccess(hasAccess);
-    });
-    return () => unsub();
-  }, [profile]);
-
-  useEffect(() => {
-    const unsubProducts = onSnapshot(collection(db, 'products'), (snap) => {
-      setProducts(snap.docs.map(d => ({ id: d.id, ...d.data() } as Product)));
-      setLoading(false);
-    }, (error) => {
-      handleSupabaseError(error, OperationType.GET, 'products');
-      setLoading(false);
-    });
-
-    return () => unsubProducts();
-  }, []);
-
-  const handleAddProduct = async (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    const formData = new FormData(e.currentTarget);
-    const newProduct = {
-      sku: formData.get('code'),
-      name: formData.get('name'),
-      category: formData.get('category'),
-      basePrice: Number(formData.get('basePrice')),
-      wholesalePrice: Number(formData.get('wholesalePrice')),
-      dealerPrice: Number(formData.get('dealerPrice')),
-      minStockLevel: 0,
-      reorderPoint: 0,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
-
-    try {
-      const docRef = await addDoc(collection(db, 'products'), newProduct);
-      const whSnap = await getDocs(collection(db, 'warehouses'));
-      for (const d of whSnap.docs) {
-        await addDoc(collection(db, 'inventory'), {
-          productId: docRef.id,
-          warehouseId: d.id,
-          quantity: 0,
-          lastUpdated: serverTimestamp()
-        });
-      }
-      setIsAddProductOpen(false);
-      toast.success('Product added to catalog');
-    } catch (err) {
-      handleSupabaseError(err, OperationType.CREATE, 'products');
-    }
-  };
-
-  const handleEditProduct = async (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    if (!editProduct) return;
-    setIsSaving(true);
-    const formData = new FormData(e.currentTarget);
-    try {
-      await updateDoc(doc(db, 'products', editProduct.id), {
-        name: formData.get('editName'),
-        category: formData.get('editCategory'),
-        basePrice: Number(formData.get('editBasePrice')),
-        wholesalePrice: Number(formData.get('editWholesalePrice')),
-        dealerPrice: Number(formData.get('editDealerPrice')),
-        updatedAt: new Date(),
-      });
-      toast.success('Product updated successfully.');
-      setEditProduct(null);
-    } catch (err) {
-      handleSupabaseError(err, OperationType.UPDATE, 'products');
-    } finally {
-      setIsSaving(false);
-    }
-  };
-
-  const filteredProducts = useMemo(() => {
-    return products.filter(p => 
-      p.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
-      p.sku.toLowerCase().includes(searchTerm.toLowerCase())
-    );
-  }, [products, searchTerm]);
-
-  const categories = useMemo(() => {
-    const cats = new Set(filteredProducts.map(p => p.category || 'Uncategorized'));
-    return ['All', ...Array.from(cats).sort()];
-  }, [filteredProducts]);
-
-  const defaultCategory = 'All';
-
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center min-h-[400px]">
-        <div className="w-8 h-8 border-4 border-zinc-200 border-t-zinc-900 rounded-full animate-spin" />
-      </div>
-    );
-  }
-
-  return (
-    <div className="space-y-6">
-      <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center justify-between">
-        <h2 className="text-2xl font-bold tracking-tight text-foreground uppercase">Pricelist</h2>
-        <div className="flex items-center gap-2 w-full sm:w-auto">
-          <div className="relative w-full max-w-sm">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-400" />
-            <Input 
-              placeholder="Search by product name or Item Code..." 
-              className="pl-9 h-10 border-border bg-background"
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-            />
-          </div>
-          {canEditPricelist && (
-            <Dialog open={isAddProductOpen} onOpenChange={setIsAddProductOpen}>
-              <DialogTrigger className="h-10 gap-2 px-4 bg-[#1A2332] text-white rounded-lg inline-flex items-center justify-center font-medium transition-all hover:bg-[#1A2332]/90 flex-shrink-0">
-                <Plus className="w-4 h-4" /> Add Product
-              </DialogTrigger>
-              <DialogContent className="max-w-2xl">
-                <DialogHeader>
-                  <DialogTitle>Add New Product</DialogTitle>
-                  <DialogDescription>Register a new product with pricing into the catalog.</DialogDescription>
-                </DialogHeader>
-                <form onSubmit={handleAddProduct} className="space-y-4 pt-4">
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <div className="space-y-2">
-                      <Label htmlFor="code">Item Code</Label>
-                      <Input id="code" name="code" required placeholder="AP-XYZ-123" />
-                    </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="name">Item Name</Label>
-                      <Input id="name" name="name" required placeholder="Product Name" />
-                    </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="category">Category</Label>
-                      <Input id="category" name="category" placeholder="Category" />
-                    </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="basePrice">Base Cost (₱)</Label>
-                      <Input id="basePrice" name="basePrice" type="number" step="0.01" required />
-                    </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="wholesalePrice">Wholesale (₱)</Label>
-                      <Input id="wholesalePrice" name="wholesalePrice" type="number" step="0.01" />
-                    </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="dealerPrice">Dealer (₱)</Label>
-                      <Input id="dealerPrice" name="dealerPrice" type="number" step="0.01" />
-                    </div>
-                  </div>
-                  <DialogFooter>
-                    <Button type="submit" className="w-full sm:w-auto">Save Product</Button>
-                  </DialogFooter>
-                </form>
-              </DialogContent>
-            </Dialog>
-          )}
-        </div>
-      </div>
-
-      {categories.length === 0 ? (
-        <div className="text-center py-12 text-muted-foreground bg-muted/30 rounded-xl border border-dashed border-border">
-          No products found matching your search.
-        </div>
-      ) : (
-        <Tabs defaultValue={defaultCategory} className="w-full">
-          <TabsList className="mb-4 flex flex-wrap h-auto bg-muted/50 p-1 rounded-lg">
-            {categories.map(category => (
-              <TabsTrigger 
-                key={category} 
-                value={category}
-                className="rounded-md data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm px-4 py-2 font-medium text-sm transition-all"
-              >
-                {category}
-              </TabsTrigger>
-            ))}
-          </TabsList>
-          
-          {categories.map(category => {
-            const categoryProducts = category === 'All' 
-              ? filteredProducts 
-              : filteredProducts.filter(p => (p.category || 'Uncategorized') === category);
-            
-            return (
-              <TabsContent key={category} value={category} className="mt-0">
-                {/* Mobile Card View */}
-                <div className="lg:hidden space-y-3">
-                  {categoryProducts.map((p) => (
-                    <div key={p.id} className="bg-card border border-border rounded-xl p-4 space-y-3">
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="min-w-0">
-                          <p className="text-sm font-bold text-foreground">{p.name}</p>
-                          <p className="text-[10px] font-mono text-zinc-500 mt-0.5">{p.sku}</p>
-                        </div>
-                        {canEditPricelist && (
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => setEditProduct(p)}
-                            className="shrink-0 h-8 text-[10px] font-black uppercase tracking-widest text-muted-foreground hover:text-foreground"
-                          >
-                            <Pencil className="w-3 h-3 mr-1" /> Edit
-                          </Button>
-                        )}
-                      </div>
-                      <div className="grid grid-cols-3 gap-2 pt-2 border-t border-border">
-                        <div className="text-center">
-                          <p className="text-[9px] font-black uppercase tracking-widest text-muted-foreground mb-1">Base</p>
-                          <p className="text-xs font-bold">₱{p.basePrice?.toLocaleString() || '0'}</p>
-                        </div>
-                        <div className="text-center">
-                          <p className="text-[9px] font-black uppercase tracking-widest text-emerald-600 dark:text-emerald-400 mb-1">Wholesale</p>
-                          <p className="text-xs font-bold text-emerald-600 dark:text-emerald-400">₱{p.wholesalePrice?.toLocaleString() || '0'}</p>
-                        </div>
-                        <div className="text-center">
-                          <p className="text-[9px] font-black uppercase tracking-widest text-blue-600 dark:text-blue-400 mb-1">Dealer</p>
-                          <p className="text-xs font-bold text-blue-600 dark:text-blue-400">₱{p.dealerPrice?.toLocaleString() || '0'}</p>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                  {categoryProducts.length === 0 && (
-                    <div className="text-center py-8 text-muted-foreground text-xs italic">No products in this category.</div>
-                  )}
-                </div>
-
-                {/* Desktop Table View */}
-                <div className="hidden lg:block bg-card border border-border rounded-xl overflow-hidden shadow-sm">
-                  <div className="overflow-x-auto w-full">
-                    <Table>
-                      <TableHeader className="bg-muted/50">
-                        <TableRow>
-                          <TableHead className="w-[120px] text-[10px] font-bold uppercase tracking-widest min-w-[120px]">Item Code</TableHead>
-                          <TableHead className="text-[10px] font-bold uppercase tracking-widest text-foreground min-w-[200px]">Product Name</TableHead>
-                          <TableHead className="text-right text-[10px] font-bold uppercase tracking-widest min-w-[100px]">Base Price</TableHead>
-                          <TableHead className="text-right text-[10px] font-bold uppercase tracking-widest text-emerald-600 dark:text-emerald-400 min-w-[100px]">Wholesale</TableHead>
-                          <TableHead className="text-right text-[10px] font-bold uppercase tracking-widest text-blue-600 dark:text-blue-400 min-w-[100px]">Dealer</TableHead>
-                          {canEditPricelist && (
-                            <TableHead className="text-right text-[10px] font-bold uppercase tracking-widest min-w-[80px]">Edit</TableHead>
-                          )}
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {categoryProducts.map((p) => (
-                          <TableRow key={p.id} className="hover:bg-muted/30 transition-colors">
-                            <TableCell className="font-mono text-xs text-zinc-500">{p.sku}</TableCell>
-                            <TableCell className="font-bold text-sm text-foreground">{p.name}</TableCell>
-                            <TableCell className="text-right font-medium">₱{p.basePrice?.toLocaleString() || '0'}</TableCell>
-                            <TableCell className="text-right font-bold text-emerald-600 dark:text-emerald-400">₱{p.wholesalePrice?.toLocaleString() || '0'}</TableCell>
-                            <TableCell className="text-right font-bold text-blue-600 dark:text-blue-400">₱{p.dealerPrice?.toLocaleString() || '0'}</TableCell>
-                            {canEditPricelist && (
-                              <TableCell className="text-right">
-                                <Button
-                                  variant="ghost"
-                                  size="sm"
-                                  onClick={() => setEditProduct(p)}
-                                  className="h-8 text-[10px] font-black uppercase tracking-widest text-muted-foreground hover:text-foreground"
-                                >
-                                  <Pencil className="w-3 h-3 mr-1" /> Edit
-                                </Button>
-                              </TableCell>
-                            )}
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  </div>
-                </div>
-              </TabsContent>
-            );
-          })}
-        </Tabs>
-      )}
-
-      {/* Edit Product Dialog */}
-      <Dialog open={!!editProduct} onOpenChange={(open) => { if (!open) setEditProduct(null); }}>
-        <DialogContent className="max-w-2xl rounded-2xl">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <Pencil className="w-4 h-4 text-primary" /> Edit Product
-            </DialogTitle>
-            <DialogDescription>
-              Update pricing and details for <span className="font-black text-foreground">{editProduct?.name}</span>
-            </DialogDescription>
-          </DialogHeader>
-          <form onSubmit={handleEditProduct} className="space-y-4 pt-4">
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label htmlFor="editName">Item Name</Label>
-                <Input id="editName" name="editName" required defaultValue={editProduct?.name} />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="editCategory">Category</Label>
-                <Input id="editCategory" name="editCategory" defaultValue={editProduct?.category} />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="editBasePrice">Base Cost (₱)</Label>
-                <Input id="editBasePrice" name="editBasePrice" type="number" step="0.01" required defaultValue={editProduct?.basePrice} />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="editWholesalePrice">Wholesale (₱)</Label>
-                <Input id="editWholesalePrice" name="editWholesalePrice" type="number" step="0.01" defaultValue={editProduct?.wholesalePrice} />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="editDealerPrice">Dealer (₱)</Label>
-                <Input id="editDealerPrice" name="editDealerPrice" type="number" step="0.01" defaultValue={editProduct?.dealerPrice} />
-              </div>
-            </div>
-            <DialogFooter className="gap-2">
-              <Button type="button" variant="outline" onClick={() => setEditProduct(null)} className="font-black uppercase tracking-widest text-[10px]">
-                Cancel
-              </Button>
-              <Button type="submit" disabled={isSaving} className="font-black uppercase tracking-widest text-[10px]">
-                Save Changes
-              </Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
-    </div>
-  );
+  const [products, setProducts] = useState<Product[]>([]), [saved, setSaved] = useState<SavedPricelist[]>(readSaved), [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState(''), [dateFilter, setDateFilter] = useState('all'), [typeFilter, setTypeFilter] = useState('all'), [pdfFilter, setPdfFilter] = useState('all');
+  const [from, setFrom] = useState(''), [to, setTo] = useState(''), [viewId, setViewId] = useState(''), [renameId, setRenameId] = useState(''), [rename, setRename] = useState('');
+  const [createOpen, setCreateOpen] = useState(false), [name, setName] = useState(''), [productSearch, setProductSearch] = useState(''), [chosen, setChosen] = useState<Record<string, boolean>>({}), [delegated, setDelegated] = useState(false);
+  const [productCategory, setProductCategory] = useState('all'), [productSupplier, setProductSupplier] = useState('all');
+  const [defaultScheme, setDefaultScheme] = useState<PriceType>('base'), [categorySchemes, setCategorySchemes] = useState<Record<string, PriceType>>({}), [itemOverrides, setItemOverrides] = useState<Record<string, PriceType>>({});
+  const [selectedPdfId, setSelectedPdfId] = useState('');
+  const canEdit = profile?.role === 'admin' || delegated;
+  useEffect(() => { if (profile?.role === 'staff') return onSnapshot(query(collection(db, 'delegations'), where('staffEmail', '==', profile.email.toLowerCase())), s => setDelegated(s.docs.some((d: { data: () => Record<string, unknown> }) => d.data().canAdjustPricelist === true))); }, [profile]);
+  useEffect(() => onSnapshot(collection(db, 'products'), s => { setProducts(s.docs.map((d: { id: string; data: () => Record<string, unknown> }) => ({ id: d.id, ...d.data() } as Product))); setLoading(false); }, e => { handleSupabaseError(e, OperationType.GET, 'products'); setLoading(false); }), []);
+  const save = (next: SavedPricelist[]) => { setSaved(next); localStorage.setItem(KEY, JSON.stringify(next)); };
+  const filtered = useMemo(() => { const now = new Date(), today = new Date(now.getFullYear(), now.getMonth(), now.getDate()), week = new Date(today), month = new Date(now.getFullYear(), now.getMonth(), 1); week.setDate(today.getDate() - today.getDay()); return saved.filter(p => { const d = new Date(p.createdAt); const dateOk = dateFilter === 'all' || dateFilter === 'today' && d >= today || dateFilter === 'week' && d >= week || dateFilter === 'month' && d >= month || dateFilter === 'custom' && (!from || d >= new Date(from + 'T00:00:00')) && (!to || d <= new Date(to + 'T23:59:59')); return p.name.toLowerCase().includes(search.toLowerCase()) && dateOk && (typeFilter === 'all' || listType(p) === typeFilter) && (pdfFilter === 'all' || pdfFilter === 'exported' && !!p.lastPdfGeneratedAt || pdfFilter === 'never' && !p.lastPdfGeneratedAt); }).sort((a,b) => b.createdAt.localeCompare(a.createdAt)); }, [saved, search, dateFilter, typeFilter, pdfFilter, from, to]);
+  const view = saved.find(p => p.id === viewId);
+  const choices = products.filter(p => [p.sku, p.name, p.category, p.supplier].some(v => String(v || '').toLowerCase().includes(productSearch.toLowerCase())) && (productCategory === 'all' || (p.category || 'Uncategorized') === productCategory) && (productSupplier === 'all' || p.supplier === productSupplier));
+  const selectedProducts = products.filter(p => chosen[p.id]);
+  const grouped = selectedProducts.reduce<Record<string, Product[]>>((g, product) => { (g[product.category || 'Uncategorized'] ||= []).push(product); return g; }, {});
+  const effectiveScheme = (product: Product) => itemOverrides[product.id] ?? categorySchemes[product.category || 'Uncategorized'] ?? defaultScheme;
+  const closeCreate = () => { setCreateOpen(false); setName(''); setProductSearch(''); setProductCategory('all'); setProductSupplier('all'); setChosen({}); setDefaultScheme('base'); setCategorySchemes({}); setItemOverrides({}); };
+  const buildPricelist = (): SavedPricelist => ({ id: crypto.randomUUID(), name: name.trim(), createdAt: new Date().toISOString(), items: selectedProducts.map(x => { const priceType = effectiveScheme(x); return { productId: x.id, sku: x.sku, name: x.name, category: x.category || 'Uncategorized', priceType, price: price(x, priceType) }; }) });
+  const create = (draft = false) => { if (!name.trim() || !selectedProducts.length) return; const p = buildPricelist(); save([p, ...saved]); closeCreate(); toast.success(draft ? `"${p.name}" saved as draft` : `"${p.name}" saved successfully`); };
+  const generatePdf = (target = view) => { if (!target) return; const rows = target.items.map(i => `<tr><td>${escapeHtml(i.sku)}</td><td>${escapeHtml(i.name)}</td><td>${escapeHtml(i.category)}</td><td>${schemeLabel(i.priceType)}</td><td>₱${i.price.toLocaleString()}</td></tr>`).join(''); const w = window.open('', '_blank'); if (!w) return toast.error('Allow pop-ups to preview this pricelist PDF'); w.document.write(`<html><head><title>${escapeHtml(target.name)}</title><style>body{font-family:Arial;padding:32px}table{width:100%;border-collapse:collapse}th,td{padding:10px;border:1px solid #ddd;text-align:left}th{background:#111827;color:white}</style></head><body><h1>${escapeHtml(target.name)}</h1><p>Date Created: ${dateLabel(target.createdAt)}</p><table><thead><tr><th>SKU</th><th>Item Name</th><th>Category</th><th>Price Scheme</th><th>Price</th></tr></thead><tbody>${rows}</tbody></table><script>window.onload=()=>{window.print();window.close()}<\/script></body></html>`); w.document.close(); save(saved.map(p => p.id === target.id ? { ...p, lastPdfGeneratedAt: new Date().toISOString() } : p)); };
+  const doRename = () => { if (!rename.trim()) return; save(saved.map(p => p.id === renameId ? { ...p, name: rename.trim(), updatedAt: new Date().toISOString() } : p)); setRenameId(''); toast.success('Pricelist renamed'); };
+  const remove = (p: SavedPricelist) => { if (window.confirm(`Delete "${p.name}"? This action cannot be undone.`)) { save(saved.filter(x => x.id !== p.id)); toast.success('Pricelist deleted'); } };
+  if (loading) return <div className="flex min-h-[400px] items-center justify-center"><Loader2 className="h-8 w-8 animate-spin"/></div>;
+  return <div className="space-y-5 pb-20">
+    <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between"><div><p className="mt-1 text-sm text-muted-foreground">Create and manage saved pricelists using products from Inventory.</p></div><div className="flex gap-2"><Button variant="outline" disabled={!selectedPdfId} onClick={() => generatePdf(saved.find(p => p.id === selectedPdfId))}><Download className="mr-2 h-4 w-4"/>Generate PDF</Button>{canEdit && <Button onClick={() => setCreateOpen(true)}><Plus className="mr-2 h-4 w-4"/>Create Pricelist</Button>}</div></div>
+    <div className="rounded-2xl border bg-card p-4"><div className="grid gap-3 md:grid-cols-4"><div><label className="text-xs invisible select-none block">Search</label><div className="relative mt-1"><Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2"/><Input className="pl-9" placeholder="Search by pricelist name..." value={search} onChange={e => setSearch(e.target.value)}/></div></div><Filter label="Date Created" value={dateFilter} set={setDateFilter} options={[["all","All Dates"],["today","Today"],["week","This Week"],["month","This Month"],["custom","Custom Date Range"]]}/><Filter label="Pricelist Type" value={typeFilter} set={setTypeFilter} options={[["all","All Types"],["Regular","Regular"],["Metro Manila","Metro Manila"],["Provincial","Provincial"],["Promo","Promo"],["Mixed","Mixed"]]}/><Filter label="PDF Status" value={pdfFilter} set={setPdfFilter} options={[["all","All Statuses"],["never","Never Exported"],["exported","Exported"]]}/></div>{dateFilter === 'custom' && <div className="mt-3 grid grid-cols-2 gap-3"><Field label="From" value={from} set={setFrom}/><Field label="To" value={to} set={setTo}/></div>}</div>
+    <div className="overflow-x-auto rounded-2xl border"><Table><TableHeader><TableRow><TableHead className="w-12"/><TableHead>Name</TableHead><TableHead>Type</TableHead><TableHead>Items</TableHead><TableHead>Date Created</TableHead><TableHead>Last PDF Generated</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader><TableBody>{filtered.map(p => <TableRow key={p.id}><TableCell><input type="checkbox" checked={selectedPdfId === p.id} onChange={e => setSelectedPdfId(e.target.checked ? p.id : '')}/></TableCell><TableCell><span className="flex items-center gap-2 font-bold"><FileText className="h-5 w-5"/>{p.name}</span></TableCell><TableCell>{listType(p)}</TableCell><TableCell>{p.items.length}</TableCell><TableCell>{dateLabel(p.createdAt)}</TableCell><TableCell>{dateLabel(p.lastPdfGeneratedAt)}</TableCell><TableCell><div className="flex justify-end gap-2"><Icon title="View" onClick={() => setViewId(p.id)}><Eye/></Icon>{canEdit && <><Icon title="Rename" onClick={() => { setRenameId(p.id); setRename(p.name); }}><Pencil/></Icon><Icon title="Delete" danger onClick={() => remove(p)}><Trash2/></Icon></>}</div></TableCell></TableRow>)}{!filtered.length && <TableRow><TableCell colSpan={7} className="h-40 text-center text-muted-foreground">No saved pricelists match the selected filters.</TableCell></TableRow>}</TableBody></Table></div>
+    <Dialog open={!!view} onOpenChange={o => !o && setViewId('')}><DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-5xl"><DialogHeader><DialogTitle>{view?.name}</DialogTitle><DialogDescription>{view && `${view.items.length} items · Created ${dateLabel(view.createdAt)}`}</DialogDescription></DialogHeader><Items items={view?.items || []}/><DialogFooter><Button variant="outline" onClick={() => setViewId('')}>Close</Button><Button onClick={() => generatePdf()}><Download className="mr-2 h-4 w-4"/>Generate PDF</Button></DialogFooter></DialogContent></Dialog>
+    <Dialog open={!!renameId} onOpenChange={o => !o && setRenameId('')}><DialogContent><DialogHeader><DialogTitle>Rename Pricelist</DialogTitle></DialogHeader><Label>Pricelist Name</Label><Input value={rename} onChange={e => setRename(e.target.value)}/><DialogFooter><Button variant="outline" onClick={() => setRenameId('')}>Cancel</Button><Button onClick={doRename}>Rename</Button></DialogFooter></DialogContent></Dialog>
+    <Builder open={createOpen} close={closeCreate} name={name} setName={setName} products={products} choices={choices} chosen={chosen} setChosen={setChosen} search={productSearch} setSearch={setProductSearch} category={productCategory} setCategory={setProductCategory} supplier={productSupplier} setSupplier={setProductSupplier} grouped={grouped} defaultScheme={defaultScheme} setDefaultScheme={setDefaultScheme} categorySchemes={categorySchemes} setCategorySchemes={setCategorySchemes} itemOverrides={itemOverrides} setItemOverrides={setItemOverrides} saveDraft={() => create(true)} savePricelist={() => create(false)} preview={() => generatePdf(buildPricelist())}/>
+  </div>;
 }
+
+type Setter<T> = React.Dispatch<React.SetStateAction<T>>;
+interface BuilderProps { open:boolean; close:()=>void; name:string; setName:(v:string)=>void; products:Product[]; choices:Product[]; chosen:Record<string,boolean>; setChosen:Setter<Record<string,boolean>>; search:string; setSearch:(v:string)=>void; category:string; setCategory:(v:string)=>void; supplier:string; setSupplier:(v:string)=>void; grouped:Record<string,Product[]>; defaultScheme:PriceType; setDefaultScheme:(v:PriceType)=>void; categorySchemes:Record<string,PriceType>; setCategorySchemes:Setter<Record<string,PriceType>>; itemOverrides:Record<string,PriceType>; setItemOverrides:Setter<Record<string,PriceType>>; saveDraft:()=>void; savePricelist:()=>void; preview:()=>void; }
+function Builder(p: BuilderProps) {
+  const categories = [...new Set(p.products.map(x => x.category || 'Uncategorized'))].sort(), suppliers = [...new Set(p.products.map(x => x.supplier).filter(Boolean) as string[])].sort();
+  const count = Object.keys(p.chosen).length, ready = !!p.name.trim() && count > 0;
+  const selectedProducts = p.products.filter(x => p.chosen[x.id]);
+  const removeItem = (id:string) => { p.setChosen(c => { const n={...c}; delete n[id]; return n; }); p.setItemOverrides(o => { const n={...o}; delete n[id]; return n; }); };
+  return <Dialog open={p.open} onOpenChange={o => !o && p.close()}><DialogContent className="max-h-[94vh] w-[94vw] max-w-[94vw] overflow-y-auto p-0 sm:!max-w-[94vw] lg:!max-w-6xl">
+    <div className="sticky top-0 z-20 flex flex-col justify-between gap-4 border-b bg-background px-6 py-4 lg:flex-row lg:items-center"><div><DialogTitle>Create Pricelist</DialogTitle><DialogDescription>Build a new pricelist from your Inventory products.</DialogDescription></div><Steps/></div>
+    <div className="space-y-5 px-6"><section className="rounded-xl border p-4"><h3 className="mb-4 text-sm font-bold">Pricelist Information</h3><div className="grid gap-4 md:grid-cols-2"><div><Label>Pricelist Name</Label><Input className="mt-2" value={p.name} onChange={e => p.setName(e.target.value)} placeholder="Enter pricelist name"/></div><div><Label>Default Price Scheme</Label><Scheme value={p.defaultScheme} promo={count > 0 && selectedProducts.every(x => x.promoPrice != null)} onChange={p.setDefaultScheme}/><p className="mt-1 text-xs text-muted-foreground">Applies to all products unless overridden per category or item.</p></div></div></section>
+    <section id="add-pricelist-products" className="rounded-xl border p-4"><div className="mb-4 flex justify-between"><h3 className="text-sm font-bold">Add Products</h3><Button size="sm" onClick={() => p.setChosen(c => { const n={...c}; p.choices.forEach(x => n[x.id]=true); return n; })}><Plus className="mr-2 h-4 w-4"/>{count ? 'Add More Products' : 'Add Products'}</Button></div><div className="grid gap-3 md:grid-cols-3"><div className="relative"><Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2"/><Input className="pl-9" placeholder="Search by name, SKU..." value={p.search} onChange={e => p.setSearch(e.target.value)}/></div><SimpleSelect value={p.category} onChange={p.setCategory} label="All Categories" values={categories}/><SimpleSelect value={p.supplier} onChange={p.setSupplier} label="All Suppliers" values={suppliers}/></div><div className="mt-3 max-h-40 overflow-y-auto rounded-lg border"><Table><TableBody>{p.choices.map(x => <TableRow key={x.id}><TableCell className="w-12"><input type="checkbox" checked={!!p.chosen[x.id]} onChange={e => e.target.checked ? p.setChosen(c => ({...c,[x.id]:true})) : removeItem(x.id)}/></TableCell><TableCell className="font-mono text-xs">{x.sku}</TableCell><TableCell className="font-medium">{x.name}</TableCell><TableCell>{x.category || 'Uncategorized'}</TableCell></TableRow>)}</TableBody></Table></div></section>
+    <div className="flex flex-wrap justify-between gap-3"><div><b className="text-sm">Selected Products <span className="rounded-full bg-muted px-2 py-1 text-xs">{count} items</span></b><p className="mt-1 text-xs text-muted-foreground">Prices are read-only and retrieved from Inventory / Product Pricing.</p></div><div className="flex gap-2"><Button variant="ghost" size="sm" disabled={!count} onClick={() => {p.setChosen({});p.setCategorySchemes({});p.setItemOverrides({});}}><Trash2 className="mr-2 h-4 w-4"/>Remove All</Button><Button variant="outline" size="sm" disabled={!count} onClick={() => {p.setCategorySchemes({});p.setItemOverrides({});}}><RotateCcw className="mr-2 h-4 w-4"/>Apply Default to All</Button></div></div>
+    {Object.entries(p.grouped).map(([category,items]) => { const cs=p.categorySchemes[category]??p.defaultScheme, mixed=items.some(x => p.itemOverrides[x.id]!=null && p.itemOverrides[x.id]!==cs); return <section key={category} className="overflow-hidden rounded-xl border"><div className="flex flex-col justify-between gap-3 border-b bg-muted/30 px-4 py-3 md:flex-row md:items-center"><b>{category} <span className="text-xs font-normal text-muted-foreground">{items.length} items</span></b><div className="flex flex-wrap items-center gap-2"><Label className="text-xs">Category Price Scheme</Label><Scheme value={cs} display={mixed?'Mixed Price Scheme':undefined} promo={items.every(x=>x.promoPrice!=null)} onChange={v=>p.setCategorySchemes(s=>({...s,[category]:v}))}/>{p.categorySchemes[category]&&<Button variant="ghost" size="icon" title="Reset Category Override" aria-label={`Reset price scheme for ${category}`} onClick={()=>p.setCategorySchemes(s=>{const n={...s};delete n[category];return n;})}><RotateCcw className="h-4 w-4"/></Button>}</div></div><div className="overflow-x-auto"><Table><TableHeader><TableRow><TableHead>SKU</TableHead><TableHead>Item Name</TableHead><TableHead>Supplier</TableHead><TableHead>Price Scheme</TableHead><TableHead className="text-right">Price</TableHead><TableHead/></TableRow></TableHeader><TableBody>{items.map(x=>{const s=p.itemOverrides[x.id]??cs;return <TableRow key={x.id}><TableCell className="font-mono text-xs">{x.sku}</TableCell><TableCell className="font-medium">{x.name}</TableCell><TableCell>{x.supplier||'—'}</TableCell><TableCell><div className="flex items-center gap-1"><Scheme value={s} promo={x.promoPrice!=null} onChange={v=>p.setItemOverrides(o=>({...o,[x.id]:v}))}/>{p.itemOverrides[x.id]&&<Button variant="ghost" size="icon" title="Reset Item Override" onClick={()=>p.setItemOverrides(o=>{const n={...o};delete n[x.id];return n;})}><RotateCcw className="h-4 w-4"/></Button>}</div></TableCell><TableCell className="text-right font-bold">₱{price(x,s).toLocaleString()}</TableCell><TableCell><Button variant="ghost" size="icon" title="Remove from pricelist" onClick={()=>removeItem(x.id)}><X className="h-4 w-4"/></Button></TableCell></TableRow>})}</TableBody></Table></div></section>})}
+    {!count&&<div className="rounded-xl border border-dashed py-12 text-center text-sm text-muted-foreground">Select products above to configure their price schemes.</div>}</div>
+    <DialogFooter className="sticky bottom-0 z-20 border-t bg-background px-6 py-4"><Button variant="outline" onClick={p.close}>Cancel</Button><Button variant="outline" disabled={!ready} onClick={p.saveDraft}>Save Draft</Button><Button disabled={!ready} onClick={p.savePricelist}>Save Pricelist</Button><Button disabled={!ready} onClick={p.preview}><Eye className="mr-2 h-4 w-4"/>Preview PDF</Button></DialogFooter>
+  </DialogContent></Dialog>;
+}
+function Steps(){return <div className="flex items-center gap-2 text-xs"><span className="flex items-center gap-2"><i className="grid h-6 w-6 place-items-center rounded-full bg-primary text-primary-foreground"><Check className="h-3 w-3"/></i>Add Products</span><i className="h-px w-7 bg-border"/><span className="flex items-center gap-2 font-bold"><i className="grid h-6 w-6 place-items-center rounded-full bg-primary text-primary-foreground">2</i>Configure &amp; Review</span><i className="h-px w-7 bg-border"/><span className="flex items-center gap-2 text-muted-foreground"><i className="grid h-6 w-6 place-items-center rounded-full bg-muted">3</i>Preview PDF</span></div>}
+function Scheme({value,onChange,promo=false,display}:{value:PriceType;onChange:(v:PriceType)=>void;promo?:boolean;display?:string}){const values:PriceType[]=['base','metroManila','provincial',...(promo?['promo' as PriceType]:[])];return <Select value={value} onValueChange={v=>v&&onChange(v as PriceType)}><SelectTrigger className="mt-2 w-52"><SelectValue>{display||schemeLabel(value)}</SelectValue></SelectTrigger><SelectContent>{values.map(v=><SelectItem key={v} value={v}>{schemeLabel(v)}</SelectItem>)}</SelectContent></Select>}
+function SimpleSelect({value,onChange,label,values}:{value:string;onChange:(v:string)=>void;label:string;values:string[]}){return <Select value={value} onValueChange={v=>v&&onChange(v)}><SelectTrigger><SelectValue>{value==='all'?label:value}</SelectValue></SelectTrigger><SelectContent><SelectItem value="all">{label}</SelectItem>{values.map(v=><SelectItem key={v} value={v}>{v}</SelectItem>)}</SelectContent></Select>}
+function Filter({label,value,set,options}:{label:string;value:string;set:(v:string)=>void;options:string[][]}){return <div><Label className="text-xs">{label}</Label><Select value={value} onValueChange={v=>v&&set(v)}><SelectTrigger className="mt-1"><SelectValue>{options.find(x=>x[0]===value)?.[1]}</SelectValue></SelectTrigger><SelectContent>{options.map(([v,l])=><SelectItem key={v} value={v}>{l}</SelectItem>)}</SelectContent></Select></div>}
+function Field({label,value,set}:{label:string;value:string;set:(v:string)=>void}){return <div><Label>{label}</Label><Input type="date" value={value} onChange={e=>set(e.target.value)}/></div>}
+function Icon({title,onClick,danger,children}:{title:string;onClick:()=>void;danger?:boolean;children:React.ReactElement}){return <Button variant="outline" size="icon" title={title} onClick={onClick} className={danger?'text-destructive':''}>{React.cloneElement(children,{className:'h-4 w-4'} as React.HTMLAttributes<HTMLElement>)}</Button>}
+function Items({items}:{items:PricelistItem[]}){return <div className="overflow-x-auto rounded-xl border"><Table><TableHeader><TableRow><TableHead>SKU</TableHead><TableHead>Item Name</TableHead><TableHead>Category</TableHead><TableHead>Price Scheme</TableHead><TableHead className="text-right">Price</TableHead></TableRow></TableHeader><TableBody>{items.map(i=><TableRow key={`${i.productId}-${i.sku}`}><TableCell>{i.sku}</TableCell><TableCell>{i.name}</TableCell><TableCell>{i.category}</TableCell><TableCell>{schemeLabel(i.priceType)}</TableCell><TableCell className="text-right font-bold">₱{i.price.toLocaleString()}</TableCell></TableRow>)}</TableBody></Table></div>}

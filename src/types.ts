@@ -32,6 +32,7 @@ export interface Product {
   mmPrice?: number;
   provincialPrice?: number;
   costPrice?: number;
+  promoPrice?: number;
   supplier?: string;
   photoUrl?: string;
   minStockLevel: number;
@@ -46,6 +47,7 @@ export interface Warehouse {
   id: string;
   name: string;
   location: string;
+  active?: boolean;
 }
 
 export interface InventoryItem {
@@ -56,7 +58,7 @@ export interface InventoryItem {
   lastUpdated: any;
 }
 
-export type OrderStatus = 'pending' | 'preparing' | 'out_for_delivery' | 'delivered' | 'completed' | 'escalated';
+export type OrderStatus = 'pending' | 'preparing' | 'out_for_delivery' | 'delivered' | 'completed' | 'escalated' | 'cancelled';
 export type PaymentStatus = 'unpaid' | 'partially_paid' | 'paid' | 'defaulted';
 
 export interface StatusHistoryEntry {
@@ -88,6 +90,7 @@ export interface OrderItem {
   id: string;
   orderId: string;
   productId: string;
+  warehouseId?: string;
   sku: string;
   name: string;
   quantity: number;
@@ -113,15 +116,27 @@ export interface ExpenseCategory {
   createdAt: any;
 }
 
+export type TransferStatus = 'pending' | 'in_transit' | 'received' | 'cancelled';
+
 export interface Transfer {
   id: string;
   sourceWarehouseId: string;
   destinationWarehouseId: string;
   productId: string;
   quantity: number;
-  status: 'pending' | 'in_transit' | 'received';
+  status: TransferStatus;
   initiatedBy: string;
+  driverName?: string;
+  vehiclePlate?: string;
+  dispatchedAt?: any;
+  dispatchedBy?: string;
+  receivedAt?: any;
+  receivedBy?: string;
+  cancelledAt?: any;
+  cancelledBy?: string;
+  cancellationReason?: string;
   createdAt: any;
+  updatedAt?: any;
 }
 
 export interface StockAdjustment {
