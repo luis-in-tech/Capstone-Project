@@ -38,6 +38,11 @@ function extractStatusCode(error: unknown): number | null {
 function getFriendlyMessage(rawMessage: string, statusCode: number | null, context: string): string {
   const lower = rawMessage.toLowerCase();
 
+  // Missing column in existing table
+  if (lower.includes('could not find the') && lower.includes('column')) {
+    return `Database column missing: ${rawMessage}. Please run the migration script in your Supabase SQL Editor.`;
+  }
+
   // Missing table / relation not found
   if (
     statusCode === 404 ||

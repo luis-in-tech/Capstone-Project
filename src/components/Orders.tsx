@@ -51,6 +51,7 @@ import { useAuth } from '../hooks/useAuth';
 import { toast } from 'sonner';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { addDays, format } from 'date-fns';
+import { DELIVERY_REGIONS, REGION_LOCATIONS } from '../constants/deliveryLocations';
 
 export function Orders() {
   const { profile } = useAuth();
@@ -59,7 +60,7 @@ export function Orders() {
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
   const [isNewOrderOpen, setIsNewOrderOpen] = useState(false);
   const [cart, setCart] = useState<{ productId: string; quantity: number; price: number; name: string; sku: string }[]>([]);
-  const [clientInfo, setClientInfo] = useState({ name: '', region: 'Metro Manila' });
+  const [clientInfo, setClientInfo] = useState({ name: '', region: '', city: '' });
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
   const [orderItems, setOrderItems] = useState<OrderItem[]>([]);
   const [isOrderDetailsOpen, setIsOrderDetailsOpen] = useState(false);
@@ -91,7 +92,9 @@ export function Orders() {
     const matchesSku = order.skus?.some(sku => sku.toLowerCase().includes(queryStr));
     const matchesOrderNumber = order.orderNumber.toLowerCase().includes(queryStr);
     const matchesClient = order.clientName.toLowerCase().includes(queryStr);
-    return matchesSku || matchesOrderNumber || matchesClient;
+    const matchesCity = order.deliveryCity?.toLowerCase().includes(queryStr);
+    const matchesRegion = order.deliveryRegion?.toLowerCase().includes(queryStr);
+    return matchesSku || matchesOrderNumber || matchesClient || matchesCity || matchesRegion;
   });
 
   useEffect(() => {
@@ -356,11 +359,38 @@ export function Orders() {
     setCart(prev => prev.filter(item => item.productId !== productId));
   };
 
+  const resetOrderForm = () => {
+    setCart([]);
+    setSkuRows([{ id: 1, sku: '', quantity: '1' }]);
+    setClientInfo({ name: '', region: '', city: '' });
+    setManualScanCode('');
+    setOrderEntryMode('select');
+    skuCartQuantitiesRef.current = {};
+    lastScannedCodeRef.current = '';
+    stopScanner();
+  };
+
+  const handleNewOrderOpenChange = (open: boolean) => {
+    if (!open) {
+      resetOrderForm();
+    }
+    setIsNewOrderOpen(open);
+  };
+
   const submitOrder = async () => {
-    if (!clientInfo.name || cart.length === 0) return;
+    if (!clientInfo.name.trim() || cart.length === 0) return;
+    if (!clientInfo.region) {
+      toast.error('Please select a delivery region.');
+      return;
+    }
+    if (!clientInfo.city) {
+      toast.error('Please select a delivery city or municipality.');
+      return;
+    }
 
     const totalAmount = cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
-    const deadlineDays = clientInfo.region === 'Metro Manila' ? 7 : 14;
+    const regionConfig = DELIVERY_REGIONS.find(r => r.value === clientInfo.region);
+    const deadlineDays = regionConfig ? regionConfig.slaDays : (clientInfo.region === 'Metro Manila' ? 7 : 14);
     const deadline = addDays(new Date(), deadlineDays);
 
     const loadingToast = toast.loading('Validating stock and placing order...');
@@ -442,6 +472,7 @@ export function Orders() {
         skus: cart.map(item => item.sku),
         totalAmount,
         deliveryRegion: clientInfo.region,
+        deliveryCity: clientInfo.city,
         deliveryDeadline: deadline,
         statusHistory: [
           {
@@ -454,8 +485,19 @@ export function Orders() {
         createdAt: serverTimestamp(),
       };
       
-      // Use setDoc for the order directly
-      await import('../lib/supabaseAdapter').then(({ setDoc }) => setDoc(orderRef, orderData));
+      // Use setDoc for the order directly (with graceful fallback if DB schema hasn't added deliveryCity column yet)
+      const { setDoc } = await import('../lib/supabaseAdapter');
+      try {
+        await setDoc(orderRef, orderData);
+      } catch (insertError: any) {
+        const errorMsg = String(insertError?.message || insertError || '');
+        if (errorMsg.toLowerCase().includes('deliverycity') || insertError?.code === 'PGRST204') {
+          const { deliveryCity: _, ...fallbackOrderData } = orderData;
+          await setDoc(orderRef, fallbackOrderData);
+        } else {
+          throw insertError;
+        }
+      }
 
       // 5. Commit Items in a batch (the order now exists, so get() will work in rules)
       const itemsBatch = writeBatch(db);
@@ -499,9 +541,7 @@ export function Orders() {
         duration: 5000
       });
 
-      setCart([]);
-      setSkuRows([{ id: 1, sku: '', quantity: '1' }]);
-      setClientInfo({ name: '', region: 'Metro Manila' });
+      resetOrderForm();
       setIsNewOrderOpen(false);
     } catch (err) {
       toast.dismiss(loadingToast);
@@ -698,8 +738,11 @@ export function Orders() {
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3">
         <h2 className="text-xl font-bold tracking-tight text-zinc-900">Service Request Queue (Orders)</h2>
-        <Dialog open={isNewOrderOpen} onOpenChange={setIsNewOrderOpen}>
-          <DialogTrigger className="h-9 gap-2 px-4 bg-[#1A2332] text-white rounded-lg inline-flex items-center justify-center font-medium transition-all hover:bg-[#1A2332]/90">
+        <Dialog open={isNewOrderOpen} onOpenChange={handleNewOrderOpenChange}>
+          <DialogTrigger 
+            onClick={() => resetOrderForm()}
+            className="h-9 gap-2 px-4 bg-[#1A2332] text-white rounded-lg inline-flex items-center justify-center font-medium transition-all hover:bg-[#1A2332]/90"
+          >
             <Plus className="w-4 h-4" /> Create Order
           </DialogTrigger>
           <DialogContent className="sm:max-w-6xl w-[95vw] max-h-[90vh] overflow-y-auto">
@@ -721,16 +764,49 @@ export function Orders() {
                   <Label>Delivery Region</Label>
                   <Select 
                     value={clientInfo.region} 
-                    onValueChange={v => setClientInfo(prev => ({ ...prev, region: v }))}
+                    onValueChange={v => {
+                      if (!v) return;
+                      setClientInfo(prev => ({ ...prev, region: v, city: '' }));
+                    }}
                   >
                     <SelectTrigger className="w-full">
-                      <SelectValue />
+                      <SelectValue placeholder="Select delivery region..." />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="Metro Manila">Metro Manila (1 Week)</SelectItem>
-                      <SelectItem value="Luzon">Provincial Luzon (10 Days)</SelectItem>
-                      <SelectItem value="Visayas">Visayas (14 Days)</SelectItem>
-                      <SelectItem value="Mindanao">Mindanao (14 Days)</SelectItem>
+                      {DELIVERY_REGIONS.map(reg => (
+                        <SelectItem key={reg.value} value={reg.value}>{reg.label}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <Label>Delivery City / Municipality</Label>
+                    <span className="text-[11px] text-zinc-400 font-medium">
+                      {clientInfo.region ? `Under ${clientInfo.region}` : 'Select a region first'}
+                    </span>
+                  </div>
+                  <Select 
+                    value={clientInfo.city} 
+                    onValueChange={v => setClientInfo(prev => ({ ...prev, city: v }))}
+                    disabled={!clientInfo.region}
+                  >
+                    <SelectTrigger className="w-full">
+                      <SelectValue 
+                        placeholder={
+                          clientInfo.region 
+                            ? `Select city / municipality in ${clientInfo.region}...` 
+                            : 'Select a delivery region first...'
+                        } 
+                      />
+                    </SelectTrigger>
+                    <SelectContent className="max-h-60 overflow-y-auto">
+                      {(REGION_LOCATIONS[clientInfo.region] || []).map(loc => (
+                        <SelectItem key={loc} value={loc}>
+                          {loc}
+                        </SelectItem>
+                      ))}
                     </SelectContent>
                   </Select>
                 </div>
@@ -909,7 +985,7 @@ export function Orders() {
                     <span className="text-xs font-bold text-zinc-500 uppercase tracking-widest">Grand Total</span>
                     <span className="text-xl font-black text-black dark:text-white">₱{cart.reduce((s, i) => s + (i.price * i.quantity), 0).toLocaleString()}</span>
                   </div>
-                  <Button className="w-full h-11 bg-[#1A2332] text-white font-bold" disabled={cart.length === 0 || !clientInfo.name} onClick={submitOrder}>
+                  <Button className="w-full h-11 bg-[#1A2332] text-white font-bold" disabled={cart.length === 0 || !clientInfo.name.trim() || !clientInfo.region || !clientInfo.city} onClick={submitOrder}>
                     Confirm and Queue Order
                   </Button>
                 </div>
@@ -1040,7 +1116,9 @@ export function Orders() {
                     <p className="text-[10px] font-black uppercase tracking-tighter text-zinc-400">Client Information</p>
                     <div className="bg-muted p-2 rounded-md border border-border">
                       <p className="text-xs font-bold text-zinc-900">{selectedOrder?.clientName}</p>
-                      <p className="text-[10px] text-zinc-500 font-medium">{selectedOrder?.deliveryRegion} Region</p>
+                      <p className="text-[10px] text-zinc-500 font-medium">
+                        {selectedOrder?.deliveryRegion} Region{selectedOrder?.deliveryCity ? ` • ${selectedOrder.deliveryCity}` : ''}
+                      </p>
                     </div>
                   </div>
 
@@ -1260,7 +1338,9 @@ export function Orders() {
                 <div className="min-w-0">
                   <p className="text-xs font-mono text-zinc-400">{order.orderNumber}</p>
                   <p className="text-sm font-bold text-zinc-900 mt-0.5">{order.clientName}</p>
-                  <p className="text-[10px] text-zinc-400 uppercase font-bold tracking-tighter">{order.deliveryRegion}</p>
+                  <p className="text-[10px] text-zinc-400 uppercase font-bold tracking-tighter">
+                    {order.deliveryRegion}{order.deliveryCity ? ` • ${order.deliveryCity}` : ''}
+                  </p>
                 </div>
                 <Badge variant="outline" className={`shrink-0 gap-1.5 h-6 capitalize text-[10px] font-bold ${
                   order.status === 'delivered' || order.status === 'completed' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
@@ -1378,7 +1458,9 @@ export function Orders() {
                     <TableCell>
                       <div className="flex flex-col">
                         <span className="text-xs font-bold text-zinc-900">{order.clientName}</span>
-                        <span className="text-[10px] text-zinc-400 uppercase font-bold tracking-tighter">{order.deliveryRegion}</span>
+                        <span className="text-[10px] text-zinc-400 uppercase font-bold tracking-tighter">
+                          {order.deliveryRegion}{order.deliveryCity ? ` • ${order.deliveryCity}` : ''}
+                        </span>
                       </div>
                     </TableCell>
                     <TableCell>

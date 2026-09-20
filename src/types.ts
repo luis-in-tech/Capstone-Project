@@ -79,6 +79,7 @@ export interface Order {
   totalAmount: number;
   paymentStatus: PaymentStatus;
   deliveryRegion: string;
+  deliveryCity?: string;
   deliveryDeadline: any;
   photoValidationUrl?: string;
   statusHistory?: StatusHistoryEntry[];
