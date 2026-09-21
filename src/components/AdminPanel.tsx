@@ -1,3 +1,4 @@
+import { hasAdminRole } from '../lib/staffPermissions';
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { collection, db, getDocs } from '../lib/supabaseAdapter';
@@ -33,7 +34,7 @@ export function AdminPanel() {
   const [lastChecked, setLastChecked] = useState<Date | null>(null);
 
   const loadOverview = async () => {
-    if (profile?.role !== 'admin') return;
+    if (!hasAdminRole(profile)) return;
     setLoading(true);
     setLoadError(false);
     try {

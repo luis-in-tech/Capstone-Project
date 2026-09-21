@@ -1,30 +1,17 @@
+import { hasAdminRole } from '../lib/staffPermissions';
+import { useStaffAccess } from '../hooks/useStaffAccess';
 import React, { useState, useEffect, useRef } from 'react';
 import { db, storage } from '../lib/supabaseAdapter';
-import { 
-  collection, 
-  onSnapshot, 
-  addDoc, 
-  updateDoc, 
-  doc, 
-  query, 
-  orderBy, 
-  where, 
-  serverTimestamp, 
-  getDocs, 
-  writeBatch,
-  arrayUnion
-} from '../lib/supabaseAdapter';
-import { Order, OrderStatus, Product, InventoryItem, OrderItem, StatusHistoryEntry } from '../types';
+import { collection, onSnapshot, query, orderBy, where, getDocs } from '../lib/supabaseAdapter';
+import { Order, OrderStatus, Product, InventoryItem, OrderItem } from '../types';
 import { handleSupabaseError, OperationType } from '../lib/supabaseErrorHandler';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter, DialogDescription } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
 import { 
   ShoppingCart, 
-  Trash2, 
   Plus, 
   Clock, 
   Truck, 
@@ -36,31 +23,42 @@ import {
   FileText,
   Eye,
   Calendar,
-  PackageCheck,
   User as UserIcon,
   Upload,
   X as XIcon,
   XCircle,
-  RotateCcw,
   ImageIcon,
-  ScanBarcode,
-  ListPlus
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { useAuth } from '../hooks/useAuth';
 import { toast } from 'sonner';
+<<<<<<< Updated upstream
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { addDays, format } from 'date-fns';
 import { DELIVERY_REGIONS, REGION_LOCATIONS } from '../constants/deliveryLocations';
+=======
+import { format } from 'date-fns';
+import { OrderEntry } from './OrderEntry';
+import { DeliveryReceipt } from './DeliveryReceipt';
+import { supabase } from '../lib/supabase';
+import { type ReceiptOrder, type ReceiptItem, money } from '../lib/orderEntry';
+>>>>>>> Stashed changes
 
 export function Orders() {
   const { profile } = useAuth();
+  const { permissions } = useStaffAccess();
+  const canCreate = permissions.orders === 'create';
+  const canManageOrders = canCreate && profile?.role !== 'agent';
   const [orders, setOrders] = useState<Order[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
   const [isNewOrderOpen, setIsNewOrderOpen] = useState(false);
+<<<<<<< Updated upstream
   const [cart, setCart] = useState<{ productId: string; quantity: number; price: number; name: string; sku: string }[]>([]);
   const [clientInfo, setClientInfo] = useState({ name: '', region: '', city: '' });
+=======
+  const [orderEntryKey, setOrderEntryKey] = useState(0);
+>>>>>>> Stashed changes
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
   const [orderItems, setOrderItems] = useState<OrderItem[]>([]);
   const [isOrderDetailsOpen, setIsOrderDetailsOpen] = useState(false);
@@ -68,22 +66,13 @@ export function Orders() {
   const [searchQuery, setSearchQuery] = useState('');
   const [isDispatchDialogOpen, setIsDispatchDialogOpen] = useState(false);
   const [dispatchOrder, setDispatchOrder] = useState<Order | null>(null);
-  const [photoUrl, setPhotoUrl] = useState('');
   const [photoFile, setPhotoFile] = useState<File | null>(null);
   const [photoPreview, setPhotoPreview] = useState<string | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const scannerVideoRef = useRef<HTMLVideoElement>(null);
-  const scannerStreamRef = useRef<MediaStream | null>(null);
-  const scannerFrameRef = useRef<number | null>(null);
-  const lastScannedCodeRef = useRef('');
-  const skuInputRefs = useRef<Record<number, HTMLInputElement | null>>({});
-  const quantityInputRefs = useRef<Record<number, HTMLInputElement | null>>({});
-  const skuCartQuantitiesRef = useRef<Record<string, number>>({});
-  const [orderEntryMode, setOrderEntryMode] = useState<'scan' | 'sku' | 'select'>('select');
-  const [manualScanCode, setManualScanCode] = useState('');
-  const [isScannerActive, setIsScannerActive] = useState(false);
-  const [skuRows, setSkuRows] = useState([{ id: 1, sku: '', quantity: '1' }]);
+  const [receiptOrder, setReceiptOrder] = useState<ReceiptOrder | null>(null);
+  const [receiptItems, setReceiptItems] = useState<ReceiptItem[]>([]);
+  const statusLock = useRef(false);
 
   const [activeTab, setActiveTab] = useState<'items' | 'history'>('items');
 
@@ -98,7 +87,7 @@ export function Orders() {
   });
 
   useEffect(() => {
-    const isAdminOrSecretary = profile?.role === 'admin' || profile?.role === 'secretary';
+    const isAdminOrSecretary = hasAdminRole(profile) || profile?.role === 'secretary' || profile?.role === 'staff';
     const q = isAdminOrSecretary
       ? query(collection(db, 'orders'), orderBy('createdAt', 'desc'))
       : query(collection(db, 'orders'), where('agentId', '==', profile?.uid || ''), orderBy('createdAt', 'desc'));
@@ -128,6 +117,7 @@ export function Orders() {
     };
   }, [profile]);
 
+<<<<<<< Updated upstream
   const getProductStock = (productId: string) =>
     inventory.filter(i => i.productId === productId).reduce((sum, i) => sum + i.quantity, 0);
 
@@ -549,135 +539,40 @@ export function Orders() {
     }
   };
 
+=======
+>>>>>>> Stashed changes
   const updateOrderStatus = async (order: Order, newStatus: OrderStatus) => {
-    try {
-      // Stock restoration on cancellation or escalation:
-      if ((newStatus === 'cancelled' || newStatus === 'escalated') && order.status !== 'cancelled' && order.status !== 'escalated') {
-        const itemsSnap = await getDocs(collection(db, 'orders', order.id, 'items'));
-        const items = itemsSnap.docs.map(d => ({ id: d.id, ...d.data() } as OrderItem));
-
-        let totalRestoredUnits = 0;
-        if (items.length > 0) {
-          const productIds = Array.from(new Set(items.map(i => i.productId)));
-          const currentInventory: InventoryItem[] = [];
-          for (let i = 0; i < productIds.length; i += 10) {
-            const chunk = productIds.slice(i, i + 10);
-            const invSnap = await getDocs(query(collection(db, 'inventory'), where('productId', 'in', chunk)));
-            currentInventory.push(...invSnap.docs.map(d => ({ id: d.id, ...d.data() } as InventoryItem)));
-          }
-
-          const invBatch = writeBatch(db);
-
-          for (const item of items) {
-            let targetInv = currentInventory.find(inv => 
-              inv.productId === item.productId && item.warehouseId && inv.warehouseId === item.warehouseId
-            );
-
-            if (!targetInv) {
-              const matches = currentInventory.filter(inv => inv.productId === item.productId);
-              if (matches.length > 0) {
-                targetInv = matches[0];
-              }
-            }
-
-            if (targetInv) {
-              invBatch.update(doc(db, 'inventory', targetInv.id), {
-                quantity: targetInv.quantity + item.quantity,
-                lastUpdated: serverTimestamp()
-              });
-              invBatch.set(doc(collection(db, 'stockAdjustments')), {
-                productId: item.productId,
-                warehouseId: targetInv.warehouseId,
-                adjustmentAmount: item.quantity,
-                reason: `Order ${order.orderNumber} ${newStatus}: stock replenishment`,
-                recordedBy: profile?.uid || 'system',
-                timestamp: serverTimestamp()
-              });
-              totalRestoredUnits += item.quantity;
-            }
-          }
-
-          try {
-            await invBatch.commit();
-          } catch (invErr) {
-            console.warn('Inventory replenishment write failed:', invErr);
-          }
-        }
-
-        await updateDoc(doc(db, 'orders', order.id), {
-          status: newStatus,
-          updatedAt: serverTimestamp(),
-          statusHistory: arrayUnion({
-            status: newStatus,
-            changedBy: profile?.displayName || profile?.email || 'Unknown',
-            timestamp: new Date(),
-            note: `Order marked as ${newStatus.replace('_', ' ')} — ${totalRestoredUnits} unit(s) restored to inventory`
-          })
-        });
-
-        toast.success(`Order ${order.orderNumber} ${newStatus}. ${totalRestoredUnits} unit(s) restored to stock.`, {
-          icon: <RotateCcw className="text-emerald-500" />,
-          duration: 5000
-        });
-
-        if (selectedOrder && selectedOrder.id === order.id) {
-          setSelectedOrder(prev => prev ? { ...prev, status: newStatus } : null);
-        }
-        return;
-      }
-
-      // Stock was already deducted at order placement — skip re-deduction here.
-      // Just transition the status for pending → preparing.
-      if (newStatus === 'preparing' && order.status === 'pending') {
-        await updateDoc(doc(db, 'orders', order.id), {
-          status: newStatus,
-          updatedAt: serverTimestamp(),
-          statusHistory: arrayUnion({
-            status: newStatus,
-            changedBy: profile?.displayName || profile?.email || 'Unknown',
-            timestamp: new Date(),
-            note: `Order moved to Preparing (stock was reserved at placement)`
-          })
-        });
-        toast.success(`Order ${order.orderNumber} is now in preparation.`, {
-          icon: <PackageCheck className="text-emerald-500" />,
-          duration: 4000
-        });
-        return;
-      }
-
-      // Manual Dispatch with Photo Validation
-      if (newStatus === 'out_for_delivery' && !order.photoValidationUrl) {
-         setDispatchOrder(order);
-         setPhotoUrl('');
-         setIsDispatchDialogOpen(true);
-         return;
-      }
-
-      await updateDoc(doc(db, 'orders', order.id), {
-        status: newStatus,
-        updatedAt: serverTimestamp(),
-        statusHistory: arrayUnion({
-          status: newStatus,
-          changedBy: profile?.displayName || profile?.email || 'Unknown',
-          timestamp: new Date(),
-          note: `Status updated to ${newStatus.replace('_', ' ')}`
-        }),
-        ...(newStatus === 'out_for_delivery' && photoUrl ? { photoValidationUrl: photoUrl } : {})
-      });
-      toast.success(`Order moving to ${newStatus}`);
-    } catch (err) {
-      handleSupabaseError(err, OperationType.UPDATE, `orders/${order.id}`);
+    if (!canManageOrders) return;
+    if (statusLock.current) return;
+    if (newStatus === 'out_for_delivery' && !order.photoValidationUrl) {
+      setDispatchOrder(order);
+      setPhotoFile(null);
+      setPhotoPreview(null);
+      setIsDispatchDialogOpen(true);
+      return;
     }
+    statusLock.current = true;
+    try {
+      const { data, error } = await supabase.rpc('transition_order_entry', { p_order_id: order.id, p_status: newStatus });
+      if (error) throw error;
+      setOrders(current => current.map(item => item.id === order.id ? data : item));
+      setSelectedOrder(current => current?.id === order.id ? data : current);
+      toast.success(`Order ${order.orderNumber}: ${newStatus.replaceAll('_', ' ')}`, {
+        description: ['cancelled', 'escalated'].includes(newStatus) ? 'Status and inventory restoration saved successfully.' : undefined,
+      });
+    } catch (error: any) {
+      toast.error('Order update failed', { description: error?.message || 'Please retry.' });
+    } finally { statusLock.current = false; }
   };
 
   const handleViewDetails = async (order: Order) => {
     setSelectedOrder(order);
     setIsOrderDetailsOpen(true);
+    setOrderItems([]);
     setIsLoadingItems(true);
     try {
       const itemsSnap = await getDocs(collection(db, 'orders', order.id, 'items'));
-      const items = itemsSnap.docs.map(d => ({ id: d.id, ...d.data() } as OrderItem));
+      const items = itemsSnap.docs.map(d => ({ id: d.id, ...d.data() } as ReceiptItem)).sort((a, b) => (a.entryDetails?.position ?? 0) - (b.entryDetails?.position ?? 0));
       setOrderItems(items);
     } catch (err) {
       handleSupabaseError(err, OperationType.GET, `orders/${order.id}/items`);
@@ -687,37 +582,33 @@ export function Orders() {
   };
 
   const handleDispatch = async () => {
-    if (!dispatchOrder || !photoFile) return;
+    if (!dispatchOrder || !photoFile || statusLock.current) return;
+    statusLock.current = true;
     setIsUploading(true);
     try {
-      // Upload file to Firebase Storage
+      // Upload dispatch proof to the existing asset bucket.
       const { ref, uploadBytes, getDownloadURL } = await import('../lib/supabaseAdapter');
       const filePath = `dispatch-proofs/${dispatchOrder.id}_${Date.now()}_${photoFile.name}`;
       const storageRef = ref(storage, filePath);
       await uploadBytes(storageRef, photoFile);
       const downloadUrl = await getDownloadURL(storageRef);
 
-      await updateDoc(doc(db, 'orders', dispatchOrder.id), {
-        status: 'out_for_delivery',
-        photoValidationUrl: downloadUrl,
-        updatedAt: serverTimestamp(),
-        statusHistory: arrayUnion({
-          status: 'out_for_delivery',
-          changedBy: profile?.displayName || profile?.email || 'Unknown',
-          timestamp: new Date(),
-          note: 'Order dispatched with photo verification'
-        })
+      const { data, error } = await supabase.rpc('transition_order_entry', {
+        p_order_id: dispatchOrder.id, p_status: 'out_for_delivery', p_photo_url: downloadUrl,
       });
+      if (error) throw error;
+      setOrders(current => current.map(item => item.id === dispatchOrder.id ? data : item));
+      setSelectedOrder(current => current?.id === dispatchOrder.id ? data : current);
       setIsDispatchDialogOpen(false);
       setDispatchOrder(null);
       setPhotoFile(null);
       setPhotoPreview(null);
-      setPhotoUrl('');
       toast.success('Inventory dispatched for delivery');
     } catch (err) {
       handleSupabaseError(err, OperationType.UPDATE, `orders/${dispatchOrder.id}`);
     } finally {
       setIsUploading(false);
+      statusLock.current = false;
     }
   };
 
@@ -737,6 +628,7 @@ export function Orders() {
   return (
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3">
+<<<<<<< Updated upstream
         <h2 className="text-xl font-bold tracking-tight text-zinc-900">Service Request Queue (Orders)</h2>
         <Dialog open={isNewOrderOpen} onOpenChange={handleNewOrderOpenChange}>
           <DialogTrigger 
@@ -993,6 +885,18 @@ export function Orders() {
             </div>
           </DialogContent>
         </Dialog>
+=======
+        <h2 className="text-xl font-bold tracking-tight text-zinc-900">Order Entry</h2>
+        {canCreate && <Button onClick={() => setIsNewOrderOpen(true)}><Plus className="size-4" />Create Order</Button>}
+        {profile && canCreate && <OrderEntry key={`${profile.uid}:${orderEntryKey}`} open={isNewOrderOpen} onClose={() => setIsNewOrderOpen(false)} orders={orders} products={products} inventory={inventory} profile={profile} onSaved={(order, items) => {
+          setOrders(current => [order, ...current.filter(item => item.id !== order.id)]);
+          setIsNewOrderOpen(false);
+          setOrderEntryKey(value => value + 1);
+          setReceiptItems(items);
+          setReceiptOrder(order);
+        }}/>}
+        <DeliveryReceipt order={receiptOrder} items={receiptItems} onClose={() => setReceiptOrder(null)}/>
+>>>>>>> Stashed changes
 
         <Dialog open={isOrderDetailsOpen} onOpenChange={setIsOrderDetailsOpen}>
           <DialogContent className="sm:max-w-5xl w-[95vw] max-h-[90vh] overflow-y-auto">
@@ -1004,10 +908,11 @@ export function Orders() {
                 </Badge>
               </DialogTitle>
               <DialogDescription>
-                System ledger summary for current B2B request.
+                Order items, delivery details, and status history.
               </DialogDescription>
             </DialogHeader>
 
+            <Button variant="outline" className="self-start" disabled={isLoadingItems || !orderItems.length} onClick={() => { setIsOrderDetailsOpen(false); setReceiptItems(orderItems); setReceiptOrder(selectedOrder); }}><FileText className="size-4"/>View Delivery Receipt</Button>
             <div className="flex items-center gap-4 border-b border-border px-6 -mx-6">
               <button 
                 className={`pb-3 text-xs font-black uppercase tracking-widest transition-all relative ${
@@ -1146,7 +1051,7 @@ export function Orders() {
                         ₱{selectedOrder?.totalAmount.toLocaleString()}
                       </span>
                     </div>
-                    <p className="text-[9px] text-zinc-400 text-right italic">Inclusive of all taxes and regional fees.</p>
+                    {(selectedOrder as ReceiptOrder)?.receiptDetails && <div className="mt-2 space-y-1 text-xs text-muted-foreground"><p>Subtotal: {money((selectedOrder as ReceiptOrder).receiptDetails!.subtotal)}</p><p>Order discount: {money((selectedOrder as ReceiptOrder).receiptDetails!.discount)}</p><p>Payment terms: {(selectedOrder as ReceiptOrder).receiptDetails!.paymentTerms}</p></div>}
                   </div>
 
                   {selectedOrder?.photoValidationUrl && (
@@ -1161,7 +1066,7 @@ export function Orders() {
                     </div>
                   )}
 
-                  {selectedOrder && profile?.role !== 'agent' && !['delivered', 'completed', 'cancelled', 'escalated'].includes(selectedOrder.status) && (
+                  {selectedOrder && canManageOrders && !['delivered', 'completed', 'cancelled', 'escalated'].includes(selectedOrder.status) && (
                     <div className="pt-4 border-t border-border flex items-center justify-end gap-2">
                       <Button
                         type="button"
@@ -1198,6 +1103,7 @@ export function Orders() {
         </Dialog>
 
         <Dialog open={isDispatchDialogOpen} onOpenChange={(open) => {
+            if (isUploading) return;
             if (!open) { setPhotoFile(null); setPhotoPreview(null); }
             setIsDispatchDialogOpen(open);
           }}>
@@ -1310,7 +1216,7 @@ export function Orders() {
       <div className="flex items-center gap-2 bg-card p-3 border border-border rounded-xl">
         <ShoppingCart className="w-4 h-4 text-zinc-400 ml-1" />
         <Input 
-          placeholder="Filter by Order #, or Client..." 
+          placeholder="Search order number, customer, or SKU…"
           className="h-8 text-xs border-none shadow-none focus-visible:ring-0"
           value={searchQuery}
           onChange={e => setSearchQuery(e.target.value)}
@@ -1330,8 +1236,8 @@ export function Orders() {
       {/* Mobile Card View */}
       <div className="lg:hidden space-y-3">
         {filteredOrders.map(order => {
-          const deadlineDate = typeof order.deliveryDeadline?.toDate === 'function' ? order.deliveryDeadline.toDate() : null;
-          const isOverdue = deadlineDate && deadlineDate < new Date() && !['delivered', 'completed'].includes(order.status);
+          const deadlineDate = typeof order.deliveryDeadline?.toDate === 'function' ? order.deliveryDeadline.toDate() : order.deliveryDeadline ? new Date(order.deliveryDeadline) : null;
+          const isOverdue = deadlineDate && deadlineDate < new Date() && !['delivered', 'completed', 'cancelled', 'escalated'].includes(order.status);
           return (
             <div key={order.id} className="bg-card border border-border rounded-xl p-4 space-y-3">
               <div className="flex items-start justify-between gap-2">
@@ -1366,7 +1272,7 @@ export function Orders() {
                 <Button size="icon" variant="ghost" className="h-7 w-7 text-muted-foreground hover:text-foreground" onClick={() => handleViewDetails(order)} title="View Details">
                   <Eye className="w-4 h-4" />
                 </Button>
-                {profile?.role !== 'agent' && (
+                {canManageOrders && (
                   <>
                     {order.status === 'pending' && (
                       <Button size="icon" variant="ghost" className="h-7 w-7 text-zinc-400 hover:text-zinc-900" onClick={() => updateOrderStatus(order, 'preparing')} title="Move to Preparing">
@@ -1383,6 +1289,7 @@ export function Orders() {
                         <CheckCircle2 className="w-4 h-4" />
                       </Button>
                     )}
+                    {order.status === 'delivered' && <Button size="sm" variant="outline" onClick={() => updateOrderStatus(order, 'completed')}>Complete</Button>}
                     {order.status !== 'delivered' && order.status !== 'completed' && order.status !== 'cancelled' && order.status !== 'escalated' && (
                       <>
                         <Button
@@ -1448,8 +1355,8 @@ export function Orders() {
             </TableHeader>
             <TableBody>
               {filteredOrders.map(order => {
-                const deadlineDate = typeof order.deliveryDeadline?.toDate === 'function' ? order.deliveryDeadline.toDate() : null;
-                const isOverdue = deadlineDate && deadlineDate < new Date() && !['delivered', 'completed'].includes(order.status);
+                const deadlineDate = typeof order.deliveryDeadline?.toDate === 'function' ? order.deliveryDeadline.toDate() : order.deliveryDeadline ? new Date(order.deliveryDeadline) : null;
+                const isOverdue = deadlineDate && deadlineDate < new Date() && !['delivered', 'completed', 'cancelled', 'escalated'].includes(order.status);
                 return (
                   <TableRow key={order.id} className="group transition-colors">
                     <TableCell className="font-mono text-xs text-zinc-400 font-medium">
@@ -1494,7 +1401,7 @@ export function Orders() {
                       >
                         <Eye className="w-4 h-4" />
                       </Button>
-                      {profile?.role !== 'agent' && (
+                      {canManageOrders && (
                         <>
                           {order.status === 'pending' && (
                             <Button size="icon" variant="ghost" className="h-7 w-7 text-zinc-400 hover:text-zinc-900" onClick={() => updateOrderStatus(order, 'preparing')} title="Move to Preparing">
@@ -1511,6 +1418,7 @@ export function Orders() {
                               <CheckCircle2 className="w-4 h-4" />
                             </Button>
                           )}
+                          {order.status === 'delivered' && <Button size="sm" variant="outline" onClick={() => updateOrderStatus(order, 'completed')}>Complete</Button>}
                           {order.status !== 'delivered' && order.status !== 'completed' && order.status !== 'cancelled' && order.status !== 'escalated' && (
                             <>
                               <Button

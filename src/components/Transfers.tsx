@@ -1,4 +1,7 @@
+import { hasAdminRole } from '../lib/staffPermissions';
 import React, { useState, useEffect } from 'react';
+import { useStaffAccess } from '../hooks/useStaffAccess';
+import { permitsMovement } from '../lib/staffPermissions';
 import { db } from '../lib/supabaseAdapter';
 import { collection, onSnapshot, addDoc, updateDoc, doc, query, orderBy, serverTimestamp } from '../lib/supabaseAdapter';
 import { Transfer, Product, Warehouse, InventoryItem, TransferStatus } from '../types';
@@ -15,8 +18,9 @@ import { Badge } from '@/components/ui/badge';
 import { useAuth } from '../hooks/useAuth';
 import { toast } from 'sonner';
 
-export function Transfers() {
+export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
   const { profile } = useAuth();
+  const { permissions } = useStaffAccess();
   const [transfers, setTransfers] = useState<Transfer[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
@@ -42,7 +46,7 @@ export function Transfers() {
   // Action Loading State
   const [isProcessing, setIsProcessing] = useState(false);
 
-  const canManageTransfer = profile?.role === 'admin' || profile?.role === 'secretary' || profile?.role === 'staff';
+  const canManageTransfer = permitsMovement(permissions.movementCreate, 'internal') && permissions.inventory === 'adjust' && (hasAdminRole(profile) || profile?.role === 'secretary' || profile?.role === 'staff');
 
   useEffect(() => {
     const unsubTransfers = onSnapshot(query(collection(db, 'transfers'), orderBy('createdAt', 'desc')), (snap) => {
@@ -363,7 +367,7 @@ export function Transfers() {
           setIsAddTransferOpen(open);
           if (!open) setTransferItems([{ id: Date.now(), productName: '', quantity: 1 }]);
         }}>
-          <DialogTrigger className="h-9 gap-2 px-4 bg-[#1A2332] text-white rounded-lg inline-flex items-center justify-center font-medium transition-all hover:bg-[#1A2332]/90">
+          <DialogTrigger hidden={historyOnly} className={historyOnly ? 'hidden' : "h-9 gap-2 px-4 bg-[#1A2332] text-white rounded-lg inline-flex items-center justify-center font-medium transition-all hover:bg-[#1A2332]/90"}>
             <ArrowRightLeft className="w-4 h-4" /> New Transport Request
           </DialogTrigger>
           <DialogContent>

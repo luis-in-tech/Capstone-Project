@@ -18,6 +18,21 @@ export interface StaffDelegation {
   canAdjustInventory: boolean;
   canAdjustPricelist: boolean;
   createdAt: any;
+  active?: boolean;
+  permissions?: StaffPermissions;
+}
+
+export type MovementAccess = 'both' | 'external' | 'internal' | 'none';
+export type SupplyChainView = 'customers' | 'suppliers' | 'warehouses';
+export interface StaffPermissions {
+  inventory: 'view' | 'adjust';
+  pricelist: 'view' | 'edit';
+  orders: 'none' | 'view' | 'create';
+  movementView: MovementAccess;
+  movementCreate: MovementAccess;
+  supplyChain: SupplyChainView[] | 'all' | SupplyChainView | 'none';
+  warehouseAccess: 'all' | 'selected';
+  warehouseIds: string[];
 }
 
 export interface Product {

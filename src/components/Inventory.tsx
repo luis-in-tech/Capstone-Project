@@ -1,7 +1,9 @@
+import { hasAdminRole } from '../lib/staffPermissions';
+import { useStaffAccess } from '../hooks/useStaffAccess';
 import React, { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { db } from '../lib/supabaseAdapter';
-import { collection, onSnapshot, query, where, addDoc, updateDoc, deleteDoc, doc, serverTimestamp } from '../lib/supabaseAdapter';
+import { collection, onSnapshot, query, where, addDoc, updateDoc, doc, serverTimestamp } from '../lib/supabaseAdapter';
 import { Product, InventoryItem, Warehouse } from '../types';
 import { handleSupabaseError, OperationType } from '../lib/supabaseErrorHandler';
 import { Button } from '@/components/ui/button';
@@ -10,22 +12,25 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Card, CardContent } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter, DialogDescription } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
-import { Search, Plus, QrCode, Package, Warehouse as WarehouseIcon, Building2, AlertTriangle, Eye, CircleDollarSign, SlidersHorizontal, Tag, Pencil, Trash2, MapPin, ImagePlus, X, Download, Upload, FileSpreadsheet, FileText, BarChart3, Info, Printer, CheckCircle2 } from 'lucide-react';
+import { Search, Plus, QrCode, Package, Warehouse as WarehouseIcon, AlertTriangle, Eye, CircleDollarSign, SlidersHorizontal, Tag, Pencil, Trash2, ImagePlus, X, Download, Upload, FileSpreadsheet, FileText, BarChart3, Info, Printer } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useAuth } from '../hooks/useAuth';
 import { toast } from 'sonner';
 import * as XLSX from 'xlsx';
+import { WarehouseLayout } from './WarehouseLayout';
 
 const PRODUCT_TEMPLATE_HEADERS = ['SKU Code', 'Item Name', 'Category', 'Supplier Name', 'Base Price / Retail Price', 'Metro Manila Price', 'Provincial Price', 'Cost', 'Minimum Stock Level', 'Reorder Point'];
 type ImportRow = Record<string, string | number | undefined>;
 interface ProductImportPreview { row: number; data: Omit<Product, 'id'>; errors: string[]; }
-interface NamedOption { id: string; name: string; }
+interface NamedOption { id: string; name: string; active?: boolean; }
 
 export function Inventory() {
   const { profile } = useAuth();
+  const { permissions } = useStaffAccess();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [products, setProducts] = useState<Product[]>([]);
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
@@ -64,32 +69,31 @@ export function Inventory() {
 
   // Warehouse Filter State (for filtering inventory view)
   const [warehouseFilter, setWarehouseFilter] = useState<string>('all');
-  const [isWarehouseManagerOpen, setIsWarehouseManagerOpen] = useState(false);
-  const [newWarehouseName, setNewWarehouseName] = useState('');
-  const [newWarehouseLocation, setNewWarehouseLocation] = useState('');
-  const [isCreatingWarehouse, setIsCreatingWarehouse] = useState(false);
-  const [editingWarehouseId, setEditingWarehouseId] = useState<string | null>(null);
-  const [editingWarehouseName, setEditingWarehouseName] = useState('');
-  const [editingWarehouseLocation, setEditingWarehouseLocation] = useState('');
-  const [warehouseActionId, setWarehouseActionId] = useState<string | null>(null);
+  const [inventoryView, setInventoryView] = useState<'stock' | 'layout'>('stock');
   const [managedCategories, setManagedCategories] = useState<NamedOption[]>([]);
   const [managedSuppliers, setManagedSuppliers] = useState<NamedOption[]>([]);
-  const [referenceManager, setReferenceManager] = useState<'category' | 'supplier' | null>(null);
-  const [newReferenceName, setNewReferenceName] = useState('');
-  const [editingReferenceName, setEditingReferenceName] = useState<string | null>(null);
-  const [referenceDraft, setReferenceDraft] = useState('');
-  const [referenceAction, setReferenceAction] = useState<string | null>(null);
-  const [deletingReference, setDeletingReference] = useState<{
-    name: string;
-    type: 'category' | 'supplier';
-    affectedCount: number;
-    affectedItems: Product[];
-  } | null>(null);
-
   const [hasDelegatedAccess, setHasDelegatedAccess] = useState(false);
 
-  const isAdmin = profile?.role === 'admin';
-  const canAdjustStock = isAdmin || hasDelegatedAccess;
+  useEffect(() => {
+    const category = searchParams.get('category');
+    const productId = searchParams.get('product');
+    const product = products.find(item => item.id === productId);
+    if (category === null && !product) return;
+    const next = new URLSearchParams(searchParams);
+    if (category !== null) {
+      setCategoryFilter(category || 'all');
+      next.delete('category');
+    }
+    if (product) {
+      setSelectedProduct(product);
+      setIsDetailOpen(true);
+      next.delete('product');
+    }
+    setSearchParams(next, { replace: true });
+  }, [products, searchParams, setSearchParams]);
+
+  const isAdmin = hasAdminRole(profile) && permissions.inventory === 'adjust';
+  const canAdjustStock = permissions.inventory === 'adjust';
 
   useEffect(() => {
     if (!productImage) {
@@ -136,16 +140,6 @@ export function Inventory() {
   }, [isAddProductOpen]);
 
   useEffect(() => {
-    if (!profile || profile.role !== 'staff') return;
-    const q = query(collection(db, 'delegations'), where('staffEmail', '==', profile.email.toLowerCase()));
-    const unsub = onSnapshot(q, (snap) => {
-      const hasAccess = snap.docs.some((d: { data: () => Record<string, unknown> }) => d.data().canAdjustInventory === true);
-      setHasDelegatedAccess(hasAccess);
-    });
-    return () => unsub();
-  }, [profile]);
-
-  useEffect(() => {
     const unsubProducts = onSnapshot(collection(db, 'products'), (snap) => {
       setProducts(snap.docs.map((d: { id: string; data: () => Record<string, unknown> }) => ({ id: d.id, ...d.data() } as Product)));
     }, (error) => {
@@ -162,7 +156,7 @@ export function Inventory() {
       handleSupabaseError(error, OperationType.GET, 'warehouses');
     });
     const unsubCategories = onSnapshot(collection(db, 'productCategories'), (snap) => {
-      setManagedCategories(snap.docs.map((d: { id: string; data: () => Record<string, unknown> }) => ({ id: d.id, name: String(d.data().name || '') })).filter((item: NamedOption) => item.name));
+      setManagedCategories(snap.docs.map((d: { id: string; data: () => Record<string, unknown> }) => ({ id: d.id, name: String(d.data().name || ''), active: d.data().active !== false })).filter((item: NamedOption) => item.name));
     }, (error) => handleSupabaseError(error, OperationType.GET, 'productCategories'));
     const unsubSuppliers = onSnapshot(collection(db, 'suppliers'), (snap) => {
       setManagedSuppliers(snap.docs.map((d: { id: string; data: () => Record<string, unknown> }) => ({ id: d.id, name: String(d.data().name || '') })).filter((item: NamedOption) => item.name));
@@ -472,171 +466,11 @@ export function Inventory() {
     }
   };
 
-  const handleAddWarehouse = async (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    if (!newWarehouseName.trim()) return;
-    setIsCreatingWarehouse(true);
-    try {
-      const newWh = {
-        name: newWarehouseName.trim(),
-        location: newWarehouseLocation.trim() || 'Warehouse Facility',
-      };
-      const docRef = await addDoc(collection(db, 'warehouses'), newWh);
-
-      // Initialize inventory for all existing products in this new warehouse
-      for (const p of products) {
-        await addDoc(collection(db, 'inventory'), {
-          productId: p.id,
-          warehouseId: docRef.id,
-          quantity: 0,
-          lastUpdated: serverTimestamp()
-        });
-      }
-
-      setWarehouseFilter(docRef.id);
-      setNewWarehouseName('');
-      setNewWarehouseLocation('');
-      toast.success(`Warehouse "${newWarehouseName}" added successfully`);
-    } catch (err) {
-      handleSupabaseError(err, OperationType.CREATE, 'warehouses');
-    } finally {
-      setIsCreatingWarehouse(false);
-    }
-  };
-
-  const startEditingWarehouse = (warehouse: Warehouse) => {
-    setEditingWarehouseId(warehouse.id);
-    setEditingWarehouseName(warehouse.name);
-    setEditingWarehouseLocation(warehouse.location || '');
-  };
-
-  const handleUpdateWarehouse = async (warehouseId: string) => {
-    if (!editingWarehouseName.trim()) return;
-    setWarehouseActionId(warehouseId);
-    try {
-      await updateDoc(doc(db, 'warehouses', warehouseId), {
-        name: editingWarehouseName.trim(),
-        location: editingWarehouseLocation.trim() || 'Warehouse Facility',
-      });
-      setEditingWarehouseId(null);
-      toast.success('Warehouse updated successfully');
-    } catch (err) {
-      handleSupabaseError(err, OperationType.UPDATE, `warehouses/${warehouseId}`);
-    } finally {
-      setWarehouseActionId(null);
-    }
-  };
-
-  const handleDeleteWarehouse = async (warehouse: Warehouse) => {
-    const warehouseInventory = inventory.filter(item => item.warehouseId === warehouse.id);
-    const stockCount = warehouseInventory.reduce((sum, item) => sum + item.quantity, 0);
-    const warning = stockCount > 0
-      ? `This warehouse still contains ${stockCount.toLocaleString()} units. Deleting it will also remove those inventory records. Continue?`
-      : `Delete "${warehouse.name}"? This will also remove its inventory records.`;
-    if (!window.confirm(warning)) return;
-
-    setWarehouseActionId(warehouse.id);
-    try {
-      for (const item of warehouseInventory) {
-        await deleteDoc(doc(db, 'inventory', item.id));
-      }
-      await deleteDoc(doc(db, 'warehouses', warehouse.id));
-      if (warehouseFilter === warehouse.id) setWarehouseFilter('all');
-      if (editingWarehouseId === warehouse.id) setEditingWarehouseId(null);
-      toast.success(`Warehouse "${warehouse.name}" deleted`);
-    } catch (err) {
-      handleSupabaseError(err, OperationType.DELETE, `warehouses/${warehouse.id}`);
-    } finally {
-      setWarehouseActionId(null);
-    }
-  };
-
-  const handleAddReference = async (event: React.FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    if (!referenceManager || !newReferenceName.trim()) return;
-    const name = newReferenceName.trim();
-    const values = referenceManager === 'category' ? categories : suppliers;
-    if (values.some(value => value.toLowerCase() === name.toLowerCase())) {
-      toast.error(`That ${referenceManager} already exists.`);
-      return;
-    }
-    setReferenceAction('new');
-    try {
-      await addDoc(collection(db, referenceManager === 'category' ? 'productCategories' : 'suppliers'), { name, createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
-      setNewReferenceName('');
-      toast.success(`${referenceManager === 'category' ? 'Category' : 'Supplier'} added`);
-    } catch (error) {
-      handleSupabaseError(error, OperationType.CREATE, referenceManager === 'category' ? 'productCategories' : 'suppliers');
-    } finally { setReferenceAction(null); }
-  };
-
-  const handleUpdateReference = async (oldName: string) => {
-    if (!referenceManager || !referenceDraft.trim()) return;
-    const name = referenceDraft.trim();
-    setReferenceAction(oldName);
-    try {
-      const records = referenceManager === 'category' ? managedCategories : managedSuppliers;
-      const record = records.find(item => item.name === oldName);
-      const collectionName = referenceManager === 'category' ? 'productCategories' : 'suppliers';
-      if (record) await updateDoc(doc(db, collectionName, record.id), { name, updatedAt: serverTimestamp() });
-      else await addDoc(collection(db, collectionName), { name, createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
-      for (const product of products.filter(item => referenceManager === 'category' ? item.category === oldName : item.supplier === oldName)) {
-        await updateDoc(doc(db, 'products', product.id), { [referenceManager === 'category' ? 'category' : 'supplier']: name, updatedAt: new Date() });
-      }
-      setEditingReferenceName(null);
-      toast.success(`${referenceManager === 'category' ? 'Category' : 'Supplier'} updated`);
-    } catch (error) {
-      handleSupabaseError(error, OperationType.UPDATE, referenceManager === 'category' ? 'productCategories' : 'suppliers');
-    } finally { setReferenceAction(null); }
-  };
-
-  const handleDeleteReference = (name: string) => {
-    if (!referenceManager) return;
-    const affected = products.filter(item => referenceManager === 'category' ? item.category === name : item.supplier === name);
-    setDeletingReference({
-      name,
-      type: referenceManager,
-      affectedCount: affected.length,
-      affectedItems: affected
-    });
-  };
-
-  const confirmDeleteReference = async () => {
-    if (!deletingReference) return;
-    const { name, type, affectedCount } = deletingReference;
-    setReferenceAction(name);
-    try {
-      const records = type === 'category' ? managedCategories : managedSuppliers;
-      const record = records.find(item => item.name === name);
-      if (record) {
-        await deleteDoc(doc(db, type === 'category' ? 'productCategories' : 'suppliers', record.id));
-      }
-
-      // Reassign all affected products to 'Uncategorized' (or 'N/A')
-      for (const product of products.filter(item => type === 'category' ? item.category === name : item.supplier === name)) {
-        await updateDoc(doc(db, 'products', product.id), {
-          [type === 'category' ? 'category' : 'supplier']: type === 'category' ? 'Uncategorized' : 'N/A',
-          updatedAt: new Date()
-        });
-      }
-
-      toast.success(
-        type === 'category'
-          ? `Category "${name}" deleted. ${affectedCount} product(s) moved to Uncategorized.`
-          : `Supplier "${name}" deleted. ${affectedCount} product(s) updated.`
-      );
-    } catch (error) {
-      handleSupabaseError(error, OperationType.DELETE, type === 'category' ? 'productCategories' : 'suppliers');
-    } finally {
-      setReferenceAction(null);
-      setDeletingReference(null);
-    }
-  };
-
   const updateStock = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const formData = new FormData(e.currentTarget);
     const warehouseId = formData.get('warehouseId') as string;
+    if (!canAdjustStock || (permissions.warehouseAccess === 'selected' && !permissions.warehouseIds.includes(warehouseId))) { toast.error('You do not have permission to adjust this warehouse.'); return; }
     const quantity = Number(formData.get('quantity'));
     const reason = formData.get('reason') as string;
 
@@ -706,11 +540,6 @@ export function Inventory() {
     });
   };
 
-  const getWarehouseStock = (warehouseId: string) =>
-    inventory
-      .filter(item => item.warehouseId === warehouseId)
-      .reduce((sum, item) => sum + item.quantity, 0);
-
   const activeWarehouseObj = warehouses.find(w => w.id === warehouseFilter);
   const activeWarehouseLabel = warehouseFilter === 'all'
     ? 'All Warehouses'
@@ -718,7 +547,8 @@ export function Inventory() {
 
   const categories = Array.from(new Set([...managedCategories.map(item => item.name), ...products.map(product => product.category).filter(Boolean)])).sort();
   const suppliers = Array.from(new Set([...managedSuppliers.map(item => item.name), ...products.map(product => product.supplier).filter(Boolean) as string[]])).sort();
-  const categoryOptions = Array.from(new Set(['Uncategorized', ...categories])).filter(Boolean).sort();
+  const inactiveCategoryNames = new Set(managedCategories.filter(item => item.active === false).map(item => item.name));
+  const categoryOptions = Array.from(new Set(['Uncategorized', ...categories])).filter(name => name && !inactiveCategoryNames.has(name)).sort();
   const supplierOptions = Array.from(new Set(['N/A', ...suppliers])).filter(Boolean).sort();
 
   const isAddSkuDuplicate = Boolean(
@@ -748,7 +578,7 @@ export function Inventory() {
     const matchesSearch = [product.name, product.sku, product.category, product.supplier]
       .some(value => (value || '').toLowerCase().includes(term));
     return matchesSearch
-      && (categoryFilter === 'all' || product.category === categoryFilter)
+      && (categoryFilter === 'all' || (product.category || 'Uncategorized') === categoryFilter)
       && (supplierFilter === 'all' || product.supplier === supplierFilter)
       && (stockFilter === 'all' || getProductStatus(product, stock, warehouseFilter) === stockFilter)
       && (!hideZeroStock || stock > 0);
@@ -909,8 +739,16 @@ export function Inventory() {
   };
 
 
+  const inventoryNavigation = <div className="flex gap-1 rounded-xl bg-muted/60 p-1 w-fit" aria-label="Inventory views">
+    <Button variant={inventoryView === 'stock' ? 'default' : 'ghost'} aria-pressed={inventoryView === 'stock'} onClick={() => setInventoryView('stock')}><Package className="size-4" />Products & Stock</Button>
+    <Button variant={inventoryView === 'layout' ? 'default' : 'ghost'} aria-pressed={inventoryView === 'layout'} onClick={() => setInventoryView('layout')}><WarehouseIcon className="size-4" />Warehouse Layout</Button>
+  </div>;
+
+  if (inventoryView === 'layout') return <div className="space-y-5 pb-20">{inventoryNavigation}<WarehouseLayout warehouses={warehouses} products={products} inventory={inventory} /></div>;
+
   return (
     <div className="space-y-5 pb-20">
+      {inventoryNavigation}
       <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
         <div>
           <p className="mt-1 text-sm text-muted-foreground">Manage products, stock levels, suppliers, and warehouse inventory.</p>
@@ -919,7 +757,6 @@ export function Inventory() {
           <Button type="button" variant="outline" onClick={() => navigate('/pricelist')} className="h-11 gap-3 rounded-xl border-zinc-200 bg-white px-5 text-base font-semibold text-zinc-500 shadow-sm hover:bg-zinc-50 hover:text-zinc-700">
             <Tag className="h-5 w-5 text-zinc-500" strokeWidth={2.25} /> Pricelist
           </Button>
-          {isAdmin && <Select value="" onValueChange={(value) => { if (value === 'warehouses') setIsWarehouseManagerOpen(true); if (value === 'categories') setReferenceManager('category'); if (value === 'suppliers') setReferenceManager('supplier'); }}><SelectTrigger className="h-11! w-auto gap-2 rounded-xl px-5 font-bold shadow-sm"><Building2 className="h-4 w-4" /><SelectValue placeholder="Manage" /></SelectTrigger><SelectContent><SelectItem value="warehouses">Warehouses</SelectItem><SelectItem value="categories">Categories</SelectItem><SelectItem value="suppliers">Suppliers</SelectItem></SelectContent></Select>}
           {isAdmin && <Button type="button" variant="outline" onClick={() => setIsImportOpen(true)} className="h-11 gap-2 rounded-xl px-5 font-bold shadow-sm"><Upload className="h-4 w-4" /> Import Products</Button>}
           {isAdmin && <Button type="button" onClick={() => setIsAddProductOpen(true)} className="h-11 gap-2 rounded-xl bg-[#101d33] px-5 font-bold text-white shadow-lg hover:bg-[#172842]"><Plus className="h-4 w-4" /> Add Product</Button>}
         </div>
@@ -1280,165 +1117,6 @@ export function Inventory() {
               </DialogFooter>
             </form>
           )}
-        </DialogContent>
-      </Dialog>
-
-      {/* Warehouse Manager */}
-      <Dialog open={isWarehouseManagerOpen} onOpenChange={setIsWarehouseManagerOpen}>
-        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <Building2 className="h-5 w-5 text-[#FF2D20]" /> Manage Warehouses
-            </DialogTitle>
-            <DialogDescription>
-              Add new facilities or update your existing warehouse network.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-3 py-2">
-            <Label>Existing Warehouses</Label>
-            <div className="max-h-72 space-y-2 overflow-y-auto pr-1">
-              {warehouses.map(warehouse => (
-                <div key={warehouse.id} className="rounded-xl border border-border p-3">
-                  {editingWarehouseId === warehouse.id ? (
-                    <div className="space-y-3">
-                      <Input value={editingWarehouseName} onChange={event => setEditingWarehouseName(event.target.value)} placeholder="Warehouse name" autoFocus />
-                      <Input value={editingWarehouseLocation} onChange={event => setEditingWarehouseLocation(event.target.value)} placeholder="Location / address" />
-                      <div className="flex justify-end gap-2">
-                        <Button type="button" size="sm" variant="outline" onClick={() => setEditingWarehouseId(null)}>Cancel</Button>
-                        <Button type="button" size="sm" disabled={!editingWarehouseName.trim() || warehouseActionId === warehouse.id} onClick={() => handleUpdateWarehouse(warehouse.id)}>
-                          {warehouseActionId === warehouse.id ? 'Saving...' : 'Save Changes'}
-                        </Button>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="flex items-center gap-3">
-                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-muted"><WarehouseIcon className="h-5 w-5 text-muted-foreground" /></div>
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate text-sm font-bold">{warehouse.name}</p>
-                        <p className="flex items-center gap-1 truncate text-xs text-muted-foreground"><MapPin className="h-3 w-3 shrink-0" />{warehouse.location || 'Warehouse Facility'}</p>
-                      </div>
-                      <Badge variant="secondary" className="hidden sm:inline-flex">{getWarehouseStock(warehouse.id).toLocaleString()} units</Badge>
-                      <Button type="button" variant="ghost" size="icon" title="Edit warehouse" disabled={warehouseActionId !== null} onClick={() => startEditingWarehouse(warehouse)}><Pencil className="h-4 w-4" /></Button>
-                      <Button type="button" variant="ghost" size="icon" title="Delete warehouse" disabled={warehouseActionId !== null} className="text-red-500 hover:bg-red-50 hover:text-red-600" onClick={() => handleDeleteWarehouse(warehouse)}><Trash2 className="h-4 w-4" /></Button>
-                    </div>
-                  )}
-                </div>
-              ))}
-              {warehouses.length === 0 && <div className="rounded-xl border border-dashed p-6 text-center text-sm text-muted-foreground">No warehouses have been added yet.</div>}
-            </div>
-          </div>
-          <form onSubmit={handleAddWarehouse} className="space-y-4 border-t border-border pt-4">
-            <div><p className="text-sm font-bold">Add a Warehouse</p><p className="text-xs text-muted-foreground">Inventory tracking will initialize automatically for all products.</p></div>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div className="space-y-2"><Label htmlFor="warehouseName">Warehouse Name</Label><Input id="warehouseName" required placeholder="e.g., Cebu Hub" value={newWarehouseName} onChange={event => setNewWarehouseName(event.target.value)} /></div>
-              <div className="space-y-2"><Label htmlFor="warehouseLocation">Location / Address</Label><Input id="warehouseLocation" placeholder="e.g., Cebu City" value={newWarehouseLocation} onChange={event => setNewWarehouseLocation(event.target.value)} /></div>
-            </div>
-            <DialogFooter><Button type="submit" disabled={isCreatingWarehouse || !newWarehouseName.trim()} className="bg-[#FF2D20] text-white hover:bg-[#E02619]"><Plus className="mr-2 h-4 w-4" />{isCreatingWarehouse ? 'Creating...' : 'Add Warehouse'}</Button></DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog open={referenceManager !== null} onOpenChange={(open) => { if (!open) { setReferenceManager(null); setNewReferenceName(''); setEditingReferenceName(null); } }}>
-        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
-          <DialogHeader>
-            <DialogTitle>Manage {referenceManager === 'category' ? 'Categories' : 'Suppliers'}</DialogTitle>
-            <DialogDescription>Add, rename, or remove {referenceManager === 'category' ? 'product categories' : 'preferred suppliers'} used by Inventory.</DialogDescription>
-          </DialogHeader>
-          <form onSubmit={handleAddReference} className="space-y-3 border-b border-border pb-4">
-            <Label htmlFor="newReferenceName">Add {referenceManager === 'category' ? 'Category' : 'Supplier'}</Label>
-            <div className="flex gap-2"><Input id="newReferenceName" value={newReferenceName} onChange={event => setNewReferenceName(event.target.value)} required placeholder={`Enter ${referenceManager || ''} name`} /><Button type="submit" disabled={!newReferenceName.trim() || referenceAction !== null}><Plus className="mr-2 h-4 w-4" />Add</Button></div>
-          </form>
-          <div className="max-h-72 space-y-2 overflow-y-auto py-2 pr-1">
-            {(referenceManager === 'category' ? categories : suppliers.filter(name => name !== 'N/A')).map(name => (
-              <div key={name} className="flex items-center gap-2 rounded-xl border border-border p-3">
-                {editingReferenceName === name ? (
-                  <>
-                    <Input value={referenceDraft} onChange={event => setReferenceDraft(event.target.value)} autoFocus />
-                    <Button type="button" size="sm" variant="outline" onClick={() => setEditingReferenceName(null)}>Cancel</Button>
-                    <Button type="button" size="sm" disabled={!referenceDraft.trim() || referenceAction !== null} onClick={() => handleUpdateReference(name)}>Save</Button>
-                  </>
-                ) : (
-                  <>
-                    <span className="min-w-0 flex-1 truncate text-sm font-semibold">{name}</span>
-                    <Button type="button" variant="ghost" size="icon" title={`Edit ${referenceManager}`} disabled={referenceAction !== null} onClick={() => { setEditingReferenceName(name); setReferenceDraft(name); }}><Pencil className="h-4 w-4" /></Button>
-                    <Button type="button" variant="ghost" size="icon" title={`Delete ${referenceManager}`} disabled={referenceAction !== null} className="text-red-500 hover:bg-red-50 hover:text-red-600" onClick={() => handleDeleteReference(name)}><Trash2 className="h-4 w-4" /></Button>
-                  </>
-                )}
-              </div>
-            ))}
-            {(referenceManager === 'category' ? categories : suppliers.filter(name => name !== 'N/A')).length === 0 && <div className="rounded-xl border border-dashed p-6 text-center text-sm text-muted-foreground">No {referenceManager === 'category' ? 'categories' : 'suppliers'} added yet.</div>}
-          </div>
-        </DialogContent>
-      </Dialog>
-
-      {/* Destructive Reference Deletion Confirmation Dialog */}
-      <Dialog open={deletingReference !== null} onOpenChange={(open) => { if (!open && referenceAction === null) setDeletingReference(null); }}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2 text-red-600">
-              <AlertTriangle className="h-5 w-5" />
-              Delete {deletingReference?.type === 'category' ? 'Category' : 'Supplier'}
-            </DialogTitle>
-            <DialogDescription>
-              Are you sure you want to remove <span className="font-bold text-foreground">"{deletingReference?.name}"</span> from the catalog?
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="space-y-4 py-2">
-            {deletingReference && deletingReference.affectedCount > 0 ? (
-              <div className="rounded-xl border border-amber-200 bg-amber-50/50 p-4 space-y-3 dark:border-amber-900/50 dark:bg-amber-950/20">
-                <div className="flex items-start gap-3">
-                  <AlertTriangle className="h-5 w-5 text-amber-600 shrink-0 mt-0.5" />
-                  <div className="space-y-1">
-                    <p className="text-xs font-bold text-amber-900 dark:text-amber-200">
-                      {deletingReference.affectedCount} Product{deletingReference.affectedCount > 1 ? 's' : ''} Will Be Affected
-                    </p>
-                    <p className="text-xs text-amber-700 dark:text-amber-300">
-                      Deleting this {deletingReference.type} will automatically wipe its assignment and reassign all affected products to <span className="font-mono font-bold">{deletingReference.type === 'category' ? 'Uncategorized' : 'N/A'}</span>.
-                    </p>
-                  </div>
-                </div>
-
-                <div className="max-h-36 overflow-y-auto space-y-1.5 rounded-lg border border-amber-200/60 bg-white/80 p-2 dark:border-amber-900/30 dark:bg-zinc-900/80">
-                  <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Affected Items:</p>
-                  {deletingReference.affectedItems.map(item => (
-                    <div key={item.id} className="flex items-center justify-between text-xs py-0.5">
-                      <span className="font-semibold truncate max-w-[200px]">{item.name}</span>
-                      <span className="font-mono text-[10px] text-muted-foreground">{item.sku}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ) : (
-              <div className="rounded-xl border border-emerald-200 bg-emerald-50/50 p-4 flex items-center gap-3 dark:border-emerald-900/50 dark:bg-emerald-950/20">
-                <CheckCircle2 className="h-5 w-5 text-emerald-600 shrink-0" />
-                <p className="text-xs text-emerald-800 dark:text-emerald-200">
-                  No products are currently using this {deletingReference?.type}. It is safe to delete without reassigning any products.
-                </p>
-              </div>
-            )}
-          </div>
-
-          <DialogFooter className="gap-2 sm:gap-0">
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => setDeletingReference(null)}
-              disabled={referenceAction !== null}
-            >
-              Cancel
-            </Button>
-            <Button
-              type="button"
-              variant="destructive"
-              onClick={confirmDeleteReference}
-              disabled={referenceAction !== null}
-              className="gap-2"
-            >
-              <Trash2 className="h-4 w-4" />
-              {referenceAction !== null ? 'Deleting...' : deletingReference && deletingReference.affectedCount > 0 ? `Reassign ${deletingReference.affectedCount} & Delete` : `Delete ${deletingReference?.type === 'category' ? 'Category' : 'Supplier'}`}
-            </Button>
-          </DialogFooter>
         </DialogContent>
       </Dialog>
 

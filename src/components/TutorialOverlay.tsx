@@ -97,17 +97,17 @@ const TUTORIAL_PAGES = [
   },
   {
     id: 'transport',
-    title: 'Transport',
+    title: 'Inventory Movement',
     icon: <Truck className="w-8 h-8 text-zinc-900" />,
-    content: 'The Transport module handles stock movement between warehouse facilities. Initiate transport requests specifying source and destination warehouses, add multiple product items, and track the movement lifecycle: Pending → In Transit → Received. Stock levels auto-adjust upon confirmation.',
+    content: 'Record external supplier receipts or internal warehouse transfers. Select products and quantities, review the summary, and confirm to update inventory. External receipts also record a purchase expense. Movement IDs, date/time, and the recorder are assigned automatically. Earlier transport requests remain available in history.',
     highlights: [
-      'Warehouse-to-Warehouse Transport',
-      'Multi-Item Transport Requests',
-      'Status Lifecycle Tracking',
-      'Automatic Inventory Rebalancing',
-      'Transport Detail View'
+      'External Receipts & Internal Transfers',
+      'Multi-Product Selection',
+      'Review Before Confirmation',
+      'Automatic Stock & Purchase Recording',
+      'Movement Details & History'
     ],
-    videoLabel: 'Transport Walkthrough'
+    videoLabel: 'Inventory Movement Walkthrough'
   },
   {
     id: 'finance',
@@ -265,7 +265,7 @@ export const TutorialOverlay = ({ open, onOpenChange }: { open: boolean, onOpenC
                           {current.id === 'dashboard' && 'Analytics is accessible to Admin users and reports on Active Pro order and fulfillment performance.'}
                           {current.id === 'inventory' && 'Inventory is visible to all roles. Stock adjustments require Admin access or a specific delegation from the Staff Delegation panel.'}
                           {current.id === 'orders' && 'Order Entry is available to all roles. Agents can create and manage their own orders, while Admins and Secretaries can view all orders system-wide.'}
-                          {current.id === 'transport' && 'Transport management is restricted to Admin and Secretary roles for initiating and tracking warehouse-to-warehouse stock movements.'}
+                          {current.id === 'transport' && 'Inventory Movement is available to Admin and Secretary roles for recording supplier receipts and warehouse transfers.'}
                           {current.id === 'finance' && 'The Financials module is Admin-only. It contains sensitive revenue and expense data used for business decision-making.'}
                           {current.id === 'logistics' && 'The Logistics Optimizer is available to Admin and Secretary roles for reviewing and applying AI-driven operational recommendations.'}
                           {current.id === 'pricelist' && 'The Pricelist is visible to all roles. Editing privileges require Admin access or a pricelist delegation from Staff Delegation.'}

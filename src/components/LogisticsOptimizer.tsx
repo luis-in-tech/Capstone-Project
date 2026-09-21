@@ -36,6 +36,11 @@ import { db, collection, onSnapshot, query, orderBy, addDoc, serverTimestamp } f
 import { Order, InventoryItem, Warehouse, Product, Transfer } from '../types';
 import { useAuth } from '../hooks/useAuth';
 
+<<<<<<< Updated upstream
+=======
+type LogisticsOrder = Order & { deliveryCity?: string };
+
+>>>>>>> Stashed changes
 const TRUCK_UNIT_CAPACITY = 80;
 const COST_PER_INDIVIDUAL_RUN = 1250;
 const COST_PER_CONSOLIDATED_RUN = 1800;
@@ -71,7 +76,11 @@ export function LogisticsOptimizer() {
   const [activeTab, setActiveTab] = useState<'consolidation' | 'load_balancing' | 'traffic_rerouting'>('consolidation');
 
   // Real database states
+<<<<<<< Updated upstream
   const [dbOrders, setDbOrders] = useState<Order[]>([]);
+=======
+  const [dbOrders, setDbOrders] = useState<LogisticsOrder[]>([]);
+>>>>>>> Stashed changes
   const [dbWarehouses, setDbWarehouses] = useState<Warehouse[]>([]);
   const [dbInventory, setDbInventory] = useState<InventoryItem[]>([]);
   const [dbProducts, setDbProducts] = useState<Product[]>([]);
@@ -260,13 +269,21 @@ export function LogisticsOptimizer() {
         createdAt: new Date(),
         updatedAt: new Date()
       }
+<<<<<<< Updated upstream
     ] as Order[];
+=======
+    ] satisfies LogisticsOrder[];
+>>>>>>> Stashed changes
   }, [dbOrders]);
 
   const consolidatedGroups = useMemo(() => {
     const groups: Record<string, {
       region: string;
+<<<<<<< Updated upstream
       orders: Order[];
+=======
+      orders: LogisticsOrder[];
+>>>>>>> Stashed changes
       totalUnits: number;
       totalRevenue: number;
       cities: string[];
@@ -377,6 +394,14 @@ export function LogisticsOptimizer() {
   }, [activeWarehousesList]);
 
   const handleTriggerStockTransferProtocol = async (imbalance: typeof inventoryImbalances[0]) => {
+<<<<<<< Updated upstream
+=======
+    if (imbalance.productId.startsWith('sim-')) {
+      setTriggeredProtocols(prev => [...prev, `${imbalance.productId}-${imbalance.depletedWarehouse.id}`]);
+      toast.info('Demo transfer simulated. No inventory or transfer records were changed.');
+      return;
+    }
+>>>>>>> Stashed changes
     setIsProcessing(true);
     const protocolId = `${imbalance.productId}-${imbalance.depletedWarehouse.id}`;
 
@@ -387,7 +412,11 @@ export function LogisticsOptimizer() {
         productId: imbalance.productId,
         quantity: imbalance.recommendedTransferQty,
         status: 'pending',
+<<<<<<< Updated upstream
         initiatedBy: profile?.displayName || profile?.email || 'Automated Load Balancer',
+=======
+        initiatedBy: profile?.uid || 'Automated Load Balancer',
+>>>>>>> Stashed changes
         createdAt: serverTimestamp(),
         notes: `Auto-rebalanced ${imbalance.recommendedTransferQty} items from ${imbalance.surplusWarehouse.name} to ${imbalance.depletedWarehouse.name}`
       });
@@ -398,11 +427,15 @@ export function LogisticsOptimizer() {
         icon: <Boxes className="w-5 h-5 text-emerald-500" />
       });
     } catch {
+<<<<<<< Updated upstream
       setTriggeredProtocols(prev => [...prev, protocolId]);
       toast.success(`Stock Transfer Request Sent!`, {
         description: `Scheduled ${imbalance.recommendedTransferQty} boxes to move from ${imbalance.surplusWarehouse.name} to ${imbalance.depletedWarehouse.name}.`,
         icon: <CheckCircle2 className="w-5 h-5 text-emerald-500" />
       });
+=======
+      toast.error('Unable to save the stock transfer. Please try again.');
+>>>>>>> Stashed changes
     } finally {
       setIsProcessing(false);
     }
@@ -413,6 +446,14 @@ export function LogisticsOptimizer() {
   // ══════════════════════════════════════════════════════════════════════════
   const handleReportIncident = (e: React.FormEvent) => {
     e.preventDefault();
+<<<<<<< Updated upstream
+=======
+    const delayMinutes = Number(incidentDelay);
+    if (!Number.isFinite(delayMinutes) || delayMinutes <= 0 || !driverReporterName.trim()) {
+      toast.error('Enter a positive delay and a driver name.');
+      return;
+    }
+>>>>>>> Stashed changes
 
     let bypassRoute = 'Take C-5 Highway & Katipunan bypass';
     let timeSaved = 28;
@@ -428,11 +469,19 @@ export function LogisticsOptimizer() {
       id: `inc-${Date.now()}`,
       type: selectedIncidentType,
       corridor: selectedCorridor,
+<<<<<<< Updated upstream
       delayMinutes: parseInt(incidentDelay) || 30,
       reporter: driverReporterName || 'Driver Field Unit',
       timestamp: 'Just now',
       bypassRoute,
       timeSavedMinutes: timeSaved,
+=======
+      delayMinutes,
+      reporter: driverReporterName || 'Driver Field Unit',
+      timestamp: 'Just now',
+      bypassRoute,
+      timeSavedMinutes: Math.min(timeSaved, delayMinutes),
+>>>>>>> Stashed changes
       status: 'active'
     };
 
@@ -455,6 +504,12 @@ export function LogisticsOptimizer() {
 
   return (
     <div className="space-y-6 pb-16 max-w-7xl mx-auto">
+<<<<<<< Updated upstream
+=======
+      <p className="text-xs text-muted-foreground" role="note">
+        Preview: dispatch, warehouse balancing, traffic alerts, and driver notifications are simulated for this session. Sample orders appear when no pending orders are available. Savings and detours are illustrative estimates.
+      </p>
+>>>>>>> Stashed changes
       {/* Friendly Top Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-gradient-to-r from-amber-50 via-amber-100/40 to-transparent dark:from-amber-950/20 dark:via-amber-900/10 dark:to-transparent p-6 rounded-2xl border border-amber-200/60 dark:border-amber-900/40">
         <div>
@@ -548,7 +603,11 @@ export function LogisticsOptimizer() {
 
       {/* Main 3 Core Feature Tabs */}
       <Tabs value={activeTab} onValueChange={v => setActiveTab(v as any)} className="w-full space-y-4">
+<<<<<<< Updated upstream
         <TabsList className="grid grid-cols-1 md:grid-cols-3 w-full gap-3 bg-transparent border-0 p-0 shadow-none h-auto">
+=======
+        <TabsList className="grid grid-cols-1 md:grid-cols-3 w-full gap-3 bg-transparent border-0 p-0 shadow-none h-auto group-data-horizontal/tabs:h-fit">
+>>>>>>> Stashed changes
           <TabsTrigger
             value="consolidation"
             className={cn(

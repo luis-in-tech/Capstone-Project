@@ -1,7 +1,10 @@
+import { useStaffAccess } from '../hooks/useStaffAccess';
+import { canVisit } from '../lib/staffPermissions';
 import { Link, useLocation } from 'react-router-dom';
 import {
   BarChart3,
   Package,
+  Building2,
   ShoppingCart,
   Truck,
   DollarSign,
@@ -32,17 +35,19 @@ const navigation = [
   { name: 'Overview', href: '/admin', icon: Shield, roles: ['admin'] },
   { name: 'Analytics', href: '/dashboard', icon: BarChart3, roles: ['admin'] },
   { name: 'Inventory', href: '/inventory', icon: Package, roles: ['admin', 'secretary', 'agent', 'staff'] },
+  { name: 'Supply Chain', href: '/supply-chain', icon: Building2, roles: ['admin', 'secretary', 'agent', 'staff'] },
   { name: 'Order Entry', href: '/orders', icon: ShoppingCart, roles: ['admin', 'secretary', 'agent', 'staff'] },
-  { name: 'Transport', href: '/transfers', icon: Truck, roles: ['admin', 'secretary'] },
+  { name: 'Inventory Movement', href: '/transfers', icon: Truck, roles: ['admin', 'secretary', 'agent', 'staff'] },
   { name: 'Financials', href: '/finance', icon: DollarSign, roles: ['admin'] },
   { name: 'Logistics Optimizer', href: '/logistics', icon: Activity, roles: ['admin', 'secretary'] },
   { name: 'Pricelist', href: '/pricelist', icon: Tag, roles: ['admin', 'secretary', 'agent', 'staff'] },
-  { name: 'Staff Delegation', href: '/delegation', icon: UserCog, roles: ['admin', 'agent'] },
+  { name: 'Staff Delegation', href: '/delegation', icon: UserCog, roles: ['admin'] },
   { name: 'Settings', href: '/settings', icon: Settings, roles: ['admin', 'secretary', 'agent', 'staff'] },
 ];
 
 export function Layout({ children }: { children: React.ReactNode }) {
   const { profile, logout, updateRole } = useAuth();
+  const access = useStaffAccess();
   const { theme, setTheme } = useTheme();
   const location = useLocation();
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -52,7 +57,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const isDark = theme === 'dark';
 
   const filteredNavigation = navigation.filter(item =>
-    item.roles.includes(profile?.role || 'agent')
+    item.roles.includes(profile?.role || 'agent') && ((!access.revoked && !access.error && canVisit(item.href, access.permissions)) || item.href === '/settings')
   );
 
   const SidebarContent = () => (
