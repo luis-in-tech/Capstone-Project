@@ -10,13 +10,13 @@ import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
-import { 
-  ShoppingCart, 
-  Plus, 
-  Clock, 
-  Truck, 
-  CheckCircle2, 
-  Camera, 
+import {
+  ShoppingCart,
+  Plus,
+  Clock,
+  Truck,
+  CheckCircle2,
+  Camera,
   AlertCircle,
   AlertTriangle,
   ChevronRight,
@@ -32,17 +32,11 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { useAuth } from '../hooks/useAuth';
 import { toast } from 'sonner';
-<<<<<<< Updated upstream
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { addDays, format } from 'date-fns';
-import { DELIVERY_REGIONS, REGION_LOCATIONS } from '../constants/deliveryLocations';
-=======
 import { format } from 'date-fns';
 import { OrderEntry } from './OrderEntry';
 import { DeliveryReceipt } from './DeliveryReceipt';
 import { supabase } from '../lib/supabase';
 import { type ReceiptOrder, type ReceiptItem, money } from '../lib/orderEntry';
->>>>>>> Stashed changes
 
 export function Orders() {
   const { profile } = useAuth();
@@ -53,12 +47,7 @@ export function Orders() {
   const [products, setProducts] = useState<Product[]>([]);
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
   const [isNewOrderOpen, setIsNewOrderOpen] = useState(false);
-<<<<<<< Updated upstream
-  const [cart, setCart] = useState<{ productId: string; quantity: number; price: number; name: string; sku: string }[]>([]);
-  const [clientInfo, setClientInfo] = useState({ name: '', region: '', city: '' });
-=======
   const [orderEntryKey, setOrderEntryKey] = useState(0);
->>>>>>> Stashed changes
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
   const [orderItems, setOrderItems] = useState<OrderItem[]>([]);
   const [isOrderDetailsOpen, setIsOrderDetailsOpen] = useState(false);
@@ -117,430 +106,6 @@ export function Orders() {
     };
   }, [profile]);
 
-<<<<<<< Updated upstream
-  const getProductStock = (productId: string) =>
-    inventory.filter(i => i.productId === productId).reduce((sum, i) => sum + i.quantity, 0);
-
-  const addToCart = (product: Product) => {
-    const totalStock = getProductStock(product.id);
-    if (totalStock === 0) {
-      toast.error(`${product.name} is out of stock and cannot be ordered.`);
-      return;
-    }
-    setCart(prev => {
-      const existing = prev.find(item => item.productId === product.id);
-      if (existing) {
-        return prev.map(item => item.productId === product.id 
-          ? { ...item, quantity: item.quantity + 1 }
-          : item
-        );
-      }
-      return [...prev, { 
-        productId: product.id, 
-        quantity: 1, 
-        price: product.wholesalePrice || product.basePrice,
-        name: product.name,
-        sku: product.sku
-      }];
-    });
-    toast.success(`${product.name} added to cart`);
-  };
-
-  const addQuantityToCart = (product: Product, quantity: number) => {
-    const requestedQuantity = Math.max(1, Math.floor(quantity || 1));
-    const totalStock = getProductStock(product.id);
-    const quantityAlreadyInCart = cart.find(item => item.productId === product.id)?.quantity || 0;
-    if (totalStock <= 0 || quantityAlreadyInCart + requestedQuantity > totalStock) {
-      toast.error(`Only ${Math.max(0, totalStock - quantityAlreadyInCart)} more ${product.name} available.`);
-      return false;
-    }
-    setCart(prev => {
-      const existing = prev.find(item => item.productId === product.id);
-      if (existing) {
-        return prev.map(item => item.productId === product.id
-          ? { ...item, quantity: item.quantity + requestedQuantity }
-          : item
-        );
-      }
-      return [...prev, {
-        productId: product.id,
-        quantity: requestedQuantity,
-        price: product.wholesalePrice || product.basePrice,
-        name: product.name,
-        sku: product.sku
-      }];
-    });
-    toast.success(`${requestedQuantity} x ${product.name} added to cart`);
-    return true;
-  };
-
-  const findProductByCode = (code: string) => {
-    const normalizedCode = code.trim().toLowerCase();
-    return products.find(product => product.sku.trim().toLowerCase() === normalizedCode);
-  };
-
-  const commitSkuRowAndAdvance = (rowId: number) => {
-    const rowIndex = skuRows.findIndex(row => row.id === rowId);
-    const row = skuRows[rowIndex];
-    if (!row) return;
-    const product = findProductByCode(row.sku);
-    if (!product) {
-      toast.error(row.sku.trim() ? `No inventory item found for SKU ${row.sku.trim()}.` : 'Enter a valid SKU first.');
-      skuInputRefs.current[rowId]?.focus();
-      return;
-    }
-    const quantity = Number(row.quantity);
-    if (!Number.isInteger(quantity) || quantity < 1) {
-      toast.error('Quantity must be at least 1.');
-      quantityInputRefs.current[rowId]?.focus();
-      return;
-    }
-    const totalStock = getProductStock(product.id);
-    if (totalStock <= 0) {
-      toast.error(`${product.name} is currently out of stock.`);
-      quantityInputRefs.current[rowId]?.focus();
-      return;
-    }
-    if (quantity > totalStock) {
-      toast.error(`Cannot order ${quantity} units. Only ${totalStock} available in stock.`);
-      quantityInputRefs.current[rowId]?.focus();
-      return;
-    }
-    const existingNextRow = skuRows[rowIndex + 1];
-    const nextRowId = existingNextRow?.id ?? Math.max(0, ...skuRows.map(item => item.id)) + 1;
-    if (!existingNextRow) {
-      setSkuRows(rows => [...rows, { id: nextRowId, sku: '', quantity: '1' }]);
-    }
-    window.setTimeout(() => skuInputRefs.current[nextRowId]?.focus(), 0);
-  };
-
-  const deleteSkuRow = (rowId: number) => {
-    const rowIndex = skuRows.findIndex(row => row.id === rowId);
-    const previousRowId = skuRows[rowIndex - 1]?.id;
-    const nextRowId = skuRows[rowIndex + 1]?.id;
-
-    if (skuRows.length === 1) {
-      setSkuRows([{ id: rowId, sku: '', quantity: '1' }]);
-      window.setTimeout(() => skuInputRefs.current[rowId]?.focus(), 0);
-      return;
-    }
-
-    setSkuRows(rows => rows.filter(row => row.id !== rowId));
-    window.setTimeout(() => {
-      if (previousRowId) quantityInputRefs.current[previousRowId]?.focus();
-      else if (nextRowId) skuInputRefs.current[nextRowId]?.focus();
-    }, 0);
-  };
-
-  const handleScannedCode = (code: string) => {
-    if (!code.trim()) return;
-    const product = findProductByCode(code);
-    if (!product) {
-      toast.error(`No inventory item found for code ${code.trim()}.`);
-      return;
-    }
-    addQuantityToCart(product, 1);
-    setManualScanCode('');
-  };
-
-  const stopScanner = () => {
-    if (scannerFrameRef.current !== null) cancelAnimationFrame(scannerFrameRef.current);
-    scannerFrameRef.current = null;
-    scannerStreamRef.current?.getTracks().forEach(track => track.stop());
-    scannerStreamRef.current = null;
-    setIsScannerActive(false);
-  };
-
-  const startScanner = async () => {
-    const BarcodeDetectorClass = (window as any).BarcodeDetector;
-    if (!BarcodeDetectorClass) {
-      toast.error('Camera scanning is not supported by this browser. Enter the code below instead.');
-      return;
-    }
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
-      scannerStreamRef.current = stream;
-      if (scannerVideoRef.current) {
-        scannerVideoRef.current.srcObject = stream;
-        await scannerVideoRef.current.play();
-      }
-      setIsScannerActive(true);
-      const detector = new BarcodeDetectorClass({ formats: ['qr_code', 'code_128', 'code_39', 'ean_13', 'ean_8', 'upc_a', 'upc_e'] });
-      const scanFrame = async () => {
-        const video = scannerVideoRef.current;
-        if (!video || !scannerStreamRef.current) return;
-        try {
-          const codes = await detector.detect(video);
-          const code = codes[0]?.rawValue?.trim();
-          if (code && code !== lastScannedCodeRef.current) {
-            lastScannedCodeRef.current = code;
-            handleScannedCode(code);
-            window.setTimeout(() => { lastScannedCodeRef.current = ''; }, 1500);
-          }
-        } catch {
-          // Ignore individual unreadable camera frames and continue scanning.
-        }
-        scannerFrameRef.current = requestAnimationFrame(scanFrame);
-      };
-      scannerFrameRef.current = requestAnimationFrame(scanFrame);
-    } catch {
-      toast.error('Unable to access the camera. Check camera permission or enter the code manually.');
-      stopScanner();
-    }
-  };
-
-  useEffect(() => {
-    if (!isNewOrderOpen || orderEntryMode !== 'scan') stopScanner();
-    return () => {
-      if (!isNewOrderOpen) stopScanner();
-    };
-  }, [isNewOrderOpen, orderEntryMode]);
-
-  useEffect(() => {
-    const nextSkuQuantities: Record<string, number> = {};
-    for (const row of skuRows) {
-      const product = findProductByCode(row.sku);
-      const quantity = Number(row.quantity);
-      if (product && Number.isInteger(quantity) && quantity > 0) {
-        nextSkuQuantities[product.id] = (nextSkuQuantities[product.id] || 0) + quantity;
-      }
-    }
-
-    const previousSkuQuantities = skuCartQuantitiesRef.current;
-    setCart(currentCart => {
-      const affectedProductIds = new Set([
-        ...Object.keys(previousSkuQuantities),
-        ...Object.keys(nextSkuQuantities)
-      ]);
-      let nextCart = [...currentCart];
-
-      for (const productId of affectedProductIds) {
-        const existing = nextCart.find(item => item.productId === productId);
-        const quantityFromOtherModes = Math.max(0, (existing?.quantity || 0) - (previousSkuQuantities[productId] || 0));
-        const nextQuantity = quantityFromOtherModes + (nextSkuQuantities[productId] || 0);
-
-        if (nextQuantity === 0) {
-          nextCart = nextCart.filter(item => item.productId !== productId);
-          continue;
-        }
-
-        if (existing) {
-          nextCart = nextCart.map(item => item.productId === productId ? { ...item, quantity: nextQuantity } : item);
-        } else {
-          const product = products.find(item => item.id === productId);
-          if (product) {
-            nextCart.push({
-              productId: product.id,
-              quantity: nextQuantity,
-              price: product.wholesalePrice || product.basePrice,
-              name: product.name,
-              sku: product.sku
-            });
-          }
-        }
-      }
-
-      return nextCart;
-    });
-    skuCartQuantitiesRef.current = nextSkuQuantities;
-  }, [skuRows, products]);
-
-  const removeFromCart = (productId: string) => {
-    setCart(prev => prev.filter(item => item.productId !== productId));
-  };
-
-  const resetOrderForm = () => {
-    setCart([]);
-    setSkuRows([{ id: 1, sku: '', quantity: '1' }]);
-    setClientInfo({ name: '', region: '', city: '' });
-    setManualScanCode('');
-    setOrderEntryMode('select');
-    skuCartQuantitiesRef.current = {};
-    lastScannedCodeRef.current = '';
-    stopScanner();
-  };
-
-  const handleNewOrderOpenChange = (open: boolean) => {
-    if (!open) {
-      resetOrderForm();
-    }
-    setIsNewOrderOpen(open);
-  };
-
-  const submitOrder = async () => {
-    if (!clientInfo.name.trim() || cart.length === 0) return;
-    if (!clientInfo.region) {
-      toast.error('Please select a delivery region.');
-      return;
-    }
-    if (!clientInfo.city) {
-      toast.error('Please select a delivery city or municipality.');
-      return;
-    }
-
-    const totalAmount = cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
-    const regionConfig = DELIVERY_REGIONS.find(r => r.value === clientInfo.region);
-    const deadlineDays = regionConfig ? regionConfig.slaDays : (clientInfo.region === 'Metro Manila' ? 7 : 14);
-    const deadline = addDays(new Date(), deadlineDays);
-
-    const loadingToast = toast.loading('Validating stock and placing order...');
-
-    try {
-      // 1. Consolidate cart demand by productId
-      const consolidatedDemand: Record<string, { quantity: number; name: string; sku: string; price: number }> = {};
-      for (const item of cart) {
-        if (!consolidatedDemand[item.productId]) {
-          consolidatedDemand[item.productId] = { quantity: 0, name: item.name, sku: item.sku, price: item.price };
-        }
-        consolidatedDemand[item.productId].quantity += item.quantity;
-      }
-
-      // 2. Fetch live inventory for all products in cart (chunked for Firestore 'in' limit)
-      const productIds = Object.keys(consolidatedDemand);
-      const currentInventory: InventoryItem[] = [];
-      for (let i = 0; i < productIds.length; i += 10) {
-        const chunk = productIds.slice(i, i + 10);
-        const invSnap = await getDocs(query(collection(db, 'inventory'), where('productId', 'in', chunk)));
-        currentInventory.push(...invSnap.docs.map(d => ({ id: d.id, ...d.data() } as InventoryItem)));
-      }
-
-      // 3. Validate stock sufficiency and pick best warehouse per product
-      const stockUpdates: { inventoryId: string; newQuantity: number; adjustment: any }[] = [];
-      const insufficient: string[] = [];
-
-      // 4. Generate order number first so it can be referenced in stock adjustment logs
-      const orderNumber = `ORD-${Date.now().toString().slice(-6)}`;
-
-      for (const productId in consolidatedDemand) {
-        const demand = consolidatedDemand[productId];
-        const warehouseOptions = currentInventory
-          .filter(inv => inv.productId === productId)
-          .sort((a, b) => b.quantity - a.quantity);
-
-        const totalAvail = warehouseOptions.reduce((sum, inv) => sum + Math.max(0, inv.quantity), 0);
-
-        if (warehouseOptions.length === 0 || totalAvail < demand.quantity) {
-          insufficient.push(`${demand.name} (${demand.quantity} requested, ${totalAvail} available across warehouses)`);
-        } else {
-          const best = warehouseOptions[0];
-          if (best.quantity < demand.quantity) {
-            insufficient.push(`${demand.name} (${demand.quantity} requested, but largest facility only has ${best.quantity} available)`);
-          } else {
-            stockUpdates.push({
-              inventoryId: best.id,
-              newQuantity: best.quantity - demand.quantity,
-              adjustment: {
-                productId,
-                warehouseId: best.warehouseId,
-                adjustmentAmount: -demand.quantity,
-                reason: `Auto-deduction: Order ${orderNumber}`,
-                recordedBy: profile?.uid || 'system',
-                timestamp: serverTimestamp()
-              }
-            });
-          }
-        }
-      }
-
-      if (insufficient.length > 0) {
-        toast.dismiss(loadingToast);
-        toast.error(`Insufficient stock: ${insufficient.join(', ')}`, {
-          duration: 7000,
-          icon: <AlertCircle className="text-red-500" />
-        });
-        return;
-      }
-
-      // 5. Commit Order first so that Firestore rules can see it
-      const orderRef = doc(collection(db, 'orders'));
-      const orderData = {
-        orderNumber,
-        agentId: profile?.uid,
-        clientId: `CLI-${Math.random().toString(36).substring(7).toUpperCase()}`,
-        clientName: clientInfo.name,
-        status: 'pending',
-        skus: cart.map(item => item.sku),
-        totalAmount,
-        deliveryRegion: clientInfo.region,
-        deliveryCity: clientInfo.city,
-        deliveryDeadline: deadline,
-        statusHistory: [
-          {
-            status: 'pending',
-            changedBy: profile?.displayName || profile?.email || 'Unknown',
-            timestamp: new Date(),
-            note: 'Order created via B2B Portal — stock reserved on placement'
-          }
-        ],
-        createdAt: serverTimestamp(),
-      };
-      
-      // Use setDoc for the order directly (with graceful fallback if DB schema hasn't added deliveryCity column yet)
-      const { setDoc } = await import('../lib/supabaseAdapter');
-      try {
-        await setDoc(orderRef, orderData);
-      } catch (insertError: any) {
-        const errorMsg = String(insertError?.message || insertError || '');
-        if (errorMsg.toLowerCase().includes('deliverycity') || insertError?.code === 'PGRST204') {
-          const { deliveryCity: _, ...fallbackOrderData } = orderData;
-          await setDoc(orderRef, fallbackOrderData);
-        } else {
-          throw insertError;
-        }
-      }
-
-      // 5. Commit Items in a batch (the order now exists, so get() will work in rules)
-      const itemsBatch = writeBatch(db);
-      for (const item of cart) {
-        const itemRef = doc(collection(db, `orders/${orderRef.id}/items`));
-        const assignedUpdate = stockUpdates.find(u => u.adjustment.productId === item.productId);
-        itemsBatch.set(itemRef, {
-          orderId: orderRef.id,
-          productId: item.productId,
-          warehouseId: assignedUpdate?.adjustment.warehouseId || '',
-          sku: item.sku,
-          name: item.name,
-          quantity: item.quantity,
-          unitPrice: item.price,
-          subtotal: item.price * item.quantity
-        });
-      }
-      await itemsBatch.commit();
-
-      // 6. Deduct inventory (wrap in try/catch in case cloud rules deny Agents)
-      try {
-        const invBatch = writeBatch(db);
-        for (const up of stockUpdates) {
-          invBatch.update(doc(db, 'inventory', up.inventoryId), {
-            quantity: up.newQuantity,
-            lastUpdated: serverTimestamp()
-          });
-          invBatch.set(doc(collection(db, 'stockAdjustments')), {
-            ...up.adjustment,
-            reason: `Auto-deduction: Order ${orderNumber}`
-          });
-        }
-        await invBatch.commit();
-      } catch (invError) {
-        console.warn('Inventory deduction failed (likely due to role permissions), but order was placed.', invError);
-      }
-      toast.dismiss(loadingToast);
-      toast.success('Order placed & stock reserved', {
-        description: `${orderNumber} — inventory deducted immediately.`,
-        icon: <PackageCheck className="text-emerald-500" />,
-        duration: 5000
-      });
-
-      resetOrderForm();
-      setIsNewOrderOpen(false);
-    } catch (err) {
-      toast.dismiss(loadingToast);
-      handleSupabaseError(err, OperationType.CREATE, 'orders');
-    }
-  };
-
-=======
->>>>>>> Stashed changes
   const updateOrderStatus = async (order: Order, newStatus: OrderStatus) => {
     if (!canManageOrders) return;
     if (statusLock.current) return;
@@ -628,264 +193,6 @@ export function Orders() {
   return (
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3">
-<<<<<<< Updated upstream
-        <h2 className="text-xl font-bold tracking-tight text-zinc-900">Service Request Queue (Orders)</h2>
-        <Dialog open={isNewOrderOpen} onOpenChange={handleNewOrderOpenChange}>
-          <DialogTrigger 
-            onClick={() => resetOrderForm()}
-            className="h-9 gap-2 px-4 bg-[#1A2332] text-white rounded-lg inline-flex items-center justify-center font-medium transition-all hover:bg-[#1A2332]/90"
-          >
-            <Plus className="w-4 h-4" /> Create Order
-          </DialogTrigger>
-          <DialogContent className="sm:max-w-6xl w-[95vw] max-h-[90vh] overflow-y-auto">
-            <DialogHeader>
-              <DialogTitle>Order Entry Portal</DialogTitle>
-              <DialogDescription>Input new customer request for multi-warehouse synchronization.</DialogDescription>
-            </DialogHeader>
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 pt-4">
-              <div className="space-y-4 lg:col-span-2">
-                <div className="space-y-2">
-                  <Label>Client Business Name</Label>
-                  <Input 
-                    placeholder="Enter client name..." 
-                    value={clientInfo.name}
-                    onChange={e => setClientInfo(prev => ({ ...prev, name: e.target.value }))}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label>Delivery Region</Label>
-                  <Select 
-                    value={clientInfo.region} 
-                    onValueChange={v => {
-                      if (!v) return;
-                      setClientInfo(prev => ({ ...prev, region: v, city: '' }));
-                    }}
-                  >
-                    <SelectTrigger className="w-full">
-                      <SelectValue placeholder="Select delivery region..." />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {DELIVERY_REGIONS.map(reg => (
-                        <SelectItem key={reg.value} value={reg.value}>{reg.label}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <Label>Delivery City / Municipality</Label>
-                    <span className="text-[11px] text-zinc-400 font-medium">
-                      {clientInfo.region ? `Under ${clientInfo.region}` : 'Select a region first'}
-                    </span>
-                  </div>
-                  <Select 
-                    value={clientInfo.city} 
-                    onValueChange={v => setClientInfo(prev => ({ ...prev, city: v }))}
-                    disabled={!clientInfo.region}
-                  >
-                    <SelectTrigger className="w-full">
-                      <SelectValue 
-                        placeholder={
-                          clientInfo.region 
-                            ? `Select city / municipality in ${clientInfo.region}...` 
-                            : 'Select a delivery region first...'
-                        } 
-                      />
-                    </SelectTrigger>
-                    <SelectContent className="max-h-60 overflow-y-auto">
-                      {(REGION_LOCATIONS[clientInfo.region] || []).map(loc => (
-                        <SelectItem key={loc} value={loc}>
-                          {loc}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="pt-2 space-y-3">
-                  <div className="grid grid-cols-3 gap-2">
-                    <Button type="button" variant={orderEntryMode === 'scan' ? 'default' : 'outline'} onClick={() => setOrderEntryMode('scan')} className="gap-2">
-                      <ScanBarcode className="w-4 h-4" /> Scan Code
-                    </Button>
-                    <Button type="button" variant={orderEntryMode === 'sku' ? 'default' : 'outline'} onClick={() => setOrderEntryMode('sku')} className="gap-2">
-                      <ListPlus className="w-4 h-4" /> Enter SKUs
-                    </Button>
-                    <Button type="button" variant={orderEntryMode === 'select' ? 'default' : 'outline'} onClick={() => setOrderEntryMode('select')} className="gap-2">
-                      <Plus className="w-4 h-4" /> Select Items
-                    </Button>
-                  </div>
-
-                  {orderEntryMode === 'scan' && (
-                    <div className="min-h-[350px] border rounded-md p-4 space-y-4">
-                      <Label className="text-[10px] font-bold uppercase tracking-widest text-zinc-500">QR / Barcode Scanner</Label>
-                      <div className="relative aspect-video overflow-hidden rounded-lg bg-zinc-950 flex items-center justify-center">
-                        <video ref={scannerVideoRef} className="w-full h-full object-cover" muted playsInline />
-                        {!isScannerActive && <ScanBarcode className="absolute w-12 h-12 text-zinc-600" />}
-                      </div>
-                      <Button type="button" variant="outline" className="w-full" onClick={isScannerActive ? stopScanner : startScanner}>
-                        <Camera className="w-4 h-4 mr-2" /> {isScannerActive ? 'Stop Camera' : 'Start Camera'}
-                      </Button>
-                      <div className="flex gap-2">
-                        <Input
-                          value={manualScanCode}
-                          onChange={e => setManualScanCode(e.target.value)}
-                          onKeyDown={e => e.key === 'Enter' && handleScannedCode(manualScanCode)}
-                          placeholder="Scan or enter SKU / code"
-                        />
-                        <Button type="button" onClick={() => handleScannedCode(manualScanCode)}>Add</Button>
-                      </div>
-                    </div>
-                  )}
-
-                  {orderEntryMode === 'sku' && (
-                    <div className="min-h-[350px] max-h-[500px] overflow-y-auto border rounded-md p-2">
-                      <Table>
-                        <TableHeader>
-                          <TableRow>
-                            <TableHead>SKU</TableHead>
-                            <TableHead className="w-20">Qty</TableHead>
-                            <TableHead>Product</TableHead>
-                            <TableHead className="text-right">Total</TableHead>
-                            <TableHead className="w-10" />
-                          </TableRow>
-                        </TableHeader>
-                        <TableBody>
-                          {skuRows.map(row => {
-                            const product = findProductByCode(row.sku);
-                            const price = product ? product.wholesalePrice || product.basePrice : 0;
-                            const quantity = Number(row.quantity) || 0;
-                            return (
-                              <TableRow key={row.id}>
-                                <TableCell className="p-1">
-                                  <Input
-                                    ref={element => { skuInputRefs.current[row.id] = element; }}
-                                    value={row.sku}
-                                    onChange={e => setSkuRows(rows => rows.map(item => item.id === row.id ? { ...item, sku: e.target.value } : item))}
-                                    onKeyDown={e => {
-                                      if (e.key === 'Enter') {
-                                        e.preventDefault();
-                                        quantityInputRefs.current[row.id]?.focus();
-                                        quantityInputRefs.current[row.id]?.select();
-                                      } else if (e.key === 'Backspace' && row.sku === '') {
-                                        const rowIndex = skuRows.findIndex(item => item.id === row.id);
-                                        const previousRow = skuRows[rowIndex - 1];
-                                        if (previousRow) {
-                                          e.preventDefault();
-                                          setSkuRows(rows => rows.filter(item => item.id !== row.id));
-                                          window.setTimeout(() => {
-                                            const previousQuantityInput = quantityInputRefs.current[previousRow.id];
-                                            previousQuantityInput?.focus();
-                                            previousQuantityInput?.setSelectionRange(previousQuantityInput.value.length, previousQuantityInput.value.length);
-                                          }, 0);
-                                        }
-                                      }
-                                    }}
-                                    placeholder="SKU"
-                                  />
-                                </TableCell>
-                                <TableCell className="p-1">
-                                  <Input
-                                    ref={element => { quantityInputRefs.current[row.id] = element; }}
-                                    type="text"
-                                    inputMode="numeric"
-                                    value={row.quantity}
-                                    onChange={e => {
-                                      const value = e.target.value;
-                                      if (value === '' || /^[1-9]\d*$/.test(value)) {
-                                        setSkuRows(rows => rows.map(item => item.id === row.id ? { ...item, quantity: value } : item));
-                                      }
-                                    }}
-                                    onKeyDown={e => {
-                                      if (e.key === 'Enter') {
-                                        e.preventDefault();
-                                        commitSkuRowAndAdvance(row.id);
-                                      } else if (e.key === 'Backspace' && row.quantity === '') {
-                                        e.preventDefault();
-                                        const skuInput = skuInputRefs.current[row.id];
-                                        skuInput?.focus();
-                                        skuInput?.setSelectionRange(skuInput.value.length, skuInput.value.length);
-                                      }
-                                    }}
-                                  />
-                                </TableCell>
-                                <TableCell className="p-1 text-xs font-medium">{product?.name || (row.sku ? 'SKU not found' : '—')}</TableCell>
-                                <TableCell className="p-1 text-right text-xs font-bold">₱{(price * quantity).toLocaleString()}</TableCell>
-                                <TableCell className="p-1">
-                                  <Button type="button" size="icon" variant="ghost" className="h-8 w-8 text-red-500" onClick={() => deleteSkuRow(row.id)} aria-label="Delete SKU row">
-                                    <Trash2 className="w-4 h-4" />
-                                  </Button>
-                                </TableCell>
-                              </TableRow>
-                            );
-                          })}
-                        </TableBody>
-                      </Table>
-                    </div>
-                  )}
-
-                  {orderEntryMode === 'select' && (
-                    <div>
-                      <Label className="text-[10px] font-bold uppercase tracking-widest text-zinc-500">Available Inventory</Label>
-                      <div className="mt-2 space-y-2 min-h-[350px] max-h-[500px] overflow-y-auto border rounded-md p-2">
-                        {products.map(p => (
-                          <div key={p.id} className="flex items-center justify-between p-2 rounded border transition-all hover:bg-muted border-transparent hover:border-border">
-                            <div className="min-w-0">
-                              <p className="text-xs font-bold truncate">{p.name}</p>
-                              <div className="flex items-center gap-2">
-                                <p className={`text-[10px] font-semibold ${getProductStock(p.id) <= 0 ? 'text-red-500' : 'text-zinc-500'}`}>Stock: {getProductStock(p.id)}</p>
-                                {getProductStock(p.id) <= 0 && <span className="text-[9px] font-black uppercase tracking-widest bg-red-100 text-red-600 px-1.5 py-0.5 rounded">Out of Stock</span>}
-                              </div>
-                            </div>
-                            <Button size="sm" variant="ghost" onClick={() => addToCart(p)}><Plus className="w-3 h-3 mr-1" /> Add</Button>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </div>
-              
-              <div className="bg-muted rounded-xl p-4 flex flex-col border border-border">
-                <div className="flex items-center justify-between mb-4">
-                  <h4 className="text-xs font-bold uppercase tracking-widest text-black dark:text-white">Current Cart</h4>
-                  <Badge variant="secondary" className="text-[10px]">{cart.length} Items</Badge>
-                </div>
-                <div className="flex-1 space-y-3 mb-4 overflow-y-auto pr-2">
-                  {cart.map(item => (
-                    <div key={item.productId} className="flex items-center justify-between bg-card p-2 rounded-lg border border-border">
-                      <div className="min-w-0">
-                        <p className="text-[11px] font-bold truncate">{item.name}</p>
-                        <p className="text-[10px] text-zinc-500">₱{item.price.toLocaleString()} x {item.quantity}</p>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs font-black">₱{(item.price * item.quantity).toLocaleString()}</span>
-                        <Button size="icon" variant="ghost" className="h-6 w-6 text-red-500" onClick={() => removeFromCart(item.productId)}>
-                          <Trash2 className="w-3 h-3" />
-                        </Button>
-                      </div>
-                    </div>
-                  ))}
-                  {cart.length === 0 && (
-                    <div className="h-40 flex flex-col items-center justify-center text-zinc-400">
-                      <ShoppingCart className="w-8 h-8 mb-2 opacity-20" />
-                      <p className="text-xs font-medium">Cart is empty</p>
-                    </div>
-                  )}
-                </div>
-                <div className="pt-4 border-top border-zinc-200 space-y-3">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold text-zinc-500 uppercase tracking-widest">Grand Total</span>
-                    <span className="text-xl font-black text-black dark:text-white">₱{cart.reduce((s, i) => s + (i.price * i.quantity), 0).toLocaleString()}</span>
-                  </div>
-                  <Button className="w-full h-11 bg-[#1A2332] text-white font-bold" disabled={cart.length === 0 || !clientInfo.name.trim() || !clientInfo.region || !clientInfo.city} onClick={submitOrder}>
-                    Confirm and Queue Order
-                  </Button>
-                </div>
-              </div>
-            </div>
-          </DialogContent>
-        </Dialog>
-=======
         <h2 className="text-xl font-bold tracking-tight text-zinc-900">Order Entry</h2>
         {canCreate && <Button onClick={() => setIsNewOrderOpen(true)}><Plus className="size-4" />Create Order</Button>}
         {profile && canCreate && <OrderEntry key={`${profile.uid}:${orderEntryKey}`} open={isNewOrderOpen} onClose={() => setIsNewOrderOpen(false)} orders={orders} products={products} inventory={inventory} profile={profile} onSaved={(order, items) => {
@@ -894,9 +201,8 @@ export function Orders() {
           setOrderEntryKey(value => value + 1);
           setReceiptItems(items);
           setReceiptOrder(order);
-        }}/>}
-        <DeliveryReceipt order={receiptOrder} items={receiptItems} onClose={() => setReceiptOrder(null)}/>
->>>>>>> Stashed changes
+        }} />}
+        <DeliveryReceipt order={receiptOrder} items={receiptItems} onClose={() => setReceiptOrder(null)} />
 
         <Dialog open={isOrderDetailsOpen} onOpenChange={setIsOrderDetailsOpen}>
           <DialogContent className="sm:max-w-5xl w-[95vw] max-h-[90vh] overflow-y-auto">
@@ -912,20 +218,18 @@ export function Orders() {
               </DialogDescription>
             </DialogHeader>
 
-            <Button variant="outline" className="self-start" disabled={isLoadingItems || !orderItems.length} onClick={() => { setIsOrderDetailsOpen(false); setReceiptItems(orderItems); setReceiptOrder(selectedOrder); }}><FileText className="size-4"/>View Delivery Receipt</Button>
+            <Button variant="outline" className="self-start" disabled={isLoadingItems || !orderItems.length} onClick={() => { setIsOrderDetailsOpen(false); setReceiptItems(orderItems); setReceiptOrder(selectedOrder); }}><FileText className="size-4" />View Delivery Receipt</Button>
             <div className="flex items-center gap-4 border-b border-border px-6 -mx-6">
-              <button 
-                className={`pb-3 text-xs font-black uppercase tracking-widest transition-all relative ${
-                  activeTab === 'items' ? 'text-primary border-b-2 border-primary' : 'text-zinc-500 hover:text-foreground'
-                }`}
+              <button
+                className={`pb-3 text-xs font-black uppercase tracking-widest transition-all relative ${activeTab === 'items' ? 'text-primary border-b-2 border-primary' : 'text-zinc-500 hover:text-foreground'
+                  }`}
                 onClick={() => setActiveTab('items')}
               >
                 Line Items
               </button>
-              <button 
-                className={`pb-3 text-xs font-black uppercase tracking-widest transition-all relative ${
-                  activeTab === 'history' ? 'text-primary border-b-2 border-primary' : 'text-zinc-500 hover:text-foreground'
-                }`}
+              <button
+                className={`pb-3 text-xs font-black uppercase tracking-widest transition-all relative ${activeTab === 'history' ? 'text-primary border-b-2 border-primary' : 'text-zinc-500 hover:text-foreground'
+                  }`}
                 onClick={() => setActiveTab('history')}
               >
                 Status History
@@ -979,10 +283,9 @@ export function Orders() {
                   <div className="space-y-4 pr-2 max-h-[400px] overflow-y-auto">
                     {selectedOrder?.statusHistory?.slice().reverse().map((entry, idx) => (
                       <div key={idx} className="relative pl-6 pb-6 border-l-2 border-border last:pb-0">
-                        <div className={`absolute left-[-9px] top-0 w-4 h-4 rounded-full border-2 border-background ${
-                          entry.status === 'delivered' ? 'bg-emerald-500' : 
+                        <div className={`absolute left-[-9px] top-0 w-4 h-4 rounded-full border-2 border-background ${entry.status === 'delivered' ? 'bg-emerald-500' :
                           entry.status === 'pending' ? 'bg-zinc-300' : 'bg-blue-500'
-                        }`} />
+                          }`} />
                         <div className="bg-muted rounded-xl p-3 border border-border group hover:border-foreground/20 transition-colors">
                           <div className="flex items-center justify-between mb-1">
                             <span className="text-[10px] font-black uppercase tracking-widest text-zinc-900">
@@ -1034,7 +337,7 @@ export function Orders() {
                       <div>
                         <p className="text-xs font-bold text-zinc-900">
                           {selectedOrder?.deliveryDeadline && (
-                            typeof selectedOrder.deliveryDeadline.toDate === 'function' 
+                            typeof selectedOrder.deliveryDeadline.toDate === 'function'
                               ? format(selectedOrder.deliveryDeadline.toDate(), 'PPP')
                               : format(new Date(selectedOrder.deliveryDeadline), 'PPP')
                           )}
@@ -1056,11 +359,11 @@ export function Orders() {
 
                   {selectedOrder?.photoValidationUrl && (
                     <div className="pt-4 space-y-2">
-                       <p className="text-[10px] font-black uppercase tracking-tighter text-zinc-400">Dispatch Proof</p>
-                       <img 
-                        src={selectedOrder.photoValidationUrl} 
-                        alt="Dispatch Validation" 
-                         className="w-full h-32 object-cover rounded-lg border border-border"
+                      <p className="text-[10px] font-black uppercase tracking-tighter text-zinc-400">Dispatch Proof</p>
+                      <img
+                        src={selectedOrder.photoValidationUrl}
+                        alt="Dispatch Validation"
+                        className="w-full h-32 object-cover rounded-lg border border-border"
                         referrerPolicy="no-referrer"
                       />
                     </div>
@@ -1103,10 +406,10 @@ export function Orders() {
         </Dialog>
 
         <Dialog open={isDispatchDialogOpen} onOpenChange={(open) => {
-            if (isUploading) return;
-            if (!open) { setPhotoFile(null); setPhotoPreview(null); }
-            setIsDispatchDialogOpen(open);
-          }}>
+          if (isUploading) return;
+          if (!open) { setPhotoFile(null); setPhotoPreview(null); }
+          setIsDispatchDialogOpen(open);
+        }}>
           <DialogContent className="sm:max-w-md">
             <DialogHeader>
               <DialogTitle className="flex items-center gap-2">
@@ -1211,20 +514,20 @@ export function Orders() {
           </DialogContent>
         </Dialog>
 
-      </div>
+      </div >
 
       <div className="flex items-center gap-2 bg-card p-3 border border-border rounded-xl">
         <ShoppingCart className="w-4 h-4 text-zinc-400 ml-1" />
-        <Input 
+        <Input
           placeholder="Search order number, customer, or SKU…"
           className="h-8 text-xs border-none shadow-none focus-visible:ring-0"
           value={searchQuery}
           onChange={e => setSearchQuery(e.target.value)}
         />
         {searchQuery && (
-          <Button 
-            variant="ghost" 
-            size="sm" 
+          <Button
+            variant="ghost"
+            size="sm"
             className="h-6 px-2 text-[10px] font-bold uppercase text-zinc-400"
             onClick={() => setSearchQuery('')}
           >
@@ -1248,13 +551,12 @@ export function Orders() {
                     {order.deliveryRegion}{order.deliveryCity ? ` • ${order.deliveryCity}` : ''}
                   </p>
                 </div>
-                <Badge variant="outline" className={`shrink-0 gap-1.5 h-6 capitalize text-[10px] font-bold ${
-                  order.status === 'delivered' || order.status === 'completed' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
+                <Badge variant="outline" className={`shrink-0 gap-1.5 h-6 capitalize text-[10px] font-bold ${order.status === 'delivered' || order.status === 'completed' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
                   order.status === 'out_for_delivery' ? 'bg-blue-50 text-blue-700 border-blue-200' :
-                  order.status === 'cancelled' ? 'bg-red-50 text-red-700 border-red-200' :
-                  order.status === 'escalated' ? 'bg-purple-50 text-purple-700 border-purple-200' :
-                  'bg-amber-50 text-amber-700 border-amber-200'
-                }`}>
+                    order.status === 'cancelled' ? 'bg-red-50 text-red-700 border-red-200' :
+                      order.status === 'escalated' ? 'bg-purple-50 text-purple-700 border-purple-200' :
+                        'bg-amber-50 text-amber-700 border-amber-200'
+                  }`}>
                   {getStatusIcon(order.status)}
                   {order.status.replace('_', ' ')}
                 </Badge>
@@ -1324,7 +626,7 @@ export function Orders() {
                 )}
                 {order.photoValidationUrl && (
                   <Button size="icon" variant="ghost" className="h-7 w-7 text-zinc-400 hover:text-zinc-900" onClick={() => window.open(order.photoValidationUrl)}>
-                     <FileText className="w-4 h-4" />
+                    <FileText className="w-4 h-4" />
                   </Button>
                 )}
               </div>
@@ -1371,13 +673,12 @@ export function Orders() {
                       </div>
                     </TableCell>
                     <TableCell>
-                      <Badge variant="outline" className={`gap-1.5 h-6 capitalize text-[10px] font-bold ${
-                        order.status === 'delivered' || order.status === 'completed' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
+                      <Badge variant="outline" className={`gap-1.5 h-6 capitalize text-[10px] font-bold ${order.status === 'delivered' || order.status === 'completed' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
                         order.status === 'out_for_delivery' ? 'bg-blue-50 text-blue-700 border-blue-200' :
-                        order.status === 'cancelled' ? 'bg-red-50 text-red-700 border-red-200' :
-                        order.status === 'escalated' ? 'bg-purple-50 text-purple-700 border-purple-200' :
-                        'bg-amber-50 text-amber-700 border-amber-200'
-                      }`}>
+                          order.status === 'cancelled' ? 'bg-red-50 text-red-700 border-red-200' :
+                            order.status === 'escalated' ? 'bg-purple-50 text-purple-700 border-purple-200' :
+                              'bg-amber-50 text-amber-700 border-amber-200'
+                        }`}>
                         {getStatusIcon(order.status)}
                         {order.status.replace('_', ' ')}
                       </Badge>
@@ -1392,10 +693,10 @@ export function Orders() {
                       ₱{order.totalAmount.toLocaleString()}
                     </TableCell>
                     <TableCell className="text-right space-x-1">
-                      <Button 
-                        size="icon" 
-                        variant="ghost" 
-                        className="h-7 w-7 text-muted-foreground hover:text-foreground" 
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        className="h-7 w-7 text-muted-foreground hover:text-foreground"
                         onClick={() => handleViewDetails(order)}
                         title="View Details"
                       >
@@ -1453,7 +754,7 @@ export function Orders() {
                       )}
                       {order.photoValidationUrl && (
                         <Button size="icon" variant="ghost" className="h-7 w-7 text-zinc-400 hover:text-zinc-900" onClick={() => window.open(order.photoValidationUrl)}>
-                           <FileText className="w-4 h-4" />
+                          <FileText className="w-4 h-4" />
                         </Button>
                       )}
                     </TableCell>
@@ -1474,6 +775,6 @@ export function Orders() {
           </Table>
         </div>
       </div>
-    </div>
+    </div >
   );
 }
