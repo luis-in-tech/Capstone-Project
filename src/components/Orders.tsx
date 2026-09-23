@@ -323,7 +323,7 @@ export function Orders() {
                   <div className="space-y-1">
                     <p className="text-[10px] font-black uppercase tracking-tighter text-zinc-400">Client Information</p>
                     <div className="bg-muted p-2 rounded-md border border-border">
-                      <p className="text-xs font-bold text-zinc-900">{selectedOrder?.clientName}</p>
+                      <p className="text-xs font-bold text-zinc-900 dark:text-white">{selectedOrder?.clientName}</p>
                       <p className="text-[10px] text-zinc-500 font-medium">
                         {selectedOrder?.deliveryRegion} Region{selectedOrder?.deliveryCity ? ` • ${selectedOrder.deliveryCity}` : ''}
                       </p>
@@ -546,7 +546,7 @@ export function Orders() {
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
                   <p className="text-xs font-mono text-zinc-400">{order.orderNumber}</p>
-                  <p className="text-sm font-bold text-zinc-900 mt-0.5">{order.clientName}</p>
+                  <p className="text-sm font-bold text-zinc-900 dark:text-white mt-0.5">{order.clientName}</p>
                   <p className="text-[10px] text-zinc-400 uppercase font-bold tracking-tighter">
                     {order.deliveryRegion}{order.deliveryCity ? ` • ${order.deliveryCity}` : ''}
                   </p>
@@ -666,7 +666,7 @@ export function Orders() {
                     </TableCell>
                     <TableCell>
                       <div className="flex flex-col">
-                        <span className="text-xs font-bold text-zinc-900">{order.clientName}</span>
+                        <span className="text-xs font-bold text-zinc-900 dark:text-white">{order.clientName}</span>
                         <span className="text-[10px] text-zinc-400 uppercase font-bold tracking-tighter">
                           {order.deliveryRegion}{order.deliveryCity ? ` • ${order.deliveryCity}` : ''}
                         </span>
