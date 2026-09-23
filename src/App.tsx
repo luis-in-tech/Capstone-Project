@@ -1,3 +1,6 @@
+import { StaffAccessProvider, useStaffAccess } from './hooks/useStaffAccess';
+import { canVisit } from './lib/staffPermissions';
+import { useLocation } from 'react-router-dom';
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
@@ -15,9 +18,10 @@ import { Privacy } from './components/Privacy';
 import { Terms } from './components/Terms';
 import { Dashboard } from './components/Dashboard';
 import { Inventory } from './components/Inventory';
+import { SupplyChain } from './components/SupplyChain';
 import { Orders } from './components/Orders';
 import { Finance } from './components/Finance';
-import { Transfers } from './components/Transfers';
+import { InventoryMovement } from './components/InventoryMovement';
 import { Settings } from './components/Settings';
 import { Pricelist } from './components/Pricelist';
 import { LogisticsOptimizer } from './components/LogisticsOptimizer';
@@ -30,8 +34,10 @@ import { handleSupabaseError, OperationType } from './lib/supabaseErrorHandler';
 
 function ProtectedRoute({ children, allowedRoles, fallbackPath = "/inventory" }: { children: React.ReactNode, allowedRoles?: string[], fallbackPath?: string }) {
   const { user, profile, loading } = useAuth();
+  const access = useStaffAccess();
+  const location = useLocation();
   
-  if (loading) return (
+  if (loading || (user && access.loading)) return (
     <div className="min-h-screen flex items-center justify-center bg-zinc-950">
       <div className="w-12 h-12 border-4 border-white/20 border-t-white rounded-full animate-spin" />
     </div>
@@ -39,6 +45,9 @@ function ProtectedRoute({ children, allowedRoles, fallbackPath = "/inventory" }:
   
   if (!user) return <Navigate to="/login" replace />;
   
+  if (access.error) return <Layout><div role="alert" className="rounded-xl border p-6"><h1 className="font-semibold">Permissions could not be loaded</h1><p className="mt-2 text-sm text-muted-foreground">Reload the page to try again.</p><button className="mt-4 underline" onClick={() => window.location.reload()}>Retry</button></div></Layout>;
+  if (access.revoked && location.pathname !== '/settings') return <Layout><div className="rounded-xl border p-8 text-center"><h1 className="text-xl font-semibold">Your access has been deactivated</h1><p className="mt-2 text-sm text-muted-foreground">Contact an administrator to restore your access.</p></div></Layout>;
+  if (!canVisit(location.pathname, access.permissions)) return <Navigate to="/inventory" replace />;
   if (allowedRoles && profile && !allowedRoles.includes(profile.role)) {
     return <Navigate to={fallbackPath} replace />;
   }
@@ -48,11 +57,12 @@ function ProtectedRoute({ children, allowedRoles, fallbackPath = "/inventory" }:
 
 function AppContent() {
   const { user, profile } = useAuth();
+  const access = useStaffAccess();
 
   // Seed initial warehouses if empty
   useEffect(() => {
     const seedWarehouses = async () => {
-      if (profile?.role !== 'admin') return; 
+      if (access.loading || access.revoked || access.error || !(profile?.role === 'admin')) return;
       try {
         const { data: snap, error } = await supabase.from('warehouses').select('*');
         if (error) throw error;
@@ -65,9 +75,9 @@ function AppContent() {
       }
     };
     if (user && profile) seedWarehouses();
-  }, [user, profile]);
+  }, [user, profile, access.loading, access.revoked, access.error, access.hasDelegation]);
 
-  const defaultPath = profile?.role === 'admin' ? '/admin' : '/inventory';
+  const defaultPath = (profile?.role === 'admin') ? '/admin' : '/inventory';
 
   return (
     <Routes>
@@ -98,6 +108,12 @@ function AppContent() {
         </ProtectedRoute>
       } />
       
+      <Route path="/supply-chain" element={
+        <ProtectedRoute allowedRoles={['admin', 'secretary', 'agent', 'staff']}>
+          <SupplyChain />
+        </ProtectedRoute>
+      } />
+
       <Route path="/orders" element={
         <ProtectedRoute allowedRoles={['admin', 'secretary', 'agent', 'staff']}>
           <Orders />
@@ -105,8 +121,8 @@ function AppContent() {
       } />
       
       <Route path="/transfers" element={
-        <ProtectedRoute allowedRoles={['admin', 'secretary']}>
-          <Transfers />
+        <ProtectedRoute allowedRoles={['admin', 'secretary', 'agent', 'staff']}>
+          <InventoryMovement />
         </ProtectedRoute>
       } />
       
@@ -141,7 +157,7 @@ function AppContent() {
       } />
 
       <Route path="/delegation" element={
-        <ProtectedRoute allowedRoles={['admin', 'agent']}>
+        <ProtectedRoute allowedRoles={['admin']}>
           <DelegationPanel />
         </ProtectedRoute>
       } />
@@ -157,7 +173,7 @@ export default function App() {
     <BrowserRouter>
       <ThemeProvider defaultTheme="light">
         <AuthProvider>
-          <AppContent />
+          <StaffAccessProvider><AppContent /></StaffAccessProvider>
           <Toaster position="top-right" richColors closeButton />
         </AuthProvider>
       </ThemeProvider>

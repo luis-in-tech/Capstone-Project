@@ -52,7 +52,7 @@ export const Terms = () => {
             <section>
               <h2 className="text-xl font-black tracking-tight text-zinc-900 mb-4">3. USAGE QUOTAS</h2>
               <p className="text-zinc-600 leading-relaxed font-medium">
-                Standard accounts are subject to Firebase resource quotas. Excessive API polling or abnormal database activity may trigger temporary throttling to ensure global system stability.
+                Standard accounts are subject to Supabase resource quotas. Excessive API polling or abnormal database activity may trigger temporary throttling to ensure global system stability.
               </p>
             </section>
 

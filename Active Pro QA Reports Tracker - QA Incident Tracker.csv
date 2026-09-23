@@ -1,0 +1,13 @@
+,,,,,,,,,,,,,
+,QA INCIDENT TRACKER • FULL-STACK DEFECT TRIAGE DASHBOARD,,,,,,,,,,,,
+,TOTAL INCIDENTS,,CRITICAL BLOCKERS,,ACTIVE TRIAGE,,RECTIFICATION RATE,,,,,,
+,7,,0,,6,,14.3%,,,,,,
+,,,,,,,,,,,,,
+,Report ID,Date Logged (UTC+8),Feature/Component,Issue Title,Exact Steps to Reproduce,Expected Behavior,Actual Output,Environment,Severity,Resolution Status,PR by,Assignee,Deployment/PR Link
+,RPT-2026-001,9/9/2026,,,,,,Local,Medium,QA Review,Luis Vicente,Lance Siyhian,PR #142 (fix/ssr-hydration-promo)
+,RPT-2026-002,9/10/2026,,,,,,Staging,High,QA Review,Lance Siyhian,Luis Vicente,PR #389 (fix/refresh-token-mutex)
+,RPT-2026-003,9/19/2026,,,,,,Staging,Medium,Rectified,Luis Vicente,Luis Vicente,PR #205 (fix/webhook-idempotency)
+,RPT-2026-004,9/14/2026,,,,,,,,,,,Active Pro — Frontend QA Findings & UX Recommendations - 1915 × 865px AP Front-End Bugs
+,RPT-2026-005,9/16/2026,Removed redundant titles,,,,,,,,,,https://docs.google.com/document/d/1OktV-aP3XrfAi_ayl9rF34BDi3GrcgyDsgA8b-B3mks/edit?tab=t.0
+,RPT-2026-006,9/19/2026,New features,Backend & APIs,,,,,,,,,
+,RPT-2026-007,9/22/2026,Logistics Optimizer & Orders,Vite build crash from Git conflict markers and leftover code in Orders,"1. Pull Cristine-Branch. 2. Run 'npm run dev'. 3. Observe terminal output.",App builds cleanly without errors and calculates routes with vehicle capacities.,Vite crashed with 'Unexpected token (39:1)' in LogisticsOptimizer.tsx due to Git conflict markers + 50 TypeScript errors in Orders.tsx.,Local,High,Rectified,Lance Siyhian,Lance Siyhian,https://github.com/luis-in-tech/Capstone-Project/commit/8797098

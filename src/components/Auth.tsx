@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useAuth } from '../hooks/useAuth';
-import { Link } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from '@/components/ui/card';
 import { Warehouse, LogIn, ArrowLeft, Mail, Lock, Eye, EyeOff, UserPlus, HelpCircle } from 'lucide-react';
@@ -11,7 +11,8 @@ import { toast } from 'sonner';
 
 export function Auth() {
   const { signIn, signInWithEmail, signUpWithEmail, resetPassword } = useAuth();
-  const [isSignUp, setIsSignUp] = useState(false);
+  const location = useLocation();
+  const [isSignUp, setIsSignUp] = useState(location.pathname === '/signup');
   const [isResetMode, setIsResetMode] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [email, setEmail] = useState('');
@@ -168,7 +169,18 @@ export function Auth() {
             </Button>
           </form>
 
-
+          {!isResetMode && (
+            <button
+              type="button"
+              onClick={toggleMode}
+              className="w-full text-center text-[10px] font-black uppercase tracking-widest text-muted-foreground hover:text-foreground transition-colors py-2"
+            >
+              {isSignUp ? 'Already have an account? ' : "Don't have an account? "}
+              <span className="text-foreground underline underline-offset-2">
+                {isSignUp ? 'Login' : 'Sign Up'}
+              </span>
+            </button>
+          )}
 
           {isResetMode && (
             <Button 

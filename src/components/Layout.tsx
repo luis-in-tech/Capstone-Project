@@ -1,7 +1,10 @@
+import { useStaffAccess } from '../hooks/useStaffAccess';
+import { canVisit } from '../lib/staffPermissions';
 import { Link, useLocation } from 'react-router-dom';
 import {
   BarChart3,
   Package,
+  Building2,
   ShoppingCart,
   Truck,
   DollarSign,
@@ -29,11 +32,12 @@ import { motion, AnimatePresence } from 'motion/react';
 import { TutorialOverlay } from './TutorialOverlay';
 
 const navigation = [
-  { name: 'Admin Panel', href: '/admin', icon: Shield, roles: ['admin'] },
-  { name: 'Dashboard', href: '/dashboard', icon: BarChart3, roles: ['admin'] },
+  { name: 'Overview', href: '/admin', icon: Shield, roles: ['admin'] },
+  { name: 'Analytics', href: '/dashboard', icon: BarChart3, roles: ['admin'] },
   { name: 'Inventory', href: '/inventory', icon: Package, roles: ['admin', 'secretary', 'agent', 'staff'] },
+  { name: 'Supply Chain', href: '/supply-chain', icon: Building2, roles: ['admin', 'secretary', 'agent', 'staff'] },
   { name: 'Order Entry', href: '/orders', icon: ShoppingCart, roles: ['admin', 'secretary', 'agent', 'staff'] },
-  { name: 'Transport', href: '/transfers', icon: Truck, roles: ['admin', 'secretary'] },
+  { name: 'Inventory Movement', href: '/transfers', icon: Truck, roles: ['admin', 'secretary', 'agent', 'staff'] },
   { name: 'Financials', href: '/finance', icon: DollarSign, roles: ['admin'] },
   { name: 'Logistics Optimizer', href: '/logistics', icon: Activity, roles: ['admin', 'secretary'] },
   { name: 'Pricelist', href: '/pricelist', icon: Tag, roles: ['admin', 'secretary', 'agent', 'staff'] },
@@ -43,6 +47,7 @@ const navigation = [
 
 export function Layout({ children }: { children: React.ReactNode }) {
   const { profile, logout, updateRole } = useAuth();
+  const access = useStaffAccess();
   const { theme, setTheme } = useTheme();
   const location = useLocation();
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -52,7 +57,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const isDark = theme === 'dark';
 
   const filteredNavigation = navigation.filter(item =>
-    item.roles.includes(profile?.role || 'agent')
+    item.roles.includes(profile?.role || 'agent') && ((!access.revoked && !access.error && canVisit(item.href, access.permissions)) || item.href === '/settings')
   );
 
   const SidebarContent = () => (
@@ -79,6 +84,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
             <Link
               key={item.name}
               to={item.href}
+              onClick={() => setIsMobileMenuOpen(false)}
               className={`flex items-center ${isCollapsed ? 'justify-center px-0' : 'gap-3 px-3'} py-2.5 text-sm font-medium rounded-lg transition-all group ${isActive
                   ? 'bg-sidebar-primary text-sidebar-primary-foreground shadow-md'
                   : 'text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent'
@@ -87,12 +93,6 @@ export function Layout({ children }: { children: React.ReactNode }) {
             >
               <item.icon className={`w-4 h-4 flex-shrink-0 ${isActive ? 'text-sidebar-primary-foreground' : ''}`} />
               {!isCollapsed && <span className="flex-1">{item.name}</span>}
-              {isActive && !isCollapsed && (
-                <motion.div
-                  layoutId="active-pill"
-                  className="w-1.5 h-1.5 rounded-full bg-sidebar-primary-foreground"
-                />
-              )}
             </Link>
           );
         })}
@@ -180,7 +180,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
       {/* Main Content */}
       <div className={`flex-1 flex flex-col min-w-0 transition-all duration-300 ${isCollapsed ? 'lg:pl-20' : 'lg:pl-64'}`}>
         {/* Top Header */}
-        <header className="sticky top-0 z-40 flex items-center justify-between px-4 py-3 bg-background/90 backdrop-blur-md border-b border-border lg:px-8">
+        <header className="sticky top-0 z-40 flex items-center justify-between px-4 py-3 bg-background/90 backdrop-blur-md border-b border-border lg:hidden">
           {/* Mobile menu */}
           <div className="lg:hidden">
             <Sheet open={isMobileMenuOpen} onOpenChange={setIsMobileMenuOpen}>
@@ -195,10 +195,23 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
           {/* Page title */}
           <div className="flex flex-col">
+            <span style={{ fontFamily: "'Anton', sans-serif" }} className="text-lg tracking-tight text-foreground leading-none italic">
+              Active <span className="text-primary">Pro</span>
+            </span>
+            <span className="text-[9px] uppercase font-black tracking-widest text-muted-foreground mt-0.5">
+              {filteredNavigation.find(item => item.href === location.pathname)?.name || 'Portal'}
+            </span>
           </div>
 
           {/* Header right */}
           <div className="flex items-center gap-3">
+            <button
+              onClick={() => setTheme(isDark ? 'light' : 'dark')}
+              className="inline-flex items-center justify-center rounded-lg h-9 w-9 bg-muted text-muted-foreground hover:text-foreground transition-all"
+              title="Toggle theme"
+            >
+              {isDark ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+            </button>
           </div>
         </header>
 

@@ -767,7 +767,7 @@ export function Finance() {
                     <div className="space-y-2">
                       <Label htmlFor="expense-order" className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Linked Order (Optional)</Label>
                       <Select name="orderId">
-                        <SelectTrigger id="expense-order" className="rounded-xl border-2 border-border h-11">
+                        <SelectTrigger id="expense-order" className="w-full rounded-xl border-2 border-border h-11">
                           <SelectValue placeholder="No order linked" />
                         </SelectTrigger>
                         <SelectContent className="rounded-xl">
@@ -999,7 +999,7 @@ export function Finance() {
                   <div className="space-y-2">
                     <Label htmlFor="edit-expense-orderId">Linked Order (Optional)</Label>
                     <Select name="orderId" defaultValue={editingExpense.orderId || 'none'}>
-                      <SelectTrigger id="edit-expense-orderId">
+                      <SelectTrigger id="edit-expense-orderId" className="w-full">
                         <SelectValue placeholder="No order linked" />
                       </SelectTrigger>
                       <SelectContent>

@@ -3,8 +3,28 @@ import { supabase } from './supabase';
 export const db = {};
 export const storage = supabase.storage;
 
-export function collection(db: any, path: string) {
-  return { path };
+export function collection(db: any, path: string, ...rest: string[]) {
+  let fullPath = path;
+  if (rest.length > 0) {
+    fullPath = [path, ...rest].join('/');
+  }
+
+  // Handle Firestore-style subcollection: orders/:orderId/items -> order_items
+  const parts = fullPath.split('/').filter(Boolean);
+  if (parts.length === 3 && parts[0] === 'orders' && parts[2] === 'items') {
+    return {
+      path: 'order_items',
+      parentField: 'orderId',
+      parentId: parts[1],
+      isSubcollection: true
+    };
+  }
+
+  // Normalize camelCase table names to matching Postgres tables if needed
+  let normalizedPath = fullPath;
+  if (normalizedPath === 'orderItems') normalizedPath = 'order_items';
+
+  return { path: normalizedPath };
 }
 
 export function query(col: any, ...ops: any[]) {
@@ -27,8 +47,14 @@ export function doc(dbOrCol: any, pathOrId?: string, ...rest: string[]) {
   // Check if the first argument is a collection reference (e.g. doc(collection(db, 'orders')))
   if (dbOrCol && typeof dbOrCol.path === 'string') {
     // Generate a random ID if one isn't provided
-    const autoId = crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2, 15);
-    return { path: dbOrCol.path, id: pathOrId || autoId };
+    const autoId = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2, 15);
+    return {
+      path: dbOrCol.path,
+      id: pathOrId || autoId,
+      parentField: dbOrCol.parentField,
+      parentId: dbOrCol.parentId,
+      isSubcollection: dbOrCol.isSubcollection
+    };
   }
 
   // If pathOrId is provided and rest contains the ID (e.g. doc(db, 'orders', '123'))
@@ -38,12 +64,22 @@ export function doc(dbOrCol: any, pathOrId?: string, ...rest: string[]) {
 
   // If path contains the ID (e.g. doc(db, 'orders/123'))
   if (pathOrId) {
-    const parts = pathOrId.split('/');
-    if (parts.length > 1) {
+    const parts = pathOrId.split('/').filter(Boolean);
+    if (parts.length === 2) {
       return { path: parts[0], id: parts[1] };
     }
+    // Handle doc(db, `orders/${orderId}/items/${itemId}`)
+    if (parts.length === 4 && parts[0] === 'orders' && parts[2] === 'items') {
+      return {
+        path: 'order_items',
+        id: parts[3],
+        parentField: 'orderId',
+        parentId: parts[1],
+        isSubcollection: true
+      };
+    }
     // Fallback for doc(db, 'orders') - implicitly generate ID
-    const autoId = crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2, 15);
+    const autoId = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2, 15);
     return { path: pathOrId, id: autoId };
   }
 
@@ -55,12 +91,16 @@ export function serverTimestamp() {
 }
 
 export async function getDocs(q: any) {
-  let builder = supabase.from(q.path).select('*');
+  let builder: any = supabase.from(q.path).select('*');
+  if (q.isSubcollection && q.parentField && q.parentId) {
+    builder = builder.eq(q.parentField, q.parentId);
+  }
   if (q.ops) {
     for (const op of q.ops) {
       if (op.type === 'where') {
         if (op.op === '==') builder = builder.eq(op.field, op.value);
         if (op.op === '!=') builder = builder.neq(op.field, op.value);
+        if (op.op === 'in') builder = builder.in(op.field, op.value);
         if (op.op === 'array-contains') builder = builder.contains(op.field, [op.value]);
       }
       if (op.type === 'orderBy') {
@@ -74,7 +114,7 @@ export async function getDocs(q: any) {
   const { data, error } = await builder;
   if (error) throw error;
   return {
-    docs: (data || []).map(d => ({
+    docs: (data || []).map((d: any) => ({
       id: d.id || d.uid,
       data: () => d
     })),
@@ -109,7 +149,13 @@ export function onSnapshot(q: any, callback: (snap: any) => void, errorCb?: (e: 
 }
 
 export async function addDoc(col: any, data: any) {
-  const { data: res, error } = await supabase.from(col.path).insert([data]).select().single();
+  const payload = {
+    ...data,
+    ...(col.parentField && col.parentId && !data[col.parentField]
+      ? { [col.parentField]: col.parentId }
+      : {})
+  };
+  const { data: res, error } = await supabase.from(col.path).insert([payload]).select().single();
   if (error) throw error;
   return { id: res?.id || 'new-id' };
 }
@@ -140,7 +186,14 @@ export async function getDoc(docRef: any) {
 }
 
 export async function setDoc(docRef: any, data: any) {
-  const { error } = await supabase.from(docRef.path).upsert([data]);
+  const payload = {
+    id: data.id || docRef.id,
+    ...data,
+    ...(docRef.parentField && docRef.parentId && !data[docRef.parentField]
+      ? { [docRef.parentField]: docRef.parentId }
+      : {})
+  };
+  const { error } = await supabase.from(docRef.path).upsert([payload]);
   if (error) throw error;
 }
 
