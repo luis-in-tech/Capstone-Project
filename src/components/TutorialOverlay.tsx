@@ -34,7 +34,7 @@ const TUTORIAL_PAGES = [
     icon: <Zap className="w-8 h-8 text-zinc-900" />,
     content: 'Active Pro is a centralized logistics management system built for multi-hub warehouse environments. It synchronizes stock levels, order fulfillment, financial tracking, and staff delegation — all in real-time.',
     highlights: [
-      'Real-time Firebase Sync',
+      'Real-time Supabase Sync',
       'Multi-Warehouse Architecture',
       'Role-Based Access Control',
       'Automated Financial Processing'

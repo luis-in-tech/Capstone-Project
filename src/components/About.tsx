@@ -62,7 +62,7 @@ export const About = () => {
                 <div className="relative z-10">
                   <h2 className="text-xs font-black uppercase tracking-[0.3em] text-zinc-500 mb-6">The Technology</h2>
                   <p className="text-2xl font-bold tracking-tight mb-8">
-                    Fully integrated with Firebase for real-time reactivity and ITIL 4 compliant service management principles.
+                    Fully integrated with Supabase for real-time reactivity and ITIL 4 compliant service management principles.
                   </p>
                   <div className="flex gap-4">
                     <div className="flex items-center gap-2 px-3 py-1 bg-white/10 rounded-full border border-white/10">

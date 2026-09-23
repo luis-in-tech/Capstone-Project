@@ -52,7 +52,7 @@ export const Privacy = () => {
             <section>
               <h2 className="text-xl font-black tracking-tight text-zinc-900 mb-4">3. THIRD-PARTY INFRASTRUCTURE</h2>
               <p className="text-zinc-600 leading-relaxed font-medium">
-                Our core infrastructure is hosted on Firebase (Google Cloud Platform). Data processing occurs within secure VPC environments. We do not sell supply chain data to third-party marketing entities.
+                Our core infrastructure is hosted on Supabase (backed by PostgreSQL and secure cloud infrastructure). Data processing occurs within secure environments. We do not sell supply chain data to third-party marketing entities.
               </p>
             </section>
 

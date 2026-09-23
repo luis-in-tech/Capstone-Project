@@ -3,7 +3,7 @@ import { useStaffAccess } from '../hooks/useStaffAccess';
 import React, { useState, useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { db } from '../lib/supabaseAdapter';
-import { collection, onSnapshot, query, where, addDoc, updateDoc, doc, serverTimestamp } from '../lib/supabaseAdapter';
+import { collection, onSnapshot, query, where, addDoc, updateDoc, doc, serverTimestamp, deleteDoc } from '../lib/supabaseAdapter';
 import { Product, InventoryItem, Warehouse } from '../types';
 import { handleSupabaseError, OperationType } from '../lib/supabaseErrorHandler';
 import { Button } from '@/components/ui/button';
@@ -50,6 +50,8 @@ export function Inventory() {
   const [editProductImage, setEditProductImage] = useState<File | null>(null);
   const [editProductImagePreview, setEditProductImagePreview] = useState('');
   const [isSubmittingProduct, setIsSubmittingProduct] = useState(false);
+  const [productToDelete, setProductToDelete] = useState<Product | null>(null);
+  const [isDeletingProduct, setIsDeletingProduct] = useState(false);
 
   // Add Product form state for uniqueness and select tracking
   const [addSku, setAddSku] = useState('');
@@ -466,6 +468,26 @@ export function Inventory() {
     }
   };
 
+  const handleDeleteProduct = async () => {
+    if (!productToDelete) return;
+    setIsDeletingProduct(true);
+    try {
+      const inventoryItems = inventory.filter(i => i.productId === productToDelete.id);
+      for (const item of inventoryItems) {
+        await deleteDoc(doc(db, 'inventory', item.id));
+      }
+      
+      await deleteDoc(doc(db, 'products', productToDelete.id));
+      
+      toast.success('Product deleted successfully');
+      setProductToDelete(null);
+    } catch (error) {
+      handleSupabaseError(error, OperationType.DELETE, `products/${productToDelete.id}`);
+    } finally {
+      setIsDeletingProduct(false);
+    }
+  };
+
   const updateStock = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const formData = new FormData(e.currentTarget);
@@ -788,8 +810,8 @@ export function Inventory() {
           </div>
           <div className="grid grid-cols-1 gap-3 p-4 sm:grid-cols-2 xl:grid-cols-[1fr_1fr_1fr_1fr_auto] xl:items-end">
             <div className="space-y-1.5"><Label className="text-xs font-semibold">Warehouse</Label><Select value={warehouseFilter} onValueChange={(value) => setWarehouseFilter(value ?? 'all')}><SelectTrigger className="h-10 rounded-xl"><SelectValue>{warehouseFilter === 'all' ? 'All Warehouses' : activeWarehouseObj?.name}</SelectValue></SelectTrigger><SelectContent><SelectItem value="all">All Warehouses</SelectItem>{warehouses.map(warehouse => <SelectItem key={warehouse.id} value={warehouse.id}>{warehouse.name}</SelectItem>)}</SelectContent></Select></div>
-            <div className="space-y-1.5"><Label className="text-xs font-semibold">Category</Label><Select value={categoryFilter} onValueChange={(value) => setCategoryFilter(value ?? 'all')}><SelectTrigger className="h-10 rounded-xl"><SelectValue>{categoryFilter === 'all' ? 'All Categories' : categoryFilter}</SelectValue></SelectTrigger><SelectContent><SelectItem value="all">All Categories</SelectItem>{categories.map(category => <SelectItem key={category} value={category}>{category}</SelectItem>)}</SelectContent></Select></div>
-            <div className="space-y-1.5"><Label className="text-xs font-semibold">Supplier</Label><Select value={supplierFilter} onValueChange={(value) => setSupplierFilter(value ?? 'all')}><SelectTrigger className="h-10 rounded-xl"><SelectValue>{supplierFilter === 'all' ? 'All Suppliers' : supplierFilter}</SelectValue></SelectTrigger><SelectContent><SelectItem value="all">All Suppliers</SelectItem>{suppliers.map(supplier => <SelectItem key={supplier} value={supplier}>{supplier}</SelectItem>)}</SelectContent></Select></div>
+            <div className="space-y-1.5"><Label className="text-xs font-semibold">Category</Label><Select value={categoryFilter} onValueChange={(value) => setCategoryFilter(value ?? 'all')}><SelectTrigger className="h-10 rounded-xl"><SelectValue>{categoryFilter === 'all' ? 'All Categories' : categoryFilter}</SelectValue></SelectTrigger><SelectContent><SelectItem value="all">All Categories</SelectItem>{categories.filter(c => c !== 'Uncategorized').map(category => <SelectItem key={category} value={category}>{category}</SelectItem>)}<div className="my-1 h-px bg-muted" /><SelectItem value="Uncategorized" className="italic text-muted-foreground">Uncategorized</SelectItem></SelectContent></Select></div>
+            <div className="space-y-1.5"><Label className="text-xs font-semibold">Supplier</Label><Select value={supplierFilter} onValueChange={(value) => setSupplierFilter(value ?? 'all')}><SelectTrigger className="h-10 rounded-xl"><SelectValue>{supplierFilter === 'all' ? 'All Suppliers' : supplierFilter}</SelectValue></SelectTrigger><SelectContent><SelectItem value="all">All Suppliers</SelectItem>{suppliers.filter(s => s !== 'N/A').map(supplier => <SelectItem key={supplier} value={supplier}>{supplier}</SelectItem>)}<div className="my-1 h-px bg-muted" /><SelectItem value="N/A" className="italic text-muted-foreground">N/A</SelectItem></SelectContent></Select></div>
             <div className="space-y-1.5"><Label className="text-xs font-semibold">Stock Status</Label><Select value={stockFilter} onValueChange={(value) => setStockFilter(value ?? 'all')}><SelectTrigger className="h-10 rounded-xl"><SelectValue>{stockFilter === 'all' ? 'All Statuses' : stockFilter === 'in' ? 'In Stock' : stockFilter === 'low' ? 'Low Stock' : 'Out of Stock'}</SelectValue></SelectTrigger><SelectContent><SelectItem value="all">All Statuses</SelectItem><SelectItem value="in">In Stock</SelectItem><SelectItem value="low">Low Stock</SelectItem><SelectItem value="out">Out of Stock</SelectItem></SelectContent></Select></div>
             <label className="flex h-10 cursor-pointer items-center justify-between gap-3 whitespace-nowrap rounded-xl border border-border px-3 text-xs font-medium">Hide zero-stock<input type="checkbox" checked={hideZeroStock} onChange={(event) => setHideZeroStock(event.target.checked)} className="h-4 w-4 accent-[#101d33]" /></label>
           </div>
@@ -819,6 +841,7 @@ export function Inventory() {
                       <div className="flex justify-end gap-1">
                         <Button variant="outline" size="icon" className="h-9 w-9" title="View product" onClick={() => { setSelectedProduct(product); setIsDetailOpen(true); }}><Eye className="h-4 w-4" /></Button>
                         {isAdmin && <Button variant="outline" size="icon" className="h-9 w-9" title="Edit product" onClick={() => setEditingProduct(product)}><Pencil className="h-4 w-4" /></Button>}
+                        {isAdmin && <Button variant="outline" size="icon" className="h-9 w-9 text-red-500 hover:text-red-600 hover:bg-red-50 hover:border-red-200" title="Delete product" onClick={() => setProductToDelete(product)}><Trash2 className="h-4 w-4" /></Button>}
                         <Dialog><DialogTrigger className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-border hover:bg-muted"><QrCode className="h-4 w-4" /></DialogTrigger><DialogContent className="text-center sm:max-w-xs"><DialogHeader><DialogTitle className="text-center">Asset QR Label</DialogTitle></DialogHeader><div className="flex flex-col items-center gap-4 py-8"><div id={`qr-svg-table-${product.id}`} className="rounded-2xl border-2 border-primary p-4"><QRCodeSVG value={product.id} size={180} /></div><div><p className="font-black">{product.name}</p><p className="font-mono text-xs text-muted-foreground">{product.sku}</p></div></div><Button variant="outline" onClick={() => printThermalLabel(product, `qr-svg-table-${product.id}`)}><Printer className="mr-2 h-4 w-4" />Print Label</Button></DialogContent></Dialog>
                         {canAdjustStock && <Button variant="outline" size="icon" className="h-9 w-9" title="Adjust stock" onClick={() => { setSelectedProduct(product); setIsStockUpdateOpen(true); }}><SlidersHorizontal className="h-4 w-4" /></Button>}
                       </div>
@@ -891,29 +914,53 @@ export function Inventory() {
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="category">Category</Label>
-                    <Select name="category" value={addCategory} onValueChange={setAddCategory}>
+                    <Select name="category" value={categoryOptions.includes(addCategory) ? addCategory : 'custom'} onValueChange={(val) => setAddCategory(val === 'custom' ? '' : val)}>
                       <SelectTrigger id="category">
                         <SelectValue placeholder="Select category" />
                       </SelectTrigger>
                       <SelectContent className="max-h-60 overflow-y-auto">
-                        {categoryOptions.map(category => (
+                        {categoryOptions.filter(c => c !== 'Uncategorized').map(category => (
                           <SelectItem key={category} value={category}>{category}</SelectItem>
                         ))}
+                        <div className="my-1 h-px bg-muted" />
+                        <SelectItem value="Uncategorized" className="italic text-muted-foreground">Uncategorized</SelectItem>
+                        <SelectItem value="custom" className="font-bold text-[#101d33]">+ Add new category</SelectItem>
                       </SelectContent>
                     </Select>
+                    {!categoryOptions.includes(addCategory) && (
+                      <Input
+                        placeholder="Enter new category name..."
+                        value={addCategory}
+                        onChange={(e) => setAddCategory(e.target.value)}
+                        className="mt-2"
+                        autoFocus
+                      />
+                    )}
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="supplier">Preferred Supplier</Label>
-                    <Select name="supplier" value={addSupplier} onValueChange={setAddSupplier}>
+                    <Select name="supplier" value={supplierOptions.includes(addSupplier) ? addSupplier : 'custom'} onValueChange={(val) => setAddSupplier(val === 'custom' ? '' : val)}>
                       <SelectTrigger id="supplier">
                         <SelectValue placeholder="Select supplier" />
                       </SelectTrigger>
                       <SelectContent className="max-h-60 overflow-y-auto">
-                        {supplierOptions.map(supplier => (
+                        {supplierOptions.filter(s => s !== 'N/A').map(supplier => (
                           <SelectItem key={supplier} value={supplier}>{supplier}</SelectItem>
                         ))}
+                        <div className="my-1 h-px bg-muted" />
+                        <SelectItem value="N/A" className="italic text-muted-foreground">N/A</SelectItem>
+                        <SelectItem value="custom" className="font-bold text-[#101d33]">+ Add new supplier</SelectItem>
                       </SelectContent>
                     </Select>
+                    {!supplierOptions.includes(addSupplier) && (
+                      <Input
+                        placeholder="Enter new supplier name..."
+                        value={addSupplier}
+                        onChange={(e) => setAddSupplier(e.target.value)}
+                        className="mt-2"
+                        autoFocus
+                      />
+                    )}
                   </div>
                 </div>
               </section>
@@ -1040,30 +1087,54 @@ export function Inventory() {
 
                     <div className="space-y-2">
                       <Label htmlFor="edit-category">Category</Label>
-                      <Select name="category" value={editCategory} onValueChange={setEditCategory}>
+                      <Select name="category" value={categoryOptions.includes(editCategory) ? editCategory : 'custom'} onValueChange={(val) => setEditCategory(val === 'custom' ? '' : val)}>
                         <SelectTrigger id="edit-category">
                           <SelectValue placeholder="Select category" />
                         </SelectTrigger>
                         <SelectContent className="max-h-60 overflow-y-auto">
-                          {Array.from(new Set([...categoryOptions, editCategory])).filter(Boolean).sort().map(category => (
+                          {categoryOptions.filter(c => c !== 'Uncategorized').map(category => (
                             <SelectItem key={category} value={category}>{category}</SelectItem>
                           ))}
+                          <div className="my-1 h-px bg-muted" />
+                          <SelectItem value="Uncategorized" className="italic text-muted-foreground">Uncategorized</SelectItem>
+                          <SelectItem value="custom" className="font-bold text-[#101d33]">+ Add new category</SelectItem>
                         </SelectContent>
                       </Select>
+                      {!categoryOptions.includes(editCategory) && (
+                        <Input
+                          placeholder="Enter new category name..."
+                          value={editCategory}
+                          onChange={(e) => setEditCategory(e.target.value)}
+                          className="mt-2"
+                          autoFocus
+                        />
+                      )}
                     </div>
 
                     <div className="space-y-2">
                       <Label htmlFor="edit-supplier">Supplier Name</Label>
-                      <Select name="supplier" value={editSupplier} onValueChange={setEditSupplier}>
+                      <Select name="supplier" value={supplierOptions.includes(editSupplier) ? editSupplier : 'custom'} onValueChange={(val) => setEditSupplier(val === 'custom' ? '' : val)}>
                         <SelectTrigger id="edit-supplier">
                           <SelectValue placeholder="Select supplier" />
                         </SelectTrigger>
                         <SelectContent className="max-h-60 overflow-y-auto">
-                          {Array.from(new Set([...supplierOptions, editSupplier])).filter(Boolean).sort().map(supplier => (
+                          {supplierOptions.filter(s => s !== 'N/A').map(supplier => (
                             <SelectItem key={supplier} value={supplier}>{supplier}</SelectItem>
                           ))}
+                          <div className="my-1 h-px bg-muted" />
+                          <SelectItem value="N/A" className="italic text-muted-foreground">N/A</SelectItem>
+                          <SelectItem value="custom" className="font-bold text-[#101d33]">+ Add new supplier</SelectItem>
                         </SelectContent>
                       </Select>
+                      {!supplierOptions.includes(editSupplier) && (
+                        <Input
+                          placeholder="Enter new supplier name..."
+                          value={editSupplier}
+                          onChange={(e) => setEditSupplier(e.target.value)}
+                          className="mt-2"
+                          autoFocus
+                        />
+                      )}
                     </div>
                   </div>
                 </section>
@@ -1117,6 +1188,26 @@ export function Inventory() {
               </DialogFooter>
             </form>
           )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={Boolean(productToDelete)} onOpenChange={(open) => !open && setProductToDelete(null)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-red-600 flex items-center gap-2">
+              <AlertTriangle className="h-5 w-5" /> Delete Product
+            </DialogTitle>
+            <DialogDescription>
+              Are you sure you want to delete <span className="font-bold">{productToDelete?.name}</span>? 
+              This will also remove all its inventory records across all warehouses. This action cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="mt-4">
+            <Button variant="outline" onClick={() => setProductToDelete(null)}>Cancel</Button>
+            <Button variant="destructive" onClick={handleDeleteProduct} disabled={isDeletingProduct}>
+              {isDeletingProduct ? 'Deleting...' : 'Yes, Delete Product'}
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 
