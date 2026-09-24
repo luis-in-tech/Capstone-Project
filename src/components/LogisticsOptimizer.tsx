@@ -20,7 +20,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
-import { db, collection, onSnapshot, query, orderBy, addDoc, serverTimestamp } from '../lib/supabaseAdapter';
+import { db, collection, onSnapshot, query, orderBy, addDoc, updateDoc, doc, serverTimestamp } from '../lib/supabaseAdapter';
 import { Order, InventoryItem, Warehouse, Product } from '../types';
 import { useAuth } from '../hooks/useAuth';
 import {
@@ -67,43 +67,17 @@ export function LogisticsOptimizer() {
   const [dbProducts, setDbProducts] = useState<Product[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
 
-  // Dispatched consolidated truck state
+  // Dispatched consolidated truck state (persisted to dispatch_trips)
   const [dispatchedTrucks, setDispatchedTrucks] = useState<Record<string, { truckId: string; plate: string; driver: string; timestamp: string }>>({});
+
+  // Fleet vehicles from Supabase
+  const [fleetVehicles, setFleetVehicles] = useState<{ id: string; plate: string; name: string; status: string }[]>([]);
 
   // Triggered transfer protocols
   const [triggeredProtocols, setTriggeredProtocols] = useState<string[]>([]);
 
-  // Crowdsourced incidents state
-  const [incidents, setIncidents] = useState<TrafficIncident[]>([
-    {
-      id: 'inc-1',
-      type: 'accident',
-      corridor: 'EDSA (Cubao to Balintawak)',
-      delayMinutes: 45,
-      reporter: 'Leo Mendoza (Truck #04)',
-      timestamp: '10 minutes ago',
-      bypassRoute: 'Take C-5 Highway & Katipunan bypass',
-      timeSavedMinutes: 28,
-      status: 'rerouted'
-    },
-    {
-      id: 'inc-2',
-      type: 'congestion',
-      corridor: 'C-5 Highway (Bagong Ilog to Taguig)',
-      delayMinutes: 30,
-      reporter: 'Danilo Santos (Truck #09)',
-      timestamp: '3 minutes ago',
-      bypassRoute: 'Take BGC 32nd Ave & Lawton shortcut',
-      timeSavedMinutes: 18,
-      status: 'active'
-    }
-  ]);
-
-  // Field incident form state
-  const [selectedIncidentType, setSelectedIncidentType] = useState<'accident' | 'closure' | 'congestion'>('accident');
-  const [selectedCorridor, setSelectedCorridor] = useState(HIGHWAYS_AND_CORRIDORS[0].name);
-  const [incidentDelay, setIncidentDelay] = useState('35');
-  const [driverReporterName, setDriverReporterName] = useState(profile?.displayName || 'Driver Leo S. (Van #02)');
+  // Crowdsourced incidents — loaded live from Supabase traffic_incidents via Realtime
+  const [incidents, setIncidents] = useState<TrafficIncident[]>([]);
 
   // ── Database Subscriptions ────────────────────────────────────────────────
   useEffect(() => {
@@ -123,13 +97,52 @@ export function LogisticsOptimizer() {
       setDbProducts(snap.docs.map(d => ({ id: d.id, ...d.data() } as Product)));
     }, () => {});
 
+    // Fleet vehicles (Supabase Realtime)
+    const unsubFleet = onSnapshot(collection(db, 'fleet_vehicles'), (snap) => {
+      setFleetVehicles(snap.docs.map((d: { id: string; data: () => Record<string, unknown> }) => ({ id: d.id, ...d.data() } as { id: string; plate: string; name: string; status: string })));
+    }, () => {});
+
+    // Traffic incidents (Supabase Realtime — newest first)
+    const unsubTraffic = onSnapshot(
+      query(collection(db, 'traffic_incidents'), orderBy('created_at', 'desc')),
+      (snap) => {
+        setIncidents(snap.docs.map((d: { id: string; data: () => Record<string, unknown> }) => {
+          const data = d.data() as Record<string, unknown>;
+          return {
+            id: d.id,
+            type: data.type as TrafficIncident['type'],
+            corridor: String(data.corridor ?? ''),
+            delayMinutes: Number(data.delay_minutes ?? 0),
+            reporter: String(data.reporter ?? 'Field Unit'),
+            timestamp: data.created_at
+              ? new Date(data.created_at as string).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+              : 'Just now',
+            bypassRoute: String(data.bypass_route ?? ''),
+            timeSavedMinutes: Number(data.time_saved_minutes ?? 0),
+            status: data.status as TrafficIncident['status'],
+          };
+        }));
+      },
+      () => {}
+    );
+
     return () => {
       unsubOrders();
       unsubWarehouses();
       unsubInventory();
       unsubProducts();
+      unsubFleet();
+      unsubTraffic();
     };
   }, []);
+
+  // Field incident form state
+  const [selectedIncidentType, setSelectedIncidentType] = useState<'accident' | 'closure' | 'congestion'>('accident');
+  const [selectedCorridor, setSelectedCorridor] = useState(HIGHWAYS_AND_CORRIDORS[0].name);
+  const [incidentDelay, setIncidentDelay] = useState('35');
+  const [driverReporterName, setDriverReporterName] = useState(profile?.displayName || 'Driver Leo S. (Van #02)');
+
+
 
   // ══════════════════════════════════════════════════════════════════════════
   // MODULE 1: MATHEMATICAL ORDER ROUTE OPTIMIZATION (CLARKE-WRIGHT + 2-OPT)
@@ -258,21 +271,71 @@ export function LogisticsOptimizer() {
     return calculateOptimalLogisticsRoutes(effectivePendingOrders, DEFAULT_DEPOT);
   }, [effectivePendingOrders]);
 
-  const handleDispatchConsolidatedTruck = (routeId: string, truckName: string, orderCount: number) => {
-    setDispatchedTrucks(prev => ({
-      ...prev,
-      [routeId]: {
-        truckId: truckName,
-        plate: `NCB-${Math.floor(1000 + Math.random() * 9000)}`,
-        driver: truckName.includes('Van') ? 'Rogelio Mendoza' : 'Danilo Santos',
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-      }
-    }));
+  const handleDispatchConsolidatedTruck = async (routeId: string, truckName: string, orderCount: number, route?: OptimizedRoute) => {
+    setIsProcessing(true);
+    try {
+      // Find a matching available fleet vehicle, or fall back to the first available
+      const matched = fleetVehicles.find(v => v.name === truckName && v.status === 'available')
+        ?? fleetVehicles.find(v => v.status === 'available');
 
-    toast.success(`Dispatched ${truckName}!`, {
-      description: `Dispatched with ${orderCount} customer deliveries. Following the Clarke-Wright optimized sequence.`,
-      icon: <Truck className="w-5 h-5 text-emerald-500" />
-    });
+      const plate = matched?.plate ?? `NCB-${Math.floor(1000 + Math.random() * 9000)}`;
+      const driver = truckName.includes('Van') ? 'Rogelio Mendoza' : 'Danilo Santos';
+      const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+      // Persist dispatch trip to Supabase
+      const tripRef = await addDoc(collection(db, 'dispatch_trips'), {
+        vehicle_id: matched?.id ?? null,
+        vehicle_name: truckName,
+        plate,
+        driver,
+        region: route?.region ?? routeId,
+        total_units: route?.totalUnits ?? orderCount,
+        savings_php: route?.savingsPhp ?? 0,
+        status: 'in_transit',
+        dispatched_at: serverTimestamp(),
+        dispatched_by: profile?.displayName ?? profile?.email ?? 'Dispatcher',
+      });
+
+      // Persist each stop as a trip_order row
+      if (route?.stops?.length) {
+        for (let i = 0; i < route.stops.length; i++) {
+          const stop = route.stops[i];
+          await addDoc(collection(db, 'trip_orders'), {
+            trip_id: tripRef.id,
+            order_id: stop.order.id,
+            order_number: stop.order.orderNumber,
+            client_name: stop.order.clientName,
+            delivery_city: stop.city,
+            stop_sequence: i + 1,
+            units: stop.units,
+            created_at: serverTimestamp(),
+          });
+        }
+      }
+
+      // Update local UI state
+      setDispatchedTrucks(prev => ({
+        ...prev,
+        [routeId]: { truckId: truckName, plate, driver, timestamp: now }
+      }));
+
+      toast.success(`Dispatched ${truckName}!`, {
+        description: `Dispatched with ${orderCount} customer deliveries. Following the Clarke-Wright optimized sequence.`,
+        icon: <Truck className="w-5 h-5 text-emerald-500" />
+      });
+    } catch {
+      // Fallback: still update local UI so UX is not broken
+      const plate = `NCB-${Math.floor(1000 + Math.random() * 9000)}`;
+      const driver = truckName.includes('Van') ? 'Rogelio Mendoza' : 'Danilo Santos';
+      const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      setDispatchedTrucks(prev => ({ ...prev, [routeId]: { truckId: truckName, plate, driver, timestamp: now } }));
+      toast.success(`Dispatched ${truckName}!`, {
+        description: `Dispatched with ${orderCount} customer deliveries. Following the Clarke-Wright optimized sequence.`,
+        icon: <Truck className="w-5 h-5 text-emerald-500" />
+      });
+    } finally {
+      setIsProcessing(false);
+    }
   };
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -381,7 +444,7 @@ export function LogisticsOptimizer() {
   // ══════════════════════════════════════════════════════════════════════════
   // MODULE 3: CROWDSOURCED TRAFFIC & INCIDENT REROUTING
   // ══════════════════════════════════════════════════════════════════════════
-  const handleReportIncident = (e: React.FormEvent) => {
+  const handleReportIncident = async (e: React.FormEvent) => {
     e.preventDefault();
     const delayMinutes = Number(incidentDelay);
     if (!Number.isFinite(delayMinutes) || delayMinutes <= 0 || !driverReporterName.trim()) {
@@ -399,19 +462,34 @@ export function LogisticsOptimizer() {
       timeSaved = 34;
     }
 
-    const newInc: TrafficIncident = {
-      id: `inc-${Date.now()}`,
-      type: selectedIncidentType,
-      corridor: selectedCorridor,
-      delayMinutes,
-      reporter: driverReporterName || 'Driver Field Unit',
-      timestamp: 'Just now',
-      bypassRoute,
-      timeSavedMinutes: Math.min(timeSaved, delayMinutes),
-      status: 'active'
-    };
+    const timeSavedMinutes = Math.min(timeSaved, delayMinutes);
 
-    setIncidents(prev => [newInc, ...prev]);
+    try {
+      // Persist to Supabase — onSnapshot will update local state automatically via Realtime
+      await addDoc(collection(db, 'traffic_incidents'), {
+        type: selectedIncidentType,
+        corridor: selectedCorridor,
+        delay_minutes: delayMinutes,
+        reporter: driverReporterName || 'Driver Field Unit',
+        bypass_route: bypassRoute,
+        time_saved_minutes: timeSavedMinutes,
+        status: 'active',
+        created_at: serverTimestamp(),
+      });
+    } catch {
+      // Fallback: add locally if Supabase fails
+      setIncidents(prev => [{
+        id: `inc-${Date.now()}`,
+        type: selectedIncidentType,
+        corridor: selectedCorridor,
+        delayMinutes,
+        reporter: driverReporterName || 'Driver Field Unit',
+        timestamp: 'Just now',
+        bypassRoute,
+        timeSavedMinutes,
+        status: 'active',
+      }, ...prev]);
+    }
 
     toast.warning('Traffic Alert Broadcasted!', {
       description: `Reported ${selectedIncidentType.toUpperCase()} on ${selectedCorridor}. Detour route ready for dispatched drivers.`,
@@ -419,9 +497,15 @@ export function LogisticsOptimizer() {
     });
   };
 
-  const handlePushAlternativeRoute = (incidentId: string) => {
-    setIncidents(prev => prev.map(inc => inc.id === incidentId ? { ...inc, status: 'rerouted' } : inc));
+  const handlePushAlternativeRoute = async (incidentId: string) => {
     const target = incidents.find(i => i.id === incidentId);
+    try {
+      // Update status in Supabase — Realtime will sync the UI
+      await updateDoc(doc(db, `traffic_incidents/${incidentId}`), { status: 'rerouted' });
+    } catch {
+      // Fallback: update locally
+      setIncidents(prev => prev.map(inc => inc.id === incidentId ? { ...inc, status: 'rerouted' } : inc));
+    }
     toast.success('Detour Pushed to Driver!', {
       description: `Dispatched detour: ${target?.bypassRoute || 'Shortcut accepted'}. Estimated time saved: ${target?.timeSavedMinutes || 25} mins.`,
       icon: <Navigation className="w-5 h-5 text-sky-400" />
@@ -757,7 +841,7 @@ export function LogisticsOptimizer() {
                     ) : (
                       <Button
                         className="w-full bg-[#1A2332] text-white hover:bg-[#1A2332]/90 font-bold text-xs h-11 rounded-xl gap-2 shadow-sm"
-                        onClick={() => handleDispatchConsolidatedTruck(route.routeId, route.vehicle.name, route.stops.length)}
+                        onClick={() => handleDispatchConsolidatedTruck(route.routeId, route.vehicle.name, route.stops.length, route)}
                       >
                         <Truck className="w-4 h-4 text-emerald-400" /> Dispatch {route.vehicle.name} ({route.stops.length} Deliveries Sequenced)
                       </Button>

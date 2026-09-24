@@ -1,4 +1,4 @@
-﻿import { useStaffAccess } from '../hooks/useStaffAccess';
+import { useStaffAccess } from '../hooks/useStaffAccess';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { collection, db, onSnapshot } from '../lib/supabaseAdapter';
 import { Product } from '../types';
@@ -16,9 +16,13 @@ import { toast } from 'sonner';
 // ---------------------------------------------------------------------------
 // Gemini Vision – Pricelist Image Scanner
 // ---------------------------------------------------------------------------
-const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY as string;
+const GEMINI_API_KEY = (import.meta.env.VITE_GEMINI_API_KEY as string) || '';
 
 async function scanPricelistImage(file: File): Promise<PricelistItem[]> {
+  if (!GEMINI_API_KEY || GEMINI_API_KEY.includes('MY_')) {
+    throw new Error('Missing Gemini API Key in .env. Please update VITE_GEMINI_API_KEY in your .env file.');
+  }
+
   const toBase64 = (f: File): Promise<string> =>
     new Promise((res, rej) => {
       const r = new FileReader();
@@ -31,12 +35,13 @@ async function scanPricelistImage(file: File): Promise<PricelistItem[]> {
 
   const prompt = `You are a pricelist data extractor. Analyze the provided pricelist image and extract all product entries.
 Return ONLY a valid JSON array (no markdown fences, no explanation) with objects matching this schema:
-[{ "sku": string, "name": string, "category": string, "price": number }]
+[{ "sku": "SKU-001", "name": "Product Name", "category": "General", "price": 1250.50 }]
+
 Rules:
-- "sku": product code. If absent, use "SKU-001", "SKU-002", etc.
-- "name": product name as shown.
+- "sku": product code or SKU string. If absent, generate "SKU-001", "SKU-002", etc.
+- "name": full product name as shown.
 - "category": product group or category. If absent, use "General".
-- "price": numeric value only (strip currency symbols). Use 0 if unreadable.
+- "price": NUMERIC price of the product (strip currency symbols like ₱, $, PHP, and remove commas e.g. "1,500.00" becomes 1500.00). DO NOT return 0 if a price is printed in the image.
 Return ONLY the JSON array.`;
 
   const body = {
@@ -49,31 +54,143 @@ Return ONLY the JSON array.`;
     generationConfig: { temperature: 0.1, maxOutputTokens: 4096 },
   };
 
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${GEMINI_API_KEY}`,
-    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
-  );
+  // Build candidate endpoints dynamically and statically
+  const endpoints: Array<{ url: string; headers: Record<string, string> }> = [];
 
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({})) as { error?: { message?: string } };
-    throw new Error(err?.error?.message || `Gemini API error: ${res.status}`);
+  const addEndpoint = (ver: string, model: string) => {
+    const url = `https://generativelanguage.googleapis.com/${ver}/models/${model}:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`;
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'x-goog-api-key': GEMINI_API_KEY,
+    };
+    endpoints.push({ url, headers });
+  };
+
+  // Try discovering models dynamically from Google API first
+  try {
+    for (const ver of ['v1beta', 'v1']) {
+      const listUrl = `https://generativelanguage.googleapis.com/${ver}/models?key=${encodeURIComponent(GEMINI_API_KEY)}`;
+      const listHeaders: Record<string, string> = { 'x-goog-api-key': GEMINI_API_KEY };
+      const listRes = await fetch(listUrl, { headers: listHeaders });
+      if (listRes.ok) {
+        const listData = await listRes.json() as { models?: Array<{ name?: string; supportedGenerationMethods?: string[] }> };
+        if (listData?.models) {
+          for (const m of listData.models) {
+            if (m.name && m.supportedGenerationMethods?.includes('generateContent')) {
+              const modelId = m.name.replace(/^models\//, '');
+              // Ignore non-vision models like TTS, audio, embeddings
+              if (/tts|embedding|audio|speech/i.test(modelId)) continue;
+              addEndpoint(ver, modelId);
+            }
+          }
+        }
+      }
+    }
+  } catch {
+    // Ignore discovery errors and fall back to static list
+  }
+
+  // Standard fallback models if dynamic discovery returned nothing
+  const staticModels = ['gemini-1.5-flash', 'gemini-2.0-flash', 'gemini-1.5-pro', 'gemini-1.5-flash-latest'];
+  for (const ver of ['v1beta', 'v1']) {
+    for (const m of staticModels) {
+      addEndpoint(ver, m);
+    }
+  }
+
+  let res: Response | null = null;
+  let lastErr = '';
+
+  for (const ep of endpoints) {
+    // Retry up to 2 times per endpoint for transient 500/503 internal errors
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      res = await fetch(ep.url, {
+        method: 'POST',
+        headers: ep.headers,
+        body: JSON.stringify(body),
+      });
+
+      if (res.ok) break;
+
+      const errBody = await res.clone().json().catch(() => ({})) as { error?: { message?: string } };
+      lastErr = errBody?.error?.message || '';
+
+      const isInternalError = res.status >= 500 || /internal|overloaded|unavailable|try again/i.test(lastErr);
+      if (isInternalError && attempt < 2) {
+        await new Promise(r => setTimeout(r, 1500));
+        continue;
+      }
+      break;
+    }
+
+    if (res && res.ok) break;
+
+    // If model is not found, or image modality not supported, or transient 500 error, try next candidate model
+    if (
+      res?.status === 404 ||
+      res?.status === 400 ||
+      res?.status === 500 ||
+      res?.status === 503 ||
+      lastErr.includes('not found') ||
+      lastErr.includes('modality') ||
+      lastErr.includes('not enabled') ||
+      lastErr.includes('image input') ||
+      lastErr.includes('Internal error')
+    ) {
+      continue;
+    }
+
+    if (res?.status === 429 || lastErr.includes('Quota exceeded')) {
+      throw new Error('Google AI Studio Free Tier rate limit reached (15 requests/min). Please wait ~30 seconds before scanning again.');
+    }
+    throw new Error(lastErr || `Gemini API error: ${res?.status}`);
+  }
+  if (!res || !res.ok) {
+    const errBody = await res?.json().catch(() => ({})) as { error?: { message?: string } };
+    throw new Error(errBody?.error?.message || 'Gemini API failed after retries.');
   }
 
   const data = await res.json() as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
   const raw: string = data?.candidates?.[0]?.content?.parts?.[0]?.text || '[]';
-  const clean = raw.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim();
-  const parsed = JSON.parse(clean) as Array<{ sku?: string; name?: string; category?: string; price?: number }>;
+
+  // Robustly extract the first JSON array from the response,
+  // stripping markdown fences and fixing common issues like trailing commas.
+  const extractJson = (text: string): string => {
+    let s = text.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim();
+    const match = s.match(/(\[[\s\S]*\])/);
+    if (match) s = match[1];
+    s = s.replace(/,\s*([}\]])/g, '$1');
+    return s;
+  };
+
+  let parsed: Array<Record<string, unknown>>;
+  try {
+    parsed = JSON.parse(extractJson(raw));
+  } catch {
+    throw new Error('Could not parse the response from Gemini. Try a clearer image.');
+  }
 
   if (!Array.isArray(parsed)) throw new Error('Unexpected response format from Gemini.');
 
-  return parsed.map((item, i) => ({
-    productId: `scan-${Date.now()}-${i}`,
-    sku: String(item.sku || `SKU-${String(i + 1).padStart(3, '0')}`),
-    name: String(item.name || 'Unknown Product'),
-    category: String(item.category || 'General'),
-    priceType: 'base' as PriceType,
-    price: Number(item.price) || 0,
-  }));
+  const parsePriceNum = (v: unknown): number => {
+    if (typeof v === 'number') return isNaN(v) ? 0 : v;
+    if (v === null || v === undefined) return 0;
+    const str = String(v).replace(/[^0-9.]/g, '');
+    const num = parseFloat(str);
+    return isNaN(num) ? 0 : num;
+  };
+
+  return parsed.map((item, i) => {
+    const rawPrice = item.price ?? item.unitPrice ?? item.unit_price ?? item.cost ?? item.amount ?? item.rate ?? item.price_php ?? item.item_price ?? 0;
+    return {
+      productId: `scan-${Date.now()}-${i}`,
+      sku: String(item.sku || item.code || item.item_code || `SKU-${String(i + 1).padStart(3, '0')}`),
+      name: String(item.name || item.product_name || item.item_name || item.description || 'Unknown Product'),
+      category: String(item.category || item.product_category || item.group || 'General'),
+      priceType: 'base' as PriceType,
+      price: parsePriceNum(rawPrice),
+    };
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -190,10 +307,10 @@ export function Pricelist() {
       <Dialog open={!!renameId && canEdit} onOpenChange={o => !o && setRenameId('')}><DialogContent><DialogHeader><DialogTitle>Rename Pricelist</DialogTitle></DialogHeader><Label>Pricelist Name</Label><Input value={rename} onChange={e => setRename(e.target.value)}/><DialogFooter><Button variant="outline" onClick={() => setRenameId('')}>Cancel</Button><Button onClick={doRename}>Rename</Button></DialogFooter></DialogContent></Dialog>
 
       <Dialog open={!!scanItems} onOpenChange={o => !o && cancelScan()}>
-        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-4xl">
+        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-5xl">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2"><ScanLine className="h-5 w-5"/>Review Scanned Pricelist</DialogTitle>
-            <DialogDescription>{scanItems?.length ?? 0} products extracted. Review and name the pricelist before saving.</DialogDescription>
+            <DialogDescription>{scanItems?.length ?? 0} products extracted. Review, edit prices if needed, and name the pricelist before saving.</DialogDescription>
           </DialogHeader>
           {scanPreviewUrl && (
             <div className="overflow-hidden rounded-xl border">
@@ -204,7 +321,98 @@ export function Pricelist() {
             <Label>Pricelist Name</Label>
             <Input value={scanName} onChange={e => setScanName(e.target.value)} placeholder="Enter a name for this pricelist"/>
           </div>
-          <Items items={scanItems || []}/>
+          <div className="overflow-x-auto rounded-xl border">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="w-32">SKU</TableHead>
+                  <TableHead>Item Name</TableHead>
+                  <TableHead className="w-36">Category</TableHead>
+                  <TableHead className="w-40">Price Scheme</TableHead>
+                  <TableHead className="w-36 text-right">Price (₱)</TableHead>
+                  <TableHead className="w-12 text-center" />
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {(scanItems || []).map((item, idx) => (
+                  <TableRow key={item.productId || idx}>
+                    <TableCell>
+                      <Input
+                        className="h-8 font-mono text-xs"
+                        value={item.sku}
+                        onChange={e => {
+                          const val = e.target.value;
+                          setScanItems(prev => prev ? prev.map((x, i) => i === idx ? { ...x, sku: val } : x) : null);
+                        }}
+                      />
+                    </TableCell>
+                    <TableCell>
+                      <Input
+                        className="h-8 text-sm font-medium"
+                        value={item.name}
+                        onChange={e => {
+                          const val = e.target.value;
+                          setScanItems(prev => prev ? prev.map((x, i) => i === idx ? { ...x, name: val } : x) : null);
+                        }}
+                      />
+                    </TableCell>
+                    <TableCell>
+                      <Input
+                        className="h-8 text-xs"
+                        value={item.category}
+                        onChange={e => {
+                          const val = e.target.value;
+                          setScanItems(prev => prev ? prev.map((x, i) => i === idx ? { ...x, category: val } : x) : null);
+                        }}
+                      />
+                    </TableCell>
+                    <TableCell>
+                      <Select
+                        value={item.priceType}
+                        onValueChange={val => {
+                          setScanItems(prev => prev ? prev.map((x, i) => i === idx ? { ...x, priceType: val as PriceType } : x) : null);
+                        }}
+                      >
+                        <SelectTrigger className="h-8 text-xs">
+                          <SelectValue>{schemeLabel(item.priceType)}</SelectValue>
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="base">Regular Price</SelectItem>
+                          <SelectItem value="metroManila">Metro Manila Price</SelectItem>
+                          <SelectItem value="provincial">Provincial Price</SelectItem>
+                          <SelectItem value="promo">Promo Price</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </TableCell>
+                    <TableCell>
+                      <Input
+                        type="number"
+                        step="0.01"
+                        className="h-8 text-right font-bold text-sm"
+                        value={item.price}
+                        onChange={e => {
+                          const val = parseFloat(e.target.value) || 0;
+                          setScanItems(prev => prev ? prev.map((x, i) => i === idx ? { ...x, price: val } : x) : null);
+                        }}
+                      />
+                    </TableCell>
+                    <TableCell className="text-center">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8 text-destructive"
+                        onClick={() => {
+                          setScanItems(prev => prev ? prev.filter((_, i) => i !== idx) : null);
+                        }}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
           <DialogFooter>
             <Button variant="outline" onClick={cancelScan}>Cancel</Button>
             <Button onClick={confirmScan} disabled={!scanName.trim() || !scanItems?.length}><Check className="mr-2 h-4 w-4"/>Save Pricelist</Button>
