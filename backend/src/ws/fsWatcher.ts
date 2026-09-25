@@ -101,7 +101,7 @@ export function createFsWatcher(httpServer: HttpServer): {
       ignored: [
         /(^|[/\\])\../,             // Hidden files/dirs (e.g. .git, .env)
         /node_modules/,
-        new RegExp(BACKEND_ROOT.replace(/\\/g, '\\\\')),
+        new RegExp(BACKEND_ROOT.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
         /\.trash/,
         /dist/,
       ],

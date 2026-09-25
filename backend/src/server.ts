@@ -38,6 +38,12 @@ import express, { Request, Response } from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 
+// Enable BigInt serialization for Prisma entities
+(BigInt.prototype as any).toJSON = function () {
+  const intVal = Number(this);
+  return Number.isSafeInteger(intVal) ? intVal : this.toString();
+};
+
 // ── Config & Utilities ────────────────────────────────────────────────────────
 import { env }           from './config/env';
 import { ensureTrashDir, FRONTEND_ROOT, BACKEND_ROOT } from './config/paths';

@@ -177,7 +177,14 @@ export async function deleteDoc(docRef: any) {
 }
 
 export async function getDoc(docRef: any) {
-  const { data, error } = await supabase.from(docRef.path).select('*').eq('uid', docRef.id).single();
+  let { data, error } = await supabase.from(docRef.path).select('*').eq('id', docRef.id).maybeSingle();
+  if (error || !data) {
+    const { data: uidData, error: uidError } = await supabase.from(docRef.path).select('*').eq('uid', docRef.id).maybeSingle();
+    if (!uidError && uidData) {
+      data = uidData;
+      error = null;
+    }
+  }
   if (error && error.code !== 'PGRST116') throw error; // PGRST116 is no rows
   return {
     exists: () => !!data,

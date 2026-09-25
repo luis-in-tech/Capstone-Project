@@ -302,7 +302,7 @@ export function LogisticsOptimizer() {
           const stop = route.stops[i];
           await addDoc(collection(db, 'trip_orders'), {
             trip_id: tripRef.id,
-            order_id: stop.order.id,
+            order_id: (stop.order.id && !stop.order.id.startsWith('demo-')) ? stop.order.id : null,
             order_number: stop.order.orderNumber,
             client_name: stop.order.clientName,
             delivery_city: stop.city,

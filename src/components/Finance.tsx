@@ -77,6 +77,17 @@ export function Finance() {
     };
   }, []);
 
+  const parseDate = (d: any): Date | null => {
+    if (!d) return null;
+    if (typeof d?.toDate === 'function') return d.toDate();
+    if (d instanceof Date) return isNaN(d.getTime()) ? null : d;
+    if (typeof d === 'string' || typeof d === 'number') {
+      const parsed = new Date(d);
+      return isNaN(parsed.getTime()) ? null : parsed;
+    }
+    return null;
+  };
+
   const totalRevenue = orders
     .filter(o => ['delivered', 'completed'].includes(o.status))
     .reduce((sum, o) => sum + (o.totalAmount || 0), 0);
@@ -96,12 +107,12 @@ export function Finance() {
 
     const monthOrders = orders.filter(o => {
       if (!['delivered', 'completed'].includes(o.status)) return false;
-      const date = typeof o.createdAt?.toDate === 'function' ? o.createdAt.toDate() : null;
+      const date = parseDate(o.createdAt);
       return date && `${date.toLocaleString('default', { month: 'short' })} ${date.getFullYear()}` === monthKey;
     });
 
     const monthExpenses = expenses.filter(e => {
-      const date = typeof e.date?.toDate === 'function' ? e.date.toDate() : null;
+      const date = parseDate(e.date);
       return date && `${date.toLocaleString('default', { month: 'short' })} ${date.getFullYear()}` === monthKey;
     });
 
@@ -121,12 +132,12 @@ export function Finance() {
 
     const monthOrders = orders.filter(o => {
       if (!['delivered', 'completed'].includes(o.status)) return false;
-      const date = typeof o.createdAt?.toDate === 'function' ? o.createdAt.toDate() : null;
+      const date = parseDate(o.createdAt);
       return date && `${date.toLocaleString('default', { month: 'short' })} ${date.getFullYear()}` === monthKey;
     });
 
     const monthExpenses = expenses.filter(e => {
-      const date = typeof e.date?.toDate === 'function' ? e.date.toDate() : null;
+      const date = parseDate(e.date);
       return date && `${date.toLocaleString('default', { month: 'short' })} ${date.getFullYear()}` === monthKey;
     });
 
@@ -144,7 +155,7 @@ export function Finance() {
   const currentMonthKey = `${currentMonthName} ${currentMonthYear}`;
 
   const currentMonthExpenses = expenses.filter(e => {
-    const date = typeof e.date?.toDate === 'function' ? e.date.toDate() : null;
+    const date = parseDate(e.date);
     return date && `${date.toLocaleString('default', { month: 'short' })} ${date.getFullYear()}` === currentMonthKey;
   });
 
@@ -314,8 +325,8 @@ export function Finance() {
     let valB: any;
 
     if (sortKey === 'date') {
-      valA = a.date?.toDate ? a.date.toDate().getTime() : (a.date instanceof Date ? a.date.getTime() : 0);
-      valB = b.date?.toDate ? b.date.toDate().getTime() : (b.date instanceof Date ? b.date.getTime() : 0);
+      valA = parseDate(a.date)?.getTime() ?? 0;
+      valB = parseDate(b.date)?.getTime() ?? 0;
     } else if (sortKey === 'orderId') {
       const orderA = orders.find(o => o.id === a.orderId);
       const orderB = orders.find(o => o.id === b.orderId);

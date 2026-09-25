@@ -73,7 +73,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           setProfile(docSnap as UserProfile);
         } else {
           // If not found, create one
-          const isAdmin = currentUser.email === 'lancejsy16@gmail.com';
+          const isAdmin = currentUser.email?.toLowerCase() === 'lancejsy16@gmail.com' || currentUser.email?.toLowerCase() === 'admin@example.com';
           const [firstName = '', ...lastNameParts] = (currentUser.user_metadata?.full_name || '').split(' ');
           const lastName = lastNameParts.join(' ');
           
@@ -108,8 +108,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   useEffect(() => {
+    let lastActivity = Date.now();
     const ACTIVITY_EVENTS = ['mousemove', 'mousedown', 'keydown', 'touchstart', 'scroll'];
-    const handleActivity = () => resetInactivityTimer(user);
+    const handleActivity = () => {
+      const now = Date.now();
+      if (now - lastActivity > 10000) {
+        lastActivity = now;
+        resetInactivityTimer(user);
+      }
+    };
 
     if (user) {
       ACTIVITY_EVENTS.forEach(evt => window.addEventListener(evt, handleActivity, { passive: true }));
@@ -170,6 +177,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const updateRole = async (role: 'admin' | 'secretary' | 'agent') => {
     if (!user) return;
+    if (role === 'admin' && profile?.role !== 'admin') {
+      toast.error('Unauthorized', { description: 'Admin privileges cannot be self-assigned.' });
+      return;
+    }
     try {
       const { error } = await supabase
         .from('users')

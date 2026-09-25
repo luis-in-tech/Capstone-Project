@@ -18,159 +18,178 @@ import { toast } from 'sonner';
 // ---------------------------------------------------------------------------
 const GEMINI_API_KEY = (import.meta.env.VITE_GEMINI_API_KEY as string) || '';
 
+// Pre-optimized candidate vision models in priority order of stability & quota availability
+const CANDIDATE_VISION_MODELS = [
+  { ver: 'v1', model: 'gemini-3.5-flash' },
+  { ver: 'v1beta', model: 'gemini-3.5-flash' },
+  { ver: 'v1', model: 'gemini-3.6-flash' },
+  { ver: 'v1beta', model: 'gemini-3.6-flash' },
+  { ver: 'v1', model: 'gemini-3.8-flash' },
+  { ver: 'v1beta', model: 'gemini-3.8-flash' },
+  { ver: 'v1', model: 'gemini-3.7-flash' },
+];
+
+/**
+ * Compresses and scales down user-uploaded images in the browser
+ * to prevent multi-megabyte payloads from causing timeouts or quota spikes.
+ * Fills solid white background so transparent PNG screenshots do not render black text on black.
+ */
+async function compressImageForOcr(file: File, maxDimension = 2400, quality = 0.90): Promise<{ base64: string; mimeType: string }> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('Failed to read selected image file.'));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error('Failed to decode image data.'));
+      img.onload = () => {
+        let { width, height } = img;
+        if (width > maxDimension || height > maxDimension) {
+          if (width > height) {
+            height = Math.round((height * maxDimension) / width);
+            width = maxDimension;
+          } else {
+            width = Math.round((width * maxDimension) / height);
+            height = maxDimension;
+          }
+        }
+
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          const rawBase64 = (reader.result as string).split(',')[1];
+          return resolve({ base64: rawBase64, mimeType: file.type || 'image/jpeg' });
+        }
+
+        // Fill solid white background so transparent PNGs do not become black in JPEG
+        ctx.fillStyle = '#FFFFFF';
+        ctx.fillRect(0, 0, width, height);
+        ctx.drawImage(img, 0, 0, width, height);
+        const dataUrl = canvas.toDataURL('image/jpeg', quality);
+        const base64 = dataUrl.split(',')[1];
+        resolve({ base64, mimeType: 'image/jpeg' });
+      };
+      img.src = reader.result as string;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
 async function scanPricelistImage(file: File): Promise<PricelistItem[]> {
   if (!GEMINI_API_KEY || GEMINI_API_KEY.includes('MY_')) {
     throw new Error('Missing Gemini API Key in .env. Please update VITE_GEMINI_API_KEY in your .env file.');
   }
 
-  const toBase64 = (f: File): Promise<string> =>
-    new Promise((res, rej) => {
-      const r = new FileReader();
-      r.onload = () => res((r.result as string).split(',')[1]);
-      r.onerror = rej;
-      r.readAsDataURL(f);
-    });
+  const { base64, mimeType } = await compressImageForOcr(file);
 
-  const base64 = await toBase64(file);
-
-  const prompt = `You are a pricelist data extractor. Analyze the provided pricelist image and extract all product entries.
-Return ONLY a valid JSON array (no markdown fences, no explanation) with objects matching this schema:
-[{ "sku": "SKU-001", "name": "Product Name", "category": "General", "price": 1250.50 }]
+  const prompt = `You are an expert OCR and bike shop pricelist extractor.
+Carefully examine the entire pricelist image, including all tables, rows, columns, and text.
+Extract EVERY single product item row and its corresponding price.
 
 Rules:
-- "sku": product code or SKU string. If absent, generate "SKU-001", "SKU-002", etc.
-- "name": full product name as shown.
-- "category": product group or category. If absent, use "General".
-- "price": NUMERIC price of the product (strip currency symbols like ₱, $, PHP, and remove commas e.g. "1,500.00" becomes 1500.00). DO NOT return 0 if a price is printed in the image.
-Return ONLY the JSON array.`;
+- "sku": product SKU or code if visible, otherwise generate sequential SKUs ("SKU-001", "SKU-002", etc.).
+- "name": full item name and description exactly as written in the row (e.g. include brand, model, size, speed, specs). Strip leading numbering like "#29 " if desired, but keep the full descriptive model name.
+- "category": product group or category (e.g. "Bikes", "Mountain Bikes", "Components", or "General").
+- "price": NUMERIC price of the product (strip currency symbols like ₱, $, PHP, and remove commas e.g. "34,000.00" becomes 34000). DO NOT return 0 if a price is printed in the table row.
+
+Ignore store address, phone numbers, and notices like "PRICES SUBJECT TO CHANGE".
+Extract ALL rows from top to bottom.
+Return ONLY a valid JSON array matching this schema:
+[{ "sku": "SKU-001", "name": "GIANT TALON 1 ( BLACK - SMALL)", "category": "Bikes", "price": 34000 }]`;
 
   const body = {
     contents: [{
       parts: [
         { text: prompt },
-        { inline_data: { mime_type: file.type || 'image/jpeg', data: base64 } },
+        { inlineData: { mimeType, data: base64 } },
       ],
     }],
-    generationConfig: { temperature: 0.1, maxOutputTokens: 4096 },
+    generationConfig: {
+      temperature: 0.1,
+      responseMimeType: 'application/json',
+      maxOutputTokens: 8192
+    },
   };
 
-  // Build candidate endpoints dynamically and statically
-  const endpoints: Array<{ url: string; headers: Record<string, string> }> = [];
+  let rawJsonText = '';
+  let lastError = '';
 
-  const addEndpoint = (ver: string, model: string) => {
-    const url = `https://generativelanguage.googleapis.com/${ver}/models/${model}:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`;
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-      'x-goog-api-key': GEMINI_API_KEY,
-    };
-    endpoints.push({ url, headers });
-  };
-
-  // Try discovering models dynamically from Google API first
-  try {
-    for (const ver of ['v1beta', 'v1']) {
-      const listUrl = `https://generativelanguage.googleapis.com/${ver}/models?key=${encodeURIComponent(GEMINI_API_KEY)}`;
-      const listHeaders: Record<string, string> = { 'x-goog-api-key': GEMINI_API_KEY };
-      const listRes = await fetch(listUrl, { headers: listHeaders });
-      if (listRes.ok) {
-        const listData = await listRes.json() as { models?: Array<{ name?: string; supportedGenerationMethods?: string[] }> };
-        if (listData?.models) {
-          for (const m of listData.models) {
-            if (m.name && m.supportedGenerationMethods?.includes('generateContent')) {
-              const modelId = m.name.replace(/^models\//, '');
-              // Ignore non-vision models like TTS, audio, embeddings
-              if (/tts|embedding|audio|speech/i.test(modelId)) continue;
-              addEndpoint(ver, modelId);
-            }
-          }
-        }
-      }
-    }
-  } catch {
-    // Ignore discovery errors and fall back to static list
-  }
-
-  // Standard fallback models if dynamic discovery returned nothing
-  const staticModels = ['gemini-1.5-flash', 'gemini-2.0-flash', 'gemini-1.5-pro', 'gemini-1.5-flash-latest'];
-  for (const ver of ['v1beta', 'v1']) {
-    for (const m of staticModels) {
-      addEndpoint(ver, m);
-    }
-  }
-
-  let res: Response | null = null;
-  let lastErr = '';
-
-  for (const ep of endpoints) {
-    // Retry up to 2 times per endpoint for transient 500/503 internal errors
-    for (let attempt = 1; attempt <= 2; attempt++) {
-      res = await fetch(ep.url, {
+  for (const { ver, model } of CANDIDATE_VISION_MODELS) {
+    try {
+      const url = `https://generativelanguage.googleapis.com/${ver}/models/${model}:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`;
+      const res = await fetch(url, {
         method: 'POST',
-        headers: ep.headers,
+        headers: {
+          'Content-Type': 'application/json',
+          'x-goog-api-key': GEMINI_API_KEY,
+        },
         body: JSON.stringify(body),
       });
 
-      if (res.ok) break;
+      if (res.ok) {
+        const data = await res.json() as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
+        rawJsonText = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+        if (rawJsonText) break;
+      }
 
       const errBody = await res.clone().json().catch(() => ({})) as { error?: { message?: string } };
-      lastErr = errBody?.error?.message || '';
-
-      const isInternalError = res.status >= 500 || /internal|overloaded|unavailable|try again/i.test(lastErr);
-      if (isInternalError && attempt < 2) {
-        await new Promise(r => setTimeout(r, 1500));
-        continue;
-      }
-      break;
-    }
-
-    if (res && res.ok) break;
-
-    // If model is not found, or image modality not supported, or transient 500 error, try next candidate model
-    if (
-      res?.status === 404 ||
-      res?.status === 400 ||
-      res?.status === 500 ||
-      res?.status === 503 ||
-      lastErr.includes('not found') ||
-      lastErr.includes('modality') ||
-      lastErr.includes('not enabled') ||
-      lastErr.includes('image input') ||
-      lastErr.includes('Internal error')
-    ) {
+      lastError = errBody?.error?.message || `HTTP ${res.status}`;
+      continue;
+    } catch (fetchErr: any) {
+      lastError = fetchErr.message || 'Network error';
       continue;
     }
+  }
 
-    if (res?.status === 429 || lastErr.includes('Quota exceeded')) {
-      throw new Error('Google AI Studio Free Tier rate limit reached (15 requests/min). Please wait ~30 seconds before scanning again.');
+  if (!rawJsonText) {
+    if (lastError.toLowerCase().includes('quota') || lastError.includes('429')) {
+      throw new Error('Google AI Studio Free Tier rate limit reached. Please wait ~30 seconds before scanning again.');
     }
-    throw new Error(lastErr || `Gemini API error: ${res?.status}`);
-  }
-  if (!res || !res.ok) {
-    const errBody = await res?.json().catch(() => ({})) as { error?: { message?: string } };
-    throw new Error(errBody?.error?.message || 'Gemini API failed after retries.');
+    throw new Error(lastError || 'Gemini Vision scan failed. Please verify image clarity and try again.');
   }
 
-  const data = await res.json() as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
-  const raw: string = data?.candidates?.[0]?.content?.parts?.[0]?.text || '[]';
-
-  // Robustly extract the first JSON array from the response,
-  // stripping markdown fences and fixing common issues like trailing commas.
+  // Robustly extract the first JSON array or object from the response
   const extractJson = (text: string): string => {
     let s = text.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim();
-    const match = s.match(/(\[[\s\S]*\])/);
-    if (match) s = match[1];
+    const arrayMatch = s.match(/(\[[\s\S]*\])/);
+    if (arrayMatch) {
+      s = arrayMatch[1];
+    } else {
+      const objMatch = s.match(/(\{[\s\S]*\})/);
+      if (objMatch) s = objMatch[1];
+    }
     s = s.replace(/,\s*([}\]])/g, '$1');
     return s;
   };
 
-  let parsed: Array<Record<string, unknown>>;
+  let parsed: any;
   try {
-    parsed = JSON.parse(extractJson(raw));
+    parsed = JSON.parse(extractJson(rawJsonText));
   } catch {
-    throw new Error('Could not parse the response from Gemini. Try a clearer image.');
+    throw new Error('Could not parse the product list from the image. Try taking a closer or clearer photo.');
   }
 
-  if (!Array.isArray(parsed)) throw new Error('Unexpected response format from Gemini.');
+  // Handle both direct arrays [...] and wrapped objects { products: [...] }, { items: [...] }
+  let itemsArray: Array<Record<string, unknown>> = [];
+  if (Array.isArray(parsed)) {
+    itemsArray = parsed;
+  } else if (parsed && typeof parsed === 'object') {
+    for (const key of ['products', 'items', 'pricelists', 'data', 'entries', 'rows']) {
+      if (Array.isArray(parsed[key])) {
+        itemsArray = parsed[key];
+        break;
+      }
+    }
+    if (!itemsArray.length) {
+      const anyArr = Object.values(parsed).find(v => Array.isArray(v));
+      if (anyArr) itemsArray = anyArr as Array<Record<string, unknown>>;
+    }
+  }
+
+  if (!itemsArray.length) {
+    throw new Error('No product items were detected in the image. Please ensure the pricelist table is clearly visible.');
+  }
 
   const parsePriceNum = (v: unknown): number => {
     if (typeof v === 'number') return isNaN(v) ? 0 : v;
@@ -180,13 +199,13 @@ Return ONLY the JSON array.`;
     return isNaN(num) ? 0 : num;
   };
 
-  return parsed.map((item, i) => {
+  return itemsArray.map((item, i) => {
     const rawPrice = item.price ?? item.unitPrice ?? item.unit_price ?? item.cost ?? item.amount ?? item.rate ?? item.price_php ?? item.item_price ?? 0;
     return {
       productId: `scan-${Date.now()}-${i}`,
       sku: String(item.sku || item.code || item.item_code || `SKU-${String(i + 1).padStart(3, '0')}`),
       name: String(item.name || item.product_name || item.item_name || item.description || 'Unknown Product'),
-      category: String(item.category || item.product_category || item.group || 'General'),
+      category: String(item.category || item.product_category || item.group || 'Bikes'),
       priceType: 'base' as PriceType,
       price: parsePriceNum(rawPrice),
     };

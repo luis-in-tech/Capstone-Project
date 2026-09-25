@@ -168,19 +168,28 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
 
       // 3. Update transfer status (with graceful schema fallback if columns are unmigrated in Supabase)
       try {
-        await updateDoc(doc(db, 'transfers', dispatchingTransfer.id), {
-          status: 'in_transit',
-          driverName: driverName.trim() || undefined,
-          vehiclePlate: vehiclePlate.trim().toUpperCase() || undefined,
-          dispatchedAt: serverTimestamp(),
-          dispatchedBy: profile?.uid,
-          updatedAt: serverTimestamp()
-        });
-      } catch (colErr: any) {
-        console.warn('Supabase transfers schema missing columns (PGRST204). Falling back to core status update:', colErr);
-        await updateDoc(doc(db, 'transfers', dispatchingTransfer.id), {
-          status: 'in_transit'
-        });
+        try {
+          await updateDoc(doc(db, 'transfers', dispatchingTransfer.id), {
+            status: 'in_transit',
+            driverName: driverName.trim() || undefined,
+            vehiclePlate: vehiclePlate.trim().toUpperCase() || undefined,
+            dispatchedAt: serverTimestamp(),
+            dispatchedBy: profile?.uid,
+            updatedAt: serverTimestamp()
+          });
+        } catch (colErr: any) {
+          console.warn('Supabase transfers schema missing columns (PGRST204). Falling back to core status update:', colErr);
+          await updateDoc(doc(db, 'transfers', dispatchingTransfer.id), {
+            status: 'in_transit'
+          });
+        }
+      } catch (transferErr) {
+        // Rollback stock deduction on catastrophic transfer update failure
+        await updateDoc(doc(db, 'inventory', sourceInv.id), {
+          quantity: sourceInv.quantity,
+          lastUpdated: serverTimestamp()
+        }).catch(rbErr => console.error('Failed to rollback inventory quantity:', rbErr));
+        throw transferErr;
       }
 
       toast.success(`Transport dispatched! ${dispatchingTransfer.quantity} unit(s) deducted from origin facility.`);

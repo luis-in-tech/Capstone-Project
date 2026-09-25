@@ -20,6 +20,6 @@ export function StaffAccessProvider({ children }: { children: React.ReactNode })
   const error = !admin && state.error;
   const revoked = !admin && state.delegation?.active === false;
   const permissions = resolvePermissions(profile, admin ? undefined : state.delegation);
-  return <AccessContext.Provider value={{ permissions, loading, revoked, error, hasDelegation: !admin && !!state.delegation }}><Fragment key={`${profile?.uid}:${loading}:${error}:${revoked}:${JSON.stringify(permissions)}`}>{children}</Fragment></AccessContext.Provider>;
+  return <AccessContext.Provider value={{ permissions, loading, revoked, error, hasDelegation: !admin && !!state.delegation }}>{children}</AccessContext.Provider>;
 }
 export const useStaffAccess = () => useContext(AccessContext);
