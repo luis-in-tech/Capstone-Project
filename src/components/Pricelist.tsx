@@ -1,8 +1,9 @@
 import { useStaffAccess } from '../hooks/useStaffAccess';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { collection, db, onSnapshot } from '../lib/supabaseAdapter';
-import { Product } from '../types';
+import { addDoc, collection, db, doc, getDocs, onSnapshot, serverTimestamp, updateDoc } from '../lib/supabaseAdapter';
+import { Product, Warehouse } from '../types';
 import { handleSupabaseError, OperationType } from '../lib/supabaseErrorHandler';
+import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
@@ -76,19 +77,22 @@ async function compressImageForOcr(file: File, maxDimension = 2400, quality = 0.
   });
 }
 
-async function scanPricelistImage(file: File): Promise<PricelistItem[]> {
+async function scanPricelistImage(file: File, startingSkuNumber = 1, existingProducts: Product[] = []): Promise<PricelistItem[]> {
   if (!GEMINI_API_KEY || GEMINI_API_KEY.includes('MY_')) {
     throw new Error('Missing Gemini API Key in .env. Please update VITE_GEMINI_API_KEY in your .env file.');
   }
 
   const { base64, mimeType } = await compressImageForOcr(file);
 
+  const startSkuStr = `SKU-${String(startingSkuNumber).padStart(3, '0')}`;
+  const nextSkuStr = `SKU-${String(startingSkuNumber + 1).padStart(3, '0')}`;
+
   const prompt = `You are an expert OCR and bike shop pricelist extractor.
 Carefully examine the entire pricelist image, including all tables, rows, columns, and text.
 Extract EVERY single product item row and its corresponding price.
 
 Rules:
-- "sku": product SKU or code if visible, otherwise generate sequential SKUs ("SKU-001", "SKU-002", etc.).
+- "sku": product SKU or code if clearly printed in the table row. If no SKU is visible, generate sequential SKUs starting from ${startSkuStr} ("${startSkuStr}", "${nextSkuStr}", etc.).
 - "name": full item name and description exactly as written in the row (e.g. include brand, model, size, speed, specs). Strip leading numbering like "#29 " if desired, but keep the full descriptive model name.
 - "category": product group or category (e.g. "Bikes", "Mountain Bikes", "Components", or "General").
 - "price": NUMERIC price of the product (strip currency symbols like ₱, $, PHP, and remove commas e.g. "34,000.00" becomes 34000). DO NOT return 0 if a price is printed in the table row.
@@ -96,7 +100,7 @@ Rules:
 Ignore store address, phone numbers, and notices like "PRICES SUBJECT TO CHANGE".
 Extract ALL rows from top to bottom.
 Return ONLY a valid JSON array matching this schema:
-[{ "sku": "SKU-001", "name": "GIANT TALON 1 ( BLACK - SMALL)", "category": "Bikes", "price": 34000 }]`;
+[{ "sku": "${startSkuStr}", "name": "GIANT TALON 1 ( BLACK - SMALL)", "category": "Bikes", "price": 34000 }]`;
 
   const body = {
     contents: [{
@@ -201,15 +205,50 @@ Return ONLY a valid JSON array matching this schema:
 
   return itemsArray.map((item, i) => {
     const rawPrice = item.price ?? item.unitPrice ?? item.unit_price ?? item.cost ?? item.amount ?? item.rate ?? item.price_php ?? item.item_price ?? 0;
+    const itemName = String(item.name || item.product_name || item.item_name || item.description || 'Unknown Product').trim();
+
+    // Check if product already exists in inventory by matching name
+    const matchedProduct = existingProducts.find(p => p.name.trim().toLowerCase() === itemName.toLowerCase());
+    const fallbackSeqSku = `SKU-${String(startingSkuNumber + i).padStart(3, '0')}`;
+    let finalSku = matchedProduct?.sku || String(item.sku || item.code || item.item_code || fallbackSeqSku).trim();
+
+    // If Gemini returned a 1-based generic SKU like SKU-001 or SKU-1, but our starting sequence is higher (e.g. SKU-026), remap to the continuous sequence
+    const genericMatch = finalSku.match(/^SKU-0*([0-9]+)$/i);
+    if (genericMatch && startingSkuNumber > 1 && !matchedProduct) {
+      const parsedNum = parseInt(genericMatch[1], 10);
+      if (parsedNum <= itemsArray.length) {
+        finalSku = fallbackSeqSku;
+      }
+    }
+
     return {
       productId: `scan-${Date.now()}-${i}`,
-      sku: String(item.sku || item.code || item.item_code || `SKU-${String(i + 1).padStart(3, '0')}`),
-      name: String(item.name || item.product_name || item.item_name || item.description || 'Unknown Product'),
+      sku: finalSku || fallbackSeqSku,
+      name: itemName,
       category: String(item.category || item.product_category || item.group || 'Bikes'),
       priceType: 'base' as PriceType,
       price: parsePriceNum(rawPrice),
     };
   });
+}
+
+function getNextSkuSequence(products: Product[], saved: SavedPricelist[], pendingItems?: PricelistItem[] | null): number {
+  let maxNum = 0;
+  const allSkus = [
+    ...products.map(p => p.sku),
+    ...saved.flatMap(s => (s.items || []).map(i => i.sku)),
+    ...(pendingItems ? pendingItems.map(i => i.sku) : [])
+  ];
+  for (const s of allSkus) {
+    const match = String(s || '').match(/^SKU-0*([0-9]+)$/i);
+    if (match) {
+      const val = parseInt(match[1], 10);
+      if (!isNaN(val) && val > maxNum) {
+        maxNum = val;
+      }
+    }
+  }
+  return maxNum + 1;
 }
 
 // ---------------------------------------------------------------------------
@@ -233,7 +272,7 @@ function readSaved(): SavedPricelist[] { try { const data = JSON.parse(localStor
 export function Pricelist() {
   const { profile } = useAuth();
   const { permissions } = useStaffAccess();
-  const [products, setProducts] = useState<Product[]>([]), [saved, setSaved] = useState<SavedPricelist[]>(readSaved), [loading, setLoading] = useState(true);
+  const [products, setProducts] = useState<Product[]>([]), [warehouses, setWarehouses] = useState<Warehouse[]>([]), [saved, setSaved] = useState<SavedPricelist[]>(readSaved), [loading, setLoading] = useState(true);
   const [search, setSearch] = useState(''), [dateFilter, setDateFilter] = useState('all'), [typeFilter, setTypeFilter] = useState('all'), [pdfFilter, setPdfFilter] = useState('all');
   const [from, setFrom] = useState(''), [to, setTo] = useState(''), [viewId, setViewId] = useState(''), [renameId, setRenameId] = useState(''), [rename, setRename] = useState('');
   const [createOpen, setCreateOpen] = useState(false), [name, setName] = useState(''), [productSearch, setProductSearch] = useState(''), [chosen, setChosen] = useState<Record<string, boolean>>({}), [delegated, setDelegated] = useState(false);
@@ -243,6 +282,7 @@ export function Pricelist() {
 
   // Image scan state
   const scanInputRef = useRef<HTMLInputElement>(null);
+  const appendScanInputRef = useRef<HTMLInputElement>(null);
   const [scanning, setScanning] = useState(false);
   const [scanItems, setScanItems] = useState<PricelistItem[] | null>(null);
   const [scanName, setScanName] = useState('');
@@ -250,7 +290,26 @@ export function Pricelist() {
 
   const canEdit = permissions.pricelist === 'edit';
 
-  useEffect(() => onSnapshot(collection(db, 'products'), s => { setProducts(s.docs.map((d: { id: string; data: () => Record<string, unknown> }) => ({ id: d.id, ...d.data() } as Product))); setLoading(false); }, e => { handleSupabaseError(e, OperationType.GET, 'products'); setLoading(false); }), []);
+  const [syncing, setSyncing] = useState(false);
+
+  useEffect(() => {
+    const unsubProducts = onSnapshot(collection(db, 'products'), s => {
+      setProducts(s.docs.map((d: { id: string; data: () => Record<string, unknown> }) => ({ id: d.id, ...d.data() } as Product)));
+      setLoading(false);
+    }, e => {
+      handleSupabaseError(e, OperationType.GET, 'products');
+      setLoading(false);
+    });
+
+    const unsubWarehouses = onSnapshot(collection(db, 'warehouses'), s => {
+      setWarehouses(s.docs.map((d: { id: string; data: () => Record<string, unknown> }) => ({ id: d.id, ...d.data() } as Warehouse)));
+    }, () => {});
+
+    return () => {
+      unsubProducts();
+      unsubWarehouses();
+    };
+  }, []);
   const save = (next: SavedPricelist[]) => { setSaved(next); localStorage.setItem(KEY, JSON.stringify(next)); };
   const filtered = useMemo(() => { const now = new Date(), today = new Date(now.getFullYear(), now.getMonth(), now.getDate()), week = new Date(today), month = new Date(now.getFullYear(), now.getMonth(), 1); week.setDate(today.getDate() - today.getDay()); return saved.filter(p => { const d = new Date(p.createdAt); const dateOk = dateFilter === 'all' || (dateFilter === 'today' && d >= today) || (dateFilter === 'week' && d >= week) || (dateFilter === 'month' && d >= month) || (dateFilter === 'custom' && (!from || d >= new Date(from + 'T00:00:00')) && (!to || d <= new Date(to + 'T23:59:59'))); return p.name.toLowerCase().includes(search.toLowerCase()) && dateOk && (typeFilter === 'all' || listType(p) === typeFilter) && (pdfFilter === 'all' || (pdfFilter === 'exported' && !!p.lastPdfGeneratedAt) || (pdfFilter === 'never' && !p.lastPdfGeneratedAt)); }).sort((a, b) => b.createdAt.localeCompare(a.createdAt)); }, [saved, search, dateFilter, typeFilter, pdfFilter, from, to]);
   const view = saved.find(p => p.id === viewId);
@@ -275,10 +334,11 @@ export function Pricelist() {
     setScanName(`Scanned Pricelist - ${new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}`);
     setScanning(true);
     try {
-      const items = await scanPricelistImage(file);
+      const startNum = getNextSkuSequence(products, saved);
+      const items = await scanPricelistImage(file, startNum, products);
       if (!items.length) { toast.error('No products found in the image. Try a clearer photo.'); setScanning(false); return; }
       setScanItems(items);
-      toast.success(`${items.length} products extracted from image.`);
+      toast.success(`${items.length} products extracted starting from SKU-${String(startNum).padStart(3, '0')}.`);
     } catch (err) {
       toast.error(`Scan failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
     } finally {
@@ -286,16 +346,140 @@ export function Pricelist() {
       if (scanInputRef.current) scanInputRef.current.value = '';
     }
   };
-  const confirmScan = () => {
-    if (!scanItems?.length || !scanName.trim()) return;
+
+  const handleAppendScanFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith('image/')) { toast.error('Please upload an image file.'); return; }
+    setScanning(true);
+    try {
+      const startNum = getNextSkuSequence(products, saved, scanItems);
+      const newItems = await scanPricelistImage(file, startNum, products);
+      if (!newItems.length) { toast.error('No products found in the image.'); setScanning(false); return; }
+      setScanItems(prev => [...(prev || []), ...newItems]);
+      toast.success(`Added ${newItems.length} products (SKU-${String(startNum).padStart(3, '0')} to SKU-${String(startNum + newItems.length - 1).padStart(3, '0')}).`);
+    } catch (err) {
+      toast.error(`Scan failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
+    } finally {
+      setScanning(false);
+      if (appendScanInputRef.current) appendScanInputRef.current.value = '';
+    }
+  };
+  const confirmScan = async () => {
+    if (!scanItems?.length || !scanName.trim() || syncing) return;
+    setSyncing(true);
+
     const p: SavedPricelist = { id: crypto.randomUUID(), name: scanName.trim(), createdAt: new Date().toISOString(), items: scanItems };
     save([p, ...saved]);
-    toast.success(`"${p.name}" saved successfully`);
-    setScanItems(null);
-    setScanPreviewUrl('');
-    setScanName('');
+
+    let newCount = 0;
+    let updateCount = 0;
+
+    try {
+      let activeWarehouses = warehouses.filter(w => w.active !== false);
+      if (!activeWarehouses.length) {
+        try {
+          const whSnap = await getDocs(collection(db, 'warehouses'));
+          activeWarehouses = whSnap.docs
+            .map((d: any) => ({ id: d.id, ...d.data() } as Warehouse))
+            .filter(w => w.active !== false);
+        } catch {
+          // ignore warehouse lookup error
+        }
+      }
+
+      const syncedProducts = [...products];
+
+      for (const item of scanItems) {
+        const itemSku = (item.sku || '').trim();
+        const itemName = (item.name || '').trim();
+
+        const existing = syncedProducts.find(
+          x => (itemSku && x.sku.trim().toLowerCase() === itemSku.toLowerCase()) ||
+               (itemName && x.name.trim().toLowerCase() === itemName.toLowerCase())
+        );
+
+        if (existing) {
+          const updates: Record<string, unknown> = {
+            updatedAt: new Date().toISOString(),
+          };
+
+          if (item.priceType === 'metroManila') {
+            updates.mmPrice = item.price;
+            updates.wholesalePrice = item.price;
+          } else if (item.priceType === 'provincial') {
+            updates.provincialPrice = item.price;
+            updates.dealerPrice = item.price;
+          } else if (item.priceType === 'promo') {
+            updates.promoPrice = item.price;
+          } else {
+            updates.basePrice = item.price;
+            if (!existing.mmPrice) updates.mmPrice = item.price;
+            if (!existing.provincialPrice) updates.provincialPrice = item.price;
+          }
+
+          await updateDoc(doc(db, 'products', existing.id), updates);
+          updateCount++;
+        } else {
+          const newId = crypto.randomUUID();
+          const newProduct = {
+            id: newId,
+            sku: itemSku,
+            name: itemName,
+            category: (item.category || 'General').trim(),
+            basePrice: item.price,
+            mmPrice: item.priceType === 'metroManila' ? item.price : item.price,
+            wholesalePrice: item.priceType === 'metroManila' ? item.price : item.price,
+            provincialPrice: item.priceType === 'provincial' ? item.price : item.price,
+            dealerPrice: item.priceType === 'provincial' ? item.price : item.price,
+            promoPrice: item.priceType === 'promo' ? item.price : null,
+            costPrice: 0,
+            minStockLevel: 5,
+            reorderPoint: 10,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          };
+
+          await addDoc(collection(db, 'products'), newProduct);
+          syncedProducts.push(newProduct as Product);
+          newCount++;
+
+          for (const wh of activeWarehouses) {
+            try {
+              await addDoc(collection(db, 'inventory'), {
+                productId: newId,
+                warehouseId: wh.id,
+                quantity: 0,
+                lastUpdated: serverTimestamp(),
+              });
+            } catch {
+              // ignore inventory initialisation error
+            }
+          }
+        }
+      }
+
+      const details = [];
+      if (newCount > 0) details.push(`${newCount} new products added`);
+      if (updateCount > 0) details.push(`${updateCount} existing prices updated`);
+
+      toast.success(
+        `"${p.name}" saved! ${details.join(', ') || 'Synced to catalog'}.`,
+        { description: 'All products are now available in Inventory and Order Entry.' }
+      );
+    } catch (err: any) {
+      console.error('Pricelist catalog sync error:', err);
+      toast.warning(
+        `"${p.name}" saved locally, but database sync had an issue: ${err.message || 'Check database permissions.'}`
+      );
+    } finally {
+      setSyncing(false);
+      setScanItems(null);
+      setScanPreviewUrl('');
+      setScanName('');
+    }
   };
-  const cancelScan = () => { setScanItems(null); setScanPreviewUrl(''); setScanName(''); };
+  const cancelScan = () => { if (syncing) return; setScanItems(null); setScanPreviewUrl(''); setScanName(''); };
 
   if (loading) return <div className="flex min-h-[400px] items-center justify-center"><Loader2 className="h-8 w-8 animate-spin"/></div>;
   return (
@@ -316,6 +500,7 @@ export function Pricelist() {
       </div>
 
       <input ref={scanInputRef} type="file" accept="image/*" className="hidden" onChange={handleScanFile}/>
+      <input ref={appendScanInputRef} type="file" accept="image/*" className="hidden" onChange={handleAppendScanFile}/>
 
       <div className="rounded-2xl border bg-card p-4"><div className="grid gap-3 md:grid-cols-4"><div><label className="text-xs invisible select-none block">Search</label><div className="relative mt-1"><Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2"/><Input className="pl-9" placeholder="Search by pricelist name..." value={search} onChange={e => setSearch(e.target.value)}/></div></div><Filter label="Date Created" value={dateFilter} set={setDateFilter} options={[["all","All Dates"],["today","Today"],["week","This Week"],["month","This Month"],["custom","Custom Date Range"]]}/><Filter label="Pricelist Type" value={typeFilter} set={setTypeFilter} options={[["all","All Types"],["Regular","Regular"],["Metro Manila","Metro Manila"],["Provincial","Provincial"],["Promo","Promo"],["Mixed","Mixed"]]}/><Filter label="PDF Status" value={pdfFilter} set={setPdfFilter} options={[["all","All Statuses"],["never","Never Exported"],["exported","Exported"]]}/></div>{dateFilter === 'custom' && <div className="mt-3 grid grid-cols-2 gap-3"><Field label="From" value={from} set={setFrom}/><Field label="To" value={to} set={setTo}/></div>}</div>
 
@@ -325,11 +510,20 @@ export function Pricelist() {
 
       <Dialog open={!!renameId && canEdit} onOpenChange={o => !o && setRenameId('')}><DialogContent><DialogHeader><DialogTitle>Rename Pricelist</DialogTitle></DialogHeader><Label>Pricelist Name</Label><Input value={rename} onChange={e => setRename(e.target.value)}/><DialogFooter><Button variant="outline" onClick={() => setRenameId('')}>Cancel</Button><Button onClick={doRename}>Rename</Button></DialogFooter></DialogContent></Dialog>
 
-      <Dialog open={!!scanItems} onOpenChange={o => !o && cancelScan()}>
+      <Dialog open={!!scanItems} onOpenChange={o => !o && !syncing && cancelScan()}>
         <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-5xl">
           <DialogHeader>
-            <DialogTitle className="flex items-center gap-2"><ScanLine className="h-5 w-5"/>Review Scanned Pricelist</DialogTitle>
-            <DialogDescription>{scanItems?.length ?? 0} products extracted. Review, edit prices if needed, and name the pricelist before saving.</DialogDescription>
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+              <DialogTitle className="flex items-center gap-2">
+                <ScanLine className="h-5 w-5"/>Review Scanned Pricelist
+              </DialogTitle>
+              <Badge variant="outline" className="w-fit text-xs font-normal border-emerald-500/40 text-emerald-600 bg-emerald-50/60 dark:bg-emerald-950/40">
+                Auto-syncs to Inventory &amp; Order Entry
+              </Badge>
+            </div>
+            <DialogDescription>
+              {scanItems?.length ?? 0} products extracted. Review, edit prices if needed, and save to update the Inventory catalog and Order Entry in real-time.
+            </DialogDescription>
           </DialogHeader>
           {scanPreviewUrl && (
             <div className="overflow-hidden rounded-xl border">
@@ -432,9 +626,30 @@ export function Pricelist() {
               </TableBody>
             </Table>
           </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={cancelScan}>Cancel</Button>
-            <Button onClick={confirmScan} disabled={!scanName.trim() || !scanItems?.length}><Check className="mr-2 h-4 w-4"/>Save Pricelist</Button>
+          <DialogFooter className="flex-col sm:flex-row sm:justify-between items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => appendScanInputRef.current?.click()}
+              disabled={scanning || syncing}
+            >
+              {scanning ? (
+                <><Loader2 className="mr-2 h-4 w-4 animate-spin"/>Scanning next page...</>
+              ) : (
+                <><Plus className="mr-2 h-4 w-4"/>Add Another Page / Image</>
+              )}
+            </Button>
+            <div className="flex gap-2">
+              <Button variant="outline" onClick={cancelScan} disabled={syncing}>Cancel</Button>
+              <Button onClick={confirmScan} disabled={!scanName.trim() || !scanItems?.length || syncing}>
+                {syncing ? (
+                  <><Loader2 className="mr-2 h-4 w-4 animate-spin"/>Syncing Catalog...</>
+                ) : (
+                  <><Check className="mr-2 h-4 w-4"/>Save &amp; Sync to Catalog</>
+                )}
+              </Button>
+            </div>
           </DialogFooter>
         </DialogContent>
       </Dialog>
