@@ -73,7 +73,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           setProfile(docSnap as UserProfile);
         } else {
           // If not found, create one
-          const isAdmin = currentUser.email?.toLowerCase() === 'lancejsy16@gmail.com' || currentUser.email?.toLowerCase() === 'admin@example.com';
           const [firstName = '', ...lastNameParts] = (currentUser.user_metadata?.full_name || '').split(' ');
           const lastName = lastNameParts.join(' ');
           
@@ -84,7 +83,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             firstName,
             lastName,
             photoUrl: currentUser.user_metadata?.avatar_url || '',
-            role: isAdmin ? 'admin' : 'agent'
+            role: 'agent'
           };
           
           const { error: insertError } = await supabase.from('users').insert([newProfile]);

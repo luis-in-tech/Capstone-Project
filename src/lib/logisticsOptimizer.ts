@@ -188,7 +188,8 @@ export function haversineDistanceKm(c1: { lat: number; lng: number }, c2: { lat:
   const a =
     Math.sin(dLat / 2) * Math.sin(dLat / 2) +
     Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) * Math.sin(dLng / 2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  const clampedA = Math.min(1, Math.max(0, a));
+  const c = 2 * Math.atan2(Math.sqrt(clampedA), Math.sqrt(1 - clampedA));
 
   const directDistance = R * c;
   const ROAD_WINDING_FACTOR = 1.25; // accounts for actual road infrastructure
@@ -401,7 +402,7 @@ export function solveCapacityConstrainedVRP(
 
   // Helper to find which route contains a given stop index
   const findRouteIndex = (currentRoutes: DeliveryStop[][], stopTarget: DeliveryStop): number => {
-    return currentRoutes.findIndex(r => r.some(s => s.order.id === stopTarget.order.id));
+    return currentRoutes.findIndex(r => r.some(s => s === stopTarget || (s.order?.id && s.order.id === stopTarget.order?.id)));
   };
 
   // Helper to sum route units

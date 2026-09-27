@@ -1,6 +1,6 @@
 import { useStaffAccess } from '../hooks/useStaffAccess';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { addDoc, collection, db, doc, getDocs, onSnapshot, serverTimestamp, updateDoc } from '../lib/supabaseAdapter';
+import { addDoc, collection, db, deleteDoc, doc, getDocs, onSnapshot, serverTimestamp, setDoc, updateDoc } from '../lib/supabaseAdapter';
 import { Product, Warehouse } from '../types';
 import { handleSupabaseError, OperationType } from '../lib/supabaseErrorHandler';
 import { Badge } from '@/components/ui/badge';
@@ -305,12 +305,35 @@ export function Pricelist() {
       setWarehouses(s.docs.map((d: { id: string; data: () => Record<string, unknown> }) => ({ id: d.id, ...d.data() } as Warehouse)));
     }, () => {});
 
+    const unsubPricelists = onSnapshot(collection(db, 'pricelists'), s => {
+      const dbLists = s.docs.map((d: { id: string; data: () => Record<string, unknown> }) => ({ id: d.id, ...d.data() } as SavedPricelist));
+      if (dbLists.length > 0) {
+        setSaved(prev => {
+          const map = new Map<string, SavedPricelist>();
+          prev.forEach(item => map.set(item.id, item));
+          dbLists.forEach(item => map.set(item.id, item));
+          const merged = Array.from(map.values()).sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+          localStorage.setItem(KEY, JSON.stringify(merged));
+          return merged;
+        });
+      }
+    }, () => {});
+
     return () => {
       unsubProducts();
       unsubWarehouses();
+      unsubPricelists();
     };
   }, []);
-  const save = (next: SavedPricelist[]) => { setSaved(next); localStorage.setItem(KEY, JSON.stringify(next)); };
+  const save = (next: SavedPricelist[]) => {
+    setSaved(next);
+    localStorage.setItem(KEY, JSON.stringify(next));
+    try {
+      for (const item of next) {
+        setDoc(doc(db, 'pricelists', item.id), item).catch(() => {});
+      }
+    } catch {}
+  };
   const filtered = useMemo(() => { const now = new Date(), today = new Date(now.getFullYear(), now.getMonth(), now.getDate()), week = new Date(today), month = new Date(now.getFullYear(), now.getMonth(), 1); week.setDate(today.getDate() - today.getDay()); return saved.filter(p => { const d = new Date(p.createdAt); const dateOk = dateFilter === 'all' || (dateFilter === 'today' && d >= today) || (dateFilter === 'week' && d >= week) || (dateFilter === 'month' && d >= month) || (dateFilter === 'custom' && (!from || d >= new Date(from + 'T00:00:00')) && (!to || d <= new Date(to + 'T23:59:59'))); return p.name.toLowerCase().includes(search.toLowerCase()) && dateOk && (typeFilter === 'all' || listType(p) === typeFilter) && (pdfFilter === 'all' || (pdfFilter === 'exported' && !!p.lastPdfGeneratedAt) || (pdfFilter === 'never' && !p.lastPdfGeneratedAt)); }).sort((a, b) => b.createdAt.localeCompare(a.createdAt)); }, [saved, search, dateFilter, typeFilter, pdfFilter, from, to]);
   const view = saved.find(p => p.id === viewId);
   const choices = products.filter(p => [p.sku, p.name, p.category, p.supplier].some(v => String(v || '').toLowerCase().includes(productSearch.toLowerCase())) && (productCategory === 'all' || (p.category || 'Uncategorized') === productCategory) && (productSupplier === 'all' || p.supplier === productSupplier));
@@ -322,7 +345,7 @@ export function Pricelist() {
   const create = (draft = false) => { if (!name.trim() || !selectedProducts.length) return; const p = buildPricelist(); save([p, ...saved]); closeCreate(); toast.success(draft ? `"${p.name}" saved as draft` : `"${p.name}" saved successfully`); };
   const generatePdf = (target = view) => { if (!target) return; const rows = target.items.map(i => `<tr><td>${escapeHtml(i.sku)}</td><td>${escapeHtml(i.name)}</td><td>${escapeHtml(i.category)}</td><td>${schemeLabel(i.priceType)}</td><td>P${i.price.toLocaleString()}</td></tr>`).join(''); const w = window.open('', '_blank'); if (!w) return toast.error('Allow pop-ups to preview this pricelist PDF'); w.document.write(`<html><head><title>${escapeHtml(target.name)}</title><style>body{font-family:Arial;padding:32px}table{width:100%;border-collapse:collapse}th,td{padding:10px;border:1px solid #ddd;text-align:left}th{background:#111827;color:white}</style></head><body><h1>${escapeHtml(target.name)}</h1><p>Date Created: ${dateLabel(target.createdAt)}</p><table><thead><tr><th>SKU</th><th>Item Name</th><th>Category</th><th>Price Scheme</th><th>Price</th></tr></thead><tbody>${rows}</tbody></table></body></html>`); w.document.close(); save(saved.map(p => p.id === target.id ? { ...p, lastPdfGeneratedAt: new Date().toISOString() } : p)); };
   const doRename = () => { if (!rename.trim()) return; save(saved.map(p => p.id === renameId ? { ...p, name: rename.trim(), updatedAt: new Date().toISOString() } : p)); setRenameId(''); toast.success('Pricelist renamed'); };
-  const remove = (p: SavedPricelist) => { if (window.confirm(`Delete "${p.name}"? This action cannot be undone.`)) { save(saved.filter(x => x.id !== p.id)); toast.success('Pricelist deleted'); } };
+  const remove = (p: SavedPricelist) => { if (window.confirm(`Delete "${p.name}"? This action cannot be undone.`)) { save(saved.filter(x => x.id !== p.id)); deleteDoc(doc(db, 'pricelists', p.id)).catch(() => {}); toast.success('Pricelist deleted'); } };
 
   // Image scan handlers
   const handleScanClick = () => scanInputRef.current?.click();

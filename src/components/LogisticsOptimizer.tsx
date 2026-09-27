@@ -323,15 +323,10 @@ export function LogisticsOptimizer() {
         description: `Dispatched with ${orderCount} customer deliveries. Following the Clarke-Wright optimized sequence.`,
         icon: <Truck className="w-5 h-5 text-emerald-500" />
       });
-    } catch {
-      // Fallback: still update local UI so UX is not broken
-      const plate = `NCB-${Math.floor(1000 + Math.random() * 9000)}`;
-      const driver = truckName.includes('Van') ? 'Rogelio Mendoza' : 'Danilo Santos';
-      const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-      setDispatchedTrucks(prev => ({ ...prev, [routeId]: { truckId: truckName, plate, driver, timestamp: now } }));
-      toast.success(`Dispatched ${truckName}!`, {
-        description: `Dispatched with ${orderCount} customer deliveries. Following the Clarke-Wright optimized sequence.`,
-        icon: <Truck className="w-5 h-5 text-emerald-500" />
+    } catch (err) {
+      console.error('Dispatch recording error:', err);
+      toast.error('Dispatch recording failed', {
+        description: 'Could not record dispatch trip in database. Please verify connection and try again.'
       });
     } finally {
       setIsProcessing(false);

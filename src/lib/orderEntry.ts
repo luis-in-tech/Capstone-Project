@@ -70,10 +70,8 @@ export type ReceiptOrder = Order & {
 export type ReceiptItem = OrderItem & {
   entryDetails?: Pick<CartLine, "variation" | "unit" | "priceType" | "prices"> & { position?: number };
 };
-export const money = (value: number) =>
-  new Intl.NumberFormat("en-PH", { style: "currency", currency: "PHP" }).format(
-    value,
-  );
+const phMoneyFormatter = new Intl.NumberFormat("en-PH", { style: "currency", currency: "PHP" });
+export const money = (value: number) => phMoneyFormatter.format(value);
 export const roundMoney = (value: number) =>
   Math.round((value + Number.EPSILON) * 100) / 100;
 export function productPrices(product: Product): PriceSnapshot {

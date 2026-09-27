@@ -96,85 +96,90 @@ export function Finance() {
   const netProfit = totalRevenue - totalExpenses;
 
   // Process data for the performance chart (Last 6 Months)
-  const chartData = Array.from({ length: 6 }, (_, i) => {
-    const d = new Date();
-    d.setMonth(d.getMonth() - (5 - i));
-    const monthName = d.toLocaleString('default', { month: 'short' });
-    const year = d.getFullYear();
-    
-    // Exact month/year key for filtering
-    const monthKey = `${monthName} ${year}`;
+  const chartData = React.useMemo(() => {
+    return Array.from({ length: 6 }, (_, i) => {
+      const d = new Date();
+      d.setMonth(d.getMonth() - (5 - i));
+      const monthName = d.toLocaleString('default', { month: 'short' });
+      const year = d.getFullYear();
+      
+      const monthKey = `${monthName} ${year}`;
 
-    const monthOrders = orders.filter(o => {
-      if (!['delivered', 'completed'].includes(o.status)) return false;
-      const date = parseDate(o.createdAt);
-      return date && `${date.toLocaleString('default', { month: 'short' })} ${date.getFullYear()}` === monthKey;
+      const monthOrders = orders.filter(o => {
+        if (!['delivered', 'completed'].includes(o.status)) return false;
+        const date = parseDate(o.createdAt);
+        return date && `${date.toLocaleString('default', { month: 'short' })} ${date.getFullYear()}` === monthKey;
+      });
+
+      const monthExpenses = expenses.filter(e => {
+        const date = parseDate(e.date);
+        return date && `${date.toLocaleString('default', { month: 'short' })} ${date.getFullYear()}` === monthKey;
+      });
+
+      return {
+        name: monthName,
+        Revenue: monthOrders.reduce((sum, o) => sum + (o.totalAmount || 0), 0),
+        Expenses: monthExpenses.reduce((sum, e) => sum + (e.amount || 0), 0),
+      };
     });
+  }, [orders, expenses]);
 
-    const monthExpenses = expenses.filter(e => {
-      const date = parseDate(e.date);
-      return date && `${date.toLocaleString('default', { month: 'short' })} ${date.getFullYear()}` === monthKey;
+  const chartData12Months = React.useMemo(() => {
+    return Array.from({ length: 12 }, (_, i) => {
+      const d = new Date();
+      d.setMonth(d.getMonth() - (11 - i));
+      const monthName = d.toLocaleString('default', { month: 'short' });
+      const year = d.getFullYear();
+      const monthKey = `${monthName} ${year}`;
+
+      const monthOrders = orders.filter(o => {
+        if (!['delivered', 'completed'].includes(o.status)) return false;
+        const date = parseDate(o.createdAt);
+        return date && `${date.toLocaleString('default', { month: 'short' })} ${date.getFullYear()}` === monthKey;
+      });
+
+      const monthExpenses = expenses.filter(e => {
+        const date = parseDate(e.date);
+        return date && `${date.toLocaleString('default', { month: 'short' })} ${date.getFullYear()}` === monthKey;
+      });
+
+      return {
+        name: monthName,
+        Revenue: monthOrders.reduce((sum, o) => sum + (o.totalAmount || 0), 0),
+        Expenses: monthExpenses.reduce((sum, e) => sum + (e.amount || 0), 0),
+      };
     });
+  }, [orders, expenses]);
 
-    return {
-      name: monthName,
-      Revenue: monthOrders.reduce((sum, o) => sum + (o.totalAmount || 0), 0),
-      Expenses: monthExpenses.reduce((sum, e) => sum + (e.amount || 0), 0),
-    };
-  });
-
-  const chartData12Months = Array.from({ length: 12 }, (_, i) => {
-    const d = new Date();
-    d.setMonth(d.getMonth() - (11 - i));
-    const monthName = d.toLocaleString('default', { month: 'short' });
-    const year = d.getFullYear();
-    const monthKey = `${monthName} ${year}`;
-
-    const monthOrders = orders.filter(o => {
-      if (!['delivered', 'completed'].includes(o.status)) return false;
-      const date = parseDate(o.createdAt);
-      return date && `${date.toLocaleString('default', { month: 'short' })} ${date.getFullYear()}` === monthKey;
-    });
-
-    const monthExpenses = expenses.filter(e => {
-      const date = parseDate(e.date);
-      return date && `${date.toLocaleString('default', { month: 'short' })} ${date.getFullYear()}` === monthKey;
-    });
-
-    return {
-      name: monthName,
-      Revenue: monthOrders.reduce((sum, o) => sum + (o.totalAmount || 0), 0),
-      Expenses: monthExpenses.reduce((sum, e) => sum + (e.amount || 0), 0),
-    };
-  });
-
-  // Calculate expense breakdown by category for the current month
   const currentMonthDate = new Date();
   const currentMonthName = currentMonthDate.toLocaleString('default', { month: 'short' });
   const currentMonthYear = currentMonthDate.getFullYear();
-  const currentMonthKey = `${currentMonthName} ${currentMonthYear}`;
 
-  const currentMonthExpenses = expenses.filter(e => {
-    const date = parseDate(e.date);
-    return date && `${date.toLocaleString('default', { month: 'short' })} ${date.getFullYear()}` === currentMonthKey;
-  });
+  const pieData = React.useMemo(() => {
+    const currentMonthKey = `${currentMonthName} ${currentMonthYear}`;
 
-  const categoryTotals: Record<string, number> = {};
-  currentMonthExpenses.forEach(e => {
-    const cat = e.category || 'Other';
-    categoryTotals[cat] = (categoryTotals[cat] || 0) + (e.amount || 0);
-  });
+    const currentMonthExpenses = expenses.filter(e => {
+      const date = parseDate(e.date);
+      return date && `${date.toLocaleString('default', { month: 'short' })} ${date.getFullYear()}` === currentMonthKey;
+    });
 
-  const pieData = Object.entries(categoryTotals)
-    .map(([name, value]) => {
-      const cat = categories.find(c => c.name === name);
-      return { 
-        name: cat && !cat.isActive ? `${name} (Archived)` : name, 
-        value,
-        isActive: cat ? cat.isActive : true
-      };
-    })
-    .sort((a, b) => b.value - a.value);
+    const categoryTotals: Record<string, number> = {};
+    currentMonthExpenses.forEach(e => {
+      const cat = e.category || 'Other';
+      categoryTotals[cat] = (categoryTotals[cat] || 0) + (e.amount || 0);
+    });
+
+    return Object.entries(categoryTotals)
+      .map(([name, value]) => {
+        const cat = categories.find(c => c.name === name);
+        return { 
+          name: cat && !cat.isActive ? `${name} (Archived)` : name, 
+          value,
+          isActive: cat ? cat.isActive : true
+        };
+      })
+      .sort((a, b) => b.value - a.value);
+  }, [expenses, categories]);
 
   const PIE_COLORS = ['#fdd001', '#fbcc0e', '#1A2332', '#302f2f', '#7a7672', '#a0a0a0'];
 

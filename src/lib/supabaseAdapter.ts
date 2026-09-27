@@ -47,7 +47,7 @@ export function doc(dbOrCol: any, pathOrId?: string, ...rest: string[]) {
   // Check if the first argument is a collection reference (e.g. doc(collection(db, 'orders')))
   if (dbOrCol && typeof dbOrCol.path === 'string') {
     // Generate a random ID if one isn't provided
-    const autoId = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2, 15);
+    const autoId = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : 'id-' + Date.now() + '-' + Math.floor(Math.random() * 1e9);
     return {
       path: dbOrCol.path,
       id: pathOrId || autoId,
@@ -79,7 +79,7 @@ export function doc(dbOrCol: any, pathOrId?: string, ...rest: string[]) {
       };
     }
     // Fallback for doc(db, 'orders') - implicitly generate ID
-    const autoId = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2, 15);
+    const autoId = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : 'id-' + Date.now() + '-' + Math.floor(Math.random() * 1e9);
     return { path: pathOrId, id: autoId };
   }
 
@@ -100,6 +100,10 @@ export async function getDocs(q: any) {
       if (op.type === 'where') {
         if (op.op === '==') builder = builder.eq(op.field, op.value);
         if (op.op === '!=') builder = builder.neq(op.field, op.value);
+        if (op.op === '>') builder = builder.gt(op.field, op.value);
+        if (op.op === '>=') builder = builder.gte(op.field, op.value);
+        if (op.op === '<') builder = builder.lt(op.field, op.value);
+        if (op.op === '<=') builder = builder.lte(op.field, op.value);
         if (op.op === 'in') builder = builder.in(op.field, op.value);
         if (op.op === 'array-contains') builder = builder.contains(op.field, [op.value]);
       }
