@@ -43,7 +43,7 @@ function ProtectedRoute({ children, allowedRoles, fallbackPath }: { children: Re
     </div>
   );
   
-  if (!user) return <Navigate to="/login" replace />;
+  if (!user) return <Navigate to={location.pathname === '/transfers' && new URLSearchParams(location.search).has('batch') ? `/login?receipt=${encodeURIComponent(location.pathname + location.search)}` : '/login'} replace />;
   
   if (access.error) return <Layout><div role="alert" className="rounded-xl border p-6"><h1 className="font-semibold">Permissions could not be loaded</h1><p className="mt-2 text-sm text-muted-foreground">Reload the page to try again.</p><button className="mt-4 underline" onClick={() => window.location.reload()}>Retry</button></div></Layout>;
   if (access.revoked && location.pathname !== '/settings') return <Layout><div className="rounded-xl border p-8 text-center"><h1 className="text-xl font-semibold">Your access has been deactivated</h1><p className="mt-2 text-sm text-muted-foreground">Contact an administrator to restore your access.</p></div></Layout>;
@@ -58,6 +58,7 @@ function ProtectedRoute({ children, allowedRoles, fallbackPath }: { children: Re
 }
 
 function AppContent() {
+  const location = useLocation();
   const { user, profile, loading } = useAuth();
   const access = useStaffAccess();
 
@@ -90,6 +91,8 @@ function AppContent() {
 
   // Admin lands on Operational Overview (/admin); Secretary, Staff, Agent land on Inventory (/inventory)
   const defaultPath = hasAdminRole(profile) ? '/admin' : '/inventory';
+  const receiptReturn = new URLSearchParams(location.search).get('receipt');
+  const loginDestination = receiptReturn?.startsWith('/transfers?batch=') ? receiptReturn : defaultPath;
 
   return (
     <Routes>
@@ -97,7 +100,7 @@ function AppContent() {
       <Route path="/" element={<Navigate to={user ? defaultPath : "/login"} replace />} />
 
       {/* Auth routes — redirect to respective landing page if already logged in */}
-      <Route path="/login" element={user ? <Navigate to={defaultPath} replace /> : <Auth />} />
+      <Route path="/login" element={user ? <Navigate to={loginDestination} replace /> : <Auth />} />
       <Route path="/signup" element={user ? <Navigate to={defaultPath} replace /> : <Auth />} />
 
       {/* Public informational pages — kept accessible without login */}

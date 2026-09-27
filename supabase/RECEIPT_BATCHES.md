@@ -1,0 +1,11 @@
+Apply `migrations/202609280002_receipt_batches.sql` to the app's Supabase database after the existing inventory movement functions and tables are installed. This migration has not been applied to a hosted database by this code change.
+
+New supplier receipts receive one batch per product line: `BRK-000123-20260903-01`. The category prefix and numeric product reference are assigned once and retained. Brake categories use BRK; other categories use their first three letters/numbers. The numeric reference is a permanent receipt product number, independent of existing alphanumeric catalog SKUs (which are preserved and also printed). Sequences increment per product and received date across warehouses, reset for a different date, and expand past 99 without truncation. Dates default to the Philippines date and can be backdated in the receipt form. Existing receipts are not backfilled.
+
+Batch metadata is stored in the receipt's existing `items` JSON. A database trigger creates identifiers during the existing stock/expense transaction; retries reuse saved metadata. The wrapper preserves the existing confirmation RPC's authorization and transaction logic, including zone support. Counter tables are private. Receipt items and creation timestamps cannot be edited after confirmation.
+
+QR labels encode `<current app origin>/transfers?batch=<permanent batch UUID>`. Use the deployed application origin when printing production labels. Login preserves this destination; existing movement permissions still apply. Scanning opens receipt details and does not change stock. Supplier lot numbers are optional and separate from internal batch codes.
+
+Stock remains tracked by product and warehouse. Receipt quantities are historical amounts received, not per-batch remaining balances; batch depletion/FIFO and serial-number tracking are outside this change. Product and variant QR labels retain their existing behavior.
+
+Checks: `npm.cmd run lint`, `npm.cmd run build`, `node --import tsx --test src/lib/receiptBatches.test.ts src/lib/inventoryMovement.test.ts`. The migration was also exercised with local PostgreSQL (PGlite) fixtures for sequencing, date resets, retry identity, immutable metadata, rollback, supplier lots, sequence overflow and counter permissions. Hosted RPC integration still needs verification after applying the migration.

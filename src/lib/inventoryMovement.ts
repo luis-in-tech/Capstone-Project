@@ -2,6 +2,10 @@ import type { InventoryItem } from '../types';
 
 export type MovementType = 'external' | 'internal';
 export interface MovementLine {
+  batchId?: string;
+  batchCode?: string;
+  receivedDate?: string;
+  supplierLot?: string;
   productId: string;
   name: string;
   sku: string;
@@ -9,6 +13,7 @@ export interface MovementLine {
   unitCost: number;
 }
 export interface MovementDraft {
+  receivedDate?: string;
   type: MovementType;
   supplierId: string;
   sourceWarehouseId: string;

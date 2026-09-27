@@ -37,6 +37,11 @@ export interface StaffPermissions {
 
 export interface Product {
   id: string;
+  hasVariations?: boolean;
+  variationAttributes?: VariationAttribute[];
+  parentProductId?: string | null;
+  variantValues?: Record<string, string>;
+  variantEnabled?: boolean;
   sku: string;
   name: string;
   category: string;
@@ -56,6 +61,11 @@ export interface Product {
   supplierId?: string;
   createdAt: any;
   updatedAt: any;
+}
+
+export interface VariationAttribute {
+  name: string;
+  values: string[];
 }
 
 export interface Warehouse {

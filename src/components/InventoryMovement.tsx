@@ -2,6 +2,9 @@ import { hasAdminRole } from '../lib/staffPermissions';
 import { useStaffAccess } from '../hooks/useStaffAccess';
 import { permitsMovement } from '../lib/staffPermissions';
 import { useEffect, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
+import { ReceiptBatchLabels } from './ReceiptBatchLabels';
+import { receiptDateToday } from '../lib/receiptBatches';
 import { ArrowDownToLine, ArrowRight, ArrowRightLeft, Check, CheckCircle2, ChevronLeft, Clock3, Eye, History, Loader2, Package, Plus, Search, Trash2, UserRound } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
@@ -50,6 +53,8 @@ function ItemsSummary({ items, external }: { items: MovementLine[]; external: bo
 }
 
 export function InventoryMovement() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const batchId = searchParams.get('batch');
   const { profile } = useAuth();
   const { permissions } = useStaffAccess();
   const [products, setProducts] = useState<Product[]>([]);
@@ -82,6 +87,17 @@ export function InventoryMovement() {
   const [selected, setSelected] = useState<InventoryMovementRecord | null>(null);
   const canManage = permissions.movementCreate !== 'none';
   const ready = loadedReferences.length === 4 && !Object.keys(referenceErrors).length;
+
+  useEffect(() => {
+    if (!batchId || loading || loadError) return;
+    const receipt = movements.find(m => m.items.some(item => item.batchId === batchId));
+    if (receipt) setSelected(receipt);
+  }, [batchId, movements, loading, loadError]);
+
+  function closeReceipt() {
+    setSelected(null);
+    if (batchId) { const next = new URLSearchParams(searchParams); next.delete('batch'); setSearchParams(next, { replace: true }); }
+  }
 
   useEffect(() => {
     setLoading(true);
@@ -124,7 +140,7 @@ export function InventoryMovement() {
   const supplierName = suppliers.find(supplier => supplier.id === draft.supplierId)?.name || 'Select a supplier';
   const activeWarehouses = warehouses.filter(warehouse => warehouse.active !== false);
   const filtered = movements.filter(movement => {
-    const haystack = [movement.movementNumber, movement.supplierName, movement.sourceWarehouseName, movement.destinationWarehouseName, movement.invoiceNumber, movement.driverName, movement.vehiclePlate, movement.recordedByName, ...movement.items.flatMap(item => [item.name, item.sku])].join(' ').toLowerCase();
+    const haystack = [movement.movementNumber, movement.supplierName, movement.sourceWarehouseName, movement.destinationWarehouseName, movement.invoiceNumber, movement.driverName, movement.vehiclePlate, movement.recordedByName, ...movement.items.flatMap(item => [item.name, item.sku, item.batchCode])].join(' ').toLowerCase();
     return haystack.includes(search.toLowerCase().trim()) && (typeFilter === 'all' || movement.type === typeFilter)
       && (warehouseFilter === 'all' || movement.sourceWarehouseId === warehouseFilter || movement.destinationWarehouseId === warehouseFilter)
       && (supplierFilter === 'all' || movement.supplierId === supplierFilter)
@@ -138,7 +154,7 @@ export function InventoryMovement() {
   const updateLine = (id: string, patch: Partial<MovementLine>) => updateDraft({ items: draft.items.map(item => item.productId === id ? { ...item, ...patch } : item) });
 
   function startMovement() {
-    setDraft({ ...newMovementDraft(), type: permissions.movementCreate === 'internal' ? 'internal' : 'external' }); setStep('details'); setProductSearch(''); setFormError('');
+    setDraft({ ...newMovementDraft(), receivedDate: receiptDateToday(), type: permissions.movementCreate === 'internal' ? 'internal' : 'external' }); setStep('details'); setProductSearch(''); setFormError('');
     requestId.current = crypto.randomUUID(); setOpen(true);
   }
 
@@ -149,6 +165,7 @@ export function InventoryMovement() {
   }
 
   function review() {
+    if (external && (!draft.receivedDate || draft.receivedDate > receiptDateToday())) { setFormError('Enter a received date no later than today.'); return; }
     const error = validateMovement(draft, inventory);
     if (error) { setFormError(error); return; }
     if (!external && zonesReady && draft.items.some(item => item.quantity > sourceStock(item.productId))) { setFormError('Not enough stock in the selected source zone. Choose another zone or update its allocations.'); return; }
@@ -157,6 +174,7 @@ export function InventoryMovement() {
 
   async function confirm() {
     if (savingRef.current || !canManage || !ready || !permitsMovement(permissions.movementCreate, draft.type)) return;
+    if (external && (!draft.receivedDate || draft.receivedDate > receiptDateToday())) { setFormError('Enter a received date no later than today.'); setStep('details'); return; }
     const error = validateMovement(draft, inventory);
     if (error) { setFormError(error); setStep('details'); return; }
     savingRef.current = true; setSaving(true); setFormError('');
@@ -164,10 +182,11 @@ export function InventoryMovement() {
       const preparedItems = draft.items.map(item => {
         const matching = products.find(p => p.id === item.productId || p.sku === item.sku || p.name === item.name);
         const resolvedId = matching?.id || item.productId;
-        return { productId: resolvedId, quantity: item.quantity, unitCost: external ? item.unitCost : 0 };
+        return { productId: resolvedId, quantity: item.quantity, unitCost: external ? item.unitCost : 0, supplierLot: item.supplierLot?.trim() || '' };
       });
 
-      const { data, error: saveError } = await supabase.rpc(zonesReady ? 'confirm_inventory_movement_with_zones' : 'confirm_inventory_movement', {
+      const { data, error: saveError } = await supabase.rpc(external ? 'confirm_receipt_movement' : zonesReady ? 'confirm_inventory_movement_with_zones' : 'confirm_inventory_movement', {
+        ...(external ? { p_with_zones: zonesReady } : {}),
         p_request_id: requestId.current,
         p_movement: { ...draft, supplierId: external ? draft.supplierId : null, sourceWarehouseId: external ? null : draft.sourceWarehouseId,
           invoiceNumber: external ? draft.invoiceNumber.trim() : '', driverName: external ? '' : draft.driverName.trim(), vehiclePlate: external ? '' : draft.vehiclePlate.trim().toUpperCase(),
@@ -180,7 +199,7 @@ export function InventoryMovement() {
       toast.success(`${saved.movementNumber} confirmed`, { description: external ? 'Inventory received and purchase expense recorded.' : 'Stock moved to the destination warehouse.' });
     } catch (error) {
       const message = (error as { message?: string }).message || '';
-      if (/uuid|type text|type uuid|function|schema cache/i.test(message)) {
+      if (!external && /uuid|type text|type uuid|function|schema cache/i.test(message)) {
         const saved: InventoryMovementRecord = {
           id: requestId.current,
           movementNumber: `MOV-${Date.now().toString().slice(-6)}`,
@@ -207,12 +226,13 @@ export function InventoryMovement() {
         setOpen(false); setSelected(saved);
         toast.success(`${saved.movementNumber} confirmed`, { description: external ? 'Inventory received.' : 'Stock moved.' });
       } else {
-        setFormError(message || 'Unable to confirm movement. Please try again.');
+        setFormError(external && /function|schema cache/i.test(message) ? 'Receipt batch setup is required. Apply the receipt batch database migration, then retry. No receipt has been confirmed.' : message || 'Unable to confirm movement. Please try again.');
       }
     } finally { savingRef.current = false; setSaving(false); }
   }
 
   return <div className="space-y-6">
+    {batchId && !loading && !loadError && !movements.some(m => m.items.some(item => item.batchId === batchId)) && <p role="alert" className="rounded-lg border p-4">Receipt batch not found or you do not have access to it.</p>}
     <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
       <div><h1 className="text-2xl font-bold tracking-tight">Inventory Movement</h1><p className="mt-1 text-sm text-muted-foreground">Receive supplier purchases and move stock between your warehouses.</p></div>
       {canManage && <Button onClick={startMovement} disabled={!ready} className="h-11 rounded-xl px-5"><Plus className="size-4" /> New Movement</Button>}
@@ -264,6 +284,7 @@ export function InventoryMovement() {
                   {external ? <Choice id="movement-supplier" label="Supplier *" value={draft.supplierId} onChange={supplierId => updateDraft({ supplierId })} options={suppliers} placeholder="Select supplier" /> : <Choice id="movement-source" label="Source warehouse *" value={draft.sourceWarehouseId} onChange={sourceWarehouseId => updateDraft({ sourceWarehouseId })} options={activeWarehouses} placeholder="Select source" />}
                   <Choice id="movement-destination" label={external ? 'Receiving warehouse *' : 'Destination warehouse *'} value={draft.destinationWarehouseId} onChange={destinationWarehouseId => updateDraft({ destinationWarehouseId })} options={activeWarehouses.filter(warehouse => external || warehouse.id !== draft.sourceWarehouseId)} placeholder={external ? 'Select receiving warehouse' : 'Select destination'} />
                   {zonesReady && <>{!external && <Choice id="movement-source-zone" label="Source zone (optional)" value={draft.sourceZoneId || 'unassigned'} onChange={sourceZoneId => updateDraft({ sourceZoneId: sourceZoneId === 'unassigned' ? '' : sourceZoneId })} options={zoneOptions(draft.sourceWarehouseId)} />}<Choice id="movement-destination-zone" label="Destination zone (optional)" value={draft.destinationZoneId || 'unassigned'} onChange={destinationZoneId => updateDraft({ destinationZoneId: destinationZoneId === 'unassigned' ? '' : destinationZoneId })} options={zoneOptions(draft.destinationWarehouseId)} /></>}
+                  {external && <div className="space-y-2 sm:col-span-2"><Label htmlFor="receipt-date">Received date *</Label><Input id="receipt-date" type="date" required max={receiptDateToday()} value={draft.receivedDate || ''} onChange={event => updateDraft({ receivedDate: event.target.value })} /><p className="text-xs text-muted-foreground">Batch sequence resets per product on this date.</p></div>}
                   {external ? <div className="space-y-2 sm:col-span-2"><Label htmlFor="movement-invoice" className="text-xs font-semibold">Invoice number *</Label><Input id="movement-invoice" placeholder="e.g. INV-2026-001" value={draft.invoiceNumber} onChange={event => updateDraft({ invoiceNumber: event.target.value })} /></div> : <><div className="space-y-2"><Label htmlFor="movement-driver" className="text-xs font-semibold">Driver name <span className="font-normal text-muted-foreground">(optional)</span></Label><Input id="movement-driver" placeholder="Driver's full name" value={draft.driverName} onChange={event => updateDraft({ driverName: event.target.value })} /></div><div className="space-y-2"><Label htmlFor="movement-plate" className="text-xs font-semibold">Vehicle plate <span className="font-normal text-muted-foreground">(optional)</span></Label><Input id="movement-plate" placeholder="e.g. ABC 1234" value={draft.vehiclePlate} onChange={event => updateDraft({ vehiclePlate: event.target.value.toUpperCase() })} /></div></>}
                 </div>{external && !suppliers.length && <p className="text-xs text-amber-700">Add a supplier in Inventory before recording a receipt.</p>}</section>
                 <section className="space-y-3"><div className="flex items-center justify-between"><h3 className="text-sm font-semibold">02 / Products & quantities</h3><span className="text-xs text-muted-foreground">{draft.items.length} selected</span></div>
@@ -279,7 +300,7 @@ export function InventoryMovement() {
               </div>
               <aside className="h-fit space-y-5 rounded-xl border bg-muted/25 p-5 lg:sticky lg:top-0"><h3 className="text-sm font-semibold">Movement summary</h3><TypeBadge external={external} /><div className="space-y-3 text-xs"><div className="flex justify-between gap-3"><span className="text-muted-foreground">Products</span><span>{draft.items.length}</span></div><div className="flex justify-between gap-3"><span className="text-muted-foreground">Total units</span><span>{Number.isFinite(units) ? units : '—'}</span></div><div className="border-t pt-3"><p className="text-muted-foreground">{external ? 'Purchase value' : 'Purchase expense'}</p><p className="mt-1 text-2xl font-semibold">{external ? Number.isFinite(total) ? money(total) : '—' : 'None'}</p></div></div><p className="rounded-lg bg-background p-3 text-xs leading-relaxed text-muted-foreground">{external ? 'Confirmation adds stock to the receiving warehouse and records this total as a purchase expense.' : 'Confirmation deducts stock from the source and adds it to the destination. No purchase expense is recorded.'}</p><div className="space-y-3 border-t pt-4 text-xs"><p className="flex items-center gap-2"><UserRound className="size-3.5 text-muted-foreground" />{profile?.displayName || profile?.email}</p><p className="flex items-start gap-2 text-muted-foreground"><Clock3 className="mt-0.5 size-3.5 shrink-0" />Movement ID and date/time are assigned automatically on confirmation.</p></div></aside>
             </div>
-          </div> : <div className="space-y-5"><div className="flex flex-wrap items-center justify-between gap-3"><TypeBadge external={external} /><span className="text-xs text-muted-foreground">{draft.items.length} products · {units} units</span></div><div className="grid gap-4 rounded-xl border bg-muted/20 p-5 sm:grid-cols-2"><div><p className="text-xs text-muted-foreground">{external ? 'Supplier' : 'Source warehouse'}</p><p className="mt-1 font-semibold">{external ? supplierName : warehouseName(draft.sourceWarehouseId)}</p></div><div><p className="text-xs text-muted-foreground">{external ? 'Receiving warehouse' : 'Destination warehouse'}</p><p className="mt-1 font-semibold">{warehouseName(draft.destinationWarehouseId)}</p></div>{external ? <div><p className="text-xs text-muted-foreground">Invoice number</p><p className="mt-1 font-medium">{draft.invoiceNumber}</p></div> : (draft.driverName || draft.vehiclePlate) && <div><p className="text-xs text-muted-foreground">Transport details</p><p className="mt-1">{[draft.driverName, draft.vehiclePlate].filter(Boolean).join(' · ')}</p></div>}<div><p className="text-xs text-muted-foreground">Recorded by</p><p className="mt-1 font-medium">{profile?.displayName || profile?.email}</p></div></div><ItemsSummary items={draft.items} external={external} />{draft.notes.trim() && <div><p className="mb-1 text-xs text-muted-foreground">Notes</p><p className="whitespace-pre-wrap wrap-break-word text-sm">{draft.notes}</p></div>}<div className="rounded-xl border border-emerald-200 bg-emerald-50/60 p-5 dark:border-emerald-900 dark:bg-emerald-950/30"><h3 className="flex items-center gap-2 font-semibold"><CheckCircle2 className="size-4 text-emerald-600" />What happens on confirmation</h3><p className="mt-2 text-sm">{external ? `${units} units will be added to ${warehouseName(draft.destinationWarehouseId)}. A purchase expense of ${money(total)} will be recorded.` : `${units} units will be deducted from ${warehouseName(draft.sourceWarehouseId)} and added to ${warehouseName(draft.destinationWarehouseId)}.`}</p><p className="mt-2 text-xs text-muted-foreground">A unique Movement ID and system date/time will be saved with this record. Confirmed movements cannot be edited here.</p></div></div>}
+          </div> : <div className="space-y-5"><div className="flex flex-wrap items-center justify-between gap-3"><TypeBadge external={external} /><span className="text-xs text-muted-foreground">{draft.items.length} products · {units} units</span></div><div className="grid gap-4 rounded-xl border bg-muted/20 p-5 sm:grid-cols-2"><div><p className="text-xs text-muted-foreground">{external ? 'Supplier' : 'Source warehouse'}</p><p className="mt-1 font-semibold">{external ? supplierName : warehouseName(draft.sourceWarehouseId)}</p></div><div><p className="text-xs text-muted-foreground">{external ? 'Receiving warehouse' : 'Destination warehouse'}</p><p className="mt-1 font-semibold">{warehouseName(draft.destinationWarehouseId)}</p></div>{external ? <div><p className="text-xs text-muted-foreground">Invoice number</p><p className="mt-1 font-medium">{draft.invoiceNumber}</p></div> : (draft.driverName || draft.vehiclePlate) && <div><p className="text-xs text-muted-foreground">Transport details</p><p className="mt-1">{[draft.driverName, draft.vehiclePlate].filter(Boolean).join(' · ')}</p></div>}<div><p className="text-xs text-muted-foreground">Recorded by</p><p className="mt-1 font-medium">{profile?.displayName || profile?.email}</p></div></div><ItemsSummary items={draft.items} external={external} />{external && <div className="space-y-3"><p className="text-sm">Received date: {draft.receivedDate}</p>{draft.items.map(item => <div key={item.productId} className="space-y-1"><Label htmlFor={`lot-${item.productId}`}>Supplier lot ? {item.name} (optional)</Label><Input id={`lot-${item.productId}`} value={item.supplierLot || ''} onChange={event => updateLine(item.productId, { supplierLot: event.target.value })} /></div>)}</div>}{draft.notes.trim() && <div><p className="mb-1 text-xs text-muted-foreground">Notes</p><p className="whitespace-pre-wrap wrap-break-word text-sm">{draft.notes}</p></div>}<div className="rounded-xl border border-emerald-200 bg-emerald-50/60 p-5 dark:border-emerald-900 dark:bg-emerald-950/30"><h3 className="flex items-center gap-2 font-semibold"><CheckCircle2 className="size-4 text-emerald-600" />What happens on confirmation</h3><p className="mt-2 text-sm">{external ? `${units} units will be added to ${warehouseName(draft.destinationWarehouseId)}. A purchase expense of ${money(total)} will be recorded.` : `${units} units will be deducted from ${warehouseName(draft.sourceWarehouseId)} and added to ${warehouseName(draft.destinationWarehouseId)}.`}</p><p className="mt-2 text-xs text-muted-foreground">A unique Movement ID and system date/time will be saved with this record. Confirmed movements cannot be edited here.</p></div></div>}
         </div>
         {step === 'review' && zonesReady && <div className="border-t bg-muted/20 px-6 py-3 text-xs text-muted-foreground">{!external && <>Source zone: <strong>{zones.find(z => z.id === draft.sourceZoneId)?.name || 'Unassigned'}</strong> · </>}Destination zone: <strong>{zones.find(z => z.id === draft.destinationZoneId)?.name || 'Unassigned'}</strong></div>}
         {formError && <div role="alert" className="shrink-0 border-t border-destructive/30 bg-destructive/5 px-6 py-3 text-sm text-destructive">{formError}</div>}
@@ -287,13 +308,13 @@ export function InventoryMovement() {
       </DialogContent>
     </Dialog>
 
-    <Dialog open={!!selected} onOpenChange={value => { if (!value) setSelected(null); }}><DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-3xl"><DialogHeader><DialogTitle className="font-mono text-lg">{selected?.movementNumber}</DialogTitle><DialogDescription>Movement details and confirmation history</DialogDescription></DialogHeader>{selected && <div className="space-y-5"><div className="flex items-center justify-between"><TypeBadge external={selected.type === 'external'} /><Badge variant="outline" className="text-emerald-600"><Check className="mr-1 size-3" />Confirmed</Badge></div><dl className="grid gap-4 rounded-xl bg-muted/30 p-4 sm:grid-cols-2">{[
+    <Dialog open={!!selected} onOpenChange={value => { if (!value) closeReceipt(); }}><DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-3xl"><DialogHeader><DialogTitle className="font-mono text-lg">{selected?.movementNumber}</DialogTitle><DialogDescription>Movement details and confirmation history</DialogDescription></DialogHeader>{selected && <div className="space-y-5"><div className="flex items-center justify-between"><TypeBadge external={selected.type === 'external'} /><Badge variant="outline" className="text-emerald-600"><Check className="mr-1 size-3" />Confirmed</Badge></div><dl className="grid gap-4 rounded-xl bg-muted/30 p-4 sm:grid-cols-2">{[
       [selected.type === 'external' ? 'Supplier' : 'Source warehouse', selected.type === 'external' ? selected.supplierName : selected.sourceWarehouseName],
       [selected.type === 'external' ? 'Receiving warehouse' : 'Destination warehouse', selected.destinationWarehouseName],
       ...(selected.sourceZoneName ? [['Source zone', selected.sourceZoneName]] : []),
       ...(selected.destinationZoneName ? [['Destination zone', selected.destinationZoneName]] : []),
       ['Recorded by', selected.recordedByName], ['Date & time (Philippines)', dateTime(selected.createdAt)],
       ...(selected.type === 'external' ? [['Invoice number', selected.invoiceNumber], ['Purchase expense', money(Number(selected.totalValue))]] : [['Driver name', selected.driverName || '—'], ['Vehicle plate', selected.vehiclePlate || '—']]),
-    ].map(([label, value]) => <div key={label}><dt className="text-xs text-muted-foreground">{label}</dt><dd className="mt-1 wrap-break-word text-sm font-medium">{value}</dd></div>)}</dl><ItemsSummary items={selected.items} external={selected.type === 'external'} />{selected.type === 'external' && <p className="text-right font-semibold">Total purchase value: {money(Number(selected.totalValue))}</p>}{selected.notes && <div><p className="text-xs text-muted-foreground">Notes</p><p className="mt-1 whitespace-pre-wrap wrap-break-word text-sm">{selected.notes}</p></div>}<div className="border-t pt-4"><h3 className="mb-3 text-sm font-semibold">History</h3><div className="flex gap-3"><CheckCircle2 className="mt-0.5 size-5 shrink-0 text-emerald-600" /><div><p className="text-sm font-medium">Movement confirmed by {selected.recordedByName}</p><p className="mt-1 text-xs text-muted-foreground">{dateTime(selected.createdAt)}</p><p className="mt-2 text-xs text-muted-foreground">{selected.type === 'external' ? 'Inventory received and purchase expense recorded.' : 'Source stock deducted and destination stock received. No purchase expense.'}</p></div></div></div><div className="flex justify-end"><Button variant="outline" onClick={() => setSelected(null)}>Close details</Button></div></div>}</DialogContent></Dialog>
+    ].map(([label, value]) => <div key={label}><dt className="text-xs text-muted-foreground">{label}</dt><dd className="mt-1 wrap-break-word text-sm font-medium">{value}</dd></div>)}</dl><ItemsSummary items={selected.items} external={selected.type === 'external'} /><ReceiptBatchLabels movement={selected} selectedBatch={batchId} />{selected.type === 'external' && <p className="text-right font-semibold">Total purchase value: {money(Number(selected.totalValue))}</p>}{selected.notes && <div><p className="text-xs text-muted-foreground">Notes</p><p className="mt-1 whitespace-pre-wrap wrap-break-word text-sm">{selected.notes}</p></div>}<div className="border-t pt-4"><h3 className="mb-3 text-sm font-semibold">History</h3><div className="flex gap-3"><CheckCircle2 className="mt-0.5 size-5 shrink-0 text-emerald-600" /><div><p className="text-sm font-medium">Movement confirmed by {selected.recordedByName}</p><p className="mt-1 text-xs text-muted-foreground">{dateTime(selected.createdAt)}</p><p className="mt-2 text-xs text-muted-foreground">{selected.type === 'external' ? 'Inventory received and purchase expense recorded.' : 'Source stock deducted and destination stock received. No purchase expense.'}</p></div></div></div><div className="flex justify-end"><Button variant="outline" onClick={closeReceipt}>Close details</Button></div></div>}</DialogContent></Dialog>
   </div>;
 }

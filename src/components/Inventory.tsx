@@ -20,6 +20,9 @@ import { useAuth } from '../hooks/useAuth';
 import { toast } from 'sonner';
 import * as XLSX from 'xlsx';
 import { WarehouseLayout } from './WarehouseLayout';
+import { ProductVariationEditor } from './ProductVariationEditor';
+import { emptyVariations, variationDraft, validateVariations, variantLabel, variantFields, stockForProduct } from '../lib/productVariations';
+import { saveProductVariations } from '../lib/saveProductVariations';
 
 const PRODUCT_TEMPLATE_HEADERS = ['SKU Code', 'Item Name', 'Category', 'Supplier Name', 'Base Price / Retail Price', 'Metro Manila Price', 'Provincial Price', 'Cost', 'Minimum Stock Level', 'Reorder Point'];
 type ImportRow = Record<string, string | number | undefined>;
@@ -32,6 +35,12 @@ export function Inventory() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const [products, setProducts] = useState<Product[]>([]);
+  const [addVariations, setAddVariations] = useState(emptyVariations);
+  const [editVariations, setEditVariations] = useState(emptyVariations);
+  const [selectedVariantId, setSelectedVariantId] = useState('');
+  const [detailTab, setDetailTab] = useState<'overview' | 'variants'>('overview');
+  const [qrProduct, setQrProduct] = useState<Product | null>(null);
+  const [isAdjusting, setIsAdjusting] = useState(false);
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
@@ -87,7 +96,8 @@ export function Inventory() {
       next.delete('category');
     }
     if (product) {
-      setSelectedProduct(product);
+      setSelectedProduct(product.parentProductId ? products.find(p => p.id === product.parentProductId) || product : product);
+      setDetailTab(product.parentProductId ? 'variants' : 'overview');
       setIsDetailOpen(true);
       next.delete('product');
     }
@@ -96,6 +106,20 @@ export function Inventory() {
 
   const isAdmin = hasAdminRole(profile) && permissions.inventory === 'adjust';
   const canAdjustStock = permissions.inventory === 'adjust';
+  const parentProducts = products.filter(p => !p.parentProductId);
+  const childrenOf = (id: string) => products.filter(p => p.parentProductId === id);
+  const hasStock = (ids: string[]) => inventory.some(i => ids.includes(i.productId) && i.quantity !== 0);
+  const variantModeLocked = !!editingProduct && hasStock([editingProduct.id, ...childrenOf(editingProduct.id).map(p => p.id)]);
+  const adjustmentProduct = selectedProduct?.hasVariations ? childrenOf(selectedProduct.id).find(p => p.id === selectedVariantId) : selectedProduct;
+
+  useEffect(() => { setSelectedVariantId(''); }, [selectedProduct?.id]);
+  useEffect(() => { if (!isStockUpdateOpen) setSelectedVariantId(''); }, [isStockUpdateOpen]);
+  useEffect(() => {
+    if (selectedProduct) {
+      const latest = products.find(p => p.id === selectedProduct.id);
+      if (latest && latest !== selectedProduct) setSelectedProduct(latest);
+    }
+  }, [products]);
 
   useEffect(() => {
     if (!productImage) {
@@ -120,6 +144,7 @@ export function Inventory() {
 
   useEffect(() => {
     if (editingProduct) {
+      setEditVariations(variationDraft(editingProduct, childrenOf(editingProduct.id)));
       setEditSku(editingProduct.sku || '');
       setEditName(editingProduct.name || '');
       setEditCategory(editingProduct.category || 'Uncategorized');
@@ -134,6 +159,7 @@ export function Inventory() {
 
   useEffect(() => {
     if (!isAddProductOpen) {
+      setAddVariations(emptyVariations());
       setAddSku('');
       setAddName('');
       setAddCategory('Uncategorized');
@@ -263,6 +289,9 @@ export function Inventory() {
     const costPrice = Number(formData.get('costPrice')) || 0;
     const promoPriceValue = formData.get('promoPrice');
 
+    const variationError = validateVariations(addVariations, sku, products);
+    if (variationError) { toast.error(variationError); return; }
+
     setIsSubmittingProduct(true);
     try {
       let photoUrl = '';
@@ -289,22 +318,27 @@ export function Inventory() {
         updatedAt: new Date(),
       };
 
-      const docRef = await addDoc(collection(db, 'products'), newProduct);
-      // Initialize inventory for all warehouses
-      for (const wh of warehouses) {
-        await addDoc(collection(db, 'inventory'), {
-          productId: docRef.id,
-          warehouseId: wh.id,
-          quantity: 0,
-          lastUpdated: serverTimestamp()
-        });
+      if (addVariations.enabled) {
+        await saveProductVariations({ ...newProduct, id: crypto.randomUUID() }, addVariations, uploadProductImage);
+      } else {
+        const docRef = await addDoc(collection(db, 'products'), newProduct);
+        // Initialize inventory for all warehouses
+        for (const wh of warehouses) {
+          await addDoc(collection(db, 'inventory'), {
+            productId: docRef.id,
+            warehouseId: wh.id,
+            quantity: 0,
+            lastUpdated: serverTimestamp()
+          });
+        }
       }
       setProductImage(null);
       setProductImagePreview('');
       setIsAddProductOpen(false);
       toast.success('Product added to CI catalog');
     } catch (err) {
-      handleSupabaseError(err, OperationType.CREATE, 'products');
+      if (addVariations.enabled) toast.error(err instanceof Error ? err.message : 'Unable to save variants.');
+      else handleSupabaseError(err, OperationType.CREATE, 'products');
     } finally {
       setIsSubmittingProduct(false);
     }
@@ -398,6 +432,9 @@ export function Inventory() {
   const handleEditProduct = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!editingProduct) return;
+    const variationError = validateVariations(editVariations, editSku, products, editingProduct.id);
+    if (variationError) { toast.error(variationError); return; }
+    if (!!editingProduct.hasVariations !== editVariations.enabled && variantModeLocked) { toast.error('Clear existing stock through Adjust Stock before changing variation mode.'); return; }
     const form = new FormData(event.currentTarget);
     const sku = String(editSku || form.get('sku') || '').trim();
     const name = String(editName || form.get('name') || '').trim();
@@ -451,7 +488,9 @@ export function Inventory() {
         updatedAt: new Date(),
       };
 
-      await updateDoc(doc(db, 'products', editingProduct.id), updatedData);
+      if (editVariations.enabled || editingProduct.hasVariations || childrenOf(editingProduct.id).length) {
+        await saveProductVariations({ ...updatedData, id: editingProduct.id }, editVariations, uploadProductImage);
+      } else await updateDoc(doc(db, 'products', editingProduct.id), updatedData);
 
       if (selectedProduct && selectedProduct.id === editingProduct.id) {
         setSelectedProduct(prev => prev ? { ...prev, ...updatedData } : null);
@@ -462,7 +501,8 @@ export function Inventory() {
       setEditProductImagePreview('');
       toast.success('Product updated successfully');
     } catch (error) {
-      handleSupabaseError(error, OperationType.UPDATE, `products/${editingProduct.id}`);
+      if (editVariations.enabled || editingProduct.hasVariations) toast.error(error instanceof Error ? error.message : 'Unable to save variants.');
+      else handleSupabaseError(error, OperationType.UPDATE, `products/${editingProduct.id}`);
     } finally {
       setIsSubmittingProduct(false);
     }
@@ -472,11 +512,13 @@ export function Inventory() {
     if (!productToDelete) return;
     setIsDeletingProduct(true);
     try {
-      const inventoryItems = inventory.filter(i => i.productId === productToDelete.id);
+      const childIds = childrenOf(productToDelete.id).map(p => p.id);
+      const inventoryItems = inventory.filter(i => i.productId === productToDelete.id || childIds.includes(i.productId));
       for (const item of inventoryItems) {
         await deleteDoc(doc(db, 'inventory', item.id));
       }
       
+      for (const childId of childIds) await deleteDoc(doc(db, 'products', childId));
       await deleteDoc(doc(db, 'products', productToDelete.id));
       
       toast.success('Product deleted successfully');
@@ -490,14 +532,18 @@ export function Inventory() {
 
   const updateStock = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
+    if (isAdjusting) return;
+    if (!adjustmentProduct) { toast.error('Select the specific variant to adjust.'); return; }
     const formData = new FormData(e.currentTarget);
     const warehouseId = formData.get('warehouseId') as string;
     if (!canAdjustStock || (permissions.warehouseAccess === 'selected' && !permissions.warehouseIds.includes(warehouseId))) { toast.error('You do not have permission to adjust this warehouse.'); return; }
     const quantity = Number(formData.get('quantity'));
     const reason = formData.get('reason') as string;
 
-    const item = inventory.find(i => i.productId === selectedProduct?.id && i.warehouseId === warehouseId);
+    if (selectedProduct?.hasVariations && (!warehouseId || !Number.isInteger(quantity) || !quantity || !reason.trim())) { toast.error('Choose a warehouse, enter a non-zero whole quantity and a reason.'); return; }
+    const item = inventory.find(i => i.productId === adjustmentProduct.id && i.warehouseId === warehouseId);
     if (selectedProduct && profile) {
+      setIsAdjusting(true);
       try {
         if (item) {
           // 1a. Existing row — update the inventory level
@@ -508,7 +554,7 @@ export function Inventory() {
         } else {
           // 1b. No row for this product+warehouse yet — insert one
           await addDoc(collection(db, 'inventory'), {
-            productId: selectedProduct.id,
+            productId: adjustmentProduct.id,
             warehouseId,
             quantity,
             lastUpdated: serverTimestamp()
@@ -517,7 +563,7 @@ export function Inventory() {
 
         // 2. Log the adjustment for auditing
         await addDoc(collection(db, 'stockAdjustments'), {
-          productId: selectedProduct.id,
+          productId: adjustmentProduct.id,
           warehouseId,
           adjustmentAmount: quantity,
           reason,
@@ -529,19 +575,12 @@ export function Inventory() {
         toast.success('Inventory balance synchronized and adjustment logged');
       } catch (err) {
         handleSupabaseError(err, OperationType.UPDATE, `inventory/${item?.id || 'new'}`);
-      }
+      } finally { setIsAdjusting(false); }
     }
   };
 
   const getStockCount = (productId: string, warehouseId?: string) => {
-    const items = inventory.filter(i => i.productId === productId);
-    if (warehouseId && warehouseId !== 'all') {
-      return items.find(i => i.warehouseId === warehouseId)?.quantity || 0;
-    }
-    // Clamp per-warehouse quantities at 0 to prevent negative stock in one
-    // warehouse from masking deficits when aggregating across all warehouses.
-    // e.g. Warehouse A: 10,050 + Warehouse B: -600 should show 10,050 not 9,450
-    return items.reduce((sum, i) => sum + Math.max(0, i.quantity), 0);
+    return stockForProduct(products, inventory, productId, warehouseId);
   };
 
   // Check if any individual warehouse has stock at or below zero for a product
@@ -589,15 +628,21 @@ export function Inventory() {
     products.some(p => p.id !== editingProduct.id && p.name.trim().toLowerCase() === editName.trim().toLowerCase())
   );
   const getProductStatus = (product: Product, stock: number, _checkWarehouseId?: string) => {
+    if (product.hasVariations) {
+      const variants = childrenOf(product.id).filter(p => p.variantEnabled !== false);
+      const statuses = variants.map(p => getProductStatus(p, getStockCount(p.id, _checkWarehouseId), _checkWarehouseId));
+      if (!statuses.length || statuses.every(s => s === 'out')) return 'out';
+      return statuses.some(s => s !== 'in') ? 'low' : 'in';
+    }
     if (stock <= 0) return 'out';
     const threshold = product.reorderPoint || product.minStockLevel || 0;
     if (stock <= threshold) return 'low';
     return 'in';
   };
-  const filteredProducts = products.filter(product => {
+  const filteredProducts = parentProducts.filter(product => {
     const term = searchTerm.trim().toLowerCase();
     const stock = getStockCount(product.id, warehouseFilter);
-    const matchesSearch = [product.name, product.sku, product.category, product.supplier]
+    const matchesSearch = [product.name, product.sku, product.category, product.supplier, ...childrenOf(product.id).flatMap(p => [p.sku, variantLabel(p)])]
       .some(value => (value || '').toLowerCase().includes(term));
     return matchesSearch
       && (categoryFilter === 'all' || (product.category || 'Uncategorized') === categoryFilter)
@@ -606,21 +651,42 @@ export function Inventory() {
       && (!hideZeroStock || stock > 0);
   });
 
-  const totalProducts = products.length;
-  const lowStockProducts = products.filter(product => {
+  const totalProducts = parentProducts.length;
+  const lowStockProducts = parentProducts.filter(product => {
     const stock = getStockCount(product.id, warehouseFilter);
     return getProductStatus(product, stock, warehouseFilter) === 'low';
   }).length;
 
-  const outOfStockProducts = products.filter(product => {
+  const outOfStockProducts = parentProducts.filter(product => {
     const stock = getStockCount(product.id, warehouseFilter);
     return getProductStatus(product, stock, warehouseFilter) === 'out';
   }).length;
 
   const inventoryValue = products.reduce((total, product) => {
+    if (product.hasVariations) return total;
     const unitVal = (product.costPrice && product.costPrice > 0) ? product.costPrice : (product.basePrice || 0);
     return total + unitVal * Math.max(0, getStockCount(product.id, warehouseFilter));
   }, 0);
+
+  const variantRange = (product: Product, key: typeof variantFields[number][0]) => {
+    const values = childrenOf(product.id).filter(p => p.variantEnabled !== false && (key !== 'promoPrice' || p.promoPrice != null)).map(p => Number(p[key] || 0));
+    if (!values.length) return '—';
+    const min = Math.min(...values), max = Math.max(...values);
+    return min === max ? `₱${min.toLocaleString()}` : `₱${min.toLocaleString()}–₱${max.toLocaleString()}`;
+  };
+  const renderVariantDetails = (parent: Product) => <section className="space-y-3 py-3">
+    <p className="text-xs text-muted-foreground">Stock is tracked separately for each variant and warehouse. Disabled variants retain their history and any remaining stock.</p>
+    <div className="overflow-x-auto rounded-lg border"><Table>
+      <TableHeader><TableRow><TableHead className="min-w-40">Variant</TableHead><TableHead>Variant SKU</TableHead>{variantFields.map(([key, label]) => <TableHead key={key}>{label}</TableHead>)}{warehouses.map(w => <TableHead key={w.id}>{w.name}</TableHead>)}<TableHead>Total Stock</TableHead><TableHead>Status</TableHead><TableHead>Actions</TableHead></TableRow></TableHeader>
+      <TableBody>{childrenOf(parent.id).map(v => <TableRow key={v.id} className={v.variantEnabled === false ? 'bg-muted/30' : ''}>
+        <TableCell className="font-medium"><div className="flex items-center gap-2">{v.photoUrl && <img src={v.photoUrl} alt={variantLabel(v)} className="h-12 w-12 shrink-0 rounded-lg border border-border object-cover" />}<span>{variantLabel(v)}{v.variantEnabled === false && <Badge variant="secondary" className="ml-2">Disabled</Badge>}</span></div></TableCell><TableCell className="font-mono text-xs">{v.sku}</TableCell>
+        {variantFields.map(([key]) => <TableCell key={key}>{v[key] == null ? '—' : Number(v[key]).toLocaleString()}</TableCell>)}
+        {warehouses.map(w => <TableCell key={w.id}>{getStockCount(v.id, w.id).toLocaleString()}</TableCell>)}
+        <TableCell className="font-bold">{getStockCount(v.id).toLocaleString()}</TableCell><TableCell>{getProductStatus(v, getStockCount(v.id)) === 'out' ? 'Out of Stock' : getProductStatus(v, getStockCount(v.id)) === 'low' ? 'Low Stock' : 'In Stock'}</TableCell>
+        <TableCell><div className="flex gap-1"><Button type="button" variant="outline" size="icon" aria-label={`QR label for ${v.sku}`} onClick={() => setQrProduct(v)}><QrCode className="h-4 w-4" /></Button>{canAdjustStock && <Button type="button" variant="outline" size="icon" aria-label={`Adjust ${v.sku}`} onClick={() => { setSelectedVariantId(v.id); setIsDetailOpen(false); setIsStockUpdateOpen(true); }}><SlidersHorizontal className="h-4 w-4" /></Button>}</div></TableCell>
+      </TableRow>)}</TableBody>
+    </Table></div>
+  </section>;
 
   const printThermalLabel = (product: Product, svgContainerId?: string) => {
     let svgHtml = '';
@@ -766,7 +832,7 @@ export function Inventory() {
     <Button variant={inventoryView === 'layout' ? 'default' : 'ghost'} aria-pressed={inventoryView === 'layout'} onClick={() => setInventoryView('layout')}><WarehouseIcon className="size-4" />Warehouse Layout</Button>
   </div>;
 
-  if (inventoryView === 'layout') return <div className="space-y-5 pb-20">{inventoryNavigation}<WarehouseLayout warehouses={warehouses} products={products} inventory={inventory} /></div>;
+  if (inventoryView === 'layout') return <div className="space-y-5 pb-20">{inventoryNavigation}<WarehouseLayout warehouses={warehouses} products={products.filter(p => !p.hasVariations)} inventory={inventory} /></div>;
 
   return (
     <div className="space-y-5 pb-20">
@@ -830,11 +896,11 @@ export function Inventory() {
                 return (
                   <TableRow key={product.id} className="cursor-pointer hover:bg-muted/30" onClick={() => { setSelectedProduct(product); setIsDetailOpen(true); }}>
                     <TableCell className="font-mono text-xs text-muted-foreground">{product.sku}</TableCell>
-                    <TableCell><div className="flex items-center gap-3"><div className="flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-border bg-muted">{product.photoUrl ? <img src={product.photoUrl} alt={product.name} className="h-full w-full object-cover" /> : <Package className="h-5 w-5 text-muted-foreground" />}</div><div className="min-w-0"><p className="truncate text-sm font-bold">{product.name}</p><p className="truncate text-xs text-muted-foreground">{product.category || 'Uncategorized'}</p></div></div></TableCell>
-                    <TableCell><div className="grid grid-cols-[2.75rem_auto] text-xs"><span className="text-muted-foreground">Retail:</span><strong>₱{(product.basePrice || 0).toLocaleString()}</strong><span className="text-muted-foreground">MM:</span><strong>₱{(product.mmPrice ?? product.wholesalePrice ?? 0).toLocaleString()}</strong><span className="text-muted-foreground">Prov.:</span><strong>₱{(product.provincialPrice ?? product.dealerPrice ?? 0).toLocaleString()}</strong></div></TableCell>
-                    <TableCell className="text-sm font-semibold">₱{(product.costPrice || 0).toLocaleString()}</TableCell>
+                    <TableCell><div className="flex items-center gap-3"><div className="flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-border bg-muted">{product.photoUrl ? <img src={product.photoUrl} alt={product.name} className="h-full w-full object-cover" /> : <Package className="h-5 w-5 text-muted-foreground" />}</div><div className="min-w-0"><p className="truncate text-sm font-bold">{product.name}</p>{product.hasVariations && <Badge variant="secondary" className="my-1 text-[10px]">{childrenOf(product.id).filter(v => v.variantEnabled !== false).length} Variants</Badge>}<p className="truncate text-xs text-muted-foreground">{product.category || 'Uncategorized'}</p></div></div></TableCell>
+                    <TableCell>{product.hasVariations ? <div className="space-y-1 text-xs">{variantFields.slice(0, 3).map(([key, label]) => <p key={key}><span className="text-muted-foreground">{label}: </span><strong>{variantRange(product, key)}</strong></p>)}</div> : <div className="grid grid-cols-[2.75rem_auto] text-xs"><span className="text-muted-foreground">Retail:</span><strong>₱{(product.basePrice || 0).toLocaleString()}</strong><span className="text-muted-foreground">MM:</span><strong>₱{(product.mmPrice ?? product.wholesalePrice ?? 0).toLocaleString()}</strong><span className="text-muted-foreground">Prov.:</span><strong>₱{(product.provincialPrice ?? product.dealerPrice ?? 0).toLocaleString()}</strong></div>}</TableCell>
+                    <TableCell className="text-sm font-semibold">{product.hasVariations ? variantRange(product, 'costPrice') : `₱${(product.costPrice || 0).toLocaleString()}`}</TableCell>
                     <TableCell className="text-center"><Badge variant="outline" className={'rounded-full px-3 ' + statusClass}>{stock.toLocaleString()} units</Badge></TableCell>
-                    <TableCell><div className="text-xs"><p><span className="text-muted-foreground">Minimum:</span> <strong>{product.minStockLevel || 0}</strong></p><p><span className="text-muted-foreground">Reorder:</span> <strong>{product.reorderPoint || 0}</strong></p></div></TableCell>
+                    <TableCell>{product.hasVariations ? <span className="text-xs text-muted-foreground">Per variant</span> : <div className="text-xs"><p><span className="text-muted-foreground">Minimum:</span> <strong>{product.minStockLevel || 0}</strong></p><p><span className="text-muted-foreground">Reorder:</span> <strong>{product.reorderPoint || 0}</strong></p></div>}</TableCell>
                     <TableCell><p className="text-sm font-bold">{product.supplier || 'Supplier'}</p><p className="text-xs text-muted-foreground">Main Supplier</p></TableCell>
                     <TableCell className="text-center"><Badge variant="outline" className={'rounded-full ' + statusClass}>{status === 'out' ? '● Out of Stock' : status === 'low' ? '● Low Stock' : '● In Stock'}</Badge></TableCell>
                     <TableCell className="text-right" onClick={(event) => event.stopPropagation()}>
@@ -842,7 +908,7 @@ export function Inventory() {
                         <Button variant="outline" size="icon" className="h-9 w-9" title="View product" onClick={() => { setSelectedProduct(product); setIsDetailOpen(true); }}><Eye className="h-4 w-4" /></Button>
                         {isAdmin && <Button variant="outline" size="icon" className="h-9 w-9" title="Edit product" onClick={() => setEditingProduct(product)}><Pencil className="h-4 w-4" /></Button>}
                         {isAdmin && <Button variant="outline" size="icon" className="h-9 w-9 text-red-500 hover:text-red-600 hover:bg-red-50 hover:border-red-200" title="Delete product" onClick={() => setProductToDelete(product)}><Trash2 className="h-4 w-4" /></Button>}
-                        <Dialog><DialogTrigger className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-border hover:bg-muted"><QrCode className="h-4 w-4" /></DialogTrigger><DialogContent className="text-center sm:max-w-xs"><DialogHeader><DialogTitle className="text-center">Asset QR Label</DialogTitle></DialogHeader><div className="flex flex-col items-center gap-4 py-8"><div id={`qr-svg-table-${product.id}`} className="rounded-2xl border-2 border-primary p-4"><QRCodeSVG value={product.id} size={180} /></div><div><p className="font-black">{product.name}</p><p className="font-mono text-xs text-muted-foreground">{product.sku}</p></div></div><Button variant="outline" onClick={() => printThermalLabel(product, `qr-svg-table-${product.id}`)}><Printer className="mr-2 h-4 w-4" />Print Label</Button></DialogContent></Dialog>
+                        <>{product.hasVariations ? <Button variant="outline" size="icon" title="Variant QR labels" onClick={() => { setSelectedProduct(product); setIsDetailOpen(true); setDetailTab('variants'); }}><QrCode className="h-4 w-4" /></Button> : <Dialog><DialogTrigger className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-border hover:bg-muted"><QrCode className="h-4 w-4" /></DialogTrigger><DialogContent className="text-center sm:max-w-xs"><DialogHeader><DialogTitle className="text-center">Asset QR Label</DialogTitle></DialogHeader><div className="flex flex-col items-center gap-4 py-8"><div id={`qr-svg-table-${product.id}`} className="rounded-2xl border-2 border-primary p-4"><QRCodeSVG value={product.id} size={180} /></div><div><p className="font-black">{product.name}</p><p className="font-mono text-xs text-muted-foreground">{product.sku}</p></div></div><Button variant="outline" onClick={() => printThermalLabel(product, `qr-svg-table-${product.id}`)}><Printer className="mr-2 h-4 w-4" />Print Label</Button></DialogContent></Dialog>}</>
                         {canAdjustStock && <Button variant="outline" size="icon" className="h-9 w-9" title="Adjust stock" onClick={() => { setSelectedProduct(product); setIsStockUpdateOpen(true); }}><SlidersHorizontal className="h-4 w-4" /></Button>}
                       </div>
                     </TableCell>
@@ -853,12 +919,12 @@ export function Inventory() {
             </TableBody>
           </Table>
         </div>
-        <div className="flex items-center justify-between border-t border-border bg-muted/20 px-4 py-3 text-xs text-muted-foreground"><span>Showing {filteredProducts.length.toLocaleString()} of {products.length.toLocaleString()} products</span><span>{warehouses.length.toLocaleString()} warehouse{warehouses.length === 1 ? '' : 's'} connected</span></div>
+        <div className="flex items-center justify-between border-t border-border bg-muted/20 px-4 py-3 text-xs text-muted-foreground"><span>Showing {filteredProducts.length.toLocaleString()} of {parentProducts.length.toLocaleString()} products</span><span>{warehouses.length.toLocaleString()} warehouse{warehouses.length === 1 ? '' : 's'} connected</span></div>
       </div>
 
       <Dialog open={isAddProductOpen} onOpenChange={(open) => { setIsAddProductOpen(open); if (!open) setProductImage(null); }}>
-        <DialogContent className="max-h-[90vh] w-[95vw] overflow-y-auto sm:max-w-4xl"><DialogHeader><DialogTitle>New Configuration Item (Product)</DialogTitle><DialogDescription>Register a new bicycle component into the service catalog.</DialogDescription></DialogHeader>
-          <form onSubmit={handleAddProduct} className="space-y-5 pt-2">
+        <DialogContent className={`max-h-[90vh] w-[95vw] min-w-0 overflow-x-hidden overflow-y-auto ${addVariations.enabled ? 'sm:max-w-7xl' : 'sm:max-w-4xl'}`}><DialogHeader><DialogTitle>New Configuration Item (Product)</DialogTitle><DialogDescription>Register a new bicycle component into the service catalog.</DialogDescription></DialogHeader>
+          <form onSubmit={handleAddProduct} className="min-w-0 space-y-5 pt-2">
             <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
               <section className="space-y-3 rounded-xl border border-border p-4">
                 <h3 className="border-b border-border pb-2 text-sm font-bold">Product Image</h3>
@@ -965,7 +1031,8 @@ export function Inventory() {
                 </div>
               </section>
             </div>
-            <section className="space-y-3">
+            <ProductVariationEditor value={addVariations} onChange={setAddVariations} sku={addSku}  />
+{!addVariations.enabled && <><section className="space-y-3">
               <h3 className="border-b border-border pb-2 text-sm font-bold">Pricing</h3>
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
                 <div className="space-y-2"><Label htmlFor="basePrice">Price (₱)</Label><Input id="basePrice" name="basePrice" type="number" min="0" step="0.01" required /></div>
@@ -982,7 +1049,8 @@ export function Inventory() {
                 <div className="space-y-2"><Label htmlFor="reorderPoint">Restock Level</Label><Input id="reorderPoint" name="reorderPoint" type="number" min="0" defaultValue="0" /></div>
               </div>
             </section>
-            <DialogFooter>
+            </>}
+<DialogFooter>
               <Button type="submit" disabled={isSubmittingProduct || isAddSkuDuplicate || isAddNameDuplicate}>
                 {isSubmittingProduct ? 'Adding...' : 'Add Product'}
               </Button>
@@ -1002,13 +1070,13 @@ export function Inventory() {
       </Dialog>
 
       <Dialog open={Boolean(editingProduct)} onOpenChange={(open) => { if (!open) { setEditingProduct(null); setEditProductImage(null); setEditProductImagePreview(''); } }}>
-        <DialogContent className="max-h-[90vh] w-[95vw] overflow-y-auto sm:max-w-4xl">
+        <DialogContent className={`max-h-[90vh] w-[95vw] min-w-0 overflow-x-hidden overflow-y-auto ${editVariations.enabled ? 'sm:max-w-7xl' : 'sm:max-w-4xl'}`}>
           <DialogHeader>
             <DialogTitle>Edit Product</DialogTitle>
             <DialogDescription>Updates will be used by future pricelists. Existing saved pricelists remain unchanged.</DialogDescription>
           </DialogHeader>
           {editingProduct && (
-            <form onSubmit={handleEditProduct} className="space-y-5 pt-2">
+            <form onSubmit={handleEditProduct} className="min-w-0 space-y-5 pt-2">
               <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
                 <section className="space-y-3 rounded-xl border border-border p-4">
                   <h3 className="border-b border-border pb-2 text-sm font-bold">Product Image</h3>
@@ -1140,7 +1208,8 @@ export function Inventory() {
                 </section>
               </div>
 
-              <section className="space-y-3">
+              <ProductVariationEditor value={editVariations} onChange={setEditVariations} sku={editSku} key={editingProduct.id} locked={variantModeLocked} />
+{!editVariations.enabled && <><section className="space-y-3">
                 <h3 className="border-b border-border pb-2 text-sm font-bold">Pricing</h3>
                 <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
                   <div className="space-y-2">
@@ -1180,7 +1249,8 @@ export function Inventory() {
                 </div>
               </section>
 
-              <DialogFooter>
+              </>}
+<DialogFooter>
                 <Button type="button" variant="outline" onClick={() => { setEditingProduct(null); setEditProductImage(null); setEditProductImagePreview(''); }}>Cancel</Button>
                 <Button type="submit" disabled={isSubmittingProduct || isEditSkuDuplicate || isEditNameDuplicate || !editSku.trim() || !editName.trim()}>
                   {isSubmittingProduct ? 'Saving...' : 'Save Changes'}
@@ -1221,6 +1291,7 @@ export function Inventory() {
             </DialogDescription>
           </DialogHeader>
           <form onSubmit={updateStock} className="space-y-4 pt-4">
+            {selectedProduct?.hasVariations && <div className="space-y-2"><Label htmlFor="adjust-variant">Variant</Label><select id="adjust-variant" required className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm" value={selectedVariantId} onChange={e => setSelectedVariantId(e.target.value)}><option value="">Select a variant...</option>{childrenOf(selectedProduct.id).map(v => <option key={v.id} value={v.id}>{variantLabel(v)} — {v.sku}{v.variantEnabled === false ? ' (disabled)' : ''}</option>)}</select><p className="text-xs text-muted-foreground">Adjustments apply only to the selected variant and warehouse.</p></div>}
             <div className="space-y-2">
               <Label>Target Warehouse</Label>
               <Select name="warehouseId" required value={selectedWarehouseId} onValueChange={(value) => value !== null && setSelectedWarehouseId(value)}>
@@ -1244,7 +1315,7 @@ export function Inventory() {
               <div className="space-y-2">
                 <Label>Current System Total</Label>
                 <div className="h-10 px-3 flex items-center bg-muted border border-border rounded-lg text-xs font-bold">
-                  {selectedProduct ? getStockCount(selectedProduct.id) : 0} units
+                  {adjustmentProduct ? getStockCount(adjustmentProduct.id, selectedProduct?.hasVariations ? selectedWarehouseId || undefined : undefined) : 0} units
                 </div>
               </div>
             </div>
@@ -1258,7 +1329,7 @@ export function Inventory() {
               </div>
             </div>
             <DialogFooter>
-              <Button type="submit" className="w-full">Commit Adjustment</Button>
+              <Button type="submit" className="w-full" disabled={isAdjusting || !adjustmentProduct}>{isAdjusting ? 'Saving...' : 'Commit Adjustment'}</Button>
             </DialogFooter>
           </form>
         </DialogContent>
@@ -1266,7 +1337,7 @@ export function Inventory() {
 
       {/* Redesigned product detail dialog */}
       <Dialog open={isDetailOpen} onOpenChange={setIsDetailOpen}>
-        <DialogContent className="max-h-[95vh] w-[96vw] max-w-[96vw] overflow-y-auto rounded-2xl p-0 sm:max-w-7xl">
+        <DialogContent className="max-h-[95vh] w-[96vw] min-w-0 max-w-[96vw] overflow-y-auto rounded-2xl p-0 sm:max-w-7xl">
           <DialogHeader className="border-b border-border px-6 pb-4 pt-5 text-left">
             <DialogTitle className="text-2xl font-black tracking-tight">Configuration Item</DialogTitle>
             <DialogDescription>Service catalog specification and inventory node status.</DialogDescription>
@@ -1276,7 +1347,7 @@ export function Inventory() {
             const stockStatus = getProductStatus(selectedProduct, totalStock);
             const statusLabel = stockStatus === 'out' ? 'Out of Stock' : stockStatus === 'low' ? 'Low Stock' : 'In Stock';
             const statusTone = stockStatus === 'out' ? 'text-red-600' : stockStatus === 'low' ? 'text-amber-600' : 'text-emerald-600';
-            return <div className="space-y-3 px-4 pb-5 sm:px-6">
+            return <div className="min-w-0 space-y-3 px-4 pb-5 sm:px-6">
               <section className="flex flex-col gap-5 px-2 py-2 sm:flex-row sm:items-end sm:justify-between">
                 <div className="flex min-w-0 flex-1 items-center gap-4">
                   <div className="flex h-24 w-24 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-border bg-muted" aria-label="Product image">
@@ -1298,7 +1369,8 @@ export function Inventory() {
                 </div>
               </section>
 
-              <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+              <>{selectedProduct.hasVariations && <div className="flex gap-2 border-b pb-3" role="tablist" aria-label="Product details"><Button role="tab" aria-selected={detailTab === 'overview'} variant={detailTab === 'overview' ? 'default' : 'outline'} onClick={() => setDetailTab('overview')}>Overview</Button><Button role="tab" aria-selected={detailTab === 'variants'} variant={detailTab === 'variants' ? 'default' : 'outline'} onClick={() => setDetailTab('variants')}>Variants ({childrenOf(selectedProduct.id).filter(v => v.variantEnabled !== false).length})</Button></div>}
+{selectedProduct.hasVariations && detailTab === 'variants' ? renderVariantDetails(selectedProduct) : <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
                 <section className="rounded-xl border border-border/80 p-4 shadow-sm">
                   <div className="flex items-center gap-3 border-b border-border pb-3"><span className="font-mono text-sm font-black text-muted-foreground">01</span><FileText className="h-5 w-5" /><h3 className="text-base font-bold uppercase tracking-wider">Product Information</h3></div>
                   <dl className="grid grid-cols-[minmax(8rem,1fr)_minmax(0,1fr)] gap-x-5 gap-y-3 py-3 text-sm">
@@ -1309,11 +1381,11 @@ export function Inventory() {
                   </dl>
                   <div className="mt-2 flex items-center gap-3 border-y border-border py-3"><span className="font-mono text-sm font-black text-muted-foreground">02</span><Tag className="h-5 w-5" /><h3 className="text-base font-bold uppercase tracking-wider">Pricing (₱)</h3></div>
                   <dl className="grid grid-cols-[minmax(8rem,1fr)_minmax(0,1fr)] gap-x-5 gap-y-3 pt-3 text-sm">
-                    <dt className="text-muted-foreground">Base Price / Retail</dt><dd className="font-medium">{(selectedProduct.basePrice || 0).toLocaleString()}</dd>
-                    <dt className="text-muted-foreground">Cost</dt><dd className="font-medium">{(selectedProduct.costPrice || 0).toLocaleString()}</dd>
-                    <dt className="text-muted-foreground">Promo Price</dt><dd className="font-medium">{selectedProduct.promoPrice != null ? selectedProduct.promoPrice.toLocaleString() : '—'}</dd>
-                    <dt className="text-muted-foreground">Metro Manila Wholesale</dt><dd className="font-medium">{(selectedProduct.mmPrice ?? selectedProduct.wholesalePrice ?? 0).toLocaleString()}</dd>
-                    <dt className="text-muted-foreground">Provincial Wholesale</dt><dd className="font-medium">{(selectedProduct.provincialPrice ?? selectedProduct.dealerPrice ?? 0).toLocaleString()}</dd>
+                    <dt className="text-muted-foreground">Base Price / Retail</dt><dd className="font-medium">{selectedProduct.hasVariations ? variantRange(selectedProduct, 'basePrice') : (selectedProduct.basePrice || 0).toLocaleString()}</dd>
+                    <dt className="text-muted-foreground">Cost</dt><dd className="font-medium">{selectedProduct.hasVariations ? variantRange(selectedProduct, 'costPrice') : (selectedProduct.costPrice || 0).toLocaleString()}</dd>
+                    <dt className="text-muted-foreground">Promo Price</dt><dd className="font-medium">{selectedProduct.hasVariations ? variantRange(selectedProduct, 'promoPrice') : selectedProduct.promoPrice != null ? selectedProduct.promoPrice.toLocaleString() : '—'}</dd>
+                    <dt className="text-muted-foreground">Metro Manila Wholesale</dt><dd className="font-medium">{selectedProduct.hasVariations ? variantRange(selectedProduct, 'mmPrice') : (selectedProduct.mmPrice ?? selectedProduct.wholesalePrice ?? 0).toLocaleString()}</dd>
+                    <dt className="text-muted-foreground">Provincial Wholesale</dt><dd className="font-medium">{selectedProduct.hasVariations ? variantRange(selectedProduct, 'provincialPrice') : (selectedProduct.provincialPrice ?? selectedProduct.dealerPrice ?? 0).toLocaleString()}</dd>
                   </dl>
                 </section>
 
@@ -1326,11 +1398,11 @@ export function Inventory() {
                   </div>
                   <div className="mt-4 flex items-center gap-3 border-y border-border py-3"><span className="font-mono text-sm font-black text-muted-foreground">04</span><BarChart3 className="h-5 w-5" /><h3 className="text-base font-bold uppercase tracking-wider">Stock Controls</h3></div>
                   <dl className="grid grid-cols-[1fr_auto] gap-x-5 gap-y-3 pt-3 text-sm">
-                    <dt className="text-muted-foreground">Critical Stock Level</dt><dd className="font-medium">{selectedProduct.minStockLevel || 0} units</dd>
-                    <dt className="text-muted-foreground">Reorder Point</dt><dd className="font-medium">{selectedProduct.reorderPoint || 0} units</dd>
+                    <dt className="text-muted-foreground">Critical Stock Level</dt><dd className="font-medium">{selectedProduct.hasVariations ? 'Per variant' : `${selectedProduct.minStockLevel || 0} units`}</dd>
+                    <dt className="text-muted-foreground">Reorder Point</dt><dd className="font-medium">{selectedProduct.hasVariations ? 'Per variant' : `${selectedProduct.reorderPoint || 0} units`}</dd>
                     <dt className="text-muted-foreground">Stock Status</dt><dd className={`flex items-center gap-2 font-bold ${statusTone}`}><span className="h-2.5 w-2.5 rounded-full bg-current" />{statusLabel}</dd>
                   </dl>
-                  <p className="mt-3 flex items-center gap-2 text-xs text-muted-foreground"><Info className="h-4 w-4 shrink-0" />Current stock is {totalStock > (selectedProduct.minStockLevel || 0) ? 'above' : 'at or below'} the critical level.</p>
+                  <p className="mt-3 flex items-center gap-2 text-xs text-muted-foreground"><Info className="h-4 w-4 shrink-0" />{selectedProduct.hasVariations ? <>Open Variants to review individual stock thresholds and status.</> : <>Current stock is {totalStock > (selectedProduct.minStockLevel || 0) ? 'above' : 'at or below'} the critical level.</>}</p>
                 </section>
 
                 <section className="flex flex-col rounded-xl border border-border/80 p-4 shadow-sm">
@@ -1339,18 +1411,19 @@ export function Inventory() {
                   </div>
                   <p className="mt-4 text-xs text-muted-foreground">Scan or print the product identity record associated with this item.</p>
                   <div className="mt-4 flex flex-1 flex-col items-center justify-center gap-4 rounded-lg border border-border p-5">
-                    <div id={`qr-svg-detail-${selectedProduct.id}`} className="rounded-lg bg-white p-2"><QRCodeSVG value={selectedProduct.id} size={150} /></div>
+                    <div id={`qr-svg-detail-${selectedProduct.id}`} className="rounded-lg bg-white p-2">{selectedProduct.hasVariations ? <p className="max-w-40 text-center text-sm text-muted-foreground">Choose a variant to view and print its QR label.</p> : <QRCodeSVG value={selectedProduct.id} size={150} />}</div>
                     <div className="text-center"><p className="text-xs uppercase tracking-wider text-muted-foreground">SKU</p><p className="font-bold">{selectedProduct.sku}</p><p className="mt-4 text-xs uppercase tracking-wider text-muted-foreground">Unique node ID</p><p className="mt-1 break-all font-mono text-xs">{selectedProduct.id}</p></div>
                   </div>
-                  <Button variant="outline" className="mt-4 h-11" onClick={() => printThermalLabel(selectedProduct, `qr-svg-detail-${selectedProduct.id}`)}><Printer className="mr-2 h-4 w-4" />Print Label</Button>
+                  <Button variant="outline" className="mt-4 h-11" onClick={() => selectedProduct.hasVariations ? setDetailTab('variants') : printThermalLabel(selectedProduct, `qr-svg-detail-${selectedProduct.id}`)}><Printer className="mr-2 h-4 w-4" />Print Label</Button>
                 </section>
-              </div>
+              </div>}</>
             </div>;
           })()}
           <DialogFooter className="border-t border-border bg-muted/20 px-6 py-4"><Button variant="outline" onClick={() => setIsDetailOpen(false)} className="h-11 min-w-28 rounded-lg px-8 font-bold">Close</Button></DialogFooter>
         </DialogContent>
       </Dialog>
 
+      <Dialog open={!!qrProduct} onOpenChange={open => !open && setQrProduct(null)}><DialogContent className="sm:max-w-sm"><DialogHeader><DialogTitle>Variant QR Label</DialogTitle><DialogDescription>{qrProduct?.name}</DialogDescription></DialogHeader>{qrProduct && <div className="flex flex-col items-center gap-3 py-4"><div id={`qr-variant-${qrProduct.id}`} className="rounded-xl bg-white p-4"><QRCodeSVG value={qrProduct.id} size={180} /></div><p className="font-mono font-bold">{qrProduct.sku}</p><p className="text-xs text-muted-foreground">Parent: {products.find(p => p.id === qrProduct.parentProductId)?.name}</p><Button variant="outline" onClick={() => printThermalLabel(qrProduct, `qr-variant-${qrProduct.id}`)}><Printer className="mr-2 h-4 w-4" />Print Label</Button></div>}</DialogContent></Dialog>
       {/* Previous product detail layout retained temporarily for reference */}
       {false && (
         <Dialog open={isDetailOpen} onOpenChange={setIsDetailOpen}>
