@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ImagePlus, Plus, X } from 'lucide-react';
+import { AlertCircle, ImagePlus, Plus, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -44,12 +44,17 @@ export function ProductVariationEditor({ value, onChange, sku, locked = false }:
     onChange({ ...draft, variants: attributeError(parsed) ? value.variants : generateVariants(parsed, value.variants, sku) });
   };
   const bulkValid = variantFields.every(([key]) => bulk[key] == null || bulk[key] === '' || (Number.isFinite(Number(bulk[key])) && Number(bulk[key]) >= 0 && (!['minStockLevel', 'reorderPoint'].includes(key) || Number.isInteger(Number(bulk[key])))));
-  return <section className="min-w-0 space-y-4 rounded-xl border border-border p-4">
-    <label className="flex cursor-pointer items-center justify-between gap-4">
-      <span><span className="block text-sm font-bold">Has Variations</span><span className="block text-xs text-muted-foreground">Different options, each with its own SKU, pricing and warehouse stock.</span></span>
-      <span className="relative inline-flex shrink-0"><input type="checkbox" role="switch" aria-label="Has Variations" checked={value.enabled} disabled={locked} onChange={e => onChange({ ...value, enabled: e.target.checked })} className="peer absolute inset-0 z-10 h-full w-full cursor-pointer opacity-0 disabled:cursor-not-allowed" /><span aria-hidden="true" className="h-6 w-11 rounded-full bg-input transition-colors peer-checked:bg-primary peer-focus-visible:ring-2 peer-focus-visible:ring-ring peer-focus-visible:ring-offset-2 peer-disabled:opacity-50" /><span aria-hidden="true" className="pointer-events-none absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white shadow-sm transition-transform peer-checked:translate-x-5" /></span>
+  return <section className="min-w-0 space-y-4 rounded-xl border-2 border-blue-500/80 bg-blue-500/5 p-4 dark:border-blue-400 dark:bg-blue-950/10 transition-colors">
+    <label className={`flex items-center justify-between gap-4 ${locked ? 'cursor-not-allowed opacity-80' : 'cursor-pointer'}`}>
+      <span><span className="block text-sm font-bold text-foreground">Has Variations</span><span className="block text-xs text-muted-foreground">Different options, each with its own SKU, pricing and warehouse stock.</span></span>
+      <span className="relative inline-flex shrink-0"><input type="checkbox" role="switch" aria-label="Has Variations" checked={value.enabled} disabled={locked} onChange={e => onChange({ ...value, enabled: e.target.checked })} className="peer absolute inset-0 z-10 h-full w-full cursor-pointer opacity-0 disabled:cursor-not-allowed" /><span aria-hidden="true" className="h-6 w-11 rounded-full bg-input transition-colors peer-checked:bg-blue-600 peer-focus-visible:ring-2 peer-focus-visible:ring-ring peer-focus-visible:ring-offset-2 peer-disabled:opacity-50" /><span aria-hidden="true" className="pointer-events-none absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white shadow-sm transition-transform peer-checked:translate-x-5" /></span>
     </label>
-    {locked && <p className="text-xs text-muted-foreground">Clear existing stock through Adjust Stock before changing between a single product and variations.</p>}
+    {locked && (
+      <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-2.5 text-xs text-amber-800 dark:text-amber-300 font-medium">
+        <AlertCircle className="h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400 mt-0.5" />
+        <span><b>Mode Locked:</b> Existing stock was detected on this product. Clear all warehouse stock to 0 via <b>Adjust Stock</b> before changing between a single product and variations.</span>
+      </div>
+    )}
     {value.enabled && <>
       <div className="space-y-3 border-t pt-4">
         <div className="flex items-center justify-between gap-3"><h4 className="text-sm font-semibold">Variation attributes <span className="text-muted-foreground">{value.attributes.length}/3</span></h4><Button type="button" size="sm" variant="outline" disabled={value.attributes.length >= 3} onClick={() => updateAttributes([...value.attributes, { name: '', values: '' }])}><Plus className="mr-1 h-4 w-4" />Add attribute</Button></div>
