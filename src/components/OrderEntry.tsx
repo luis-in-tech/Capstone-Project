@@ -85,6 +85,7 @@ export function OrderEntry({
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
   const [warehouseError, setWarehouseError] = useState(false);
   const [customerName, setCustomerName] = useState("");
+  const [isNewCustomer, setIsNewCustomer] = useState(false);
   const [customerOpen, setCustomerOpen] = useState(false);
   const [customerSearch, setCustomerSearch] = useState("");
   const [address, setAddress] = useState("");
@@ -109,7 +110,7 @@ export function OrderEntry({
   const cameraSession = useRef(0);
   const saveLock = useRef(false);
   const customers = existingCustomers(orders);
-  const customer = customers.find((item) => item.name === customerName);
+  const customer = customers.find((item) => item.name === customerName) || (customerName.trim() ? { id: undefined, name: customerName.trim(), address, region } : null);
   const totals = groupedOrderTotals(lines, groupDiscounts, Number(discount || 0));
   const removeLine = (id: string) => {
     setLines(items => items.filter(item => item.id !== id));
@@ -324,7 +325,7 @@ export function OrderEntry({
   const submit = async () => {
     if (
       saveLock.current ||
-      !customer ||
+      !customerName.trim() ||
       !lines.length ||
       !totals.valid ||
       (terms === "Custom" && !customTerms.trim())
@@ -338,8 +339,8 @@ export function OrderEntry({
       const { data, error } = await supabase.rpc("create_order_entry", {
         p_request_id: requestId,
         p_order: {
-          customerSourceId: orders.find((o) => o.clientName === customer.name)
-            ?.id,
+          customerSourceId: customer?.id || orders.find((o) => o.clientName?.toLowerCase() === customerName.trim().toLowerCase())?.id,
+          clientName: customerName.trim(),
           address: address.trim(),
           deliveryRegion: region,
           paymentTerms: terms === "Custom" ? customTerms.trim() : terms,
@@ -432,79 +433,136 @@ export function OrderEntry({
                 </div>
                 <div className="grid gap-4 sm:grid-cols-2">
                   <div className="space-y-1.5">
-                    <Label>Customer</Label>
-                    <Popover open={customerOpen} onOpenChange={setCustomerOpen}>
-                      <PopoverTrigger
-                        render={
-                          <Button
-                            variant="outline"
-                            className="w-full justify-between font-normal"
-                          />
-                        }
-                        role="combobox"
-                        aria-expanded={customerOpen}
-                        aria-label="Select existing customer"
+                    <div className="flex items-center justify-between">
+                      <Label htmlFor="entry-customer">Customer</Label>
+                      <Button
+                        type="button"
+                        variant="link"
+                        size="sm"
+                        className="h-auto p-0 text-xs text-primary"
+                        onClick={() => {
+                          const nextState = !isNewCustomer;
+                          setIsNewCustomer(nextState);
+                          if (nextState && customerSearch.trim()) {
+                            setCustomerName(customerSearch.trim());
+                          }
+                        }}
                       >
-                        <span className="truncate">
-                          {customer?.name || "Search existing customers"}
-                        </span>
-                        <ChevronDown className="size-4 shrink-0" />
-                      </PopoverTrigger>
-                      <PopoverContent className="w-80 p-2" align="start">
-                        <Input
-                          autoFocus
-                          aria-label="Search customers"
-                          placeholder="Search customer name…"
-                          value={customerSearch}
-                          onChange={(e) => setCustomerSearch(e.target.value)}
-                        />
-                        <div className="mt-2 max-h-60 overflow-y-auto">
-                          {customers
-                            .filter((c) =>
-                              c.name
-                                .toLowerCase()
-                                .includes(customerSearch.toLowerCase()),
-                            )
-                            .map((c) => (
+                        {isNewCustomer ? "Select existing customer" : "+ Enter new client"}
+                      </Button>
+                    </div>
+                    {isNewCustomer ? (
+                      <Input
+                        id="entry-customer"
+                        placeholder="Enter new customer / client name…"
+                        value={customerName}
+                        onChange={(e) => setCustomerName(e.target.value)}
+                        autoFocus
+                      />
+                    ) : (
+                      <Popover open={customerOpen} onOpenChange={setCustomerOpen}>
+                        <PopoverTrigger
+                          render={
+                            <Button
+                              id="entry-customer"
+                              variant="outline"
+                              className="w-full justify-between font-normal"
+                            />
+                          }
+                          role="combobox"
+                          aria-expanded={customerOpen}
+                          aria-label="Select customer"
+                        >
+                          <span className="truncate">
+                            {customerName || "Search existing customers"}
+                          </span>
+                          <ChevronDown className="size-4 shrink-0" />
+                        </PopoverTrigger>
+                        <PopoverContent className="w-80 p-2" align="start">
+                          <Input
+                            autoFocus
+                            aria-label="Search customers"
+                            placeholder="Search customer name…"
+                            value={customerSearch}
+                            onChange={(e) => setCustomerSearch(e.target.value)}
+                          />
+                          <div className="mt-2 max-h-60 overflow-y-auto space-y-1">
+                            {customerSearch.trim() && (
                               <button
-                                key={c.name}
                                 type="button"
-                                className="flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-sm hover:bg-muted focus:bg-muted"
+                                className="flex w-full items-center gap-2 rounded-md bg-primary/10 px-3 py-2 text-left text-sm font-medium text-primary hover:bg-primary/20 focus:bg-primary/20"
                                 onClick={() => {
-                                  setCustomerName(c.name);
-                                  setAddress(c.address);
-                                  setRegion(
-                                    [
-                                      "Metro Manila",
-                                      "Luzon",
-                                      "Visayas",
-                                      "Mindanao",
-                                    ].includes(c.region)
-                                      ? c.region
-                                      : "Luzon",
-                                  );
+                                  setCustomerName(customerSearch.trim());
+                                  setIsNewCustomer(true);
                                   setCustomerOpen(false);
                                 }}
                               >
-                                <span>{c.name}</span>
-                                {customerName === c.name && (
-                                  <Check className="size-4" />
-                                )}
+                                <Plus className="size-4 shrink-0" />
+                                <span className="truncate">Create "{customerSearch.trim()}" (New Client)</span>
                               </button>
-                            ))}
-                          {!customers.filter((c) =>
-                            c.name
-                              .toLowerCase()
-                              .includes(customerSearch.toLowerCase()),
-                          ).length && (
-                            <p className="p-3 text-sm text-muted-foreground">
-                              No existing customers found in your accessible
-                              orders.
-                            </p>
-                          )}
-                        </div>
-                      </PopoverContent>
-                    </Popover>
+                            )}
+                            {customers
+                              .filter((c) =>
+                                c.name
+                                  .toLowerCase()
+                                  .includes(customerSearch.toLowerCase()),
+                              )
+                              .map((c) => (
+                                <button
+                                  key={c.name}
+                                  type="button"
+                                  className="flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-sm hover:bg-muted focus:bg-muted"
+                                  onClick={() => {
+                                    setCustomerName(c.name);
+                                    setIsNewCustomer(false);
+                                    setAddress(c.address);
+                                    setRegion(
+                                      [
+                                        "Metro Manila",
+                                        "Luzon",
+                                        "Visayas",
+                                        "Mindanao",
+                                      ].includes(c.region)
+                                        ? c.region
+                                        : "Luzon",
+                                    );
+                                    setCustomerOpen(false);
+                                  }}
+                                >
+                                  <span className="truncate">{c.name}</span>
+                                  {customerName === c.name && !isNewCustomer && (
+                                    <Check className="size-4 shrink-0" />
+                                  )}
+                                </button>
+                              ))}
+                            {!customers.filter((c) =>
+                              c.name
+                                .toLowerCase()
+                                .includes(customerSearch.toLowerCase()),
+                            ).length && !customerSearch.trim() && (
+                              <p className="p-3 text-sm text-muted-foreground">
+                                No existing customers found in your accessible orders.
+                              </p>
+                            )}
+                          </div>
+                          <div className="border-t mt-2 pt-2">
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              className="w-full justify-start text-xs text-muted-foreground hover:text-foreground"
+                              onClick={() => {
+                                setIsNewCustomer(true);
+                                if (customerSearch.trim()) setCustomerName(customerSearch.trim());
+                                setCustomerOpen(false);
+                              }}
+                            >
+                              <Plus className="mr-1.5 size-3.5" /> Enter a new client name
+                            </Button>
+                          </div>
+                        </PopoverContent>
+                      </Popover>
+                    )}
                   </div>
                   <div className="space-y-1.5">
                     <Label htmlFor="entry-terms">Payment Terms</Label>
@@ -563,7 +621,7 @@ export function OrderEntry({
                   </div>
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  Customers come from your existing order records. Delivery is
+                  Select from existing order clients or create a new client. Delivery is
                   due {region === "Metro Manila" ? "7" : "14"} days after
                   saving.
                 </p>
@@ -849,7 +907,7 @@ export function OrderEntry({
                 className="w-full min-h-11"
                 disabled={
                   saving ||
-                  !customer ||
+                  !customerName.trim() ||
                   !lines.length ||
                   !totals.valid ||
                   (terms === "Custom" && !customTerms.trim())
