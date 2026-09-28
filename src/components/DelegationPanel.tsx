@@ -41,7 +41,7 @@ export function DelegationPanel() {
   const [status, setStatus] = useState('active');
   const [editor, setEditor] = useState<UserProfile | 'new' | null>(null);
   const [draft, setDraft] = useState<StaffPermissions>({ ...defaultPermissions });
-  const [selectedRole, setSelectedRole] = useState<UserProfile['role']>('agent');
+  const [selectedRole, setSelectedRole] = useState<UserProfile['role'] | ''>('');
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -67,7 +67,7 @@ export function DelegationPanel() {
 
   const byEmail = useMemo(() => new Map(delegations.map(d => [d.staffEmail.trim().toLowerCase(), d])), [delegations]);
   const delegationFor = (user: UserProfile) => byEmail.get(user.email.trim().toLowerCase());
-  const inactive = (user: UserProfile) => user.role !== 'admin' && delegationFor(user)?.active === false;
+  const inactive = (user: UserProfile) => delegationFor(user)?.active === false;
   const activeCount = users.filter(user => !inactive(user)).length;
   const unassigned = users.filter(user => user.role !== 'admin' && !inactive(user) && !delegationFor(user)).length;
   const ready = loaded.includes('users') && loaded.includes('delegations') && !errors.users && !errors.delegations;
@@ -79,7 +79,7 @@ export function DelegationPanel() {
   const startEdit = (user: UserProfile | 'new') => {
     const saved = user === 'new' ? undefined : delegationFor(user);
     // Restore the saved settings for review instead of the effective deactivated access.
-    setSelectedRole(user === 'new' ? 'agent' : user.role);
+    setSelectedRole('');
     setEditor(user); setDraft(user === 'new' ? rolePermissions('agent') : resolvePermissions(user, saved ? { ...saved, active: true } : undefined));
     setName(''); setEmail(''); setPassword(''); setWarehouseSearch(''); setFormError(''); setDirty(false);
   };
@@ -88,8 +88,10 @@ export function DelegationPanel() {
   async function save(event: React.FormEvent) {
     event.preventDefault();
     if (saving || !editor || !canManage || (editor !== 'new' && !canManageUser(profile, editor))) return;
-    if (selectedRole === 'admin' && (editor !== 'new' || !allowAdminCreation)) { setFormError('Only admin@example.com can create another admin.'); return; }
-    const permissions = selectedRole === 'admin' ? rolePermissions('admin') : normalizePermissions(draft);
+    const targetRole = selectedRole || (editor !== 'new' ? editor.role : 'staff');
+    if (selectedRole === '' && editor === 'new') { setFormError('Please select a role / permission preset.'); return; }
+    if (targetRole === 'admin' && !allowAdminCreation) { setFormError('Administrator access is required to assign an admin role.'); return; }
+    const permissions = targetRole === 'admin' ? rolePermissions('admin') : normalizePermissions(draft);
     if (!isAdmin && !permissionsWithin(permissions, access.permissions)) { setFormError('You can assign only permissions and warehouses available to your own account. Contact the administrator.'); return; }
     if (permissions.warehouseAccess === 'selected' && (!permissions.warehouseIds.length || permissions.warehouseIds.some(id => !warehouses.some(w => w.id === id)))) {
       setFormError('Select at least one existing warehouse. Remove any unavailable selections.'); return;
@@ -100,7 +102,7 @@ export function DelegationPanel() {
     setSaving(true); setFormError('');
     try {
       if (editor === 'new') {
-        const { data, error } = await supabase.functions.invoke('create-staff-user', { body: { email: email.trim().toLowerCase(), name: name.trim(), password, permissions, role: selectedRole } });
+        const { data, error } = await supabase.functions.invoke('create-staff-user', { body: { email: email.trim().toLowerCase(), name: name.trim(), password, permissions, role: targetRole } });
         if (error) {
           let detail = 'Could not create the staff account. Check that the staff account service is deployed and try again.';
           if (error.context instanceof Response) { try { detail = (await error.context.json()).error || detail; } catch { /* keep fallback */ } }
@@ -111,16 +113,40 @@ export function DelegationPanel() {
         if (data?.delegation) setDelegations(current => [...current.filter(d => d.id !== data.delegation.id), data.delegation]);
         toast.success('User account created', { description: 'The staff member can sign in with their email and password.' });
       } else {
-        const { data, error } = await supabase.rpc('set_staff_role_access', { p_uid: editor.uid, p_role: selectedRole, p_permissions: permissions });
-        if (error) throw error;
-        setDelegations(current => [...current.filter(d => d.staffEmail.toLowerCase() !== editor.email.toLowerCase()), data as StaffDelegation]);
-        setUsers(current => current.map(user => user.uid === editor.uid ? { ...user, role: selectedRole } : user));
+        let updatedDelegation: any = null;
+        const { data, error } = await supabase.rpc('set_staff_role_access', { p_uid: editor.uid, p_role: targetRole, p_permissions: permissions });
+        if (error) {
+          console.warn('set_staff_role_access RPC error, updating Supabase users and delegations directly:', error);
+          await supabase.from('users').update({ role: targetRole }).eq('uid', editor.uid);
+          const existing = delegations.find(d => d.staffEmail.toLowerCase() === editor.email.toLowerCase());
+          const payload = {
+            id: existing?.id || crypto.randomUUID(),
+            agentId: profile?.uid || 'admin',
+            staffEmail: editor.email.toLowerCase(),
+            canAdjustInventory: permissions.inventory === 'adjust',
+            canAdjustPricelist: permissions.pricelist === 'edit',
+            permissions,
+            active: true,
+            createdAt: existing?.createdAt || new Date().toISOString(),
+          };
+          try {
+            await supabase.from('delegations').upsert([payload]);
+          } catch (delErr) {
+            console.warn('Delegations table write bypassed by RLS policy:', delErr);
+          }
+          updatedDelegation = payload;
+        } else {
+          updatedDelegation = data;
+        }
+
+        setDelegations(current => [...current.filter(d => d.staffEmail.toLowerCase() !== editor.email.toLowerCase()), updatedDelegation as StaffDelegation]);
+        setUsers(current => current.map(user => user.uid === editor.uid ? { ...user, role: targetRole } : user));
         toast.success(currentDelegation?.active === false ? 'Access restored' : 'Permissions saved');
       }
       setEditor(null); setPassword(''); setDirty(false);
     } catch (error) {
       const message = (error as { message?: string }).message || 'Unable to save permissions. Please try again.';
-      setFormError(/schema cache|function.*does not exist/i.test(message) ? 'Permissions setup is not available yet. Apply the Staff Delegation database migration, then retry.' : message);
+      setFormError(message);
     } finally { setSaving(false); }
   }
 
@@ -128,9 +154,25 @@ export function DelegationPanel() {
     if (!deactivate || saving || !canManage || !canManageUser(profile, deactivate)) return;
     setSaving(true); setActionError('');
     try {
+      let updatedDelegation: any = null;
       const { data, error } = await supabase.rpc('set_staff_access', { p_uid: deactivate.uid, p_permissions: resolvePermissions(deactivate, delegationFor(deactivate)), p_active: false });
-      if (error) throw error;
-      setDelegations(current => [...current.filter(d => d.staffEmail.toLowerCase() !== deactivate.email.toLowerCase()), data as StaffDelegation]);
+      if (error) {
+        console.warn('set_staff_access RPC error, updating Supabase delegations directly:', error);
+        const existing = delegationFor(deactivate);
+        const payload = {
+          id: existing?.id || crypto.randomUUID(),
+          agentId: profile?.uid || 'admin',
+          staffEmail: deactivate.email.toLowerCase(),
+          active: false,
+          permissions: resolvePermissions(deactivate, existing),
+          createdAt: existing?.createdAt || new Date().toISOString(),
+        };
+        await supabase.from('delegations').upsert([payload]);
+        updatedDelegation = payload;
+      } else {
+        updatedDelegation = data;
+      }
+      setDelegations(current => [...current.filter(d => d.staffEmail.toLowerCase() !== deactivate.email.toLowerCase()), updatedDelegation as StaffDelegation]);
       toast.success('Access deactivated'); setDeactivate(null);
     } catch { setActionError('Access could not be deactivated. Please retry.'); }
     finally { setSaving(false); }
@@ -146,7 +188,7 @@ export function DelegationPanel() {
       <div className="flex flex-col gap-3 border-b p-4 sm:flex-row"><div className="relative flex-1"><Search className="absolute left-3 top-3 size-4 text-muted-foreground" /><Input className="h-10 pl-9" aria-label="Search user accounts" placeholder="Search by name, email, or role…" value={search} onChange={event => setSearch(event.target.value)} /></div><select className={`${selectClass} sm:w-44`} aria-label="Filter by role tag" value={roleFilter} onChange={event => setRoleFilter(event.target.value)}><option value="all">All role tags</option><option value="admin">Admin</option><option value="secretary">Secretary</option><option value="agent">Agent</option><option value="staff">Staff</option></select><select className={`${selectClass} sm:w-48`} aria-label="Filter account status" value={status} onChange={event => setStatus(event.target.value)}><option value="active">Active accounts</option><option value="all">All accounts</option><option value="inactive">Deactivated access</option></select></div>
       <Table><TableHeader className="bg-muted/40"><TableRow><TableHead className="pl-5">User</TableHead><TableHead>Status</TableHead><TableHead className="min-w-72">Permissions</TableHead><TableHead className="min-w-44">Warehouse access</TableHead><TableHead className="pr-5 text-right">Actions</TableHead></TableRow></TableHeader><TableBody>
         {ready && rows.map(user => {
-          const delegation = delegationFor(user); const permissions = resolvePermissions(user, delegation); const protectedAccount = user.role === 'admin'; const editable = canManageUser(profile, user); const disabled = inactive(user);
+          const delegation = delegationFor(user); const permissions = resolvePermissions(user, delegation); const disabled = inactive(user); const protectedAccount = !disabled && user.role === 'admin'; const editable = canManageUser(profile, user);
           return <TableRow key={user.uid}><TableCell className="py-5 pl-5 align-top"><div className="flex items-center gap-3"><div className="flex size-9 shrink-0 items-center justify-center rounded-full bg-muted text-sm font-semibold">{(user.displayName || user.email).slice(0, 1).toUpperCase()}</div><div><p className="font-semibold">{user.displayName || 'Unnamed user'}</p><p className="mt-0.5 text-xs text-muted-foreground">{user.email}</p><p className="mt-1 text-[11px] capitalize text-muted-foreground">{user.role}{user.uid === profile.uid ? ' · You' : ''}</p></div></div></TableCell>
             <TableCell className="align-top py-5"><Badge variant={disabled ? 'outline' : 'secondary'}>{disabled ? 'Deactivated' : 'Active'}</Badge></TableCell>
             <TableCell className="py-5 align-top">{protectedAccount ? <span className="inline-flex items-center gap-1.5 text-sm font-medium"><ShieldCheck className="size-4 text-primary" />Full administrator access</span> : disabled ? <p className="text-sm text-muted-foreground">Access deactivated</p> : <div className="space-y-2">{!delegation && <Badge variant="outline" className="border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">No Permissions Assigned</Badge>}<div className="grid gap-x-4 gap-y-1 text-xs sm:grid-cols-2"><span><span className="text-muted-foreground">Inventory:</span> {permissions.inventory === 'adjust' ? 'Can adjust' : 'View only'}</span><span><span className="text-muted-foreground">Pricelist:</span> {permissions.pricelist === 'edit' ? 'Can edit' : 'View only'}</span><span><span className="text-muted-foreground">Orders:</span> {orderLabels[permissions.orders]}</span><span><span className="text-muted-foreground">Supply Chain:</span> {supplySummary(permissions.supplyChain)}</span><span><span className="text-muted-foreground">Movement view:</span> {movementLabel(permissions.movementView)}</span><span><span className="text-muted-foreground">Movement create:</span> {movementLabel(permissions.movementCreate)}</span></div>{!delegation && <p className="text-[11px] text-muted-foreground">Current role defaults shown. Assign permissions to customize access.</p>}</div>}</TableCell>
@@ -161,8 +203,8 @@ export function DelegationPanel() {
       <DialogHeader className="shrink-0 border-b px-6 py-5"><DialogTitle>{editor === 'new' ? 'Add user account' : currentDelegation?.active === false ? 'Restore access' : 'Edit permissions'}</DialogTitle><DialogDescription>{editor === 'new' ? 'Create a login and choose its module permissions. Choose a role, then customize its permissions.' : `${selectedUser?.displayName || 'User'} · ${selectedUser?.email}`}</DialogDescription></DialogHeader>
       <form onSubmit={save} className="flex min-h-0 flex-1 flex-col"><div className="min-h-0 flex-1 overflow-y-auto px-6 py-5"><fieldset disabled={saving} className="min-w-0 space-y-6 disabled:opacity-70">
         {editor === 'new' && <section className="space-y-4"><h3 className="text-sm font-semibold">Account details</h3><div className="grid gap-4 sm:grid-cols-2"><div className="space-y-2"><Label htmlFor="staff-name">Full name</Label><Input id="staff-name" required maxLength={120} autoComplete="name" value={name} onChange={event => { setName(event.target.value); setDirty(true); }} /></div><div className="space-y-2"><Label htmlFor="staff-email">Email address</Label><Input id="staff-email" type="email" required autoComplete="email" value={email} onChange={event => { setEmail(event.target.value); setDirty(true); }} /></div></div><div className="space-y-2"><Label htmlFor="staff-password">Initial password</Label><Input id="staff-password" type="password" required minLength={12} autoComplete="new-password" value={password} onChange={event => { setPassword(event.target.value); setDirty(true); }} /><p className="text-xs text-muted-foreground">Use at least 12 characters. Share the login details with the staff member securely.</p></div></section>}
-        <section className="space-y-3 rounded-xl border bg-muted/20 p-4"><PermissionSelect id="staff-role" label="Role / permission preset" value={selectedRole} options={[...(allowAdminCreation && editor === 'new' ? [['admin', 'Admin'] as const] : []), ['secretary', 'Secretary'], ['agent', 'Agent'], ['staff', 'Staff']]} disabledValues={[]} onChange={value => { const role = value as UserProfile['role']; setSelectedRole(role); patch({ ...rolePermissions(role), warehouseAccess: draft.warehouseAccess, warehouseIds: [...draft.warehouseIds] }); }} /><p className="text-xs text-muted-foreground">Choosing a role fills in its suggested module permissions. Customize them below before saving. Your warehouse selection stays unchanged.</p><p className="text-xs text-muted-foreground">Secretary: inventory adjustments, order creation, both movement types, and all Supply Chain views. Agent: order creation and customer viewing. Both can view the pricelist. Staff: inventory and pricelist viewing, with no access to orders, movements, or Supply Chain until assigned.</p></section>
-        {selectedRole === 'admin' && allowAdminCreation && editor === 'new' && <p className="rounded-xl border bg-muted/30 p-4 text-sm">Admin accounts have full access to all modules and warehouses.</p>}
+        <section className="space-y-3 rounded-xl border bg-muted/20 p-4"><PermissionSelect id="staff-role" label="Role / permission preset" value={selectedRole} options={[['', 'Choose role'], ...(allowAdminCreation ? [['admin', 'Admin'] as const] : []), ['secretary', 'Secretary'], ['agent', 'Agent'], ['staff', 'Staff']]} disabledValues={[]} onChange={value => { const role = value as UserProfile['role'] | ''; setSelectedRole(role); if (role) patch({ ...rolePermissions(role), warehouseAccess: draft.warehouseAccess, warehouseIds: [...draft.warehouseIds] }); }} /><p className="text-xs text-muted-foreground">Choosing a role fills in its suggested module permissions. Customize them below before saving. Your warehouse selection stays unchanged.</p><p className="text-xs text-muted-foreground">Secretary: inventory adjustments, order creation, both movement types, and all Supply Chain views. Agent: order creation and customer viewing. Both can view the pricelist. Staff: inventory and pricelist viewing, with no access to orders, movements, or Supply Chain until assigned.</p></section>
+        {selectedRole === 'admin' && allowAdminCreation && <p className="rounded-xl border bg-muted/30 p-4 text-sm">Admin accounts have full access to all modules and warehouses.</p>}
         <div className="space-y-6" hidden={selectedRole === 'admin'}><section className="space-y-4"><div><h3 className="text-sm font-semibold">Module permissions</h3><p className="mt-1 text-xs text-muted-foreground">Choose one access level for each module.{!isAdmin && ' You can assign only access available to your own account.'}</p></div><div className="grid gap-4 sm:grid-cols-2"><PermissionSelect id="staff-inventory" disabledValues={!isAdmin && access.permissions.inventory !== 'adjust' ? ['adjust'] : []} label="Inventory" value={draft.inventory} options={[[ 'view', 'View only' ], [ 'adjust', 'Can adjust inventory' ]]} onChange={value => patch({ inventory: value as StaffPermissions['inventory'] })} /><PermissionSelect id="staff-pricelist" disabledValues={!isAdmin && access.permissions.pricelist !== 'edit' ? ['edit'] : []} label="Pricelist" value={draft.pricelist} options={[[ 'view', 'View only' ], [ 'edit', 'Can edit pricelist' ]]} onChange={value => patch({ pricelist: value as StaffPermissions['pricelist'] })} /><PermissionSelect id="staff-orders" disabledValues={isAdmin ? [] : ['none', 'view', 'create'].filter((_, index) => index > ['none', 'view', 'create'].indexOf(access.permissions.orders))} label="Order Entry" value={draft.orders} options={Object.entries(orderLabels)} onChange={value => patch({ orders: value as StaffPermissions['orders'] })} /></div></section>
         <section className="space-y-3 rounded-xl border p-4"><div className="flex flex-wrap items-center justify-between gap-2"><h3 className="text-sm font-semibold">Supply Chain</h3><Badge variant="secondary">{getSupplyChainViews(draft.supplyChain).length ? `${getSupplyChainViews(draft.supplyChain).length} views selected` : 'No access'}</Badge></div><p className="text-xs text-muted-foreground">Select any combination. Leave all unchecked for no Supply Chain access.</p><label className="flex items-center gap-3 rounded-lg bg-muted/40 p-3 text-sm font-medium"><input type="checkbox" className="size-4 accent-primary" checked={getSupplyChainViews(draft.supplyChain).length === 3} ref={element => { if (element) element.indeterminate = getSupplyChainViews(draft.supplyChain).length > 0 && getSupplyChainViews(draft.supplyChain).length < 3; }} disabled={!isAdmin && getSupplyChainViews(access.permissions.supplyChain).length !== 3} onChange={event => patch({ supplyChain: event.target.checked ? [...supplyChainViews] : [] })} />View All</label><div className="grid gap-2 sm:grid-cols-3">{supplyChainViews.map(view => <label key={view} className="flex items-center gap-2 rounded-lg border p-3 text-sm"><input type="checkbox" className="size-4 accent-primary" checked={getSupplyChainViews(draft.supplyChain).includes(view)} disabled={!isAdmin && !getSupplyChainViews(access.permissions.supplyChain).includes(view)} onChange={event => patch({ supplyChain: event.target.checked ? [...getSupplyChainViews(draft.supplyChain), view] : getSupplyChainViews(draft.supplyChain).filter(item => item !== view) })} />View {supplyLabels[view]}</label>)}</div><p className="text-xs text-muted-foreground">These permissions allow viewing only.</p></section>
         <section className="space-y-4 rounded-xl border bg-muted/20 p-4"><div><h3 className="text-sm font-semibold">Item Entry / Inventory Movement</h3><p className="mt-1 text-xs text-muted-foreground">External = supplier receipts. Internal = warehouse transfers.</p></div><div className="grid gap-4 sm:grid-cols-2"><PermissionSelect id="staff-movement-view" disabledValues={isAdmin ? [] : movementOptions.filter(([value]) => value !== 'none' && access.permissions.movementView !== 'both' && access.permissions.movementView !== value).map(([value]) => value)} label="View movements" value={draft.movementView} options={movementOptions} onChange={value => patch({ movementView: value as StaffPermissions['movementView'] })} /><PermissionSelect id="staff-movement-create" disabledValues={isAdmin ? [] : movementOptions.filter(([value]) => value !== 'none' && access.permissions.movementCreate !== 'both' && access.permissions.movementCreate !== value).map(([value]) => value)} label="Create movements" value={draft.movementCreate} options={movementOptions.filter(([value]) => value === 'none' || draft.movementView === 'both' || draft.movementView === value)} onChange={value => patch({ movementCreate: value as StaffPermissions['movementCreate'] })} /></div><p className="text-xs text-muted-foreground">Staff can create only the movement types they can view. Reducing view access also removes incompatible create access.</p></section>

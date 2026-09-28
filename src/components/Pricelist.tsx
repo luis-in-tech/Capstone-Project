@@ -272,7 +272,7 @@ function readSaved(): SavedPricelist[] { try { const data = JSON.parse(localStor
 export function Pricelist() {
   const { profile } = useAuth();
   const { permissions } = useStaffAccess();
-  const [products, setProducts] = useState<Product[]>([]), [warehouses, setWarehouses] = useState<Warehouse[]>([]), [saved, setSaved] = useState<SavedPricelist[]>(readSaved), [loading, setLoading] = useState(true);
+  const [products, setProducts] = useState<Product[]>([]), [warehouses, setWarehouses] = useState<Warehouse[]>([]), [inventory, setInventory] = useState<Array<{ productId: string; quantity: number }>>([]), [saved, setSaved] = useState<SavedPricelist[]>(readSaved), [loading, setLoading] = useState(true);
   const [search, setSearch] = useState(''), [dateFilter, setDateFilter] = useState('all'), [typeFilter, setTypeFilter] = useState('all'), [pdfFilter, setPdfFilter] = useState('all');
   const [from, setFrom] = useState(''), [to, setTo] = useState(''), [viewId, setViewId] = useState(''), [renameId, setRenameId] = useState(''), [rename, setRename] = useState('');
   const [createOpen, setCreateOpen] = useState(false), [name, setName] = useState(''), [productSearch, setProductSearch] = useState(''), [chosen, setChosen] = useState<Record<string, boolean>>({}), [delegated, setDelegated] = useState(false);
@@ -305,6 +305,10 @@ export function Pricelist() {
       setWarehouses(s.docs.map((d: { id: string; data: () => Record<string, unknown> }) => ({ id: d.id, ...d.data() } as Warehouse)));
     }, () => {});
 
+    const unsubInventory = onSnapshot(collection(db, 'inventory'), s => {
+      setInventory(s.docs.map((d: { data: () => Record<string, unknown> }) => ({ productId: String(d.data().productId || ''), quantity: Number(d.data().quantity || 0) })));
+    }, () => {});
+
     const unsubPricelists = onSnapshot(collection(db, 'pricelists'), s => {
       const dbLists = s.docs.map((d: { id: string; data: () => Record<string, unknown> }) => ({ id: d.id, ...d.data() } as SavedPricelist));
       if (dbLists.length > 0) {
@@ -322,9 +326,21 @@ export function Pricelist() {
     return () => {
       unsubProducts();
       unsubWarehouses();
+      unsubInventory();
       unsubPricelists();
     };
   }, []);
+
+  const stockMap = useMemo(() => {
+    const map: Record<string, number> = {};
+    for (const item of inventory) {
+      if (item.productId) {
+        map[item.productId] = (map[item.productId] || 0) + (item.quantity || 0);
+      }
+    }
+    return map;
+  }, [inventory]);
+
   const save = (next: SavedPricelist[]) => {
     setSaved(next);
     localStorage.setItem(KEY, JSON.stringify(next));
@@ -343,7 +359,33 @@ export function Pricelist() {
   const closeCreate = () => { setCreateOpen(false); setName(''); setProductSearch(''); setProductCategory('all'); setProductSupplier('all'); setChosen({}); setDefaultScheme('base'); setCategorySchemes({}); setItemOverrides({}); };
   const buildPricelist = (): SavedPricelist => ({ id: crypto.randomUUID(), name: name.trim(), createdAt: new Date().toISOString(), items: selectedProducts.map(x => { const priceType = effectiveScheme(x); return { productId: x.id, sku: x.sku, name: x.name, category: x.category || 'Uncategorized', priceType, price: price(x, priceType) }; }) });
   const create = (draft = false) => { if (!name.trim() || !selectedProducts.length) return; const p = buildPricelist(); save([p, ...saved]); closeCreate(); toast.success(draft ? `"${p.name}" saved as draft` : `"${p.name}" saved successfully`); };
-  const generatePdf = (target = view) => { if (!target) return; const rows = target.items.map(i => `<tr><td>${escapeHtml(i.sku)}</td><td>${escapeHtml(i.name)}</td><td>${escapeHtml(i.category)}</td><td>${schemeLabel(i.priceType)}</td><td>P${i.price.toLocaleString()}</td></tr>`).join(''); const w = window.open('', '_blank'); if (!w) return toast.error('Allow pop-ups to preview this pricelist PDF'); w.document.write(`<html><head><title>${escapeHtml(target.name)}</title><style>body{font-family:Arial;padding:32px}table{width:100%;border-collapse:collapse}th,td{padding:10px;border:1px solid #ddd;text-align:left}th{background:#111827;color:white}</style></head><body><h1>${escapeHtml(target.name)}</h1><p>Date Created: ${dateLabel(target.createdAt)}</p><table><thead><tr><th>SKU</th><th>Item Name</th><th>Category</th><th>Price Scheme</th><th>Price</th></tr></thead><tbody>${rows}</tbody></table></body></html>`); w.document.close(); save(saved.map(p => p.id === target.id ? { ...p, lastPdfGeneratedAt: new Date().toISOString() } : p)); };
+  const generatePdf = (target = view) => {
+    if (!target) return;
+    const groupedItems = target.items.reduce<Record<string, PricelistItem[]>>((g, item) => {
+      const cat = item.category || 'General Category';
+      (g[cat] ||= []).push(item);
+      return g;
+    }, {});
+
+    let tableRows = '';
+    for (const [cat, items] of Object.entries(groupedItems)) {
+      tableRows += `<tr style="background-color: #f1f5f9; font-weight: bold;"><td colspan="4" style="padding: 10px 12px; font-size: 14px; border: 1px solid #cbd5e1; color: #0f172a; text-transform: uppercase; letter-spacing: 0.5px;">${escapeHtml(cat)}</td></tr>`;
+      for (const i of items) {
+        tableRows += `<tr>
+          <td style="padding: 8px 12px; border: 1px solid #e2e8f0; font-family: monospace; font-size: 12px;">${escapeHtml(i.sku)}</td>
+          <td style="padding: 8px 12px; border: 1px solid #e2e8f0; font-weight: 600;">${escapeHtml(i.name)}</td>
+          <td style="padding: 8px 12px; border: 1px solid #e2e8f0; font-size: 12px; color: #475569;">${schemeLabel(i.priceType)}</td>
+          <td style="padding: 8px 12px; border: 1px solid #e2e8f0; text-align: right; font-weight: bold; color: #0f172a;">₱${i.price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+        </tr>`;
+      }
+    }
+
+    const w = window.open('', '_blank');
+    if (!w) return toast.error('Allow pop-ups to preview this pricelist PDF');
+    w.document.write(`<!DOCTYPE html><html><head><title>${escapeHtml(target.name)}</title><style>body{font-family:'Segoe UI',Roboto,sans-serif;padding:32px;color:#1e293b;max-width:900px;margin:0 auto}h1{margin-bottom:4px;font-size:24px;color:#0f172a}p{color:#64748b;font-size:13px;margin-top:0;margin-bottom:24px}table{width:100%;border-collapse:collapse;margin-top:16px}th{background:#0f172a;color:white;padding:10px 12px;text-align:left;font-size:12px;text-transform:uppercase;letter-spacing:0.5px}td{font-size:13px}</style></head><body><h1>${escapeHtml(target.name)}</h1><p>Date Created: ${dateLabel(target.createdAt)}</p><table><thead><tr><th>SKU</th><th>Item Name</th><th>Price Scheme</th><th style="text-align:right;">Price</th></tr></thead><tbody>${tableRows}</tbody></table></body></html>`);
+    w.document.close();
+    save(saved.map(p => p.id === target.id ? { ...p, lastPdfGeneratedAt: new Date().toISOString() } : p));
+  };
   const doRename = () => { if (!rename.trim()) return; save(saved.map(p => p.id === renameId ? { ...p, name: rename.trim(), updatedAt: new Date().toISOString() } : p)); setRenameId(''); toast.success('Pricelist renamed'); };
   const remove = (p: SavedPricelist) => { if (window.confirm(`Delete "${p.name}"? This action cannot be undone.`)) { save(saved.filter(x => x.id !== p.id)); deleteDoc(doc(db, 'pricelists', p.id)).catch(() => {}); toast.success('Pricelist deleted'); } };
 
@@ -529,7 +571,7 @@ export function Pricelist() {
 
       <div className="overflow-x-auto rounded-2xl border"><Table><TableHeader><TableRow><TableHead className="w-12"/><TableHead>Name</TableHead><TableHead>Type</TableHead><TableHead>Items</TableHead><TableHead>Date Created</TableHead><TableHead>Last PDF Generated</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader><TableBody>{filtered.map(p => <TableRow key={p.id}><TableCell><input type="checkbox" checked={selectedPdfId === p.id} onChange={e => setSelectedPdfId(e.target.checked ? p.id : '')}/></TableCell><TableCell><span className="flex items-center gap-2 font-bold"><FileText className="h-5 w-5"/>{p.name}</span></TableCell><TableCell>{listType(p)}</TableCell><TableCell>{p.items.length}</TableCell><TableCell>{dateLabel(p.createdAt)}</TableCell><TableCell>{dateLabel(p.lastPdfGeneratedAt)}</TableCell><TableCell><div className="flex justify-end gap-2"><Icon title="View" onClick={() => setViewId(p.id)}><Eye/></Icon>{canEdit && <><Icon title="Rename" onClick={() => { setRenameId(p.id); setRename(p.name); }}><Pencil/></Icon><Icon title="Delete" danger onClick={() => remove(p)}><Trash2/></Icon></>}</div></TableCell></TableRow>)}{!filtered.length && <TableRow><TableCell colSpan={7} className="h-40 text-center text-muted-foreground">No saved pricelists match the selected filters.</TableCell></TableRow>}</TableBody></Table></div>
 
-      <Dialog open={!!view} onOpenChange={o => !o && setViewId('')}><DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-5xl"><DialogHeader><DialogTitle>{view?.name}</DialogTitle><DialogDescription>{view && `${view.items.length} items - Created ${dateLabel(view.createdAt)}`}</DialogDescription></DialogHeader><Items items={view?.items || []}/><DialogFooter><Button variant="outline" onClick={() => setViewId('')}>Close</Button><Button onClick={() => generatePdf()}><Download className="mr-2 h-4 w-4"/>Generate PDF</Button></DialogFooter></DialogContent></Dialog>
+      <Dialog open={!!view} onOpenChange={o => !o && setViewId('')}><DialogContent className="max-h-[94vh] w-[96vw] max-w-[96vw] overflow-y-auto sm:!max-w-[96vw] lg:!max-w-[96vw]"><DialogHeader><DialogTitle>{view?.name}</DialogTitle><DialogDescription>{view && `${view.items.length} items - Created ${dateLabel(view.createdAt)}`}</DialogDescription></DialogHeader><Items items={view?.items || []} stockMap={stockMap}/><DialogFooter><Button variant="outline" onClick={() => setViewId('')}>Close</Button><Button onClick={() => generatePdf()}><Download className="mr-2 h-4 w-4"/>Generate PDF</Button></DialogFooter></DialogContent></Dialog>
 
       <Dialog open={!!renameId && canEdit} onOpenChange={o => !o && setRenameId('')}><DialogContent><DialogHeader><DialogTitle>Rename Pricelist</DialogTitle></DialogHeader><Label>Pricelist Name</Label><Input value={rename} onChange={e => setRename(e.target.value)}/><DialogFooter><Button variant="outline" onClick={() => setRenameId('')}>Cancel</Button><Button onClick={doRename}>Rename</Button></DialogFooter></DialogContent></Dialog>
 
@@ -677,32 +719,106 @@ export function Pricelist() {
         </DialogContent>
       </Dialog>
 
-      <Builder open={createOpen && canEdit} close={closeCreate} name={name} setName={setName} products={products} choices={choices} chosen={chosen} setChosen={setChosen} search={productSearch} setSearch={setProductSearch} category={productCategory} setCategory={setProductCategory} supplier={productSupplier} setSupplier={setProductSupplier} grouped={grouped} defaultScheme={defaultScheme} setDefaultScheme={setDefaultScheme} categorySchemes={categorySchemes} setCategorySchemes={setCategorySchemes} itemOverrides={itemOverrides} setItemOverrides={setItemOverrides} saveDraft={() => create(true)} savePricelist={() => create(false)} preview={() => generatePdf(buildPricelist())}/>
+      <Builder open={createOpen && canEdit} close={closeCreate} name={name} setName={setName} products={products} choices={choices} chosen={chosen} setChosen={setChosen} search={productSearch} setSearch={setProductSearch} category={productCategory} setCategory={setProductCategory} supplier={productSupplier} setSupplier={setProductSupplier} grouped={grouped} defaultScheme={defaultScheme} setDefaultScheme={setDefaultScheme} categorySchemes={categorySchemes} setCategorySchemes={setCategorySchemes} itemOverrides={itemOverrides} setItemOverrides={setItemOverrides} saveDraft={() => create(true)} savePricelist={() => create(false)} preview={() => generatePdf(buildPricelist())} stockMap={stockMap}/>
     </div>
   );
 }
 
 type Setter<T> = React.Dispatch<React.SetStateAction<T>>;
-interface BuilderProps { open:boolean; close:()=>void; name:string; setName:(v:string)=>void; products:Product[]; choices:Product[]; chosen:Record<string,boolean>; setChosen:Setter<Record<string,boolean>>; search:string; setSearch:(v:string)=>void; category:string; setCategory:(v:string)=>void; supplier:string; setSupplier:(v:string)=>void; grouped:Record<string,Product[]>; defaultScheme:PriceType; setDefaultScheme:(v:PriceType)=>void; categorySchemes:Record<string,PriceType>; setCategorySchemes:Setter<Record<string,PriceType>>; itemOverrides:Record<string,PriceType>; setItemOverrides:Setter<Record<string,PriceType>>; saveDraft:()=>void; savePricelist:()=>void; preview:()=>void; }
+interface BuilderProps { open:boolean; close:()=>void; name:string; setName:(v:string)=>void; products:Product[]; choices:Product[]; chosen:Record<string,boolean>; setChosen:Setter<Record<string,boolean>>; search:string; setSearch:(v:string)=>void; category:string; setCategory:(v:string)=>void; supplier:string; setSupplier:(v:string)=>void; grouped:Record<string,Product[]>; defaultScheme:PriceType; setDefaultScheme:(v:PriceType)=>void; categorySchemes:Record<string,PriceType>; setCategorySchemes:Setter<Record<string,PriceType>>; itemOverrides:Record<string,PriceType>; setItemOverrides:Setter<Record<string,PriceType>>; saveDraft:()=>void; savePricelist:()=>void; preview:()=>void; stockMap:Record<string,number>; }
 function Builder(p: BuilderProps) {
+  const [newCatName, setNewCatName] = useState('');
+  const [showAddCategory, setShowAddCategory] = useState(false);
   const categories = [...new Set(p.products.map(x => x.category || 'Uncategorized'))].sort(), suppliers = [...new Set(p.products.map(x => x.supplier).filter(Boolean) as string[])].sort();
   const count = Object.keys(p.chosen).length, ready = !!p.name.trim() && count > 0;
   const selectedProducts = p.products.filter(x => p.chosen[x.id]);
   const removeItem = (id:string) => { p.setChosen(c => { const n={...c}; delete n[id]; return n; }); p.setItemOverrides(o => { const n={...o}; delete n[id]; return n; }); };
-  return <Dialog open={p.open} onOpenChange={o => !o && p.close()}><DialogContent className="max-h-[94vh] w-[94vw] max-w-[94vw] overflow-y-auto p-0 sm:!max-w-[94vw] lg:!max-w-6xl">
-    <div className="sticky top-0 z-20 flex flex-col justify-between gap-4 border-b bg-background px-6 py-4 lg:flex-row lg:items-center"><div><DialogTitle>Create Pricelist</DialogTitle><DialogDescription>Build a new pricelist from your Inventory products.</DialogDescription></div><Steps/></div>
-    <div className="space-y-5 px-6"><section className="rounded-xl border p-4"><h3 className="mb-4 text-sm font-bold">Pricelist Information</h3><div className="grid gap-4 md:grid-cols-2"><div><Label>Pricelist Name</Label><Input className="mt-2" value={p.name} onChange={e => p.setName(e.target.value)} placeholder="Enter pricelist name"/></div><div><Label>Default Price Scheme</Label><Scheme value={p.defaultScheme} promo={count > 0 && selectedProducts.every(x => x.promoPrice != null)} onChange={p.setDefaultScheme}/><p className="mt-1 text-xs text-muted-foreground">Applies to all products unless overridden per category or item.</p></div></div></section>
-    <section id="add-pricelist-products" className="rounded-xl border p-4"><div className="mb-4 flex justify-between"><h3 className="text-sm font-bold">Add Products</h3><Button size="sm" onClick={() => p.setChosen(c => { const n={...c}; p.choices.forEach(x => n[x.id]=true); return n; })}><Plus className="mr-2 h-4 w-4"/>{count ? 'Add More Products' : 'Add Products'}</Button></div><div className="grid gap-3 md:grid-cols-3"><div className="relative"><Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2"/><Input className="pl-9" placeholder="Search by name, SKU..." value={p.search} onChange={e => p.setSearch(e.target.value)}/></div><SimpleSelect value={p.category} onChange={p.setCategory} label="All Categories" values={categories}/><SimpleSelect value={p.supplier} onChange={p.setSupplier} label="All Suppliers" values={suppliers}/></div><div className="mt-3 max-h-40 overflow-y-auto rounded-lg border"><Table><TableBody>{p.choices.map(x => <TableRow key={x.id}><TableCell className="w-12"><input type="checkbox" checked={!!p.chosen[x.id]} onChange={e => e.target.checked ? p.setChosen(c => ({...c,[x.id]:true})) : removeItem(x.id)}/></TableCell><TableCell className="font-mono text-xs">{x.sku}</TableCell><TableCell className="font-medium">{x.name}</TableCell><TableCell>{x.category || 'Uncategorized'}</TableCell></TableRow>)}</TableBody></Table></div></section>
-    <div className="flex flex-wrap justify-between gap-3"><div><b className="text-sm">Selected Products <span className="rounded-full bg-muted px-2 py-1 text-xs">{count} items</span></b><p className="mt-1 text-xs text-muted-foreground">Prices are read-only and retrieved from Inventory / Product Pricing.</p></div><div className="flex gap-2"><Button variant="ghost" size="sm" disabled={!count} onClick={() => {p.setChosen({});p.setCategorySchemes({});p.setItemOverrides({});}}><Trash2 className="mr-2 h-4 w-4"/>Remove All</Button><Button variant="outline" size="sm" disabled={!count} onClick={() => {p.setCategorySchemes({});p.setItemOverrides({});}}><RotateCcw className="mr-2 h-4 w-4"/>Apply Default to All</Button></div></div>
-    {Object.entries(p.grouped).map(([category,items]) => { const cs=p.categorySchemes[category]??p.defaultScheme, mixed=items.some(x => p.itemOverrides[x.id]!=null && p.itemOverrides[x.id]!==cs); return <section key={category} className="overflow-hidden rounded-xl border"><div className="flex flex-col justify-between gap-3 border-b bg-muted/30 px-4 py-3 md:flex-row md:items-center"><b>{category} <span className="text-xs font-normal text-muted-foreground">{items.length} items</span></b><div className="flex flex-wrap items-center gap-2"><Label className="text-xs">Category Price Scheme</Label><Scheme value={cs} display={mixed?'Mixed Price Scheme':undefined} promo={items.every(x=>x.promoPrice!=null)} onChange={v=>p.setCategorySchemes(s=>({...s,[category]:v}))}/>{p.categorySchemes[category]&&<Button variant="ghost" size="icon" title="Reset Category Override" aria-label={`Reset price scheme for ${category}`} onClick={()=>p.setCategorySchemes(s=>{const n={...s};delete n[category];return n;})}><RotateCcw className="h-4 w-4"/></Button>}</div></div><div className="overflow-x-auto"><Table><TableHeader><TableRow><TableHead>SKU</TableHead><TableHead>Item Name</TableHead><TableHead>Supplier</TableHead><TableHead>Price Scheme</TableHead><TableHead className="text-right">Price</TableHead><TableHead/></TableRow></TableHeader><TableBody>{items.map(x=>{const s=p.itemOverrides[x.id]??cs;return <TableRow key={x.id}><TableCell className="font-mono text-xs">{x.sku}</TableCell><TableCell className="font-medium">{x.name}</TableCell><TableCell>{x.supplier||'---'}</TableCell><TableCell><div className="flex items-center gap-1"><Scheme value={s} promo={x.promoPrice!=null} onChange={v=>p.setItemOverrides(o=>({...o,[x.id]:v}))}/>{p.itemOverrides[x.id]&&<Button variant="ghost" size="icon" title="Reset Item Override" onClick={()=>p.setItemOverrides(o=>{const n={...o};delete n[x.id];return n;})}><RotateCcw className="h-4 w-4"/></Button>}</div></TableCell><TableCell className="text-right font-bold">P{price(x,s).toLocaleString()}</TableCell><TableCell><Button variant="ghost" size="icon" title="Remove from pricelist" onClick={()=>removeItem(x.id)}><X className="h-4 w-4"/></Button></TableCell></TableRow>})}</TableBody></Table></div></section>})}
+
+  const handleAddCategory = () => {
+    if (!newCatName.trim()) return;
+    p.setCategory(newCatName.trim());
+    setNewCatName('');
+    setShowAddCategory(false);
+    toast.success(`Category group filter set to "${newCatName.trim()}"`);
+  };
+
+  return <Dialog open={p.open} onOpenChange={o => !o && p.close()}><DialogContent className="max-h-[96vh] w-[96vw] max-w-[96vw] overflow-y-auto p-0 sm:!max-w-[96vw] lg:!max-w-[96vw]">
+    <div className="sticky top-0 z-20 flex flex-col justify-between gap-4 border-b bg-background px-6 py-4 lg:flex-row lg:items-center"><div><DialogTitle>Pricelist Builder</DialogTitle><DialogDescription>Build a new pricelist grouped by categories with stock verification.</DialogDescription></div><Steps/></div>
+    <div className="space-y-5 px-6 py-4"><section className="rounded-xl border p-4"><h3 className="mb-4 text-sm font-bold">Pricelist Information</h3><div className="grid gap-4 md:grid-cols-2"><div><Label>Pricelist Name</Label><Input className="mt-2" value={p.name} onChange={e => p.setName(e.target.value)} placeholder="Enter pricelist name"/></div><div><Label>Default / Master Price Scheme</Label><Scheme value={p.defaultScheme} promo={count > 0 && selectedProducts.every(x => x.promoPrice != null)} onChange={p.setDefaultScheme}/><p className="mt-1 text-xs text-muted-foreground">Applies to all products unless overridden per category or item.</p></div></div></section>
+    <section id="add-pricelist-products" className="rounded-xl border p-4"><div className="mb-4 flex flex-wrap items-center justify-between gap-2"><h3 className="text-sm font-bold">Add Products</h3><div className="flex gap-2"><Button size="sm" variant="outline" onClick={() => p.setChosen(c => { const n = { ...c }; p.products.forEach(x => n[x.id] = true); return n; })}><Check className="mr-1.5 h-4 w-4"/>Select All Products</Button><Button size="sm" variant="outline" onClick={() => setShowAddCategory(!showAddCategory)}><Plus className="mr-1.5 h-4 w-4"/>Category</Button><Button size="sm" onClick={() => p.setChosen(c => { const n={...c}; p.choices.forEach(x => n[x.id]=true); return n; })}><Plus className="mr-2 h-4 w-4"/>{count ? 'Add More Products' : 'Add Products'}</Button></div></div>
+    {showAddCategory && (
+      <div className="mb-4 flex items-center gap-2 rounded-lg border bg-muted/30 p-3"><Input placeholder="Type category group header name..." value={newCatName} onChange={e => setNewCatName(e.target.value)} className="h-9 text-sm" /><Button size="sm" onClick={handleAddCategory}>Set Category</Button><Button size="sm" variant="ghost" onClick={() => setShowAddCategory(false)}>Cancel</Button></div>
+    )}
+    <div className="grid gap-3 md:grid-cols-3"><div className="relative"><Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2"/><Input className="pl-9" placeholder="Search product name, SKU..." value={p.search} onChange={e => p.setSearch(e.target.value)}/></div><SimpleSelect value={p.category} onChange={p.setCategory} label="All Categories" values={categories}/><SimpleSelect value={p.supplier} onChange={p.setSupplier} label="All Suppliers" values={suppliers}/></div><div className="mt-3 max-h-40 overflow-y-auto rounded-lg border"><Table><TableHeader><TableRow><TableHead className="w-12"><input type="checkbox" title="Select All Filtered Products" checked={p.choices.length > 0 && p.choices.every(x => !!p.chosen[x.id])} onChange={e => { const checked = e.target.checked; p.setChosen(c => { const n = { ...c }; p.choices.forEach(x => { if (checked) n[x.id] = true; else delete n[x.id]; }); return n; }); }} /></TableHead><TableHead>SKU</TableHead><TableHead>Product Name</TableHead><TableHead>Category</TableHead></TableRow></TableHeader><TableBody>{p.choices.map(x => <TableRow key={x.id}><TableCell className="w-12"><input type="checkbox" checked={!!p.chosen[x.id]} onChange={e => e.target.checked ? p.setChosen(c => ({...c,[x.id]:true})) : removeItem(x.id)}/></TableCell><TableCell className="font-mono text-xs">{x.sku}</TableCell><TableCell className="font-medium">{x.name}</TableCell><TableCell>{x.category || 'Uncategorized'}</TableCell></TableRow>)}</TableBody></Table></div></section>
+    <div className="flex flex-wrap justify-between gap-3"><div><b className="text-sm">Selected Products <span className="rounded-full bg-muted px-2 py-1 text-xs">{count} items</span></b><p className="mt-1 text-xs text-muted-foreground">Warehouse stock quantities are synced for double checking stock count before export.</p></div><div className="flex gap-2"><Button variant="ghost" size="sm" disabled={!count} onClick={() => {p.setChosen({});p.setCategorySchemes({});p.setItemOverrides({});}}><Trash2 className="mr-2 h-4 w-4"/>Remove All</Button><Button variant="outline" size="sm" disabled={!count} onClick={() => {p.setCategorySchemes({});p.setItemOverrides({});}}><RotateCcw className="mr-2 h-4 w-4"/>Apply Default to All</Button></div></div>
+    {Object.entries(p.grouped).map(([category,items]) => { const cs=p.categorySchemes[category]??p.defaultScheme, mixed=items.some(x => p.itemOverrides[x.id]!=null && p.itemOverrides[x.id]!==cs); return <section key={category} className="overflow-hidden rounded-xl border mb-4"><div className="flex flex-col justify-between gap-3 border-b bg-muted/40 px-4 py-3 md:flex-row md:items-center"><b className="text-sm uppercase tracking-wider text-primary">{category} <span className="text-xs font-normal text-muted-foreground">({items.length} items)</span></b><div className="flex flex-wrap items-center gap-2"><Label className="text-xs font-semibold">Category Price Scheme:</Label><Scheme value={cs} display={mixed?'Mixed Price Scheme':undefined} promo={items.every(x=>x.promoPrice!=null)} onChange={v=>p.setCategorySchemes(s=>({...s,[category]:v}))}/>{p.categorySchemes[category]&&<Button variant="ghost" size="icon" title="Reset Category Override" aria-label={`Reset price scheme for ${category}`} onClick={()=>p.setCategorySchemes(s=>{const n={...s};delete n[category];return n;})}><RotateCcw className="h-4 w-4"/></Button>}</div></div><div className="overflow-x-auto"><Table><TableHeader><TableRow><TableHead>SKU</TableHead><TableHead>Item Name</TableHead><TableHead className="text-center">Qty (Warehouse Sync)</TableHead><TableHead>Price Scheme</TableHead><TableHead className="text-right">Price</TableHead><TableHead/></TableRow></TableHeader><TableBody>{items.map(x=>{const s=p.itemOverrides[x.id]??cs; const stock = p.stockMap[x.id] ?? 0; return <TableRow key={x.id}><TableCell className="font-mono text-xs">{x.sku}</TableCell><TableCell className="font-medium">{x.name}</TableCell><TableCell className="text-center"><Badge variant={stock > 0 ? "secondary" : "outline"} className={stock === 0 ? "text-amber-600 border-amber-300" : ""}>{stock} in stock</Badge></TableCell><TableCell><div className="flex items-center gap-1"><Scheme value={s} promo={x.promoPrice!=null} onChange={v=>p.setItemOverrides(o=>({...o,[x.id]:v}))}/>{p.itemOverrides[x.id]&&<Button variant="ghost" size="icon" title="Reset Item Override" onClick={()=>p.setItemOverrides(o=>{const n={...o};delete n[x.id];return n;})}><RotateCcw className="h-4 w-4"/></Button>}</div></TableCell><TableCell className="text-right font-bold text-sm">₱{price(x,s).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</TableCell><TableCell><Button variant="ghost" size="icon" title="Remove from pricelist" onClick={()=>removeItem(x.id)}><X className="h-4 w-4"/></Button></TableCell></TableRow>})}</TableBody></Table></div></section>})}
     {!count&&<div className="rounded-xl border border-dashed py-12 text-center text-sm text-muted-foreground">Select products above to configure their price schemes.</div>}</div>
-    <DialogFooter className="sticky bottom-0 z-20 border-t bg-background px-6 py-4"><Button variant="outline" onClick={p.close}>Cancel</Button><Button variant="outline" disabled={!ready} onClick={p.saveDraft}>Save Draft</Button><Button disabled={!ready} onClick={p.savePricelist}>Save Pricelist</Button><Button disabled={!ready} onClick={p.preview}><Eye className="mr-2 h-4 w-4"/>Preview PDF</Button></DialogFooter>
+    <DialogFooter className="sticky bottom-0 z-20 flex-col sm:flex-row sm:items-center sm:justify-between border-t bg-background px-6 py-4 gap-3"><div className="flex items-center gap-3"><Label className="text-xs font-bold shrink-0">Master Price Toggle:</Label><Scheme value={p.defaultScheme} promo={count > 0 && selectedProducts.every(x => x.promoPrice != null)} onChange={p.setDefaultScheme}/></div><div className="flex gap-2"><Button variant="outline" onClick={p.close}>Cancel</Button><Button variant="outline" disabled={!ready} onClick={p.saveDraft}>Save Draft</Button><Button disabled={!ready} onClick={p.savePricelist}>Save Pricelist</Button><Button disabled={!ready} onClick={p.preview}><Eye className="mr-2 h-4 w-4"/>Preview PDF</Button></div></DialogFooter>
   </DialogContent></Dialog>;
 }
 function Steps(){return <div className="flex items-center gap-2 text-xs"><span className="flex items-center gap-2"><i className="grid h-6 w-6 place-items-center rounded-full bg-primary text-primary-foreground"><Check className="h-3 w-3"/></i>Add Products</span><i className="h-px w-7 bg-border"/><span className="flex items-center gap-2 font-bold"><i className="grid h-6 w-6 place-items-center rounded-full bg-primary text-primary-foreground">2</i>Configure and Review</span><i className="h-px w-7 bg-border"/><span className="flex items-center gap-2 text-muted-foreground"><i className="grid h-6 w-6 place-items-center rounded-full bg-muted">3</i>Preview PDF</span></div>}
-function Scheme({value,onChange,promo=false,display}:{value:PriceType;onChange:(v:PriceType)=>void;promo?:boolean;display?:string}){const values:PriceType[]=['base','metroManila','provincial',...(promo?['promo' as PriceType]:[])];return <Select value={value} onValueChange={v=>v&&onChange(v as PriceType)}><SelectTrigger className="mt-2 w-52"><SelectValue>{display||schemeLabel(value)}</SelectValue></SelectTrigger><SelectContent>{values.map(v=><SelectItem key={v} value={v}>{schemeLabel(v)}</SelectItem>)}</SelectContent></Select>}
+function Scheme({value,onChange,promo=false,display}:{value:PriceType;onChange:(v:PriceType)=>void;promo?:boolean;display?:string}){const values:PriceType[]=['base','metroManila','provincial',...(promo?['promo' as PriceType]:[])];return <Select value={value} onValueChange={v=>v&&onChange(v as PriceType)}><SelectTrigger className="mt-1 w-48"><SelectValue>{display||schemeLabel(value)}</SelectValue></SelectTrigger><SelectContent>{values.map(v=><SelectItem key={v} value={v}>{schemeLabel(v)}</SelectItem>)}</SelectContent></Select>}
 function SimpleSelect({value,onChange,label,values}:{value:string;onChange:(v:string)=>void;label:string;values:string[]}){return <Select value={value} onValueChange={v=>v&&onChange(v)}><SelectTrigger><SelectValue>{value==='all'?label:value}</SelectValue></SelectTrigger><SelectContent><SelectItem value="all">{label}</SelectItem>{values.map(v=><SelectItem key={v} value={v}>{v}</SelectItem>)}</SelectContent></Select>}
 function Filter({label,value,set,options}:{label:string;value:string;set:(v:string)=>void;options:string[][]}){return <div><Label className="text-xs">{label}</Label><Select value={value} onValueChange={v=>v&&set(v)}><SelectTrigger className="mt-1"><SelectValue>{options.find(x=>x[0]===value)?.[1]}</SelectValue></SelectTrigger><SelectContent>{options.map(([v,l])=><SelectItem key={v} value={v}>{l}</SelectItem>)}</SelectContent></Select></div>}
 function Field({label,value,set}:{label:string;value:string;set:(v:string)=>void}){return <div><Label>{label}</Label><Input type="date" value={value} onChange={e=>set(e.target.value)}/></div>}
 function Icon({title,onClick,danger,children}:{title:string;onClick:()=>void;danger?:boolean;children:React.ReactElement}){return <Button variant="outline" size="icon" title={title} onClick={onClick} className={danger?'text-destructive':''}>{React.cloneElement(children,{className:'h-4 w-4'} as React.HTMLAttributes<HTMLElement>)}</Button>}
-function Items({items}:{items:PricelistItem[]}){return <div className="overflow-x-auto rounded-xl border"><Table><TableHeader><TableRow><TableHead>SKU</TableHead><TableHead>Item Name</TableHead><TableHead>Category</TableHead><TableHead>Price Scheme</TableHead><TableHead className="text-right">Price</TableHead></TableRow></TableHeader><TableBody>{items.map((i,idx)=><TableRow key={`${i.productId}-${idx}`}><TableCell>{i.sku}</TableCell><TableCell>{i.name}</TableCell><TableCell>{i.category}</TableCell><TableCell>{schemeLabel(i.priceType)}</TableCell><TableCell className="text-right font-bold">P{i.price.toLocaleString()}</TableCell></TableRow>)}</TableBody></Table></div>}
+
+function Items({ items, stockMap = {} }: { items: PricelistItem[]; stockMap?: Record<string, number> }) {
+  const grouped = useMemo(() => {
+    return items.reduce<Record<string, PricelistItem[]>>((g, item) => {
+      const cat = item.category || 'General Category';
+      (g[cat] ||= []).push(item);
+      return g;
+    }, {});
+  }, [items]);
+
+  return (
+    <div className="overflow-x-auto rounded-xl border">
+      <Table>
+        <TableHeader>
+          <TableRow className="bg-muted/50">
+            <TableHead>SKU</TableHead>
+            <TableHead>Item Name</TableHead>
+            <TableHead className="text-center">Qty (Warehouse Sync)</TableHead>
+            <TableHead>Price Scheme</TableHead>
+            <TableHead className="text-right">Price</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {Object.entries(grouped).map(([category, catItems]) => (
+            <React.Fragment key={category}>
+              <TableRow className="bg-muted/40 font-bold border-t border-b">
+                <TableCell colSpan={5} className="py-2.5 px-4 text-sm font-bold uppercase tracking-wider text-primary">
+                  {category} <span className="text-xs font-normal text-muted-foreground ml-2">({catItems.length} items)</span>
+                </TableCell>
+              </TableRow>
+              {catItems.map((i, idx) => {
+                const stock = stockMap[i.productId] ?? 0;
+                return (
+                  <TableRow key={`${i.productId}-${idx}`}>
+                    <TableCell className="font-mono text-xs">{i.sku}</TableCell>
+                    <TableCell className="font-medium">{i.name}</TableCell>
+                    <TableCell className="text-center">
+                      <Badge variant={stock > 0 ? "secondary" : "outline"} className={stock === 0 ? "text-amber-600 border-amber-300" : ""}>
+                        {stock} in stock
+                      </Badge>
+                    </TableCell>
+                    <TableCell>{schemeLabel(i.priceType)}</TableCell>
+                    <TableCell className="text-right font-bold text-sm">₱{i.price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</TableCell>
+                  </TableRow>
+                );
+              })}
+            </React.Fragment>
+          ))}
+          {!items.length && (
+            <TableRow>
+              <TableCell colSpan={5} className="h-32 text-center text-muted-foreground">
+                No items in this pricelist.
+              </TableCell>
+            </TableRow>
+          )}
+        </TableBody>
+      </Table>
+    </div>
+  );
+}

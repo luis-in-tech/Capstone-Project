@@ -6,7 +6,7 @@ export function getSupplyChainViews(value: StaffPermissions['supplyChain']): Sup
 }
 export const hasAdminRole = (profile: UserProfile | null) => profile?.role === 'admin';
 export function canManageUser(actor: UserProfile | null, target: UserProfile) {
-  return hasAdminRole(actor) && actor?.uid !== target.uid && target.role !== 'admin';
+  return hasAdminRole(actor) && actor?.uid !== target.uid;
 }
 
 export const defaultPermissions: StaffPermissions = {
@@ -27,8 +27,8 @@ export function normalizePermissions(value: StaffPermissions): StaffPermissions 
   return { ...value, supplyChain: getSupplyChainViews(value.supplyChain), movementCreate, warehouseIds: value.warehouseAccess === 'all' ? [] : [...new Set(value.warehouseIds)] };
 }
 export function resolvePermissions(profile: UserProfile | null, delegation?: StaffDelegation): StaffPermissions {
-  if (profile?.role === 'admin') return { ...defaultPermissions, inventory: 'adjust', pricelist: 'edit', orders: 'create', movementView: 'both', movementCreate: 'both', supplyChain: [...supplyChainViews] };
   if (delegation?.active === false) return { ...defaultPermissions, warehouseAccess: 'selected' };
+  if (profile?.role === 'admin') return { ...defaultPermissions, inventory: 'adjust', pricelist: 'edit', orders: 'create', movementView: 'both', movementCreate: 'both', supplyChain: [...supplyChainViews] };
   if (delegation?.permissions) return normalizePermissions(delegation.permissions);
   return { ...defaultPermissions, inventory: delegation?.canAdjustInventory ? 'adjust' : 'view', pricelist: delegation?.canAdjustPricelist ? 'edit' : 'view',
     orders: profile?.role === 'staff' ? 'none' : 'create', movementView: profile?.role === 'secretary' ? 'both' : 'none', movementCreate: profile?.role === 'secretary' ? 'both' : 'none' };
@@ -50,4 +50,4 @@ export function permissionsWithin(permissions: StaffPermissions, limits: StaffPe
     && (limits.warehouseAccess === 'all' || (permissions.warehouseAccess === 'selected' && permissions.warehouseIds.every(id => limits.warehouseIds.includes(id))));
 }
 
-export const canCreateAdmin = (profile: UserProfile | null) => profile?.role === 'admin' && profile.email.trim().toLowerCase() === 'admin@example.com';
+export const canCreateAdmin = (profile: UserProfile | null) => profile?.role === 'admin';

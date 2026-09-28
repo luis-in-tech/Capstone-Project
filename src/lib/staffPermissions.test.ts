@@ -110,10 +110,10 @@ test('warehouse selections are deduplicated and cleared for all-warehouse access
   assert.deepEqual(normalizePermissions({ ...defaultPermissions, warehouseIds: ['main'] }).warehouseIds, []);
 });
 
-test('only the designated admin email can create another admin', () => {
+test('any admin account can create or assign an admin role', () => {
   assert.equal(canCreateAdmin({ ...staff, role: 'admin', email: 'admin@example.com' }), true);
-  assert.equal(canCreateAdmin({ ...staff, role: 'admin', email: ' ADMIN@example.com ' }), true);
-  assert.equal(canCreateAdmin({ ...staff, role: 'admin', email: 'other@example.com' }), false);
+  assert.equal(canCreateAdmin({ ...staff, role: 'admin', email: 'ADMIN@example.com' }), true);
+  assert.equal(canCreateAdmin({ ...staff, role: 'admin', email: 'other@example.com' }), true);
   assert.equal(canCreateAdmin({ ...staff, role: 'agent', email: 'admin@example.com' }), false);
   assert.equal(canCreateAdmin(null), false);
 });

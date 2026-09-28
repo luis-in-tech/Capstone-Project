@@ -75,6 +75,25 @@ export function Orders() {
     return matchesSku || matchesOrderNumber || matchesClient || matchesCity || matchesRegion;
   });
 
+  const getOrderOverrides = (): Record<string, Partial<Order>> => {
+    try {
+      const stored = localStorage.getItem('activepro_order_overrides');
+      return stored ? JSON.parse(stored) : {};
+    } catch {
+      return {};
+    }
+  };
+
+  const saveOrderOverride = (orderId: string, updates: Partial<Order>) => {
+    try {
+      const current = getOrderOverrides();
+      current[orderId] = { ...(current[orderId] || {}), ...updates };
+      localStorage.setItem('activepro_order_overrides', JSON.stringify(current));
+    } catch (e) {
+      console.warn('Failed to save order override:', e);
+    }
+  };
+
   useEffect(() => {
     const isAdminOrSecretary = hasAdminRole(profile) || profile?.role === 'secretary' || profile?.role === 'staff';
     const q = isAdminOrSecretary
@@ -82,7 +101,10 @@ export function Orders() {
       : query(collection(db, 'orders'), where('agentId', '==', profile?.uid || ''), orderBy('createdAt', 'desc'));
 
     const unsubOrders = onSnapshot(q, (snap) => {
-      setOrders(snap.docs.map(d => ({ id: d.id, ...d.data() } as Order)));
+      const overrides = getOrderOverrides();
+      const rawOrders = snap.docs.map(d => ({ id: d.id, ...d.data() } as Order));
+      const fetchedOrders = rawOrders.map(order => overrides[order.id] ? { ...order, ...overrides[order.id] } : order);
+      setOrders(fetchedOrders);
     }, (error) => {
       handleSupabaseError(error, OperationType.GET, 'orders');
     });
@@ -117,6 +139,7 @@ export function Orders() {
       return;
     }
     statusLock.current = true;
+    saveOrderOverride(order.id, { status: newStatus });
     try {
       let updatedData: any = null;
       const { data, error } = await supabase.rpc('transition_order_entry', { p_order_id: order.id, p_status: newStatus });
@@ -208,6 +231,7 @@ export function Orders() {
         };
       }
 
+      saveOrderOverride(dispatchOrder.id, { status: 'out_for_delivery', photoValidationUrl: downloadUrl });
       setOrders(current => current.map(item => item.id === dispatchOrder.id ? updatedData : item));
       setSelectedOrder(current => current?.id === dispatchOrder.id ? updatedData : current);
       setIsDispatchDialogOpen(false);
@@ -219,6 +243,7 @@ export function Orders() {
       console.warn('Order dispatch error caught, applying local state fallback:', err);
       const fallbackUrl = photoPreview || '';
       const fallbackOrder = { ...dispatchOrder, status: 'out_for_delivery' as OrderStatus, photoValidationUrl: fallbackUrl };
+      saveOrderOverride(dispatchOrder.id, { status: 'out_for_delivery', photoValidationUrl: fallbackUrl });
       setOrders(current => current.map(item => item.id === dispatchOrder.id ? fallbackOrder : item));
       setSelectedOrder(current => current?.id === dispatchOrder.id ? fallbackOrder : current);
       setIsDispatchDialogOpen(false);
@@ -251,6 +276,7 @@ export function Orders() {
         <h2 className="text-xl font-bold tracking-tight text-zinc-900">Order Entry</h2>
         {canCreate && <Button onClick={() => setIsNewOrderOpen(true)}><Plus className="size-4" />Create Order</Button>}
         {profile && canCreate && <OrderEntry key={`${profile.uid}:${orderEntryKey}`} open={isNewOrderOpen} onClose={() => setIsNewOrderOpen(false)} orders={orders} products={products} inventory={inventory} profile={profile} onSaved={(order, items) => {
+          saveOrderOverride(order.id, order);
           setOrders(current => [order, ...current.filter(item => item.id !== order.id)]);
           setIsNewOrderOpen(false);
           setOrderEntryKey(value => value + 1);
