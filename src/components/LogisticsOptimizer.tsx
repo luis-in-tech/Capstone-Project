@@ -573,7 +573,7 @@ export function LogisticsOptimizer() {
 
       {/* Main 3 Core Feature Tabs */}
       <Tabs value={activeTab} onValueChange={v => setActiveTab(v as any)} className="w-full space-y-4">
-        <TabsList variant="line" className="w-full justify-start gap-2 overflow-x-auto border-b border-border p-0 sm:gap-6">
+        <TabsList variant="line" className="w-full justify-start gap-2 border-b border-border p-0 sm:gap-6">
           <TabsTrigger value="consolidation" className="flex-none rounded-none px-4 py-4 text-sm after:bottom-0 data-active:font-semibold">Routes</TabsTrigger>
           <TabsTrigger value="load_balancing" className="flex-none rounded-none px-4 py-4 text-sm after:bottom-0 data-active:font-semibold">
             Warehouse balance
