@@ -1,3 +1,4 @@
+import { SearchBar } from '@/components/ui/search-bar';
 import { hasAdminRole, permitsMovement } from '../lib/staffPermissions';
 import { useStaffAccess } from '../hooks/useStaffAccess';
 import React, { useState, useEffect } from 'react';
@@ -12,7 +13,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Card, CardContent } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
-import { Search, Plus, QrCode, Package, Warehouse as WarehouseIcon, AlertTriangle, Eye, CircleDollarSign, SlidersHorizontal, Tag, Pencil, Trash2, ImagePlus, X, Download, Upload, FileSpreadsheet, FileText, BarChart3, Info } from 'lucide-react';
+import { Plus, QrCode, Package, Warehouse as WarehouseIcon, AlertTriangle, Eye, CircleDollarSign, SlidersHorizontal, Tag, Pencil, Trash2, ImagePlus, X, Download, Upload, FileSpreadsheet, FileText, BarChart3, Info } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useAuth } from '../hooks/useAuth';
@@ -730,8 +731,7 @@ export function Inventory() {
         <CardContent className="p-0">
           <div className="border-b border-border p-4">
             <div className="relative max-w-xl">
-              <Search className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-              <Input value={searchTerm} onChange={(event) => setSearchTerm(event.target.value)} placeholder="Search products, SKU, category, or supplier..." className="h-11 rounded-xl bg-background pl-10" />
+              <SearchBar value={searchTerm} onValueChange={setSearchTerm} placeholder="Search products, SKU, category, or supplier..." className="h-11 rounded-xl bg-background pl-10" />
             </div>
           </div>
           <div className="grid grid-cols-1 gap-3 p-4 sm:grid-cols-2 xl:grid-cols-[1fr_1fr_1fr_1fr_auto] xl:items-end">

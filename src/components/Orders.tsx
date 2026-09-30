@@ -1,3 +1,4 @@
+import { SearchBar } from '@/components/ui/search-bar';
 import { previousOrderStatus } from '../lib/orderStatus';
 import { hasAdminRole } from '../lib/staffPermissions';
 import { useStaffAccess } from '../hooks/useStaffAccess';
@@ -7,7 +8,6 @@ import { collection, onSnapshot, query, orderBy, where, getDocs } from '../lib/s
 import { Order, OrderStatus, Product, InventoryItem, OrderItem } from '../types';
 import { handleSupabaseError, OperationType } from '../lib/supabaseErrorHandler';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
@@ -648,23 +648,12 @@ export function Orders() {
       </div >
 
       <div className="flex items-center gap-2 bg-card p-3 border border-border rounded-xl">
-        <ShoppingCart className="w-4 h-4 text-zinc-400 ml-1" />
-        <Input
+        <SearchBar
           placeholder="Search order number, customer, or SKU…"
           className="h-8 text-xs border-none shadow-none focus-visible:ring-0"
           value={searchQuery}
-          onChange={e => setSearchQuery(e.target.value)}
+          onValueChange={setSearchQuery}
         />
-        {searchQuery && (
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-6 px-2 text-[10px] font-bold uppercase text-zinc-400"
-            onClick={() => setSearchQuery('')}
-          >
-            Clear
-          </Button>
-        )}
       </div>
 
       {/* Mobile Card View */}

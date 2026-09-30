@@ -1,3 +1,4 @@
+import { SearchBar } from '@/components/ui/search-bar';
 import React, { useEffect, useRef, useState } from "react";
 import {
   Camera,
@@ -479,12 +480,12 @@ export function OrderEntry({
                           <ChevronDown className="size-4 shrink-0" />
                         </PopoverTrigger>
                         <PopoverContent className="w-80 p-2" align="start">
-                          <Input
+                          <SearchBar
                             autoFocus
                             aria-label="Search customers"
                             placeholder="Search customer name…"
                             value={customerSearch}
-                            onChange={(e) => setCustomerSearch(e.target.value)}
+                            onValueChange={setCustomerSearch}
                           />
                           <div className="mt-2 max-h-60 overflow-y-auto space-y-1">
                             {customerSearch.trim() && (
@@ -663,13 +664,12 @@ export function OrderEntry({
                 {mode === "select" ? (
                   <>
                     <div className="relative">
-                      <Search className="absolute left-3 top-3 size-4 text-muted-foreground" />
-                      <Input
+                      <SearchBar
                         className="pl-9"
                         aria-label="Search products by name or SKU"
                         placeholder="Search product name or SKU…"
                         value={search}
-                        onChange={(e) => setSearch(e.target.value)}
+                        onValueChange={setSearch}
                       />
                     </div>
                     <div className="max-h-[380px] overflow-y-auto rounded-xl border divide-y">

@@ -1,6 +1,7 @@
+import { SearchBar } from '@/components/ui/search-bar';
 import { useEffect, useState } from 'react';
 import { WarehouseFloorplan } from './WarehouseFloorplan';
-import { ArrowLeft, Grid2X2, Info, Loader2, Package, Search, Warehouse as WarehouseIcon } from 'lucide-react';
+import { ArrowLeft, Grid2X2, Info, Loader2, Package, Warehouse as WarehouseIcon } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -159,7 +160,7 @@ export function WarehouseLayout({ warehouses, products, inventory }: { warehouse
         {unassignedCard()}
       </aside>
       <section className="min-w-0 overflow-hidden rounded-2xl border bg-card lg:col-span-3">
-        <div className="space-y-4 border-b p-5"><div><h3 className="break-words text-lg font-bold">{selectedZone ? `Products Recorded in ${selectedZone.name}` : 'Unassigned Stock'}</h3><p className="mt-1 text-sm text-muted-foreground">{selectedZone ? 'View recorded inventory. Manage stock through inventory allocation or Inventory Movement.' : 'Stock that has not yet been allocated to a zone.'}</p></div><div className="relative"><Search className="absolute left-3 top-3 size-4 text-muted-foreground" /><Input aria-label="Search zone products" placeholder="Search SKU, item, category or supplier..." value={search} onChange={e => setSearch(e.target.value)} className="pl-9" /></div></div>
+        <div className="space-y-4 border-b p-5"><div><h3 className="break-words text-lg font-bold">{selectedZone ? `Products Recorded in ${selectedZone.name}` : 'Unassigned Stock'}</h3><p className="mt-1 text-sm text-muted-foreground">{selectedZone ? 'View recorded inventory. Manage stock through inventory allocation or Inventory Movement.' : 'Stock that has not yet been allocated to a zone.'}</p></div><div className="relative"><SearchBar aria-label="Search zone products" placeholder="Search SKU, item, category or supplier..." value={search} onValueChange={setSearch} className="pl-9" /></div></div>
         <Table><TableHeader className="bg-muted/40"><TableRow><TableHead>SKU</TableHead><TableHead>Item Name</TableHead><TableHead>Category</TableHead><TableHead>Supplier</TableHead><TableHead className="text-right">{selectedZone ? 'Stock Qty in Zone' : 'Unassigned Qty'}</TableHead></TableRow></TableHeader><TableBody>{rows.map(p => <TableRow key={p.id}><TableCell className="text-xs font-medium">{p.sku}</TableCell><TableCell className="font-medium">{p.name}</TableCell><TableCell>{p.category || '—'}</TableCell><TableCell>{p.supplier || '—'}</TableCell><TableCell className="text-right font-semibold tabular-nums">{count(p.id, selected).toLocaleString()}</TableCell></TableRow>)}</TableBody></Table>
         {!rows.length && <div className="p-12 text-center"><Package className="mx-auto mb-3 size-8 text-muted-foreground/50" /><p className="font-medium">{search ? 'No matching products' : 'No stock recorded here yet'}</p><p className="mt-1 text-sm text-muted-foreground">{search ? 'Try another SKU or item name.' : 'Products appear here when stock is allocated to this location.'}</p></div>}
         <div className="border-t bg-muted/20 px-5 py-3 text-xs text-muted-foreground">{rows.length} products shown · Quantities are included in the existing warehouse total.</div>

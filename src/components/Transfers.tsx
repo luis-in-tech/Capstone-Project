@@ -1,3 +1,4 @@
+import { SearchBar } from '@/components/ui/search-bar';
 import { hasAdminRole } from '../lib/staffPermissions';
 import React, { useState, useEffect } from 'react';
 import { useStaffAccess } from '../hooks/useStaffAccess';
@@ -13,7 +14,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter, DialogDescription } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Truck, ArrowRightLeft, Clock, CheckCircle2, History, Plus, X, Search, AlertTriangle, XCircle, Ban, SlidersHorizontal, User, ShieldAlert, FileText } from 'lucide-react';
+import { Truck, ArrowRightLeft, Clock, CheckCircle2, History, Plus, X, AlertTriangle, XCircle, Ban, SlidersHorizontal, User, ShieldAlert, FileText } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { useAuth } from '../hooks/useAuth';
 import { toast } from 'sonner';
@@ -494,21 +495,12 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
         <CardContent className="p-3 sm:p-4">
           <div className="flex flex-col md:flex-row gap-3 items-stretch md:items-center justify-between">
             <div className="relative flex-1">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-              <Input
+              <SearchBar
                 placeholder="Search by Movement ID, Product, Driver, Plate..."
                 value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
+                onValueChange={setSearchTerm}
                 className="pl-9 h-9 text-xs"
               />
-              {searchTerm && (
-                <button
-                  onClick={() => setSearchTerm('')}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                >
-                  <X className="w-3.5 h-3.5" />
-                </button>
-              )}
             </div>
 
             <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
