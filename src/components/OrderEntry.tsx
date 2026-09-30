@@ -336,7 +336,7 @@ export function OrderEntry({
     setSaveError("");
     stopCamera();
     try {
-      const { data, error } = await supabase.rpc("create_order_entry", {
+      const { data, error } = await supabase.rpc("create_order_entry_with_customer_details", {
         p_request_id: requestId,
         p_order: {
           customerSourceId: customer?.id || orders.find((o) => o.clientName?.toLowerCase() === customerName.trim().toLowerCase())?.id,
