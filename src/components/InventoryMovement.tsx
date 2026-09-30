@@ -3,6 +3,7 @@ import { useStaffAccess } from '../hooks/useStaffAccess';
 import { permitsMovement } from '../lib/staffPermissions';
 import { useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
+import { CITraceabilityRecord } from './CITraceabilityRecord';
 import { ReceiptBatchLabels } from './ReceiptBatchLabels';
 import { receiptDateToday } from '../lib/receiptBatches';
 import { ArrowDownToLine, ArrowRight, ArrowRightLeft, Check, CheckCircle2, ChevronLeft, Clock3, Eye, History, Loader2, Package, Plus, Search, Trash2, UserRound } from 'lucide-react';
@@ -70,7 +71,7 @@ export function InventoryMovement() {
   const [referenceErrors, setReferenceErrors] = useState<Record<string, string>>({});
   const [loadedReferences, setLoadedReferences] = useState<string[]>([]);
   const [reload, setReload] = useState(0);
-  const [search, setSearch] = useState('');
+  const [search, setSearch] = useState(() => searchParams.get('q') || '');
   const [typeFilter, setTypeFilter] = useState('all');
   const [warehouseFilter, setWarehouseFilter] = useState('all');
   const [supplierFilter, setSupplierFilter] = useState('all');
@@ -88,11 +89,6 @@ export function InventoryMovement() {
   const canManage = permissions.movementCreate !== 'none';
   const ready = loadedReferences.length === 4 && !Object.keys(referenceErrors).length;
 
-  useEffect(() => {
-    if (!batchId || loading || loadError) return;
-    const receipt = movements.find(m => m.items.some(item => item.batchId === batchId));
-    if (receipt) setSelected(receipt);
-  }, [batchId, movements, loading, loadError]);
 
   function closeReceipt() {
     setSelected(null);
@@ -226,15 +222,28 @@ export function InventoryMovement() {
         setOpen(false); setSelected(saved);
         toast.success(`${saved.movementNumber} confirmed`, { description: external ? 'Inventory received.' : 'Stock moved.' });
       } else {
-        setFormError(external && /function|schema cache/i.test(message) ? 'Receipt batch setup is required. Apply the receipt batch database migration, then retry. No receipt has been confirmed.' : message || 'Unable to confirm movement. Please try again.');
+        setFormError(external && /function|schema cache/i.test(message) ? 'CI Traceability is currently unavailable. Contact your administrator, then retry. No receipt has been confirmed.' : message || 'Unable to confirm movement. Please try again.');
       }
     } finally { savingRef.current = false; setSaving(false); }
   }
 
+  if (batchId) {
+    const receipt = movements.find(m => m.type === 'external' && m.items.some(item => item.batchId === batchId));
+    const item = receipt?.items.find(item => item.batchId === batchId);
+    if (receipt && item) return <CITraceabilityRecord movement={receipt} item={item} product={products.find(p => p.id === item.productId)} onBack={closeReceipt} onReceipt={() => {
+      const next = new URLSearchParams(searchParams); next.delete('batch'); setSearchParams(next);
+      setSelected(receipt);
+    }} />;
+    return <section className="space-y-4 rounded-xl border bg-white p-6 text-slate-900">
+      <h1 className="text-2xl font-bold">CI Traceability Record</h1>
+      {loading ? <p role="status" className="flex items-center gap-2"><Loader2 className="size-4 animate-spin" />Loading receiving record...</p> : <p role="alert">{loadError ? 'The CI Traceability Record could not be loaded. Please try again.' : 'This CI Traceability Record was not found or you do not have access to it.'}</p>}
+      <div className="flex gap-2"><Button variant="outline" onClick={closeReceipt}>Back to Item Entry</Button>{loadError && <Button onClick={() => setReload(value => value + 1)}>Retry</Button>}</div>
+    </section>;
+  }
+
   return <div className="space-y-6">
-    {batchId && !loading && !loadError && !movements.some(m => m.items.some(item => item.batchId === batchId)) && <p role="alert" className="rounded-lg border p-4">Receipt batch not found or you do not have access to it.</p>}
     <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-      <div><h1 className="text-2xl font-bold tracking-tight">Inventory Movement</h1><p className="mt-1 text-sm text-muted-foreground">Receive supplier purchases and move stock between your warehouses.</p></div>
+      <div><h1 className="text-2xl font-bold tracking-tight">Item Entry</h1><p className="mt-1 text-sm text-muted-foreground">Receive supplier purchases and move stock between your warehouses.</p></div>
       {canManage && <Button onClick={startMovement} disabled={!ready} className="h-11 rounded-xl px-5"><Plus className="size-4" /> New Movement</Button>}
     </div>
 
@@ -250,7 +259,7 @@ export function InventoryMovement() {
     {legacy ? <div className="space-y-4"><div className="rounded-xl border bg-muted/40 p-4 text-sm"><p className="font-semibold">Earlier transport records</p><p className="mt-1 text-muted-foreground">View and complete transport requests created before Inventory Movement. Their original IDs and statuses are preserved.</p></div><Transfers historyOnly /></div> : <>
       {(loadError || Object.keys(referenceErrors).length > 0) && <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm"><span>{loadError || Object.values(referenceErrors).join(' ')}</span><Button variant="outline" size="sm" onClick={() => setReload(value => value + 1)}>Retry</Button></div>}
       <div className="overflow-hidden rounded-xl border bg-card">
-        <div className="space-y-4 border-b p-4"><div className="relative"><Search className="absolute left-3 top-3 size-4 text-muted-foreground" /><Input aria-label="Search movements" className="h-10 pl-9" placeholder="Search movement ID, product, SKU, supplier, or invoice…" value={search} onChange={event => setSearch(event.target.value)} /></div>
+        <div className="space-y-4 border-b p-4"><div className="relative"><Search className="absolute left-3 top-3 size-4 text-muted-foreground" /><Input aria-label="Search movements" className="h-10 pl-9" placeholder="Search CI code, movement, product, SKU, supplier, or invoice…" value={search} onChange={event => setSearch(event.target.value)} /></div>
           <div className="grid items-end gap-3 sm:grid-cols-2 lg:grid-cols-[1fr_1fr_1fr_1fr_auto]">
             <Choice id="filter-type" label="Movement type" value={typeFilter} onChange={setTypeFilter} options={[{ id: 'all', name: 'All types' }, { id: 'external', name: 'External receipt' }, { id: 'internal', name: 'Internal transfer' }]} />
             <Choice id="filter-warehouse" label="Warehouse" value={warehouseFilter} onChange={setWarehouseFilter} options={[{ id: 'all', name: 'All warehouses' }, ...warehouses]} />
@@ -284,7 +293,7 @@ export function InventoryMovement() {
                   {external ? <Choice id="movement-supplier" label="Supplier *" value={draft.supplierId} onChange={supplierId => updateDraft({ supplierId })} options={suppliers} placeholder="Select supplier" /> : <Choice id="movement-source" label="Source warehouse *" value={draft.sourceWarehouseId} onChange={sourceWarehouseId => updateDraft({ sourceWarehouseId })} options={activeWarehouses} placeholder="Select source" />}
                   <Choice id="movement-destination" label={external ? 'Receiving warehouse *' : 'Destination warehouse *'} value={draft.destinationWarehouseId} onChange={destinationWarehouseId => updateDraft({ destinationWarehouseId })} options={activeWarehouses.filter(warehouse => external || warehouse.id !== draft.sourceWarehouseId)} placeholder={external ? 'Select receiving warehouse' : 'Select destination'} />
                   {zonesReady && <>{!external && <Choice id="movement-source-zone" label="Source zone (optional)" value={draft.sourceZoneId || 'unassigned'} onChange={sourceZoneId => updateDraft({ sourceZoneId: sourceZoneId === 'unassigned' ? '' : sourceZoneId })} options={zoneOptions(draft.sourceWarehouseId)} />}<Choice id="movement-destination-zone" label="Destination zone (optional)" value={draft.destinationZoneId || 'unassigned'} onChange={destinationZoneId => updateDraft({ destinationZoneId: destinationZoneId === 'unassigned' ? '' : destinationZoneId })} options={zoneOptions(draft.destinationWarehouseId)} /></>}
-                  {external && <div className="space-y-2 sm:col-span-2"><Label htmlFor="receipt-date">Received date *</Label><Input id="receipt-date" type="date" required max={receiptDateToday()} value={draft.receivedDate || ''} onChange={event => updateDraft({ receivedDate: event.target.value })} /><p className="text-xs text-muted-foreground">Batch sequence resets per product on this date.</p></div>}
+                  {external && <div className="space-y-2 sm:col-span-2"><Label htmlFor="receipt-date">Received date *</Label><Input id="receipt-date" type="date" required max={receiptDateToday()} value={draft.receivedDate || ''} onChange={event => updateDraft({ receivedDate: event.target.value })} /><p className="text-xs text-muted-foreground">This date appears on the CI Traceability label for each received batch.</p></div>}
                   {external ? <div className="space-y-2 sm:col-span-2"><Label htmlFor="movement-invoice" className="text-xs font-semibold">Invoice number *</Label><Input id="movement-invoice" placeholder="e.g. INV-2026-001" value={draft.invoiceNumber} onChange={event => updateDraft({ invoiceNumber: event.target.value })} /></div> : <><div className="space-y-2"><Label htmlFor="movement-driver" className="text-xs font-semibold">Driver name <span className="font-normal text-muted-foreground">(optional)</span></Label><Input id="movement-driver" placeholder="Driver's full name" value={draft.driverName} onChange={event => updateDraft({ driverName: event.target.value })} /></div><div className="space-y-2"><Label htmlFor="movement-plate" className="text-xs font-semibold">Vehicle plate <span className="font-normal text-muted-foreground">(optional)</span></Label><Input id="movement-plate" placeholder="e.g. ABC 1234" value={draft.vehiclePlate} onChange={event => updateDraft({ vehiclePlate: event.target.value.toUpperCase() })} /></div></>}
                 </div>{external && !suppliers.length && <p className="text-xs text-amber-700">Add a supplier in Inventory before recording a receipt.</p>}</section>
                 <section className="space-y-3"><div className="flex items-center justify-between"><h3 className="text-sm font-semibold">02 / Products & quantities</h3><span className="text-xs text-muted-foreground">{draft.items.length} selected</span></div>

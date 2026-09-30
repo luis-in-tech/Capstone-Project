@@ -37,7 +37,7 @@ const navigation = [
   { name: 'Inventory', href: '/inventory', icon: Package, roles: ['admin', 'secretary', 'agent', 'staff'] },
   { name: 'Supply Chain', href: '/supply-chain', icon: Building2, roles: ['admin', 'secretary', 'agent', 'staff'] },
   { name: 'Order Entry', href: '/orders', icon: ShoppingCart, roles: ['admin', 'secretary', 'agent', 'staff'] },
-  { name: 'Inventory Movement', href: '/transfers', icon: Truck, roles: ['admin', 'secretary', 'agent', 'staff'] },
+  { name: 'Item Entry', href: '/transfers', icon: Truck, roles: ['admin', 'secretary', 'agent', 'staff'] },
   { name: 'Financials', href: '/finance', icon: DollarSign, roles: ['admin'] },
   { name: 'Logistics Optimizer', href: '/logistics', icon: Activity, roles: ['admin', 'secretary'] },
   { name: 'Pricelist', href: '/pricelist', icon: Tag, roles: ['admin', 'secretary', 'agent', 'staff'] },

@@ -11,7 +11,6 @@ interface AuthContextType {
   loading: boolean;
   signIn: () => Promise<void>;
   signInWithEmail: (email: string, password: string) => Promise<void>;
-  signUpWithEmail: (email: string, password: string) => Promise<void>;
   resetPassword: (email: string) => Promise<void>;
   logout: () => Promise<void>;
   updateRole: (role: 'admin' | 'secretary' | 'agent') => Promise<void>;
@@ -148,17 +147,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  const signUpWithEmail = async (email: string, password: string) => {
-    try {
-      const { error } = await supabase.auth.signUp({ email, password });
-      if (error) throw error;
-      toast.success('Account created successfully');
-    } catch (error: any) {
-      console.error("Email sign-up error:", error);
-      toast.error('Registration failed', { description: error.message });
-    }
-  };
-
   const resetPassword = async (email: string) => {
     try {
       const { error } = await supabase.auth.resetPasswordForEmail(email);
@@ -218,7 +206,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <AuthContext.Provider value={{ 
-      user, profile, loading, signIn, signInWithEmail, signUpWithEmail, resetPassword, logout, updateRole, updateProfileData 
+      user, profile, loading, signIn, signInWithEmail, resetPassword, logout, updateRole, updateProfileData
     }}>
       {children}
     </AuthContext.Provider>

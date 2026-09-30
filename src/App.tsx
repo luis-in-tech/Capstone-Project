@@ -101,7 +101,7 @@ function AppContent() {
 
       {/* Auth routes — redirect to respective landing page if already logged in */}
       <Route path="/login" element={user ? <Navigate to={loginDestination} replace /> : <Auth />} />
-      <Route path="/signup" element={user ? <Navigate to={defaultPath} replace /> : <Auth />} />
+      <Route path="/signup" element={<Navigate to={user ? defaultPath : '/login'} replace />} />
 
       {/* Public informational pages — kept accessible without login */}
       <Route path="/about" element={<About />} />

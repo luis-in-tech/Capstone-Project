@@ -1,3 +1,4 @@
+import { previousOrderStatus } from '../lib/orderStatus';
 import { hasAdminRole } from '../lib/staffPermissions';
 import { useStaffAccess } from '../hooks/useStaffAccess';
 import React, { useState, useEffect, useRef } from 'react';
@@ -11,6 +12,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
 import {
+  Undo2,
   ShoppingCart,
   Plus,
   Clock,
@@ -62,6 +64,7 @@ export function Orders() {
   const [receiptOrder, setReceiptOrder] = useState<ReceiptOrder | null>(null);
   const [receiptItems, setReceiptItems] = useState<ReceiptItem[]>([]);
   const statusLock = useRef(false);
+  const [isReverting, setIsReverting] = useState(false);
 
   const [activeTab, setActiveTab] = useState<'items' | 'history'>('items');
 
@@ -139,17 +142,22 @@ export function Orders() {
       return;
     }
     statusLock.current = true;
-    saveOrderOverride(order.id, { status: newStatus });
+    const statusHistory = [...(order.statusHistory || [])];
+    if (statusHistory.at(-1)?.status !== order.status) {
+      statusHistory.push({ status: order.status, changedBy: profile?.uid || '', timestamp: new Date().toISOString() });
+    }
+    statusHistory.push({ status: newStatus, changedBy: profile?.uid || '', timestamp: new Date().toISOString() });
+    saveOrderOverride(order.id, { status: newStatus, statusHistory });
     try {
       let updatedData: any = null;
       const { data, error } = await supabase.rpc('transition_order_entry', { p_order_id: order.id, p_status: newStatus });
       if (error) {
         console.warn('Supabase transition_order_entry RPC error, falling back to client adapter:', error);
         const { updateDoc, doc } = await import('../lib/supabaseAdapter');
-        await updateDoc(doc(db, 'orders', order.id), { status: newStatus });
-        updatedData = { ...order, status: newStatus };
+        await updateDoc(doc(db, 'orders', order.id), { status: newStatus, statusHistory });
+        updatedData = { ...order, status: newStatus, statusHistory };
       } else {
-        updatedData = data || { ...order, status: newStatus };
+        updatedData = data || { ...order, status: newStatus, statusHistory };
       }
       setOrders(current => current.map(item => item.id === order.id ? updatedData : item));
       setSelectedOrder(current => current?.id === order.id ? updatedData : current);
@@ -158,13 +166,54 @@ export function Orders() {
       });
     } catch (error: any) {
       console.warn('Order update error caught, applying local state fallback:', error);
-      const fallbackOrder = { ...order, status: newStatus };
+      const fallbackOrder = { ...order, status: newStatus, statusHistory };
       setOrders(current => current.map(item => item.id === order.id ? fallbackOrder : item));
       setSelectedOrder(current => current?.id === order.id ? fallbackOrder : current);
       toast.success(`Order ${order.orderNumber}: ${newStatus.replaceAll('_', ' ')}`, {
         description: ['cancelled', 'escalated'].includes(newStatus) ? 'Status updated successfully.' : undefined,
       });
     } finally { statusLock.current = false; }
+  };
+
+  const revertOrderStatus = async (order: Order) => {
+    const target = previousOrderStatus(order);
+    if (!canCreate || !target || statusLock.current) return;
+    if (!window.confirm(`Revert order ${order.orderNumber} to ${target.replaceAll('_', ' ')}?`)) return;
+    statusLock.current = true;
+    setIsReverting(true);
+    try {
+      const { data, error } = await supabase.rpc('transition_order_entry', {
+        p_order_id: order.id,
+        p_status: target,
+        ...(target === 'out_for_delivery' && order.photoValidationUrl
+          ? { p_photo_url: order.photoValidationUrl } : {}),
+      });
+      if (error) throw error;
+      if (!data || data.id !== order.id || data.status !== target) {
+        throw new Error('The reverted status could not be confirmed. Refresh the order before retrying.');
+      }
+      saveOrderOverride(order.id, { status: data.status, statusHistory: data.statusHistory });
+      setOrders(current => current.map(item => item.id === order.id ? data : item));
+      setSelectedOrder(current => current?.id === order.id ? data : current);
+      toast.success(`Order reverted to ${target.replaceAll('_', ' ')}`);
+    } catch (error: any) {
+      toast.error('Unable to revert order', { description: error?.message || 'Please try again.' });
+    } finally {
+      statusLock.current = false;
+      setIsReverting(false);
+    }
+  };
+
+  const revertButton = (order: Order) => {
+    const target = previousOrderStatus(order);
+    return canCreate && target ? (
+      <Button size="icon" variant="outline" disabled={isReverting}
+        onClick={() => revertOrderStatus(order)}
+        aria-label={`Revert to ${target.replaceAll('_', ' ')}`}
+        title={`Revert to ${target.replaceAll('_', ' ')}`}>
+        <Undo2 className="w-3 h-3" />
+      </Button>
+    ) : null;
   };
 
   const handleViewDetails = async (order: Order) => {
@@ -450,6 +499,7 @@ export function Orders() {
                     </div>
                   )}
 
+                  {selectedOrder && revertButton(selectedOrder)}
                   {selectedOrder && canManageOrders && !['delivered', 'completed', 'cancelled', 'escalated'].includes(selectedOrder.status) && (
                     <div className="pt-4 border-t border-border flex items-center justify-end gap-2">
                       <Button
@@ -655,6 +705,7 @@ export function Orders() {
                 <Button size="icon" variant="ghost" className="h-7 w-7 text-muted-foreground hover:text-foreground" onClick={() => handleViewDetails(order)} title="View Details">
                   <Eye className="w-4 h-4" />
                 </Button>
+                {revertButton(order)}
                 {canManageOrders && (
                   <>
                     {order.status === 'pending' && (
@@ -783,6 +834,7 @@ export function Orders() {
                       >
                         <Eye className="w-4 h-4" />
                       </Button>
+                      {revertButton(order)}
                       {canManageOrders && (
                         <>
                           {order.status === 'pending' && (

@@ -1,4 +1,4 @@
-import { hasAdminRole } from '../lib/staffPermissions';
+import { hasAdminRole, permitsMovement } from '../lib/staffPermissions';
 import { useStaffAccess } from '../hooks/useStaffAccess';
 import React, { useState, useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
@@ -10,10 +10,9 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Card, CardContent } from '@/components/ui/card';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter, DialogDescription } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
-import { Search, Plus, QrCode, Package, Warehouse as WarehouseIcon, AlertTriangle, Eye, CircleDollarSign, SlidersHorizontal, Tag, Pencil, Trash2, ImagePlus, X, Download, Upload, FileSpreadsheet, FileText, BarChart3, Info, Printer } from 'lucide-react';
-import { QRCodeSVG } from 'qrcode.react';
+import { Search, Plus, QrCode, Package, Warehouse as WarehouseIcon, AlertTriangle, Eye, CircleDollarSign, SlidersHorizontal, Tag, Pencil, Trash2, ImagePlus, X, Download, Upload, FileSpreadsheet, FileText, BarChart3, Info } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useAuth } from '../hooks/useAuth';
@@ -23,6 +22,7 @@ import { WarehouseLayout } from './WarehouseLayout';
 import { ProductVariationEditor } from './ProductVariationEditor';
 import { emptyVariations, variationDraft, validateVariations, variantLabel, variantFields, stockForProduct } from '../lib/productVariations';
 import { saveProductVariations } from '../lib/saveProductVariations';
+import { InventoryBatchTraceability } from './InventoryBatchTraceability';
 
 const PRODUCT_TEMPLATE_HEADERS = ['SKU Code', 'Item Name', 'Category', 'Supplier Name', 'Base Price / Retail Price', 'Metro Manila Price', 'Provincial Price', 'Cost', 'Minimum Stock Level', 'Reorder Point'];
 type ImportRow = Record<string, string | number | undefined>;
@@ -39,7 +39,6 @@ export function Inventory() {
   const [editVariations, setEditVariations] = useState(emptyVariations);
   const [selectedVariantId, setSelectedVariantId] = useState('');
   const [detailTab, setDetailTab] = useState<'overview' | 'variants'>('overview');
-  const [qrProduct, setQrProduct] = useState<Product | null>(null);
   const [isAdjusting, setIsAdjusting] = useState(false);
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
@@ -683,149 +682,10 @@ export function Inventory() {
         {variantFields.map(([key]) => <TableCell key={key}>{v[key] == null ? '—' : Number(v[key]).toLocaleString()}</TableCell>)}
         {warehouses.map(w => <TableCell key={w.id}>{getStockCount(v.id, w.id).toLocaleString()}</TableCell>)}
         <TableCell className="font-bold">{getStockCount(v.id).toLocaleString()}</TableCell><TableCell>{getProductStatus(v, getStockCount(v.id)) === 'out' ? 'Out of Stock' : getProductStatus(v, getStockCount(v.id)) === 'low' ? 'Low Stock' : 'In Stock'}</TableCell>
-        <TableCell><div className="flex gap-1"><Button type="button" variant="outline" size="icon" aria-label={`QR label for ${v.sku}`} onClick={() => setQrProduct(v)}><QrCode className="h-4 w-4" /></Button>{canAdjustStock && <Button type="button" variant="outline" size="icon" aria-label={`Adjust ${v.sku}`} onClick={() => { setSelectedVariantId(v.id); setIsDetailOpen(false); setIsStockUpdateOpen(true); }}><SlidersHorizontal className="h-4 w-4" /></Button>}</div></TableCell>
+        <TableCell><div className="flex gap-1">{canAdjustStock && <Button type="button" variant="outline" size="icon" aria-label={`Adjust ${v.sku}`} onClick={() => { setSelectedVariantId(v.id); setIsDetailOpen(false); setIsStockUpdateOpen(true); }}><SlidersHorizontal className="h-4 w-4" /></Button>}</div></TableCell>
       </TableRow>)}</TableBody>
     </Table></div>
   </section>;
-
-  const printThermalLabel = (product: Product, svgContainerId?: string) => {
-    let svgHtml = '';
-    if (svgContainerId) {
-      const container = document.getElementById(svgContainerId);
-      const svg = container?.querySelector('svg');
-      if (svg) svgHtml = svg.outerHTML;
-    }
-    if (!svgHtml) {
-      const anySvg = document.querySelector('[role="dialog"] svg');
-      if (anySvg) svgHtml = anySvg.outerHTML;
-    }
-
-    const priceFormatted = (product.wholesalePrice || product.basePrice || 0).toLocaleString();
-    const printFrame = document.createElement('iframe');
-    printFrame.style.position = 'fixed';
-    printFrame.style.right = '0';
-    printFrame.style.bottom = '0';
-    printFrame.style.width = '0';
-    printFrame.style.height = '0';
-    printFrame.style.border = '0';
-    document.body.appendChild(printFrame);
-
-    const htmlContent = `
-      <!DOCTYPE html>
-      <html>
-        <head>
-          <title>Label - ${product.sku}</title>
-          <style>
-            @page {
-              size: 50mm 30mm;
-              margin: 0;
-            }
-            @media print {
-              html, body {
-                width: 50mm;
-                height: 30mm;
-                margin: 0;
-                padding: 0;
-              }
-            }
-            body {
-              margin: 0;
-              padding: 2mm 3mm;
-              font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-              width: 50mm;
-              height: 30mm;
-              box-sizing: border-box;
-              display: flex;
-              align-items: center;
-              justify-content: space-between;
-              background: #fff;
-              color: #000;
-              overflow: hidden;
-            }
-            .qr-side {
-              width: 22mm;
-              height: 22mm;
-              display: flex;
-              align-items: center;
-              justify-content: center;
-              flex-shrink: 0;
-            }
-            .qr-side svg {
-              width: 100% !important;
-              height: 100% !important;
-              display: block;
-            }
-            .info-side {
-              flex: 1;
-              display: flex;
-              flex-direction: column;
-              justify-content: center;
-              padding-left: 2mm;
-              overflow: hidden;
-            }
-            .brand {
-              font-size: 5.5pt;
-              font-weight: 800;
-              text-transform: uppercase;
-              letter-spacing: 0.5px;
-              color: #555;
-              margin-bottom: 0.5mm;
-            }
-            .prod-name {
-              font-size: 7.5pt;
-              font-weight: 800;
-              line-height: 1.15;
-              color: #000;
-              margin-bottom: 1mm;
-              word-break: break-word;
-              display: -webkit-box;
-              -webkit-line-clamp: 2;
-              -webkit-box-orient: vertical;
-              overflow: hidden;
-            }
-            .prod-sku {
-              font-family: "Courier New", Courier, monospace;
-              font-size: 6.5pt;
-              font-weight: 700;
-              color: #222;
-            }
-            .prod-price {
-              font-size: 7.5pt;
-              font-weight: 800;
-              color: #000;
-              margin-top: 1mm;
-            }
-          </style>
-        </head>
-        <body>
-          <div class="qr-side">${svgHtml}</div>
-          <div class="info-side">
-            <div class="brand">ActivePro Asset</div>
-            <div class="prod-name">${product.name}</div>
-            <div class="prod-sku">${product.sku}</div>
-            <div class="prod-price">₱${priceFormatted}</div>
-          </div>
-        </body>
-      </html>
-    `;
-
-    const frameDoc = printFrame.contentWindow?.document || printFrame.contentDocument;
-    if (frameDoc) {
-      frameDoc.open();
-      frameDoc.write(htmlContent);
-      frameDoc.close();
-      setTimeout(() => {
-        printFrame.contentWindow?.focus();
-        printFrame.contentWindow?.print();
-        setTimeout(() => {
-          if (document.body.contains(printFrame)) {
-            document.body.removeChild(printFrame);
-          }
-        }, 1500);
-      }, 250);
-    }
-  };
-
 
   const inventoryNavigation = <div className="flex gap-1 rounded-xl bg-muted/60 p-1 w-fit" aria-label="Inventory views">
     <Button variant={inventoryView === 'stock' ? 'default' : 'ghost'} aria-pressed={inventoryView === 'stock'} onClick={() => setInventoryView('stock')}><Package className="size-4" />Products & Stock</Button>
@@ -908,7 +768,6 @@ export function Inventory() {
                         <Button variant="outline" size="icon" className="h-9 w-9" title="View product" onClick={() => { setSelectedProduct(product); setIsDetailOpen(true); }}><Eye className="h-4 w-4" /></Button>
                         {isAdmin && <Button variant="outline" size="icon" className="h-9 w-9" title="Edit product" onClick={() => setEditingProduct(product)}><Pencil className="h-4 w-4" /></Button>}
                         {isAdmin && <Button variant="outline" size="icon" className="h-9 w-9 text-red-500 hover:text-red-600 hover:bg-red-50 hover:border-red-200" title="Delete product" onClick={() => setProductToDelete(product)}><Trash2 className="h-4 w-4" /></Button>}
-                        <>{product.hasVariations ? <Button variant="outline" size="icon" title="Variant QR labels" onClick={() => { setSelectedProduct(product); setIsDetailOpen(true); setDetailTab('variants'); }}><QrCode className="h-4 w-4" /></Button> : <Dialog><DialogTrigger className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-border hover:bg-muted"><QrCode className="h-4 w-4" /></DialogTrigger><DialogContent className="text-center sm:max-w-xs"><DialogHeader><DialogTitle className="text-center">Asset QR Label</DialogTitle></DialogHeader><div className="flex flex-col items-center gap-4 py-8"><div id={`qr-svg-table-${product.id}`} className="rounded-2xl border-2 border-primary p-4"><QRCodeSVG value={product.id} size={180} /></div><div><p className="font-black">{product.name}</p><p className="font-mono text-xs text-muted-foreground">{product.sku}</p></div></div><Button variant="outline" onClick={() => printThermalLabel(product, `qr-svg-table-${product.id}`)}><Printer className="mr-2 h-4 w-4" />Print Label</Button></DialogContent></Dialog>}</>
                         {canAdjustStock && <Button variant="outline" size="icon" className="h-9 w-9" title="Adjust stock" onClick={() => { setSelectedProduct(product); setIsStockUpdateOpen(true); }}><SlidersHorizontal className="h-4 w-4" /></Button>}
                       </div>
                     </TableCell>
@@ -1407,14 +1266,10 @@ export function Inventory() {
 
                 <section className="flex flex-col rounded-xl border border-border/80 p-4 shadow-sm">
                   <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                    <div className="flex items-start gap-3"><span className="font-mono text-sm font-black text-muted-foreground">05</span><QrCode className="mt-0.5 h-5 w-5" /><div><h3 className="text-base font-bold uppercase tracking-wider">Asset Traceability</h3></div></div>
+                    <div className="flex items-start gap-3"><span className="font-mono text-sm font-black text-muted-foreground">05</span><QrCode className="mt-0.5 h-5 w-5" /><div><h3 className="text-base font-bold uppercase tracking-wider">CI Traceability</h3></div></div>
                   </div>
-                  <p className="mt-4 text-xs text-muted-foreground">Scan or print the product identity record associated with this item.</p>
-                  <div className="mt-4 flex flex-1 flex-col items-center justify-center gap-4 rounded-lg border border-border p-5">
-                    <div id={`qr-svg-detail-${selectedProduct.id}`} className="rounded-lg bg-white p-2">{selectedProduct.hasVariations ? <p className="max-w-40 text-center text-sm text-muted-foreground">Choose a variant to view and print its QR label.</p> : <QRCodeSVG value={selectedProduct.id} size={150} />}</div>
-                    <div className="text-center"><p className="text-xs uppercase tracking-wider text-muted-foreground">SKU</p><p className="font-bold">{selectedProduct.sku}</p><p className="mt-4 text-xs uppercase tracking-wider text-muted-foreground">Unique node ID</p><p className="mt-1 break-all font-mono text-xs">{selectedProduct.id}</p></div>
-                  </div>
-                  <Button variant="outline" className="mt-4 h-11" onClick={() => selectedProduct.hasVariations ? setDetailTab('variants') : printThermalLabel(selectedProduct, `qr-svg-detail-${selectedProduct.id}`)}><Printer className="mr-2 h-4 w-4" />Print Label</Button>
+                  <p className="mt-4 text-sm text-muted-foreground">SKU identifies the product or variant. A CI Traceability Code identifies a received batch.</p>
+                  {isDetailOpen && <InventoryBatchTraceability key={selectedProduct.id} product={selectedProduct} variants={selectedProduct.hasVariations ? childrenOf(selectedProduct.id) : []} canView={permitsMovement(permissions.movementView, 'external')} />}
                 </section>
               </div>}</>
             </div>;
@@ -1423,7 +1278,6 @@ export function Inventory() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={!!qrProduct} onOpenChange={open => !open && setQrProduct(null)}><DialogContent className="sm:max-w-sm"><DialogHeader><DialogTitle>Variant QR Label</DialogTitle><DialogDescription>{qrProduct?.name}</DialogDescription></DialogHeader>{qrProduct && <div className="flex flex-col items-center gap-3 py-4"><div id={`qr-variant-${qrProduct.id}`} className="rounded-xl bg-white p-4"><QRCodeSVG value={qrProduct.id} size={180} /></div><p className="font-mono font-bold">{qrProduct.sku}</p><p className="text-xs text-muted-foreground">Parent: {products.find(p => p.id === qrProduct.parentProductId)?.name}</p><Button variant="outline" onClick={() => printThermalLabel(qrProduct, `qr-variant-${qrProduct.id}`)}><Printer className="mr-2 h-4 w-4" />Print Label</Button></div>}</DialogContent></Dialog>
       {/* Previous product detail layout retained temporarily for reference */}
       {false && (
         <Dialog open={isDetailOpen} onOpenChange={setIsDetailOpen}>
@@ -1529,8 +1383,8 @@ export function Inventory() {
                       <QrCode className="w-8 h-8 text-zinc-400" />
                     </div>
                     <div className="flex-1">
-                      <p className="text-[10px] font-black uppercase text-zinc-500 mb-1">Asset Traceability</p>
-                      <p className="text-[10px] text-zinc-400 font-medium italic">Unique node ID: {selectedProduct?.id}</p>
+                      <p className="text-[10px] font-black uppercase text-zinc-500 mb-1">CI Traceability</p>
+                      <p className="text-[10px] text-zinc-400 font-medium italic">SKU: {selectedProduct?.sku}</p>
                     </div>
                   </div>
                 </div>
