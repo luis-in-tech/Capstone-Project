@@ -1,3 +1,4 @@
+import { PageHeading } from './PageHeading';
 import { SearchBar } from '@/components/ui/search-bar';
 import { hasAdminRole, permitsMovement } from '../lib/staffPermissions';
 import { useStaffAccess } from '../hooks/useStaffAccess';
@@ -699,9 +700,7 @@ export function Inventory() {
     <div className="space-y-5 pb-20">
       {inventoryNavigation}
       <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-        <div>
-          <p className="mt-1 text-sm text-muted-foreground">Manage products, stock levels, suppliers, and warehouse inventory.</p>
-        </div>
+        <PageHeading title="Inventory" subtitle="Manage products, stock levels, suppliers, and warehouse inventory." />
         <div className="flex flex-wrap gap-2">
           <Button type="button" variant="outline" onClick={() => navigate('/pricelist')} className="h-11 gap-3 rounded-xl border-zinc-200 bg-white px-5 text-base font-semibold text-zinc-500 shadow-sm hover:bg-zinc-50 hover:text-zinc-700">
             <Tag className="h-5 w-5 text-zinc-500" strokeWidth={2.25} /> Pricelist

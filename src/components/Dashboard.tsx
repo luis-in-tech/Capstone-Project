@@ -1,3 +1,4 @@
+import { PageHeading } from './PageHeading';
 import { useEffect, useMemo, useState } from 'react';
 import { collection, db, getDocs } from '../lib/supabaseAdapter';
 import { Order } from '../types';
@@ -124,9 +125,7 @@ export function Dashboard() {
   return (
     <div className="space-y-8 animate-in fade-in duration-500">
       <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
-        <div>
-          <p className="mt-1 text-sm text-muted-foreground">Historical order and revenue analysis for Active Pro operations.</p>
-        </div>
+        <PageHeading title="Analytics" subtitle="Historical order and revenue analysis for Active Pro operations." />
         <div className="flex flex-wrap items-center gap-2">
           <div className="flex items-center gap-2 rounded-lg border border-border bg-card px-3"><Filter className="h-3.5 w-3.5 text-muted-foreground" /><select aria-label="Date range" value={rangeDays} onChange={event => setRangeDays(Number(event.target.value) as RangeDays)} className="h-9 bg-transparent text-xs font-bold outline-none"><option value={7}>Last 7 days</option><option value={30}>Last 30 days</option><option value={90}>Last 90 days</option></select></div>
           <select aria-label="Delivery region" value={region} onChange={event => setRegion(event.target.value)} className="h-9 rounded-lg border border-border bg-card px-3 text-xs font-bold outline-none"><option value="all">All regions</option>{regions.map(item => <option key={item} value={item}>{item}</option>)}</select>

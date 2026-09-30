@@ -1,4 +1,5 @@
-import { SearchBar } from '@/components/ui/search-bar';
+import { ProductSelectionModes } from './ProductSelectionModes';
+import { ProductPicker, ProductPickerRow } from './ProductPicker';
 import { useState } from 'react';
 import { Tooltip } from '@base-ui/react/tooltip';
 import { TriangleAlert } from 'lucide-react';
@@ -54,14 +55,18 @@ export function PricelistBuilder({ initial, products, stockMap, close, save, pre
   const [activeId, setActiveId] = useState('');
   const [search, setSearch] = useState('');
   const [category, setCategory] = useState('');
-  const [selected, setSelected] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const categories = [...new Set(products.map(p => p.category || 'Uncategorized'))].sort();
   const active = sections.find(s => s.id === activeId);
   const patch = (id: string, update: Partial<PricelistSection>) => setSections(old => old.map(s => s.id === id ? { ...s, ...update } : s));
   const toItem = (p: Product): PricelistItem => ({ productId: p.id, sku: p.sku, name: p.name, category: p.category || 'Uncategorized', priceType: master, price: productPrice(p, master) });
-  const openPicker = (id: string, filter = '') => { setActiveId(id); setCategory(filter); setSearch(''); setSelected([]); };
+  const openPicker = (id: string, filter = '') => { setActiveId(id); setCategory(filter); setSearch(''); };
+  const addToSection = (product: Product) => {
+    if (!active) return 'Choose a section first.';
+    if (active.items.some(item => item.productId === product.id)) return 'This product is already added to this section.';
+    setSections(old => old.map(section => section.id === active.id && !section.items.some(item => item.productId === product.id) ? { ...section, items: [...section.items, toItem(product)] } : section));
+  };
   const addSection = (all = false) => {
     if (!heading.trim()) return;
     const section = { id: crypto.randomUUID(), name: heading.trim(), items: all ? products.filter(p => (p.category || 'Uncategorized') === sourceCategory).map(toItem) : [] };
@@ -109,10 +114,22 @@ export function PricelistBuilder({ initial, products, stockMap, close, save, pre
       {error && <p role="alert" className="text-destructive">{error}</p>}
       <DialogFooter><Button variant="outline" onClick={close}>Cancel</Button><Button variant="outline" disabled={!ready} onClick={() => persist(true)}>Save Draft</Button><Button disabled={!ready} onClick={() => persist(false)}>{busy ? 'Saving…' : 'Save Pricelist'}</Button><Button variant="outline" disabled={!ready} onClick={() => preview(build())}>Preview PDF</Button></DialogFooter>
     </fieldset>
-    <Dialog open={!!active} onOpenChange={open => { if (!open) setActiveId(''); }}><DialogContent className="sm:max-w-3xl"><DialogHeader><DialogTitle>Add products to {active?.name}</DialogTitle><DialogDescription>Search the catalog and choose products for this section.</DialogDescription></DialogHeader><SearchBar aria-label="Search products" placeholder="Search name, SKU, or supplier" value={search} onValueChange={setSearch} /><select aria-label="Filter products by category" className={selectClass} value={category} onChange={e => setCategory(e.target.value)}><option value="">All categories</option>{categories.map(c => <option key={c} value={c}>{c}</option>)}</select>
-      <Button variant="outline" onClick={() => setSelected(old => [...new Set([...old, ...choices.filter(p => !active?.items.some(i => i.productId === p.id)).map(p => p.id)])])}>Select all filtered products</Button>
-      <div className="max-h-80 overflow-y-auto">{choices.map(p => { const added = active?.items.some(i => i.productId === p.id); return <label key={p.id} className="flex items-center gap-3 border-b p-3"><input type="checkbox" disabled={added} checked={added || selected.includes(p.id)} onChange={e => setSelected(old => e.target.checked ? [...old, p.id] : old.filter(id => id !== p.id))} /><span className="flex-1">{p.name}<small className="block text-muted-foreground">{p.sku} · {p.category}</small></span><span className="text-sm">{stockMap[p.id] ?? 0} in stock{added && ' · Added'}</span></label>; })}{!choices.length && <p className="p-4">No products match these filters.</p>}</div>
-      <DialogFooter><Button variant="outline" onClick={() => setActiveId('')}>Cancel</Button><Button disabled={!selected.length} onClick={() => { if (active) patch(active.id, { items: [...active.items, ...selected.filter(id => !active.items.some(i => i.productId === id)).flatMap(id => { const p = products.find(p => p.id === id); return p ? [toItem(p)] : []; })] }); setActiveId(''); }}>Add {selected.length} products</Button></DialogFooter>
+    <Dialog open={!!active} onOpenChange={open => { if (!open) setActiveId(''); }}><DialogContent className="sm:max-w-3xl"><DialogHeader><DialogTitle>Add products to {active?.name}</DialogTitle><DialogDescription>Search the catalog and choose products for this section.</DialogDescription></DialogHeader>
+      <ProductSelectionModes key={activeId} products={products} active={!!active} onAdd={addToSection} hint="Add a product once to this section. Products already added remain marked Added.">
+      <ProductPicker search={search} onSearch={setSearch} placeholder="Search name, SKU, or supplier" label="Search products by name, SKU, or supplier" empty={!choices.length} toolbar={<> <select aria-label="Filter products by category" className={selectClass} value={category} onChange={e => setCategory(e.target.value)}><option value="">All categories</option>{categories.map(c => <option key={c} value={c}>{c}</option>)}</select>
+      <Button type="button" variant="outline" onClick={() => { if (active) setSections(old => old.map(section => section.id === active.id ? { ...section, items: [...section.items, ...choices.filter(p => !section.items.some(item => item.productId === p.id)).map(toItem)] } : section)); }}>Add all filtered products</Button> </>}>
+        {choices.map(p => {
+          const added = active?.items.some(i => i.productId === p.id);
+
+          const scheme = active?.priceType ?? master;
+          return <ProductPickerRow key={p.id} name={p.name} sku={p.sku} selected={!!added}
+            detail={<>{p.category} · {stockMap[p.id] ?? 0} in stock</>}
+            priceLabel={labels[scheme]} price={scheme === 'promo' && p.promoPrice == null ? 'Not available' : `₱${productPrice(p, scheme).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+            action={<Button type="button" variant="outline" size="sm" disabled={added} aria-label={`Add ${p.name}`} onClick={() => addToSection(p)}>{added ? 'Added' : '+ Add'}</Button>} />;
+        })}
+      </ProductPicker>
+      </ProductSelectionModes>
+      <DialogFooter><span className="mr-auto text-sm text-muted-foreground">{active?.items.length ?? 0} products in this section</span><Button onClick={() => setActiveId('')}>Done</Button></DialogFooter>
     </DialogContent></Dialog>
   </DialogContent></Dialog>;
 }

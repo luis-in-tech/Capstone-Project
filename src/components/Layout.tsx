@@ -30,6 +30,7 @@ import { Separator } from '@/components/ui/separator';
 import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet';
 import { motion, AnimatePresence } from 'motion/react';
 import { TutorialOverlay } from './TutorialOverlay';
+import { SidebarCollapsedContext } from './PageHeading';
 
 const navigation = [
   { name: 'Overview', href: '/admin', icon: Shield, roles: ['admin'] },
@@ -225,7 +226,9 @@ export function Layout({ children }: { children: React.ReactNode }) {
               exit={{ opacity: 0, y: -10 }}
               transition={{ duration: 0.2 }}
             >
-              {children}
+              <SidebarCollapsedContext.Provider value={isCollapsed}>
+                {children}
+              </SidebarCollapsedContext.Provider>
             </motion.div>
           </AnimatePresence>
         </main>

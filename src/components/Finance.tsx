@@ -1,3 +1,4 @@
+import { PageHeading } from './PageHeading';
 import React, { useState, useEffect } from 'react';
 import { db } from '../lib/supabaseAdapter';
 import { collection, onSnapshot, addDoc, query, orderBy, serverTimestamp, updateDoc, doc } from '../lib/supabaseAdapter';
@@ -352,6 +353,7 @@ export function Finance() {
 
   return (
     <div className="space-y-8">
+      <PageHeading title="Financials" subtitle="Track revenue, expenses, and operational profit." />
       {/* Financial Health Summary */}
       <div className="grid gap-4 grid-cols-1 sm:grid-cols-3">
         <Card className="border-emerald-500/30 bg-emerald-50/20 dark:bg-emerald-950/20 dark:border-emerald-500/20">

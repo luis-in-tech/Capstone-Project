@@ -1,3 +1,4 @@
+import { PageHeading } from './PageHeading';
 import React, { useState, useEffect, useMemo } from 'react';
 import {
   Truck,
@@ -517,14 +518,11 @@ export function LogisticsOptimizer() {
   };
 
   return (
-    <div className="space-y-6 pb-16 max-w-7xl mx-auto">
+    <div className="space-y-6 pb-16">
       {/* Header and summary */}
       <header className="space-y-4">
         <div className="flex flex-col items-start justify-between gap-4 sm:flex-row">
-          <div>
-            <h2 className="text-2xl font-bold tracking-tight text-foreground">Logistics Optimizer</h2>
-            <p className="mt-1 text-sm text-muted-foreground">Plan deliveries, balance stock, and manage detours.</p>
-          </div>
+          <PageHeading title="Logistics Optimizer" subtitle="Plan deliveries, balance stock, and manage detours." />
           <Button onClick={() => toast.success('Routes and warehouse stock balances re-calculated!')} className="h-9 shrink-0 gap-2 rounded-lg bg-[#1A2332] px-3 text-sm font-semibold text-white hover:bg-[#1A2332]/90">
             <RefreshCw className="h-4 w-4" />Re-optimize routes
           </Button>

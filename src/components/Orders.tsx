@@ -1,3 +1,4 @@
+import { PageHeading } from './PageHeading';
 import { SearchBar } from '@/components/ui/search-bar';
 import { previousOrderStatus } from '../lib/orderStatus';
 import { hasAdminRole } from '../lib/staffPermissions';
@@ -322,7 +323,7 @@ export function Orders() {
   return (
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3">
-        <h2 className="text-xl font-bold tracking-tight text-zinc-900">Order Entry</h2>
+        <PageHeading title="Order Entry" subtitle="Create orders and track items, deliveries, and fulfillment status." />
         {canCreate && <Button onClick={() => setIsNewOrderOpen(true)}><Plus className="size-4" />Create Order</Button>}
         {profile && canCreate && <OrderEntry key={`${profile.uid}:${orderEntryKey}`} open={isNewOrderOpen} onClose={() => setIsNewOrderOpen(false)} orders={orders} products={products} inventory={inventory} profile={profile} onSaved={(order, items) => {
           saveOrderOverride(order.id, order);

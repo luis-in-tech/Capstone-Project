@@ -1,3 +1,4 @@
+import { PageHeading } from './PageHeading';
 import { SearchBar } from '@/components/ui/search-bar';
 import { PricelistBuilder } from './PricelistBuilder';
 import { PriceType, PricelistItem, SavedPricelist, sectionsFor } from '../lib/pricelistSections';
@@ -546,7 +547,7 @@ export function Pricelist() {
   return (
     <div className="space-y-5 pb-20">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-        <div><p className="mt-1 text-sm text-muted-foreground">Create and manage saved pricelists using products from Inventory.</p></div>
+        <PageHeading title="Pricelist" subtitle="Create and manage saved pricelists using products from Inventory." />
         <div className="flex flex-wrap gap-2">
           <Button variant="outline" disabled={!selectedPdfId} onClick={() => generatePdf(saved.find(p => p.id === selectedPdfId))}><Download className="mr-2 h-4 w-4"/>Generate PDF</Button>
           {canEdit && (

@@ -1,13 +1,13 @@
+import { ProductSelectionModes } from './ProductSelectionModes';
+import { ProductPicker, ProductPickerRow } from './ProductPicker';
 import { SearchBar } from '@/components/ui/search-bar';
 import React, { useEffect, useRef, useState } from "react";
 import {
-  Camera,
   Check,
-  ChevronDown,
   ClipboardList,
+  ChevronDown,
   Pencil,
   Plus,
-  ScanBarcode,
   Search,
   ShoppingCart,
   Trash2,
@@ -93,9 +93,7 @@ export function OrderEntry({
   const [region, setRegion] = useState("Metro Manila");
   const [terms, setTerms] = useState("COD");
   const [customTerms, setCustomTerms] = useState("");
-  const [mode, setMode] = useState<"select" | "sku" | "scan">("select");
   const [search, setSearch] = useState("");
-  const [code, setCode] = useState("");
   const [lines, setLines] = useState<CartLine[]>([]);
   const [draft, setDraft] = useState<ItemDraft | null>(null);
   const [discount, setDiscount] = useState("");
@@ -104,11 +102,6 @@ export function OrderEntry({
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
   const [itemError, setItemError] = useState("");
-  const [scanning, setScanning] = useState(false);
-  const video = useRef<HTMLVideoElement>(null);
-  const stream = useRef<MediaStream | null>(null);
-  const frame = useRef<number | null>(null);
-  const cameraSession = useRef(0);
   const saveLock = useRef(false);
   const customers = existingCustomers(orders);
   const customer = customers.find((item) => item.name === customerName) || (customerName.trim() ? { id: undefined, name: customerName.trim(), address, region } : null);
@@ -137,19 +130,6 @@ export function OrderEntry({
     [],
   );
 
-  const stopCamera = () => {
-    cameraSession.current++;
-    if (frame.current !== null) cancelAnimationFrame(frame.current);
-    frame.current = null;
-    stream.current?.getTracks().forEach((track) => track.stop());
-    stream.current = null;
-    setScanning(false);
-  };
-  useEffect(() => {
-    stopCamera();
-    return stopCamera;
-  }, [mode, open]);
-
   const availableStock = (
     productId: string,
     warehouseId: string,
@@ -168,7 +148,6 @@ export function OrderEntry({
       .reduce((sum, i) => sum + i.quantity, 0);
 
   const openItem = (product: Product, line?: CartLine) => {
-    stopCamera();
     setItemError("");
     setDraft({
       id: line?.id,
@@ -183,78 +162,6 @@ export function OrderEntry({
       customPrice: line?.priceType === "custom" ? String(line.unitPrice) : "",
     });
   };
-  const addCode = (value: string) => {
-    const product = products.find(
-      (p) => p.sku.trim().toLowerCase() === value.trim().toLowerCase(),
-    );
-    if (!product) {
-      toast.error("No product matches this SKU.");
-      return false;
-    }
-    openItem(product);
-    setCode("");
-    return true;
-  };
-  const startCamera = async () => {
-    const Detector = (window as any).BarcodeDetector;
-    if (!Detector) {
-      toast.info(
-        "Camera scanning is unavailable in this browser. Use a scanner or enter a SKU below.",
-      );
-      return;
-    }
-    stopCamera();
-    const session = cameraSession.current;
-    try {
-      const media = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: "environment" },
-      });
-      if (session !== cameraSession.current || !video.current) {
-        media.getTracks().forEach((track) => track.stop());
-        return;
-      }
-      stream.current = media;
-      video.current.srcObject = media;
-      await video.current.play();
-      if (session !== cameraSession.current) return;
-      setScanning(true);
-      const detector = new Detector({
-        formats: [
-          "qr_code",
-          "code_128",
-          "code_39",
-          "ean_13",
-          "ean_8",
-          "upc_a",
-          "upc_e",
-        ],
-      });
-      let lastUnknown = "";
-      const scan = async () => {
-        if (session !== cameraSession.current || !video.current) return;
-        try {
-          const codes = await detector.detect(video.current);
-          if (session !== cameraSession.current) return;
-          const value = codes[0]?.rawValue?.trim();
-          if (value && value !== lastUnknown) {
-            if (addCode(value)) return;
-            lastUnknown = value;
-          }
-        } catch {
-          /* Keep scanning after an unreadable frame. */
-        }
-        if (session === cameraSession.current)
-          frame.current = requestAnimationFrame(scan);
-      };
-      frame.current = requestAnimationFrame(scan);
-    } catch {
-      stopCamera();
-      toast.error(
-        "Unable to access the camera. Check permission or enter the SKU.",
-      );
-    }
-  };
-
   const draftPrices = draft ? productPrices(draft.product) : null;
   const draftPrice = draft
     ? draft.priceType === "custom"
@@ -335,7 +242,6 @@ export function OrderEntry({
     saveLock.current = true;
     setSaving(true);
     setSaveError("");
-    stopCamera();
     try {
       const { data, error } = await supabase.rpc("create_order_entry_with_customer_details", {
         p_request_id: requestId,
@@ -634,151 +540,22 @@ export function OrderEntry({
                     Choose quantity, warehouse & price
                   </span>
                 </div>
-                <div className="flex gap-1 rounded-lg bg-muted p-1">
-                  {(
-                    [
-                      { id: "select", label: "Select products", icon: Search },
-                      { id: "sku", label: "Enter SKU", icon: ClipboardList },
-                      { id: "scan", label: "Scan code", icon: ScanBarcode },
-                    ] as const
-                  ).map((tab) => (
-                    <Button
-                      key={tab.id}
-                      type="button"
-                      size="sm"
-                      className="flex-1 min-w-0 px-1 text-xs sm:px-2.5 [&_svg]:hidden sm:[&_svg]:block"
-                      variant={mode === tab.id ? "default" : "ghost"}
-                      aria-pressed={mode === tab.id}
-                      onClick={() => setMode(tab.id)}
-                    >
-                      <tab.icon className="size-4" />
-                      <span>{tab.label}</span>
-                    </Button>
-                  ))}
-                </div>
-                {warehouseError && (
-                  <p role="alert" className="text-sm text-destructive">
-                    Warehouses could not be loaded. Reload before adding items.
-                  </p>
-                )}
-                {mode === "select" ? (
-                  <>
-                    <div className="relative">
-                      <SearchBar
-                        className="pl-9"
-                        aria-label="Search products by name or SKU"
-                        placeholder="Search product name or SKU…"
-                        value={search}
-                        onValueChange={setSearch}
-                      />
-                    </div>
-                    <div className="max-h-[380px] overflow-y-auto rounded-xl border divide-y">
-                      {filteredProducts.map((p) => {
-                        const stock = activeWarehouses.reduce(
-                          (sum, w) =>
-                            sum + Math.max(0, availableStock(p.id, w.id)),
-                          0,
-                        );
-                        return (
-                          <div
-                            key={p.id}
-                            className="flex items-center gap-3 p-3 hover:bg-muted/30"
-                          >
-                            <div className="min-w-0 flex-1">
-                              <p className="text-sm font-medium">{p.name}</p>
-                              <p className="mt-1 text-xs text-muted-foreground">
-                                <span className="font-mono">{p.sku}</span> ·{" "}
-                                <span
-                                  className={
-                                    stock <= 0 ? "text-destructive" : ""
-                                  }
-                                >
-                                  {stock > 0
-                                    ? `${stock} available`
-                                    : "Out of stock"}
-                                </span>
-                              </p>
-                            </div>
-                            <div className="hidden sm:block text-right text-xs text-muted-foreground">
-                              Regular
-                              <p className="mt-1 text-sm font-semibold text-foreground">
-                                {money(p.basePrice)}
-                              </p>
-                            </div>
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              disabled={stock <= 0 || warehouseError}
-                              onClick={() => openItem(p)}
-                              aria-label={`Add ${p.name}`}
-                            >
-                              <Plus className="size-4" />
-                              Add
-                            </Button>
-                          </div>
-                        );
+                {warehouseError && <p role="alert" className="text-sm text-destructive">Warehouses could not be loaded. Reload before adding items.</p>}
+                <ProductSelectionModes products={products} active={open && !draft && !reviewOpen} hint="Press Enter or Add to choose the quantity, source warehouse, and selling price." onAdd={product => {
+                  if (warehouseError) return 'Warehouses could not be loaded.';
+                  if (!activeWarehouses.some(w => availableStock(product.id, w.id) > 0)) return 'This product is out of stock.';
+                  openItem(product);
+                }}>
+                    <ProductPicker search={search} onSearch={setSearch} empty={!filteredProducts.length}>
+                      {filteredProducts.map(p => {
+                        const stock = activeWarehouses.reduce((sum, w) => sum + Math.max(0, availableStock(p.id, w.id)), 0);
+                        return <ProductPickerRow key={p.id} name={p.name} sku={p.sku}
+                          detail={<span className={stock <= 0 ? 'text-destructive' : ''}>{stock > 0 ? `${stock} available` : 'Out of stock'}</span>}
+                          priceLabel="Regular" price={money(p.basePrice)}
+                          action={<Button type="button" variant="outline" size="sm" disabled={stock <= 0 || warehouseError} onClick={() => openItem(p)} aria-label={`Add ${p.name}`}><Plus className="size-4" />Add</Button>} />;
                       })}
-                      {!filteredProducts.length && (
-                        <div className="p-10 text-center text-sm text-muted-foreground">
-                          No products match your search.
-                        </div>
-                      )}
-                    </div>
-                  </>
-                ) : (
-                  <div className="rounded-xl border p-4 space-y-4">
-                    {mode === "scan" && (
-                      <>
-                        <div className="relative flex aspect-video max-h-56 items-center justify-center overflow-hidden rounded-lg bg-zinc-950">
-                          <video
-                            ref={video}
-                            muted
-                            playsInline
-                            className="h-full w-full object-cover"
-                          />
-                          {!scanning && (
-                            <ScanBarcode className="absolute size-10 text-zinc-500" />
-                          )}
-                        </div>
-                        <Button
-                          type="button"
-                          variant="outline"
-                          onClick={scanning ? stopCamera : startCamera}
-                        >
-                          <Camera className="size-4" />
-                          {scanning ? "Stop camera" : "Start camera"}
-                        </Button>
-                      </>
-                    )}
-                    <Label htmlFor="entry-code">
-                      {mode === "scan" ? "Scanner input / SKU" : "Product SKU"}
-                    </Label>
-                    <div className="flex gap-2">
-                      <Input
-                        id="entry-code"
-                        value={code}
-                        onChange={(e) => setCode(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") {
-                            e.preventDefault();
-                            addCode(code);
-                          }
-                        }}
-                        placeholder="Enter an exact SKU"
-                      />
-                      <Button
-                        disabled={!code.trim() || warehouseError}
-                        onClick={() => addCode(code)}
-                      >
-                        Add
-                      </Button>
-                    </div>
-                    <p className="text-xs text-muted-foreground">
-                      Press Enter or Add to choose the quantity, source
-                      warehouse, and selling price.
-                    </p>
-                  </div>
-                )}
+                    </ProductPicker>
+                </ProductSelectionModes>
               </section>
             </div>
             <aside className="min-w-0 rounded-xl border bg-muted/25 p-4 space-y-4 lg:sticky lg:top-0 self-start">

@@ -1,3 +1,4 @@
+import { PageHeading } from './PageHeading';
 import { hasAdminRole } from '../lib/staffPermissions';
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
@@ -89,9 +90,7 @@ export function AdminPanel() {
   return (
     <div className="space-y-8 animate-in fade-in duration-500">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-        <div>
-          <p className="mt-1 text-sm text-muted-foreground">Today’s operational pulse for Active Pro inventory and fulfillment.</p>
-        </div>
+        <PageHeading title="Overview" subtitle="Today’s operational pulse for Active Pro inventory and fulfillment." />
         <button type="button" onClick={loadOverview} className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-border bg-card px-3 text-xs font-bold text-foreground hover:bg-muted">
           <RefreshCw className="h-3.5 w-3.5" /> Refresh
         </button>

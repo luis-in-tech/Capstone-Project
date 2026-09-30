@@ -1,3 +1,6 @@
+import { PageHeading } from './PageHeading';
+import { ProductSelectionModes } from './ProductSelectionModes';
+import { ProductPicker, ProductPickerRow } from './ProductPicker';
 import { SearchBar } from '@/components/ui/search-bar';
 import { hasAdminRole } from '../lib/staffPermissions';
 import { useStaffAccess } from '../hooks/useStaffAccess';
@@ -82,6 +85,8 @@ export function InventoryMovement() {
   const [step, setStep] = useState<'details' | 'review'>('details');
   const [draft, setDraft] = useState<MovementDraft>(newMovementDraft);
   const [productSearch, setProductSearch] = useState('');
+  const [productLimit, setProductLimit] = useState(40);
+  useEffect(() => { setProductLimit(40); }, [productSearch, open, draft.type]);
   const [formError, setFormError] = useState('');
   const [saving, setSaving] = useState(false);
   const savingRef = useRef(false);
@@ -244,7 +249,7 @@ export function InventoryMovement() {
 
   return <div className="space-y-6">
     <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-      <div><h1 className="text-2xl font-bold tracking-tight">Item Entry</h1><p className="mt-1 text-sm text-muted-foreground">Receive supplier purchases and move stock between your warehouses.</p></div>
+      <PageHeading title="Item Entry" subtitle="Receive supplier purchases and move stock between your warehouses." />
       {canManage && <Button onClick={startMovement} disabled={!ready} className="h-11 rounded-xl px-5"><Plus className="size-4" /> New Movement</Button>}
     </div>
 
@@ -298,11 +303,27 @@ export function InventoryMovement() {
                   {external ? <div className="space-y-2 sm:col-span-2"><Label htmlFor="movement-invoice" className="text-xs font-semibold">Invoice number *</Label><Input id="movement-invoice" placeholder="e.g. INV-2026-001" value={draft.invoiceNumber} onChange={event => updateDraft({ invoiceNumber: event.target.value })} /></div> : <><div className="space-y-2"><Label htmlFor="movement-driver" className="text-xs font-semibold">Driver name <span className="font-normal text-muted-foreground">(optional)</span></Label><Input id="movement-driver" placeholder="Driver's full name" value={draft.driverName} onChange={event => updateDraft({ driverName: event.target.value })} /></div><div className="space-y-2"><Label htmlFor="movement-plate" className="text-xs font-semibold">Vehicle plate <span className="font-normal text-muted-foreground">(optional)</span></Label><Input id="movement-plate" placeholder="e.g. ABC 1234" value={draft.vehiclePlate} onChange={event => updateDraft({ vehiclePlate: event.target.value.toUpperCase() })} /></div></>}
                 </div>{external && !suppliers.length && <p className="text-xs text-amber-700">Add a supplier in Inventory before recording a receipt.</p>}</section>
                 <section className="space-y-3"><div className="flex items-center justify-between"><h3 className="text-sm font-semibold">02 / Products & quantities</h3><span className="text-xs text-muted-foreground">{draft.items.length} selected</span></div>
-                  <div className="overflow-hidden rounded-xl border"><div className="relative border-b"><SearchBar aria-label="Find products to add" className="h-10 rounded-none border-0 pl-9 shadow-none" placeholder="Search product name or SKU…" value={productSearch} onValueChange={setProductSearch} /></div><div className="max-h-44 overflow-y-auto divide-y">
-                    {matchingProducts.slice(0, 40).map(product => { const stock = sourceStock(product.id); const added = draft.items.find(item => item.productId === product.id)?.quantity || 0; const disabled = !external && (!draft.sourceWarehouseId || stock <= added); return <div key={product.id} className="flex items-center gap-3 px-3 py-2.5"><div className="flex size-9 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-muted">{product.photoUrl ? <img src={product.photoUrl} alt="" className="size-full object-cover" /> : <Package className="size-4 text-muted-foreground" />}</div><div className="min-w-0 flex-1"><p className="truncate text-xs font-medium">{product.name}</p><p className="text-[11px] text-muted-foreground">{product.sku}{!external && draft.sourceWarehouseId && <span className={stock === 0 ? 'text-destructive' : ''}> · {stock} available</span>}</p></div><Button variant="outline" size="sm" disabled={disabled} aria-label={`Add ${product.name}`} onClick={() => addProduct(product)}><Plus className="size-3" />Add</Button></div>; })}
-                    {!matchingProducts.length && <p className="p-6 text-center text-xs text-muted-foreground">No products found. Try another name or SKU.</p>}
-                    {matchingProducts.length > 40 && <p className="p-2 text-center text-xs text-muted-foreground">Search to narrow down {matchingProducts.length} products.</p>}
-                  </div></div>
+                  <ProductSelectionModes products={products} active={open && step === 'details' && canManage} hint="Add a product, then enter its quantity and any required unit cost below." onAdd={product => {
+                    if (!external && !draft.sourceWarehouseId) return 'Select a source warehouse first.';
+                    const added = draft.items.find(item => item.productId === product.id)?.quantity || 0;
+                    if (!external && sourceStock(product.id) <= added) return 'Not enough stock in the source warehouse.';
+                    addProduct(product);
+                  }}>
+                  <ProductPicker search={productSearch} onSearch={setProductSearch} empty={!matchingProducts.length}
+                    footer={matchingProducts.length > productLimit ? <div className="p-3 text-center"><Button type="button" variant="outline" size="sm" onClick={() => setProductLimit(limit => limit + 40)}>Load more products ({Math.min(productLimit, matchingProducts.length)} of {matchingProducts.length})</Button></div> : undefined}>
+                    {matchingProducts.slice(0, productLimit).map(product => {
+                      const stock = sourceStock(product.id);
+                      const line = draft.items.find(item => item.productId === product.id);
+                      const added = line?.quantity || 0;
+                      const disabled = !external && (!draft.sourceWarehouseId || stock <= added);
+                      return <ProductPickerRow key={product.id} name={product.name} sku={product.sku} selected={!!line}
+                        leading={<div className="flex size-9 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-muted">{product.photoUrl ? <img src={product.photoUrl} alt="" className="size-full object-cover" /> : <Package className="size-4 text-muted-foreground" />}</div>}
+                        detail={<>{!external && draft.sourceWarehouseId && <span className={stock === 0 ? 'text-destructive' : ''}>{stock} available in source · </span>}{line ? `${added} selected` : external ? 'External receipt' : 'Internal transfer'}</>}
+                        priceLabel={external ? 'Unit cost' : undefined} price={external ? (line ? money(line.unitCost) : product.costPrice != null ? money(Number(product.costPrice)) : 'Not set') : undefined}
+                        action={<Button type="button" variant="outline" size="sm" disabled={disabled} aria-label={`Add ${product.name}`} onClick={() => addProduct(product)}><Plus className="size-4" />Add</Button>} />;
+                    })}
+                  </ProductPicker>
+                  </ProductSelectionModes>
                   {!external && !draft.sourceWarehouseId && <p className="text-xs text-muted-foreground">Select a source warehouse to see available stock and add products.</p>}
                   {draft.items.length > 0 ? <div className="space-y-2">{draft.items.map(item => { const stock = sourceStock(item.productId); const insufficient = !external && item.quantity > stock; return <div key={item.productId} className={`rounded-xl border p-3 ${insufficient ? 'border-destructive/40 bg-destructive/5' : 'bg-muted/20'}`}><div className="mb-2 flex items-start justify-between gap-2"><div><p className="text-xs font-semibold">{item.name}</p><p className="text-[11px] text-muted-foreground">{item.sku}</p></div><Button variant="ghost" size="icon-sm" aria-label={`Remove ${item.name}`} onClick={() => updateDraft({ items: draft.items.filter(line => line.productId !== item.productId) })}><Trash2 className="size-3.5 text-muted-foreground" /></Button></div><div className="flex flex-wrap items-end gap-3"><div className="w-24 space-y-1"><Label htmlFor={`qty-${item.productId}`} className="text-[11px]">Quantity</Label><Input id={`qty-${item.productId}`} type="number" min="1" step="1" className="h-8" value={Number.isNaN(item.quantity) ? '' : item.quantity} onChange={event => updateLine(item.productId, { quantity: event.target.valueAsNumber })} /></div>{external ? <><div className="w-28 space-y-1"><Label htmlFor={`cost-${item.productId}`} className="text-[11px]">Unit cost (₱)</Label><Input id={`cost-${item.productId}`} type="number" min="0.01" step="0.01" className="h-8" value={Number.isNaN(item.unitCost) ? '' : item.unitCost} onChange={event => updateLine(item.productId, { unitCost: event.target.valueAsNumber })} /></div><p className="ml-auto pb-1 text-sm font-semibold tabular-nums">{Number.isFinite(purchaseTotal([item])) ? money(purchaseTotal([item])) : '—'}</p></> : <p className={`pb-1 text-xs ${insufficient ? 'text-destructive' : 'text-muted-foreground'}`}>{stock} available{insufficient ? ' · Not enough stock' : ''}</p>}</div></div>; })}</div> : <div className="rounded-xl border border-dashed p-5 text-center text-xs text-muted-foreground">Add products above to build your movement.</div>}
                 </section>

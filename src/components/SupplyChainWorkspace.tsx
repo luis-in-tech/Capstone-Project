@@ -1,3 +1,4 @@
+import { PageHeading } from './PageHeading';
 import { SearchBar } from '@/components/ui/search-bar';
 import { getSupplyChainViews, hasAdminRole } from '../lib/staffPermissions';
 import { useStaffAccess } from '../hooks/useStaffAccess';
@@ -183,7 +184,7 @@ export function SupplyChainWorkspace({ sourceLoading, sourceError, onRetrySource
   }
 
   return <div className="space-y-5">
-    <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="mb-1 text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">Partners & inventory</p><h1 className="text-2xl font-bold tracking-tight">Supply Chain</h1><p className="mt-1 text-sm text-muted-foreground">Your customers, suppliers, warehouses, and categories. Connected in one place.</p></div></div>
+    <div className="flex flex-wrap items-start justify-between gap-3"><PageHeading title="Supply Chain" subtitle="Your customers, suppliers, warehouses, and categories. Connected in one place." /></div>
     <div className="flex flex-wrap gap-1 rounded-2xl border bg-muted/40 p-1.5" role="group" aria-label="Supply Chain views">{allowedViews.map(({ id, name, icon: Icon }) => <button key={id} type="button" aria-pressed={!showCategories && view === id} onClick={() => { setShowCategories(false); switchView(id); }} className={`flex min-w-0 flex-1 items-center justify-center gap-2 rounded-xl px-3 py-3 text-sm font-semibold transition-colors ${!showCategories && view === id ? 'bg-background text-foreground shadow-sm ring-1 ring-border' : 'text-muted-foreground hover:bg-background/60 hover:text-foreground'}`}><Icon className="size-4" />{name}</button>)}{canManage && <button type="button" aria-pressed={showCategories} onClick={() => setShowCategories(true)} className={`flex min-w-0 flex-1 items-center justify-center gap-2 rounded-xl px-3 py-3 text-sm font-semibold transition-colors ${showCategories ? 'bg-background text-foreground shadow-sm ring-1 ring-border' : 'text-muted-foreground hover:bg-background/60 hover:text-foreground'}`}><Package className="size-4" />Categories</button>}</div>
     {showCategories ? categoriesContent : <><div className="grid items-start gap-5 xl:grid-cols-[280px_minmax(0,1fr)]">
       <aside className="overflow-hidden rounded-2xl border bg-card shadow-sm">

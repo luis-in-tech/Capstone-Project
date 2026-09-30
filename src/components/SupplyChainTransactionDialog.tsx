@@ -1,4 +1,5 @@
-import { SearchBar } from '@/components/ui/search-bar';
+import { ProductSelectionModes } from './ProductSelectionModes';
+import { ProductPicker, ProductPickerRow } from './ProductPicker';
 import { useState } from 'react';
 import { ArrowDownLeft, ArrowUpRight, Check, ChevronLeft, CreditCard, Package, Banknote, FileCheck, Info } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -41,6 +42,17 @@ export function SupplyChainTransactionDialog({ view, action, transaction, produc
   const increasing = direction === 'in';
   const account = customer ? 'receivables' : 'payables';
   const options: ChainLine[] = payment ? products.map(p => ({ id: p.id, productId: p.id, name: p.name, sku: p.sku, quantity: 0, unitPrice: Number(p.costPrice ?? 0) })) : transaction.items;
+  const filteredOptions = options.filter(item => `${item.name} ${item.sku}`.toLowerCase().includes(itemSearch.toLowerCase()));
+  const addItem = (item: ChainLine) => {
+    if (!warehouseId) return 'Choose a warehouse first.';
+    const next = (quantities[item.id] || 0) + 1;
+    if (!payment && next > item.quantity) return 'Return quantity cannot exceed the original quantity.';
+    const required = options.filter(line => line.productId === item.productId).reduce((sum, line) => sum + (quantities[line.id] || 0), 0) + 1;
+    const available = inventory.filter(row => row.productId === item.productId && row.warehouseId === warehouseId).reduce((sum, row) => sum + row.quantity, 0);
+    if (!increasing && required > available) return 'Not enough stock in the issuing warehouse.';
+    setQuantities(q => ({ ...q, [item.id]: next }));
+    setError('');
+  };
   const lines = physical ? options.filter(item => (quantities[item.id] ?? 0) > 0).map(item => ({ ...item, quantity: quantities[item.id], warehouseId })) : [];
   const value = Number(amount);
   const resulting = projectBalance(transaction.remaining, value);
@@ -103,8 +115,17 @@ export function SupplyChainTransactionDialog({ view, action, transaction, produc
         {physical && <div className="space-y-3">
           <div className={`rounded-xl border p-3 text-sm ${increasing ? 'border-emerald-300 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' : 'border-orange-300 bg-orange-500/10 text-orange-700 dark:text-orange-300'}`}>{increasing ? <ArrowDownLeft className="mr-1 inline size-4" /> : <ArrowUpRight className="mr-1 inline size-4" />}Inventory will {increasing ? 'increase' : 'decrease'} · {payment ? customer ? 'Items received from customer' : 'Items issued to supplier' : customer ? 'Customer returns to warehouse' : 'Warehouse returns to supplier'}</div>
           <Field label={increasing ? 'Receiving warehouse' : 'Issuing warehouse'} id="chain-action-warehouse"><select id="chain-action-warehouse" value={warehouseId} onChange={e => setWarehouseId(e.target.value)} className={selectClass}><option value="">Select warehouse</option>{warehouses.filter(w => w.active !== false).map(w => <option key={w.id} value={w.id}>{w.name}</option>)}</select></Field>
-          <SearchBar aria-label="Search transaction items" placeholder={payment ? 'Search inventory items…' : 'Search items from the original transaction…'} value={itemSearch} onValueChange={setItemSearch} />
-          <div className="max-h-48 overflow-y-auto rounded-xl border divide-y">{options.filter(item => `${item.name} ${item.sku}`.toLowerCase().includes(itemSearch.toLowerCase())).map(item => <div key={item.id} className="flex items-center gap-3 p-3"><input type="checkbox" aria-label={`Select ${item.name}`} checked={(quantities[item.id] ?? 0) > 0} onChange={e => setQuantities(q => ({ ...q, [item.id]: e.target.checked ? 1 : 0 }))} className="size-4 accent-primary" /><div className="min-w-0 flex-1"><p className="truncate text-sm font-medium">{item.name}</p><p className="text-xs text-muted-foreground">{item.sku}{!payment && ` · Original qty: ${item.quantity}`}</p></div><Input type="number" aria-label={`Quantity for ${item.name}`} min="0" step="1" max={payment ? undefined : item.quantity} value={quantities[item.id] || ''} placeholder="Qty" onChange={e => setQuantities(q => ({ ...q, [item.id]: Number(e.target.value) }))} className="w-20" /></div>)}{!options.length && <p className="p-6 text-center text-sm text-muted-foreground">No original items are available. Use Without Item for a financial-only refund.</p>}</div>
+          <ProductSelectionModes products={options} active={physical && !review} onAdd={addItem} hint={payment ? 'Add items and set their quantities. Enter the agreed valuation below.' : 'Only original transaction items can be added. Return quantities cannot exceed original quantities.'}>
+          <ProductPicker search={itemSearch} onSearch={setItemSearch} label="Search transaction items" placeholder={payment ? 'Search inventory items…' : 'Search items from the original transaction…'} empty={!filteredOptions.length}>
+            {filteredOptions.map(item => {
+              const stock = inventory.filter(row => row.productId === item.productId && row.warehouseId === warehouseId).reduce((sum, row) => sum + row.quantity, 0);
+              return <ProductPickerRow key={item.id} name={item.name} sku={item.sku} selected={(quantities[item.id] ?? 0) > 0}
+                detail={<>{!payment && `Original qty: ${item.quantity}`}{!increasing && warehouseId && `${!payment ? ' / ' : ''}${stock} available in issuing warehouse`}</>}
+                action={<><Button type="button" size="sm" variant="outline" aria-label={`Add ${item.name}`} onClick={() => { const issue = addItem(item); if (issue) setError(issue); }}>+ Add</Button><Input type="number" aria-label={`Quantity for ${item.name}`} min="0" step="1" max={payment ? undefined : item.quantity} value={quantities[item.id] || ''} placeholder="Qty" onChange={e => setQuantities(q => ({ ...q, [item.id]: Number(e.target.value) }))} className="w-20" /></>} />;
+            })}
+          </ProductPicker>
+          </ProductSelectionModes>
+          {!payment && !options.length && <p className="text-sm text-muted-foreground">No original items are available. Use Without Item for a financial-only refund.</p>}
         </div>}
         <Field label={physical && payment ? 'Manual item valuation (PHP)' : `${payment ? 'Payment' : 'Refund'} amount (PHP)`} id="chain-action-amount"><Input id="chain-action-amount" type="number" min="0.01" step="0.01" value={amount} onChange={e => setAmount(e.target.value)} placeholder="0.00" className="h-12 text-lg font-semibold" /></Field>
         <p className="text-xs text-muted-foreground">{physical && payment ? 'Use the agreed item value to reduce the open balance.' : !physical ? 'This transaction does not move warehouse inventory.' : 'The refund credits the original transaction; selected items move separately.'}</p>

@@ -1,3 +1,4 @@
+import { PageHeading } from './PageHeading';
 import React, { useState, useEffect, useMemo } from 'react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import {
@@ -263,9 +264,7 @@ export function Settings() {
   return (
     <div className="space-y-8 pb-12">
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <div>
-          <p className="text-muted-foreground font-medium">Manage your personal preferences, live alerts, and system telemetry.</p>
-        </div>
+        <PageHeading title="Settings" subtitle="Manage your personal preferences, live alerts, and system telemetry." />
         <div className="flex items-center gap-2 self-start md:self-center bg-muted/50 p-1.5 rounded-2xl border border-border">
           <Button
             variant={theme === 'light' ? 'default' : 'ghost'}
