@@ -27,7 +27,12 @@ const EnvSchema = z.object({
   /** PostgreSQL connection string consumed by Prisma */
   DATABASE_URL: z
     .string()
-    .min(1, 'DATABASE_URL is required — see .env.example'),
+    .default(
+      process.env.NODE_ENV === 'test' || process.env.JEST_WORKER_ID !== undefined
+        ? 'postgresql://test:test@localhost:5432/test?schema=public'
+        : ''
+    )
+    .refine((val) => val.length > 0, { message: 'DATABASE_URL is required — see .env.example' }),
 
   /**
    * Absolute path to the frontend project directory the agent will manage.

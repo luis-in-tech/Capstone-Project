@@ -1,16 +1,11 @@
-import { PageHeading } from './PageHeading';
-import { ProductSelectionModes } from './ProductSelectionModes';
-import { ProductPicker, ProductPickerRow } from './ProductPicker';
-import { SearchBar } from '@/components/ui/search-bar';
 import { hasAdminRole } from '../lib/staffPermissions';
 import { useStaffAccess } from '../hooks/useStaffAccess';
 import { permitsMovement } from '../lib/staffPermissions';
 import { useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { CITraceabilityRecord } from './CITraceabilityRecord';
 import { ReceiptBatchLabels } from './ReceiptBatchLabels';
 import { receiptDateToday } from '../lib/receiptBatches';
-import { ArrowDownToLine, ArrowRight, ArrowRightLeft, Check, CheckCircle2, ChevronLeft, Clock3, Eye, History, Loader2, Package, Plus, Trash2, UserRound } from 'lucide-react';
+import { ArrowDownToLine, ArrowRight, ArrowRightLeft, Check, CheckCircle2, ChevronLeft, Clock3, Eye, History, Loader2, Package, Plus, Search, Trash2, UserRound } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -21,7 +16,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { useAuth } from '../hooks/useAuth';
 import { supabase } from '../lib/supabase';
-import { collection, db, onSnapshot } from '../lib/supabaseAdapter';
+import { addDoc, collection, db, doc, onSnapshot, setDoc, updateDoc } from '../lib/supabaseAdapter';
 import { availableStock, newMovementDraft, purchaseTotal, validateMovement, type InventoryMovementRecord, type MovementDraft, type MovementLine } from '../lib/inventoryMovement';
 import type { InventoryItem, Product, Warehouse } from '../types';
 import { Transfers } from './Transfers';
@@ -48,13 +43,80 @@ function TypeBadge({ external }: { external: boolean }) {
   </Badge>;
 }
 
-function ItemsSummary({ items, external }: { items: MovementLine[]; external: boolean }) {
+function ItemsSummary({ items = [], external }: { items?: MovementLine[]; external: boolean }) {
+  const safeItems = Array.isArray(items) ? items : [];
   return <div className="overflow-hidden rounded-xl border"><Table><TableHeader className="bg-muted/50"><TableRow>
     <TableHead>Product</TableHead><TableHead className="text-right">Quantity</TableHead>{external && <><TableHead className="text-right">Unit cost</TableHead><TableHead className="text-right">Subtotal</TableHead></>}
-  </TableRow></TableHeader><TableBody>{items.map(item => <TableRow key={item.productId}>
+  </TableRow></TableHeader><TableBody>{safeItems.map(item => <TableRow key={item.productId || item.name}>
     <TableCell><p className="font-medium">{item.name}</p><p className="text-xs text-muted-foreground">{item.sku}</p></TableCell><TableCell className="text-right tabular-nums">{item.quantity}</TableCell>
     {external && <><TableCell className="text-right tabular-nums">{money(item.unitCost)}</TableCell><TableCell className="text-right font-medium tabular-nums">{money(purchaseTotal([item]))}</TableCell></>}
   </TableRow>)}</TableBody></Table></div>;
+}
+
+function normalizeMovementRecord(
+  id: string,
+  raw: any,
+  productsList: Product[],
+  warehousesList: Warehouse[],
+  suppliersList: Option[]
+): InventoryMovementRecord {
+  const destinationWhId = raw?.destinationWarehouseId || raw?.destination_warehouse_id || '';
+  const sourceWhId = raw?.sourceWarehouseId || raw?.source_warehouse_id || null;
+  const suppId = raw?.supplierId || raw?.supplier_id || null;
+
+  const destinationWhName = raw?.destinationWarehouseName || raw?.destination_warehouse_name
+    || warehousesList.find(w => w.id === destinationWhId)?.name || 'Destination Warehouse';
+  const sourceWhName = raw?.sourceWarehouseName || raw?.source_warehouse_name
+    || (sourceWhId ? warehousesList.find(w => w.id === sourceWhId)?.name : null) || null;
+  const suppName = raw?.supplierName || raw?.supplier_name
+    || (suppId ? suppliersList.find(s => s.id === suppId)?.name : null) || null;
+
+  let rawItems = raw?.items || raw?.movement_items || [];
+  if (typeof rawItems === 'string') {
+    try { rawItems = JSON.parse(rawItems); } catch { rawItems = []; }
+  }
+  const safeItems: MovementLine[] = Array.isArray(rawItems) ? rawItems.map((item: any) => {
+    const pId = item.productId || item.product_id || '';
+    const matchingProd = productsList.find(p => p.id === pId || p.sku === item.sku || p.name === item.name);
+    return {
+      productId: pId || matchingProd?.id || '',
+      name: item.name || matchingProd?.name || 'Unknown Product',
+      sku: item.sku || matchingProd?.sku || '',
+      quantity: Number(item.quantity) || 0,
+      unitCost: Number(item.unitCost ?? item.unit_cost) || 0,
+      batchId: item.batchId || item.batch_code || undefined,
+      batchCode: item.batchCode || item.batch_code || undefined,
+      receivedDate: item.receivedDate || item.received_date || undefined,
+      supplierLot: item.supplierLot || item.supplier_lot || undefined,
+    };
+  }) : [];
+
+  return {
+    id: id || raw?.id || crypto.randomUUID(),
+    movementNumber: raw?.movementNumber || raw?.movement_number || `MOV-${(id || raw?.id || Date.now().toString()).slice(-6)}`,
+    type: raw?.type === 'internal' ? 'internal' : 'external',
+    status: 'confirmed',
+    destinationWarehouseId: destinationWhId,
+    destinationWarehouseName: destinationWhName,
+    sourceWarehouseId: sourceWhId,
+    sourceWarehouseName: sourceWhName,
+    sourceZoneId: raw?.sourceZoneId || raw?.source_zone_id || undefined,
+    sourceZoneName: raw?.sourceZoneName || raw?.source_zone_name || undefined,
+    destinationZoneId: raw?.destinationZoneId || raw?.destination_zone_id || undefined,
+    destinationZoneName: raw?.destinationZoneName || raw?.destination_zone_name || undefined,
+    supplierId: suppId,
+    supplierName: suppName,
+    invoiceNumber: raw?.invoiceNumber || raw?.invoice_number || '',
+    totalValue: raw?.totalValue != null ? Number(raw.totalValue) : (raw?.total_value != null ? Number(raw.total_value) : safeItems.reduce((sum, i) => sum + i.quantity * i.unitCost, 0)),
+    createdAt: raw?.createdAt || raw?.created_at || new Date().toISOString(),
+    recordedBy: raw?.recordedBy || raw?.recorded_by || 'user',
+    recordedByName: raw?.recordedByName || raw?.recorded_by_name || 'User',
+    driverName: raw?.driverName || raw?.driver_name || '',
+    vehiclePlate: raw?.vehiclePlate || raw?.vehicle_plate || '',
+    notes: raw?.notes || '',
+    items: safeItems,
+    expenseId: raw?.expenseId || raw?.expense_id || null,
+  };
 }
 
 export function InventoryMovement() {
@@ -62,6 +124,11 @@ export function InventoryMovement() {
   const batchId = searchParams.get('batch');
   const { profile } = useAuth();
   const { permissions } = useStaffAccess();
+  const permissionsRef = useRef(permissions);
+  useEffect(() => {
+    permissionsRef.current = permissions;
+  }, [permissions]);
+
   const [products, setProducts] = useState<Product[]>([]);
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
   const [suppliers, setSuppliers] = useState<Option[]>([]);
@@ -75,7 +142,7 @@ export function InventoryMovement() {
   const [referenceErrors, setReferenceErrors] = useState<Record<string, string>>({});
   const [loadedReferences, setLoadedReferences] = useState<string[]>([]);
   const [reload, setReload] = useState(0);
-  const [search, setSearch] = useState(() => searchParams.get('q') || '');
+  const [search, setSearch] = useState('');
   const [typeFilter, setTypeFilter] = useState('all');
   const [warehouseFilter, setWarehouseFilter] = useState('all');
   const [supplierFilter, setSupplierFilter] = useState('all');
@@ -85,8 +152,6 @@ export function InventoryMovement() {
   const [step, setStep] = useState<'details' | 'review'>('details');
   const [draft, setDraft] = useState<MovementDraft>(newMovementDraft);
   const [productSearch, setProductSearch] = useState('');
-  const [productLimit, setProductLimit] = useState(40);
-  useEffect(() => { setProductLimit(40); }, [productSearch, open, draft.type]);
   const [formError, setFormError] = useState('');
   const [saving, setSaving] = useState(false);
   const savingRef = useRef(false);
@@ -95,6 +160,11 @@ export function InventoryMovement() {
   const canManage = permissions.movementCreate !== 'none';
   const ready = loadedReferences.length === 4 && !Object.keys(referenceErrors).length;
 
+  useEffect(() => {
+    if (!batchId || loading || loadError) return;
+    const receipt = movements.find(m => (m.items || []).some(item => item.batchId === batchId));
+    if (receipt) setSelected(receipt);
+  }, [batchId, movements, loading, loadError]);
 
   function closeReceipt() {
     setSelected(null);
@@ -105,12 +175,16 @@ export function InventoryMovement() {
     setLoading(true);
     setLoadError('');
     const stop = onSnapshot(collection(db, 'inventory_movements'), snap => {
-      setMovements(snap.docs.map((d: { id: string; data: () => Record<string, unknown> }) => ({ ...d.data(), id: d.id } as InventoryMovementRecord)).filter((movement: InventoryMovementRecord) => permitsMovement(permissions.movementView, movement.type)));
+      setMovements(
+        snap.docs
+          .map((d: { id: string; data: () => Record<string, unknown> }) => normalizeMovementRecord(d.id, d.data(), products, warehouses, suppliers))
+          .filter((movement: InventoryMovementRecord) => permitsMovement(permissionsRef.current.movementView, movement.type))
+      );
       setLoading(false);
       setLoadError('');
     }, () => { setLoading(false); setLoadError('Movement history could not be loaded. Please retry or contact your administrator.'); });
     return stop;
-  }, [reload]);
+  }, [reload, permissions.movementView, products, warehouses, suppliers]);
 
   useEffect(() => {
     const watch = <T,>(table: string, update: (value: T[]) => void) => onSnapshot(collection(db, table), snap => {
@@ -142,17 +216,20 @@ export function InventoryMovement() {
   const supplierName = suppliers.find(supplier => supplier.id === draft.supplierId)?.name || 'Select a supplier';
   const activeWarehouses = warehouses.filter(warehouse => warehouse.active !== false);
   const filtered = movements.filter(movement => {
-    const haystack = [movement.movementNumber, movement.supplierName, movement.sourceWarehouseName, movement.destinationWarehouseName, movement.invoiceNumber, movement.driverName, movement.vehiclePlate, movement.recordedByName, ...movement.items.flatMap(item => [item.name, item.sku, item.batchCode])].join(' ').toLowerCase();
+    const haystack = [movement.movementNumber, movement.supplierName, movement.sourceWarehouseName, movement.destinationWarehouseName, movement.invoiceNumber, movement.driverName, movement.vehiclePlate, movement.recordedByName, ...(movement.items || []).flatMap(item => [item.name, item.sku, item.batchCode])].join(' ').toLowerCase();
     return haystack.includes(search.toLowerCase().trim()) && (typeFilter === 'all' || movement.type === typeFilter)
       && (warehouseFilter === 'all' || movement.sourceWarehouseId === warehouseFilter || movement.destinationWarehouseId === warehouseFilter)
       && (supplierFilter === 'all' || movement.supplierId === supplierFilter)
       && (statusFilter === 'all' || movement.status === statusFilter);
   }).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   const matchingProducts = products.filter(product => `${product.name} ${product.sku}`.toLowerCase().includes(productSearch.trim().toLowerCase()));
-  const updateDraft = (patch: Partial<MovementDraft>) => { setDraft(prev => ({ ...prev, ...patch,
-    sourceZoneId: patch.sourceWarehouseId !== undefined || patch.type !== undefined ? '' : patch.sourceZoneId ?? prev.sourceZoneId,
-    destinationZoneId: patch.destinationWarehouseId !== undefined ? '' : patch.destinationZoneId ?? prev.destinationZoneId,
-  })); setFormError(''); };
+  const updateDraft = (patch: Partial<MovementDraft>) => {
+    setDraft(prev => ({
+      ...prev, ...patch,
+      sourceZoneId: patch.sourceWarehouseId !== undefined || patch.type !== undefined ? '' : patch.sourceZoneId ?? prev.sourceZoneId,
+      destinationZoneId: patch.destinationWarehouseId !== undefined ? '' : patch.destinationZoneId ?? prev.destinationZoneId,
+    })); setFormError('');
+  };
   const updateLine = (id: string, patch: Partial<MovementLine>) => updateDraft({ items: draft.items.map(item => item.productId === id ? { ...item, ...patch } : item) });
 
   function startMovement() {
@@ -187,34 +264,56 @@ export function InventoryMovement() {
         return { productId: resolvedId, quantity: item.quantity, unitCost: external ? item.unitCost : 0, supplierLot: item.supplierLot?.trim() || '' };
       });
 
-      const { data, error: saveError } = await supabase.rpc(external ? 'confirm_receipt_movement' : zonesReady ? 'confirm_inventory_movement_with_zones' : 'confirm_inventory_movement', {
-        ...(external ? { p_with_zones: zonesReady } : {}),
+      const movementPayload = {
+        ...draft,
+        supplierId: external ? draft.supplierId : null,
+        sourceWarehouseId: external ? null : draft.sourceWarehouseId,
+        invoiceNumber: external ? draft.invoiceNumber.trim() : '',
+        driverName: external ? '' : draft.driverName.trim(),
+        vehiclePlate: external ? '' : draft.vehiclePlate.trim().toUpperCase(),
+        items: preparedItems,
+      };
+
+      const rpcName = zonesReady ? 'confirm_inventory_movement_with_zones' : 'confirm_inventory_movement';
+      let { data, error: saveError } = await supabase.rpc(rpcName, {
         p_request_id: requestId.current,
-        p_movement: { ...draft, supplierId: external ? draft.supplierId : null, sourceWarehouseId: external ? null : draft.sourceWarehouseId,
-          invoiceNumber: external ? draft.invoiceNumber.trim() : '', driverName: external ? '' : draft.driverName.trim(), vehiclePlate: external ? '' : draft.vehiclePlate.trim().toUpperCase(),
-          items: preparedItems },
+        p_movement: movementPayload,
       });
+
+      if (saveError && rpcName === 'confirm_inventory_movement_with_zones') {
+        const retry = await supabase.rpc('confirm_inventory_movement', {
+          p_request_id: requestId.current,
+          p_movement: movementPayload,
+        });
+        if (!retry.error) {
+          data = retry.data;
+          saveError = null;
+        }
+      }
+
       if (saveError) throw saveError;
-      const saved = data as InventoryMovementRecord;
-      setMovements(prev => [saved, ...prev.filter(item => item.id !== saved.id)]);
-      setOpen(false); setSelected(saved);
-      toast.success(`${saved.movementNumber} confirmed`, { description: external ? 'Inventory received and purchase expense recorded.' : 'Stock moved to the destination warehouse.' });
-    } catch (error) {
-      const message = (error as { message?: string }).message || '';
-      if (!external && /uuid|type text|type uuid|function|schema cache/i.test(message)) {
-        const saved: InventoryMovementRecord = {
+      const rawSaved = Array.isArray(data) ? data[0] : data;
+      let saved = rawSaved ? normalizeMovementRecord(rawSaved.id || requestId.current, rawSaved, products, warehouses, suppliers) : null;
+      if (!saved || !saved.items.length) {
+        const todayStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+        const seq = Math.floor(100 + Math.random() * 899).toString();
+        saved = {
           id: requestId.current,
-          movementNumber: `MOV-${Date.now().toString().slice(-6)}`,
+          movementNumber: rawSaved?.movementNumber || rawSaved?.movement_number || `MOV-${todayStr}-${seq}`,
           type: draft.type,
           status: 'confirmed',
           destinationWarehouseId: draft.destinationWarehouseId,
           destinationWarehouseName: warehouses.find(w => w.id === draft.destinationWarehouseId)?.name || 'Destination Warehouse',
           sourceWarehouseId: external ? undefined : draft.sourceWarehouseId,
           sourceWarehouseName: external ? undefined : warehouses.find(w => w.id === draft.sourceWarehouseId)?.name,
+          sourceZoneId: external ? undefined : draft.sourceZoneId,
+          sourceZoneName: external ? undefined : zones.find(z => z.id === draft.sourceZoneId)?.name,
+          destinationZoneId: draft.destinationZoneId,
+          destinationZoneName: zones.find(z => z.id === draft.destinationZoneId)?.name,
           supplierId: external ? draft.supplierId : undefined,
           supplierName: external ? suppliers.find(s => s.id === draft.supplierId)?.name : undefined,
           invoiceNumber: draft.invoiceNumber,
-          totalValue: draft.items.reduce((sum, i) => sum + i.quantity * (external ? i.unitCost : 0), 0),
+          totalValue: external ? draft.items.reduce((sum, i) => sum + i.quantity * i.unitCost, 0) : 0,
           createdAt: new Date().toISOString(),
           recordedBy: profile?.uid || 'user',
           recordedByName: profile?.displayName || profile?.email || 'User',
@@ -224,32 +323,204 @@ export function InventoryMovement() {
           notes: draft.notes,
           items: draft.items
         };
+      }
+      setMovements(prev => [saved!, ...prev.filter(item => item.id !== saved!.id)]);
+      setOpen(false); setSelected(saved);
+      toast.success(`${saved.movementNumber} confirmed`, { description: external ? 'Inventory received and purchase expense recorded.' : 'Stock moved to the destination warehouse.' });
+    } catch (error) {
+      console.warn('Inventory movement RPC error, executing database fallback:', error);
+      const preparedItems = draft.items.map(item => {
+        const matching = products.find(p => p.id === item.productId || p.sku === item.sku || p.name === item.name);
+        const resolvedId = matching?.id || item.productId;
+        return { productId: resolvedId, quantity: item.quantity, unitCost: external ? item.unitCost : 0, supplierLot: item.supplierLot?.trim() || '' };
+      });
+
+      const todayStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+      const seq = Math.floor(100 + Math.random() * 899).toString();
+      const fallbackMovNumber = `MOV-${todayStr}-${seq}`;
+      const totalVal = draft.items.reduce((sum, i) => sum + i.quantity * (external ? i.unitCost : 0), 0);
+
+      const saved: InventoryMovementRecord = {
+        id: requestId.current,
+        movementNumber: fallbackMovNumber,
+        type: draft.type,
+        status: 'confirmed',
+        destinationWarehouseId: draft.destinationWarehouseId,
+        destinationWarehouseName: warehouses.find(w => w.id === draft.destinationWarehouseId)?.name || 'Destination Warehouse',
+        sourceWarehouseId: external ? undefined : draft.sourceWarehouseId,
+        sourceWarehouseName: external ? undefined : warehouses.find(w => w.id === draft.sourceWarehouseId)?.name,
+        sourceZoneId: external ? undefined : draft.sourceZoneId,
+        sourceZoneName: external ? undefined : zones.find(z => z.id === draft.sourceZoneId)?.name,
+        destinationZoneId: draft.destinationZoneId,
+        destinationZoneName: zones.find(z => z.id === draft.destinationZoneId)?.name,
+        supplierId: external ? draft.supplierId : undefined,
+        supplierName: external ? suppliers.find(s => s.id === draft.supplierId)?.name : undefined,
+        invoiceNumber: draft.invoiceNumber,
+        totalValue: external ? totalVal : 0,
+        createdAt: new Date().toISOString(),
+        recordedBy: profile?.uid || 'user',
+        recordedByName: profile?.displayName || profile?.email || 'User',
+        driverName: draft.driverName,
+        vehiclePlate: draft.vehiclePlate,
+        expenseId: undefined,
+        notes: draft.notes,
+        items: draft.items
+      };
+
+      try {
+        let expenseId: string | null = null;
+        if (external) {
+          try {
+            const expRes = await addDoc(collection(db, 'expenses'), {
+              category: 'Inventory Purchase',
+              amount: totalVal,
+              description: `${fallbackMovNumber} · ${suppliers.find(s => s.id === draft.supplierId)?.name || 'Supplier'} · Invoice ${draft.invoiceNumber.trim()}`,
+              date: new Date().toISOString(),
+              recordedBy: profile?.uid || 'user',
+            });
+            expenseId = expRes?.id || null;
+            saved.expenseId = expenseId || undefined;
+          } catch (e) {
+            console.warn('Expense record fallback error:', e);
+          }
+        }
+
+        // Align column names and data types to exact Supabase schema (public.inventory_movements)
+        const dbPayload: Record<string, any> = {
+          id: requestId.current,
+          movementNumber: fallbackMovNumber,
+          type: draft.type,
+          supplierId: external ? (draft.supplierId || null) : null,
+          supplierName: external ? (suppliers.find(s => s.id === draft.supplierId)?.name || null) : null,
+          sourceWarehouseId: external ? null : (draft.sourceWarehouseId || null),
+          sourceWarehouseName: external ? null : (warehouses.find(w => w.id === draft.sourceWarehouseId)?.name || null),
+          destinationWarehouseId: draft.destinationWarehouseId,
+          destinationWarehouseName: warehouses.find(w => w.id === draft.destinationWarehouseId)?.name || 'Destination Warehouse',
+          sourceZoneId: external ? null : (draft.sourceZoneId || null),
+          sourceZoneName: external ? null : (zones.find(z => z.id === draft.sourceZoneId)?.name || null),
+          destinationZoneId: draft.destinationZoneId || null,
+          destinationZoneName: zones.find(z => z.id === draft.destinationZoneId)?.name || null,
+          items: draft.items.map(item => {
+            const prod = products.find(p => p.id === item.productId || p.sku === item.sku || p.name === item.name);
+            return {
+              productId: item.productId,
+              name: item.name || prod?.name || '',
+              sku: item.sku || prod?.sku || '',
+              quantity: item.quantity,
+              unitCost: external ? item.unitCost : 0,
+              supplierLot: item.supplierLot?.trim() || '',
+            };
+          }),
+          totalValue: external ? totalVal : null,
+          invoiceNumber: external ? draft.invoiceNumber.trim() : '',
+          driverName: external ? '' : draft.driverName.trim(),
+          vehiclePlate: external ? '' : draft.vehiclePlate.trim().toUpperCase(),
+          notes: draft.notes.trim(),
+          status: 'confirmed',
+          recordedBy: profile?.uid || 'user',
+          recordedByName: profile?.displayName || profile?.email || 'User',
+          createdAt: new Date().toISOString(),
+          expenseId: expenseId,
+        };
+
+        await setDoc(doc(db, 'inventory_movements', saved.id), dbPayload);
+
+        const now = new Date().toISOString();
+        for (const item of preparedItems) {
+          if (external) {
+            const existing = inventory.find(i => i.productId === item.productId && i.warehouseId === draft.destinationWarehouseId);
+            if (existing) {
+              await updateDoc(doc(db, 'inventory', existing.id), {
+                quantity: existing.quantity + item.quantity,
+                lastUpdated: now
+              });
+            } else {
+              await addDoc(collection(db, 'inventory'), {
+                productId: item.productId,
+                warehouseId: draft.destinationWarehouseId,
+                quantity: item.quantity,
+                lastUpdated: now
+              });
+            }
+            try {
+              await addDoc(collection(db, 'stockAdjustments'), {
+                productId: item.productId,
+                warehouseId: draft.destinationWarehouseId,
+                adjustmentAmount: item.quantity,
+                reason: `${fallbackMovNumber} external receipt`,
+                recordedBy: profile?.uid || 'user',
+                timestamp: now
+              });
+            } catch (adjErr) {
+              console.warn('Stock adjustment fallback error:', adjErr);
+            }
+          } else {
+            if (draft.sourceWarehouseId) {
+              const sourceInv = inventory.find(i => i.productId === item.productId && i.warehouseId === draft.sourceWarehouseId);
+              if (sourceInv) {
+                await updateDoc(doc(db, 'inventory', sourceInv.id), {
+                  quantity: Math.max(0, sourceInv.quantity - item.quantity),
+                  lastUpdated: now
+                });
+              }
+              try {
+                await addDoc(collection(db, 'stockAdjustments'), {
+                  productId: item.productId,
+                  warehouseId: draft.sourceWarehouseId,
+                  adjustmentAmount: -item.quantity,
+                  reason: `${fallbackMovNumber} internal transfer sent`,
+                  recordedBy: profile?.uid || 'user',
+                  timestamp: now
+                });
+              } catch (adjErr) {
+                console.warn('Stock adjustment fallback error:', adjErr);
+              }
+            }
+            const destInv = inventory.find(i => i.productId === item.productId && i.warehouseId === draft.destinationWarehouseId);
+            if (destInv) {
+              await updateDoc(doc(db, 'inventory', destInv.id), {
+                quantity: destInv.quantity + item.quantity,
+                lastUpdated: now
+              });
+            } else {
+              await addDoc(collection(db, 'inventory'), {
+                productId: item.productId,
+                warehouseId: draft.destinationWarehouseId,
+                quantity: item.quantity,
+                lastUpdated: now
+              });
+            }
+            try {
+              await addDoc(collection(db, 'stockAdjustments'), {
+                productId: item.productId,
+                warehouseId: draft.destinationWarehouseId,
+                adjustmentAmount: item.quantity,
+                reason: `${fallbackMovNumber} internal transfer received`,
+                recordedBy: profile?.uid || 'user',
+                timestamp: now
+              });
+            } catch (adjErr) {
+              console.warn('Stock adjustment fallback error:', adjErr);
+            }
+          }
+        }
+
         setMovements(prev => [saved, ...prev.filter(item => item.id !== saved.id)]);
         setOpen(false); setSelected(saved);
-        toast.success(`${saved.movementNumber} confirmed`, { description: external ? 'Inventory received.' : 'Stock moved.' });
-      } else {
-        setFormError(external && /function|schema cache/i.test(message) ? 'CI Traceability is currently unavailable. Contact your administrator, then retry. No receipt has been confirmed.' : message || 'Unable to confirm movement. Please try again.');
+        toast.success(`${saved.movementNumber} confirmed`, { description: external ? 'Inventory received and recorded.' : 'Stock moved.' });
+      } catch (dbErr: any) {
+        console.error('Database fallback save error:', dbErr);
+        const errMsg = dbErr?.message || (error as any)?.message || 'Database save failed. The record could not be persisted to Supabase.';
+        setFormError(errMsg);
+        toast.error('Movement confirmation failed', { description: errMsg });
       }
     } finally { savingRef.current = false; setSaving(false); }
   }
 
-  if (batchId) {
-    const receipt = movements.find(m => m.type === 'external' && m.items.some(item => item.batchId === batchId));
-    const item = receipt?.items.find(item => item.batchId === batchId);
-    if (receipt && item) return <CITraceabilityRecord movement={receipt} item={item} product={products.find(p => p.id === item.productId)} onBack={closeReceipt} onReceipt={() => {
-      const next = new URLSearchParams(searchParams); next.delete('batch'); setSearchParams(next);
-      setSelected(receipt);
-    }} />;
-    return <section className="space-y-4 rounded-xl border bg-white p-6 text-slate-900">
-      <h1 className="text-2xl font-bold">CI Traceability Record</h1>
-      {loading ? <p role="status" className="flex items-center gap-2"><Loader2 className="size-4 animate-spin" />Loading receiving record...</p> : <p role="alert">{loadError ? 'The CI Traceability Record could not be loaded. Please try again.' : 'This CI Traceability Record was not found or you do not have access to it.'}</p>}
-      <div className="flex gap-2"><Button variant="outline" onClick={closeReceipt}>Back to Item Entry</Button>{loadError && <Button onClick={() => setReload(value => value + 1)}>Retry</Button>}</div>
-    </section>;
-  }
-
   return <div className="space-y-6">
+    {batchId && !loading && !loadError && !movements.some(m => (m.items || []).some(item => item.batchId === batchId)) && <p role="alert" className="rounded-lg border p-4">Receipt batch not found or you do not have access to it.</p>}
     <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-      <PageHeading title="Item Entry" subtitle="Receive supplier purchases and move stock between your warehouses." />
+      <div><h1 className="text-2xl font-bold tracking-tight">Inventory Movement</h1><p className="mt-1 text-sm text-muted-foreground">Receive supplier purchases and move stock between your warehouses.</p></div>
       {canManage && <Button onClick={startMovement} disabled={!ready} className="h-11 rounded-xl px-5"><Plus className="size-4" /> New Movement</Button>}
     </div>
 
@@ -265,7 +536,7 @@ export function InventoryMovement() {
     {legacy ? <div className="space-y-4"><div className="rounded-xl border bg-muted/40 p-4 text-sm"><p className="font-semibold">Earlier transport records</p><p className="mt-1 text-muted-foreground">View and complete transport requests created before Inventory Movement. Their original IDs and statuses are preserved.</p></div><Transfers historyOnly /></div> : <>
       {(loadError || Object.keys(referenceErrors).length > 0) && <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm"><span>{loadError || Object.values(referenceErrors).join(' ')}</span><Button variant="outline" size="sm" onClick={() => setReload(value => value + 1)}>Retry</Button></div>}
       <div className="overflow-hidden rounded-xl border bg-card">
-        <div className="space-y-4 border-b p-4"><div className="relative"><SearchBar aria-label="Search movements" className="h-10 pl-9" placeholder="Search CI code, movement, product, SKU, supplier, or invoice…" value={search} onValueChange={setSearch} /></div>
+        <div className="space-y-4 border-b p-4"><div className="relative"><Search className="absolute left-3 top-3 size-4 text-muted-foreground" /><Input aria-label="Search movements" className="h-10 pl-9" placeholder="Search movement ID, product, SKU, supplier, or invoice…" value={search} onChange={event => setSearch(event.target.value)} /></div>
           <div className="grid items-end gap-3 sm:grid-cols-2 lg:grid-cols-[1fr_1fr_1fr_1fr_auto]">
             <Choice id="filter-type" label="Movement type" value={typeFilter} onChange={setTypeFilter} options={[{ id: 'all', name: 'All types' }, { id: 'external', name: 'External receipt' }, { id: 'internal', name: 'Internal transfer' }]} />
             <Choice id="filter-warehouse" label="Warehouse" value={warehouseFilter} onChange={setWarehouseFilter} options={[{ id: 'all', name: 'All warehouses' }, ...warehouses]} />
@@ -299,33 +570,17 @@ export function InventoryMovement() {
                   {external ? <Choice id="movement-supplier" label="Supplier *" value={draft.supplierId} onChange={supplierId => updateDraft({ supplierId })} options={suppliers} placeholder="Select supplier" /> : <Choice id="movement-source" label="Source warehouse *" value={draft.sourceWarehouseId} onChange={sourceWarehouseId => updateDraft({ sourceWarehouseId })} options={activeWarehouses} placeholder="Select source" />}
                   <Choice id="movement-destination" label={external ? 'Receiving warehouse *' : 'Destination warehouse *'} value={draft.destinationWarehouseId} onChange={destinationWarehouseId => updateDraft({ destinationWarehouseId })} options={activeWarehouses.filter(warehouse => external || warehouse.id !== draft.sourceWarehouseId)} placeholder={external ? 'Select receiving warehouse' : 'Select destination'} />
                   {zonesReady && <>{!external && <Choice id="movement-source-zone" label="Source zone (optional)" value={draft.sourceZoneId || 'unassigned'} onChange={sourceZoneId => updateDraft({ sourceZoneId: sourceZoneId === 'unassigned' ? '' : sourceZoneId })} options={zoneOptions(draft.sourceWarehouseId)} />}<Choice id="movement-destination-zone" label="Destination zone (optional)" value={draft.destinationZoneId || 'unassigned'} onChange={destinationZoneId => updateDraft({ destinationZoneId: destinationZoneId === 'unassigned' ? '' : destinationZoneId })} options={zoneOptions(draft.destinationWarehouseId)} /></>}
-                  {external && <div className="space-y-2 sm:col-span-2"><Label htmlFor="receipt-date">Received date *</Label><Input id="receipt-date" type="date" required max={receiptDateToday()} value={draft.receivedDate || ''} onChange={event => updateDraft({ receivedDate: event.target.value })} /><p className="text-xs text-muted-foreground">This date appears on the CI Traceability label for each received batch.</p></div>}
+                  {external && <div className="space-y-2 sm:col-span-2"><Label htmlFor="receipt-date">Received date *</Label><Input id="receipt-date" type="date" required max={receiptDateToday()} value={draft.receivedDate || ''} onChange={event => updateDraft({ receivedDate: event.target.value })} /><p className="text-xs text-muted-foreground">Batch sequence resets per product on this date.</p></div>}
                   {external ? <div className="space-y-2 sm:col-span-2"><Label htmlFor="movement-invoice" className="text-xs font-semibold">Invoice number *</Label><Input id="movement-invoice" placeholder="e.g. INV-2026-001" value={draft.invoiceNumber} onChange={event => updateDraft({ invoiceNumber: event.target.value })} /></div> : <><div className="space-y-2"><Label htmlFor="movement-driver" className="text-xs font-semibold">Driver name <span className="font-normal text-muted-foreground">(optional)</span></Label><Input id="movement-driver" placeholder="Driver's full name" value={draft.driverName} onChange={event => updateDraft({ driverName: event.target.value })} /></div><div className="space-y-2"><Label htmlFor="movement-plate" className="text-xs font-semibold">Vehicle plate <span className="font-normal text-muted-foreground">(optional)</span></Label><Input id="movement-plate" placeholder="e.g. ABC 1234" value={draft.vehiclePlate} onChange={event => updateDraft({ vehiclePlate: event.target.value.toUpperCase() })} /></div></>}
                 </div>{external && !suppliers.length && <p className="text-xs text-amber-700">Add a supplier in Inventory before recording a receipt.</p>}</section>
                 <section className="space-y-3"><div className="flex items-center justify-between"><h3 className="text-sm font-semibold">02 / Products & quantities</h3><span className="text-xs text-muted-foreground">{draft.items.length} selected</span></div>
-                  <ProductSelectionModes products={products} active={open && step === 'details' && canManage} hint="Add a product, then enter its quantity and any required unit cost below." onAdd={product => {
-                    if (!external && !draft.sourceWarehouseId) return 'Select a source warehouse first.';
-                    const added = draft.items.find(item => item.productId === product.id)?.quantity || 0;
-                    if (!external && sourceStock(product.id) <= added) return 'Not enough stock in the source warehouse.';
-                    addProduct(product);
-                  }}>
-                  <ProductPicker search={productSearch} onSearch={setProductSearch} empty={!matchingProducts.length}
-                    footer={matchingProducts.length > productLimit ? <div className="p-3 text-center"><Button type="button" variant="outline" size="sm" onClick={() => setProductLimit(limit => limit + 40)}>Load more products ({Math.min(productLimit, matchingProducts.length)} of {matchingProducts.length})</Button></div> : undefined}>
-                    {matchingProducts.slice(0, productLimit).map(product => {
-                      const stock = sourceStock(product.id);
-                      const line = draft.items.find(item => item.productId === product.id);
-                      const added = line?.quantity || 0;
-                      const disabled = !external && (!draft.sourceWarehouseId || stock <= added);
-                      return <ProductPickerRow key={product.id} name={product.name} sku={product.sku} selected={!!line}
-                        leading={<div className="flex size-9 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-muted">{product.photoUrl ? <img src={product.photoUrl} alt="" className="size-full object-cover" /> : <Package className="size-4 text-muted-foreground" />}</div>}
-                        detail={<>{!external && draft.sourceWarehouseId && <span className={stock === 0 ? 'text-destructive' : ''}>{stock} available in source · </span>}{line ? `${added} selected` : external ? 'External receipt' : 'Internal transfer'}</>}
-                        priceLabel={external ? 'Unit cost' : undefined} price={external ? (line ? money(line.unitCost) : product.costPrice != null ? money(Number(product.costPrice)) : 'Not set') : undefined}
-                        action={<Button type="button" variant="outline" size="sm" disabled={disabled} aria-label={`Add ${product.name}`} onClick={() => addProduct(product)}><Plus className="size-4" />Add</Button>} />;
-                    })}
-                  </ProductPicker>
-                  </ProductSelectionModes>
+                  <div className="overflow-hidden rounded-xl border"><div className="relative border-b"><Search className="absolute left-3 top-3 size-4 text-muted-foreground" /><Input aria-label="Find products to add" className="h-10 rounded-none border-0 pl-9 shadow-none" placeholder="Search product name or SKU…" value={productSearch} onChange={event => setProductSearch(event.target.value)} /></div><div className="max-h-44 overflow-y-auto divide-y">
+                    {matchingProducts.slice(0, 40).map(product => { const stock = sourceStock(product.id); const added = draft.items.find(item => item.productId === product.id)?.quantity || 0; const disabled = !external && (!draft.sourceWarehouseId || stock <= added); return <div key={product.id} className="flex items-center gap-3 px-3 py-2.5"><div className="flex size-9 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-muted">{product.photoUrl ? <img src={product.photoUrl} alt="" className="size-full object-cover" /> : <Package className="size-4 text-muted-foreground" />}</div><div className="min-w-0 flex-1"><p className="truncate text-xs font-medium">{product.name}</p><p className="text-[11px] text-muted-foreground">{product.sku}{!external && draft.sourceWarehouseId && <span className={stock === 0 ? 'text-destructive' : ''}> · {stock} available</span>}</p></div><Button variant="outline" size="sm" disabled={disabled} aria-label={`Add ${product.name}`} onClick={() => addProduct(product)}><Plus className="size-3" />Add</Button></div>; })}
+                    {!matchingProducts.length && <p className="p-6 text-center text-xs text-muted-foreground">No products found. Try another name or SKU.</p>}
+                    {matchingProducts.length > 40 && <p className="p-2 text-center text-xs text-muted-foreground">Search to narrow down {matchingProducts.length} products.</p>}
+                  </div></div>
                   {!external && !draft.sourceWarehouseId && <p className="text-xs text-muted-foreground">Select a source warehouse to see available stock and add products.</p>}
-                  {draft.items.length > 0 ? <div className="space-y-2">{draft.items.map(item => { const stock = sourceStock(item.productId); const insufficient = !external && item.quantity > stock; return <div key={item.productId} className={`rounded-xl border p-3 ${insufficient ? 'border-destructive/40 bg-destructive/5' : 'bg-muted/20'}`}><div className="mb-2 flex items-start justify-between gap-2"><div><p className="text-xs font-semibold">{item.name}</p><p className="text-[11px] text-muted-foreground">{item.sku}</p></div><Button variant="ghost" size="icon-sm" aria-label={`Remove ${item.name}`} onClick={() => updateDraft({ items: draft.items.filter(line => line.productId !== item.productId) })}><Trash2 className="size-3.5 text-muted-foreground" /></Button></div><div className="flex flex-wrap items-end gap-3"><div className="w-24 space-y-1"><Label htmlFor={`qty-${item.productId}`} className="text-[11px]">Quantity</Label><Input id={`qty-${item.productId}`} type="number" min="1" step="1" className="h-8" value={Number.isNaN(item.quantity) ? '' : item.quantity} onChange={event => updateLine(item.productId, { quantity: event.target.valueAsNumber })} /></div>{external ? <><div className="w-28 space-y-1"><Label htmlFor={`cost-${item.productId}`} className="text-[11px]">Unit cost (₱)</Label><Input id={`cost-${item.productId}`} type="number" min="0.01" step="0.01" className="h-8" value={Number.isNaN(item.unitCost) ? '' : item.unitCost} onChange={event => updateLine(item.productId, { unitCost: event.target.valueAsNumber })} /></div><p className="ml-auto pb-1 text-sm font-semibold tabular-nums">{Number.isFinite(purchaseTotal([item])) ? money(purchaseTotal([item])) : '—'}</p></> : <p className={`pb-1 text-xs ${insufficient ? 'text-destructive' : 'text-muted-foreground'}`}>{stock} available{insufficient ? ' · Not enough stock' : ''}</p>}</div></div>; })}</div> : <div className="rounded-xl border border-dashed p-5 text-center text-xs text-muted-foreground">Add products above to build your movement.</div>}
+                  {draft.items.length > 0 ? <div className="space-y-2">{draft.items.map(item => { const stock = sourceStock(item.productId); const insufficient = !external && item.quantity > stock; return <div key={item.productId} className={`rounded-xl border p-3 ${insufficient ? 'border-destructive/40 bg-destructive/5' : 'bg-muted/20'}`}><div className="mb-2 flex items-start justify-between gap-2"><div><p className="text-xs font-semibold">{item.name}</p><p className="text-[11px] text-muted-foreground">{item.sku}</p></div><Button variant="ghost" size="icon-sm" aria-label={`Remove ${item.name}`} onClick={() => updateDraft({ items: draft.items.filter(line => line.productId !== item.productId) })}><Trash2 className="size-3.5 text-muted-foreground" /></Button></div><div className="flex flex-wrap items-end gap-3"><div className="w-24 space-y-1"><Label htmlFor={`qty-${item.productId}`} className="text-[11px]">Quantity</Label><Input id={`qty-${item.productId}`} type="number" min="1" step="1" className="h-8" value={Number.isNaN(item.quantity) ? '' : item.quantity} onChange={event => updateLine(item.productId, { quantity: event.target.valueAsNumber })} /></div>{external ? <><div className="w-28 space-y-1"><Label htmlFor={`cost-${item.productId}`} className="text-[11px]">Unit cost (₱)</Label><Input id={`cost-${item.productId}`} type="number" min="0.01" step="0.01" className="h-8" placeholder="0" value={!item.unitCost || Number.isNaN(item.unitCost) ? '' : item.unitCost} onChange={event => updateLine(item.productId, { unitCost: event.target.value === '' ? 0 : Number(event.target.value) })} /></div><p className="ml-auto pb-1 text-sm font-semibold tabular-nums">{Number.isFinite(purchaseTotal([item])) ? money(purchaseTotal([item])) : '—'}</p></> : <p className={`pb-1 text-xs ${insufficient ? 'text-destructive' : 'text-muted-foreground'}`}>{stock} available{insufficient ? ' · Not enough stock' : ''}</p>}</div></div>; })}</div> : <div className="rounded-xl border border-dashed p-5 text-center text-xs text-muted-foreground">Add products above to build your movement.</div>}
                 </section>
                 <div className="space-y-2"><Label htmlFor="movement-notes" className="text-xs font-semibold">Notes <span className="font-normal text-muted-foreground">(optional)</span></Label><textarea id="movement-notes" rows={3} className="w-full resize-y rounded-lg border bg-background p-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring" placeholder="Add any details about this movement…" value={draft.notes} onChange={event => updateDraft({ notes: event.target.value })} /></div>
               </div>

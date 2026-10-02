@@ -104,22 +104,74 @@ export function orderTotals(
       roundMoney(discount) === discount,
   };
 }
+export interface ExistingCustomer {
+  id: string;
+  name: string;
+  address: string;
+  region: string;
+  terms?: string;
+  phone?: string;
+  contact?: string;
+}
+
 // Use the same name grouping as Supply Chain, limited to orders visible to this user.
-export function existingCustomers(orders: ReceiptOrder[]) {
-  const customers = new Map<
-    string,
-    { id: string; name: string; address: string; region: string }
-  >();
+export function existingCustomers(
+  orders: ReceiptOrder[],
+  extraCustomers: Array<{
+    id?: string;
+    name: string;
+    address?: string;
+    region?: string;
+    terms?: string;
+    phone?: string;
+    contact?: string;
+  }> = [],
+): ExistingCustomer[] {
+  const customers = new Map<string, ExistingCustomer>();
+
   for (const order of orders) {
     const key = order.clientName?.trim().toLowerCase();
-    if (key && !customers.has(key))
-      customers.set(key, {
+    if (key && !customers.has(key)) {
+      const item: ExistingCustomer = {
         id: order.clientId,
         name: order.clientName,
         address: order.receiptDetails?.address || "",
         region: order.deliveryRegion,
-      });
+      };
+      if (order.receiptDetails?.paymentTerms) {
+        item.terms = order.receiptDetails.paymentTerms;
+      }
+      customers.set(key, item);
+    }
   }
+
+  for (const extra of extraCustomers) {
+    const key = extra.name?.trim().toLowerCase();
+    if (!key) continue;
+    const existing = customers.get(key);
+    if (!existing) {
+      const item: ExistingCustomer = {
+        id: extra.id || `customer:${key}`,
+        name: extra.name.trim(),
+        address: extra.address?.trim() || "",
+        region: extra.region?.trim() || "Metro Manila",
+      };
+      if (extra.terms?.trim()) item.terms = extra.terms.trim();
+      if (extra.phone?.trim()) item.phone = extra.phone.trim();
+      if (extra.contact?.trim()) item.contact = extra.contact.trim();
+      customers.set(key, item);
+    } else {
+      if (!existing.address && extra.address?.trim()) {
+        existing.address = extra.address.trim();
+      }
+      if (!existing.terms && extra.terms?.trim()) {
+        existing.terms = extra.terms.trim();
+      }
+      if (extra.phone?.trim()) existing.phone = extra.phone.trim();
+      if (extra.contact?.trim()) existing.contact = extra.contact.trim();
+    }
+  }
+
   return [...customers.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 export const RECEIPT_PAGE_SIZE = 12;

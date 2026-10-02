@@ -58,13 +58,53 @@ export function SupplyChainWorkspace({ sourceLoading, sourceError, onRetrySource
   const [details, setDetails] = useState<ChainTransaction | null>(null);
   const [action, setAction] = useState<'payment' | 'refund' | null>(null);
   const [previews, setPreviews] = useState<ChainTransaction[]>([]);
-  const [customerDrafts, setCustomerDrafts] = useState<Entity[]>([]);
-  const [metadata, setMetadata] = useState<Record<string, Partial<Entity>>>({});
-  const [hiddenCustomers, setHiddenCustomers] = useState<string[]>([]);
+  const [customerDrafts, setCustomerDrafts] = useState<Entity[]>(() => {
+    try {
+      const stored = localStorage.getItem('activepro_supply_chain_customers');
+      return stored ? JSON.parse(stored) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [metadata, setMetadata] = useState<Record<string, Partial<Entity>>>(() => {
+    try {
+      const stored = localStorage.getItem('activepro_supply_chain_metadata');
+      return stored ? JSON.parse(stored) : {};
+    } catch {
+      return {};
+    }
+  });
+  const [hiddenCustomers, setHiddenCustomers] = useState<string[]>(() => {
+    try {
+      const stored = localStorage.getItem('activepro_supply_chain_hidden_customers');
+      return stored ? JSON.parse(stored) : [];
+    } catch {
+      return [];
+    }
+  });
   const [editor, setEditor] = useState<Entity | null>(null);
   const [removing, setRemoving] = useState(false);
   const [saving, setSaving] = useState(false);
   const [editError, setEditError] = useState('');
+
+  useEffect(() => {
+    const syncDirectory = () => {
+      try {
+        const stored = localStorage.getItem('activepro_supply_chain_customers');
+        if (stored) setCustomerDrafts(JSON.parse(stored));
+        const meta = localStorage.getItem('activepro_supply_chain_metadata');
+        if (meta) setMetadata(JSON.parse(meta));
+        const hidden = localStorage.getItem('activepro_supply_chain_hidden_customers');
+        if (hidden) setHiddenCustomers(JSON.parse(hidden));
+      } catch {}
+    };
+    window.addEventListener('activepro_customers_changed', syncDirectory);
+    window.addEventListener('storage', syncDirectory);
+    return () => {
+      window.removeEventListener('activepro_customers_changed', syncDirectory);
+      window.removeEventListener('storage', syncDirectory);
+    };
+  }, []);
 
   useEffect(() => {
     setLoaded({}); setErrors({});
@@ -78,10 +118,30 @@ export function SupplyChainWorkspace({ sourceLoading, sourceError, onRetrySource
   }, [reload]);
 
   // Orders currently create a new clientId for each order. Group the directory by
-  // normalized customer name until the app has a persistent customer directory.
+  // normalized customer name and connect with persistent supply chain customers.
   const customerKey = (name: string) => `customer:${name.trim().toLowerCase()}`;
-  const customers = Array.from(new Map(orders.filter(o => o.clientName?.trim()).map(order => [customerKey(order.clientName), { id: customerKey(order.clientName), name: order.clientName, address: order.deliveryRegion }])).values());
-  const baseEntities: Entity[] = view === 'customers' ? [...customers, ...customerDrafts].filter(c => !hiddenCustomers.includes(c.id)) : view === 'suppliers' ? suppliers : warehouses.map(w => ({ ...w, address: w.location }));
+  const customerMap = new Map<string, Entity>();
+  for (const order of orders) {
+    if (order.clientName?.trim()) {
+      const key = customerKey(order.clientName);
+      if (!customerMap.has(key)) {
+        customerMap.set(key, { id: key, name: order.clientName, address: order.deliveryRegion });
+      }
+    }
+  }
+  for (const draft of customerDrafts) {
+    if (draft.name?.trim()) {
+      const key = customerKey(draft.name);
+      const existing = customerMap.get(key);
+      if (!existing) {
+        customerMap.set(key, { ...draft, id: draft.id || key });
+      } else {
+        customerMap.set(key, { ...existing, ...draft, id: existing.id || draft.id || key });
+      }
+    }
+  }
+  const customers = Array.from(customerMap.values());
+  const baseEntities: Entity[] = view === 'customers' ? customers.filter(c => !hiddenCustomers.includes(c.id)) : view === 'suppliers' ? suppliers : warehouses.map(w => ({ ...w, address: w.location }));
   const entities = baseEntities.map(entity => ({ ...entity, ...metadata[`${view}:${entity.id}`] })).sort((a, b) => a.name.localeCompare(b.name));
   const visibleEntities = entities.filter(entity => `${entity.name} ${entity.address || ''} ${entity.contact || ''}`.toLowerCase().includes(directorySearch.toLowerCase()));
   const current = entities.find(entity => entity.id === entityId) ?? visibleEntities[0];
@@ -159,7 +219,29 @@ export function SupplyChainWorkspace({ sourceLoading, sourceError, onRetrySource
     try {
       let id = editor.id;
       if (customer) {
-        if (!id) { id = `draft:${crypto.randomUUID()}`; setCustomerDrafts(items => [...items, { ...editor, id, name, draft: true }]); }
+        if (!id) id = customerKey(name);
+        const record: Entity = {
+          ...editor,
+          id,
+          name,
+          address: editor.address?.trim() || '',
+          contact: editor.contact?.trim() || '',
+          phone: editor.phone?.trim() || '',
+          terms: editor.terms?.trim() || '',
+          draft: false,
+        };
+        setCustomerDrafts(items => {
+          const filtered = items.filter(c => c.id !== id && c.name.toLowerCase() !== name.toLowerCase());
+          const next = [...filtered, record];
+          try { localStorage.setItem('activepro_supply_chain_customers', JSON.stringify(next)); } catch {}
+          window.dispatchEvent(new CustomEvent('activepro_customers_changed'));
+          return next;
+        });
+        setHiddenCustomers(items => {
+          const next = items.filter(hId => hId !== id);
+          try { localStorage.setItem('activepro_supply_chain_hidden_customers', JSON.stringify(next)); } catch {}
+          return next;
+        });
       } else if (warehouse) {
         const payload = { name, location: editor.address?.trim() || 'Warehouse Facility', active: editor.active !== false };
         if (id) await updateDoc(doc(db, 'warehouses', id), payload);
@@ -174,11 +256,13 @@ export function SupplyChainWorkspace({ sourceLoading, sourceError, onRetrySource
           if (original && original.name !== name) for (const product of products.filter(p => p.supplier === original.name)) await updateDoc(doc(db, 'products', product.id), { supplier: name, updatedAt: serverTimestamp() });
         } else id = (await addDoc(collection(db, 'suppliers'), { name, createdAt: serverTimestamp(), updatedAt: serverTimestamp() })).id;
       }
-      // The existing schema has no directory contact/payment-term columns.
-      // Keep these explicitly labeled fields in this module's preview state only.
-      setMetadata(items => ({ ...items, [`${view}:${id}`]: { ...(customer ? { name, address: editor.address, draft: true } : !warehouse ? { address: editor.address } : {}), contact: editor.contact, phone: editor.phone, terms: editor.terms } }));
+      setMetadata(items => {
+        const next = { ...items, [`${view}:${id}`]: { ...(customer ? { name, address: editor.address, draft: false } : !warehouse ? { address: editor.address } : {}), contact: editor.contact, phone: editor.phone, terms: editor.terms } };
+        try { localStorage.setItem('activepro_supply_chain_metadata', JSON.stringify(next)); } catch {}
+        return next;
+      });
       setEntityId(id); setEditor(null);
-      toast.success(customer ? 'Customer preview updated' : `${warehouse ? 'Warehouse' : 'Supplier'} saved; contact details kept in this preview`);
+      toast.success(customer ? 'Customer saved and ready for Order Entry' : `${warehouse ? 'Warehouse' : 'Supplier'} saved; contact details kept in this preview`);
     } catch { setEditError(`Could not finish saving this ${singular}. Check the current record before retrying.`); }
     finally { setSaving(false); }
   }
@@ -189,8 +273,8 @@ export function SupplyChainWorkspace({ sourceLoading, sourceError, onRetrySource
     {showCategories ? categoriesContent : <><div className="grid items-start gap-5 xl:grid-cols-[280px_minmax(0,1fr)]">
       <aside className="overflow-hidden rounded-2xl border bg-card shadow-sm">
         <div className="space-y-3 border-b p-4"><div className="flex items-center justify-between"><h2 className="font-semibold">{title} <span className="ml-1 text-xs font-normal text-muted-foreground">{entities.length}</span></h2>{canManage && <Button size="sm" onClick={() => { setEditError(''); setEditor({ id: '', name: '', active: true }); }}><Plus className="size-4" />Add</Button>}</div><SearchBar value={directorySearch} onValueChange={setDirectorySearch} placeholder={`Search ${title.toLowerCase()}…`} /></div>
-        <div className="max-h-64 overflow-y-auto p-2 xl:max-h-[640px]">{visibleEntities.map(entity => <button key={entity.id} type="button" onClick={() => { setEntityId(entity.id); setSelectedId(''); setSearch(''); }} aria-pressed={current?.id === entity.id} className={`mb-1 flex w-full items-center gap-3 rounded-xl border p-3 text-left transition-colors ${current?.id === entity.id ? 'border-primary/40 bg-primary/10' : 'border-transparent hover:bg-muted/60'}`}><span className="min-w-0 flex-1"><span className="block truncate text-sm font-semibold">{entity.name}</span><span className="block truncate text-xs text-muted-foreground">{entity.draft ? 'Preview customer' : warehouse ? [entity.address, entity.active === false ? 'Inactive' : 'Active warehouse'].filter(Boolean).join(' / ') : entity.address || (customer ? 'From order records' : 'Supplier account')}</span></span></button>)}{!visibleEntities.length && <div className="p-6 text-center text-sm text-muted-foreground">{loading ? 'Loading records…' : directorySearch ? 'No matching records.' : `No ${title.toLowerCase()} yet.`}</div>}</div>
-        {customer && <p className="border-t px-4 py-3 text-xs text-muted-foreground">Customers are grouped by name from existing orders. New profiles are previews.</p>}
+        <div className="max-h-64 overflow-y-auto p-2 xl:max-h-[640px]">{visibleEntities.map(entity => <button key={entity.id} type="button" onClick={() => { setEntityId(entity.id); setSelectedId(''); setSearch(''); }} aria-pressed={current?.id === entity.id} className={`mb-1 flex w-full items-center gap-3 rounded-xl border p-3 text-left transition-colors ${current?.id === entity.id ? 'border-primary/40 bg-primary/10' : 'border-transparent hover:bg-muted/60'}`}><span className="min-w-0 flex-1"><span className="block truncate text-sm font-semibold">{entity.name}</span><span className="block truncate text-xs text-muted-foreground">{entity.draft ? 'Directory customer' : warehouse ? [entity.address, entity.active === false ? 'Inactive' : 'Active warehouse'].filter(Boolean).join(' / ') : entity.address || (customer ? 'From order records' : 'Supplier account')}</span></span></button>)}{!visibleEntities.length && <div className="p-6 text-center text-sm text-muted-foreground">{loading ? 'Loading records…' : directorySearch ? 'No matching records.' : `No ${title.toLowerCase()} yet.`}</div>}</div>
+        {customer && <p className="border-t px-4 py-3 text-xs text-muted-foreground">Customers added here can be selected when creating orders in Order Entry.</p>}
       </aside>
       <div className="min-w-0 space-y-5">
         {loadError && <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm"><span><AlertCircle className="mr-2 inline size-4" />Some records could not load. Totals and actions are unavailable.</span><Button variant="outline" size="sm" onClick={() => { setReload(n => n + 1); onRetrySources(); }}>Retry</Button></div>}
@@ -198,7 +282,7 @@ export function SupplyChainWorkspace({ sourceLoading, sourceError, onRetrySource
           <section className="overflow-hidden rounded-2xl border bg-card shadow-sm">
             <div className="flex flex-wrap items-start justify-between gap-3 p-5"><div><div className="mb-2 flex items-center gap-2"><Badge variant="secondary">{warehouse ? 'Warehouse' : customer ? 'Customer account' : 'Supplier account'}</Badge>{warehouse && <Badge variant={current.active === false ? 'outline' : 'secondary'}>{current.active === false ? 'Inactive' : 'Active'}</Badge>}{current.draft && <Badge variant="outline">Preview</Badge>}</div><h2 className="text-xl font-bold">{current.name}</h2></div>{canManage && <div className="flex gap-2"><Button size="sm" variant="outline" onClick={() => { setEditError(''); setEditor({ ...current }); }}><Pencil className="size-3.5" />Edit</Button><Button size="sm" variant="ghost" className="text-destructive hover:text-destructive" onClick={() => setRemoving(true)}><Trash2 className="size-3.5" />Remove</Button></div>}</div>
             <div className="grid gap-4 px-5 pb-5 sm:grid-cols-2"><InfoField icon={MapPin} label={warehouse ? "Location" : "Address"} value={current.address} /><InfoField icon={UserRound} label="Contact person" value={current.contact} /><InfoField icon={Phone} label="Contact number" value={current.phone} /><InfoField icon={CalendarDays} label={warehouse ? 'Status' : 'Payment terms'} value={warehouse ? current.active === false ? 'Inactive' : 'Active' : current.terms} /></div>
-            {metadata[`${view}:${current.id}`] && <p className="px-5 pb-4 text-xs text-amber-700 dark:text-amber-300">Contact details and payment terms are session previews.</p>}
+            {metadata[`${view}:${current.id}`] && !customer && <p className="px-5 pb-4 text-xs text-amber-700 dark:text-amber-300">Contact details and payment terms are session previews.</p>}
             {(!warehouse || canViewValuation) && <div className="flex flex-wrap items-center justify-between gap-4 border-t bg-muted/30 px-5 py-5"><div><p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{warehouse ? 'Total Inventory Valuation' : 'Total Open Balance'}</p><p className="mt-1 text-3xl font-bold tracking-tight tabular-nums">{loading ? 'Loading…' : loadError ? 'Unavailable' : warehouse ? chainMoney(missingCosts ? null : valuation) : chainMoney(unknownBalance ? null : balance)}</p><p className="mt-1 text-xs text-muted-foreground">{warehouse ? missingCosts ? 'Some inventory items are missing cost prices.' : 'At product cost · Visible to administrators' : unknownBalance ? `Exact ${customer ? 'receivables' : 'payables'} are not available in the source records.` : customer ? 'Outstanding customer receivables' : 'Outstanding supplier payables'}</p></div>{overdueCount > 0 && <Badge variant="destructive">{overdueCount} overdue {overdueCount === 1 ? 'order' : 'orders'}</Badge>}{warehouse && <div className="text-right"><p className="text-xl font-semibold">{stock.reduce((sum, item) => sum + item.quantity, 0).toLocaleString()}</p><p className="text-xs text-muted-foreground">units on hand</p></div>}</div>}
           </section>
           <section className="overflow-hidden rounded-2xl border bg-card shadow-sm">
@@ -220,9 +304,22 @@ export function SupplyChainWorkspace({ sourceLoading, sourceError, onRetrySource
 
     <Dialog open={!!details} onOpenChange={open => { if (!open) setDetails(null); }}><DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl"><DialogHeader><DialogTitle>{details?.type} details</DialogTitle><DialogDescription>{details?.reference} · {formatDate(details?.date)}</DialogDescription></DialogHeader>{details && <><div className="flex flex-wrap justify-between gap-3 rounded-xl bg-muted/40 p-4"><div><p className="text-xs text-muted-foreground">Amount / value</p><p className="text-2xl font-bold">{chainMoney(details.amount)}</p></div><Badge variant="secondary" className="h-fit capitalize">{details.status.replaceAll('_', ' ')}</Badge></div>{details.direction && <div className={`rounded-lg p-3 text-sm ${details.direction === 'in' ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' : 'bg-orange-500/10 text-orange-700 dark:text-orange-300'}`}>{details.draft ? 'Preview: inventory would ' : 'Inventory direction: '}{details.direction === 'in' ? 'increase — items received' : 'decrease — items issued'}</div>}{details.notes && <p className="text-sm text-muted-foreground">{details.notes}</p>}<Table><TableHeader><TableRow><TableHead>Item</TableHead><TableHead className="text-right">Quantity</TableHead><TableHead className="text-right">Unit value</TableHead></TableRow></TableHeader><TableBody>{details.items.map(item => <TableRow key={item.id}><TableCell><p className="font-medium">{item.name}</p><p className="text-xs text-muted-foreground">{item.sku}{item.warehouseId && ` · ${warehouses.find(w => w.id === item.warehouseId)?.name || 'Warehouse'}`}</p></TableCell><TableCell className="text-right">{item.quantity}</TableCell><TableCell className="text-right">{chainMoney(item.unitPrice)}</TableCell></TableRow>)}{!details.items.length && <TableRow><TableCell colSpan={3} className="py-8 text-center text-muted-foreground">No physical items recorded.</TableCell></TableRow>}</TableBody></Table>{details.draft && <p className="text-xs text-amber-700 dark:text-amber-300">Session preview only. No financial or inventory changes posted.</p>}<Button variant="outline" onClick={() => setDetails(null)}>Close</Button></>}</DialogContent></Dialog>
 
-    <Dialog open={!!editor} onOpenChange={open => { if (!open && !saving) setEditor(null); }}><DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-xl"><DialogHeader><DialogTitle>{editor?.id ? 'Edit' : 'Add'} {singular}</DialogTitle><DialogDescription>{customer ? 'Customer profiles are session previews until a customer directory is connected.' : `The ${warehouse ? 'name, location, and status' : 'name'} will be saved. Contact details${!warehouse ? ', address, and payment terms' : ''} are session previews.`}</DialogDescription></DialogHeader>{editor && <form onSubmit={event => { event.preventDefault(); void saveEntity(); }} className="space-y-4"><Field label="Name" id="chain-entity-name"><Input id="chain-entity-name" required value={editor.name} onChange={e => setEditor({ ...editor, name: e.target.value })} /></Field><Field label={warehouse ? "Location" : "Address"} id="chain-entity-address"><Input id="chain-entity-address" value={editor.address || ''} onChange={e => setEditor({ ...editor, address: e.target.value })} placeholder={warehouse ? "e.g. Hub 1" : "Street, city, province"} /></Field><div className="grid gap-4 sm:grid-cols-2"><Field label="Contact person" id="chain-entity-contact"><Input id="chain-entity-contact" value={editor.contact || ''} onChange={e => setEditor({ ...editor, contact: e.target.value })} /></Field><Field label="Contact number" id="chain-entity-phone"><Input id="chain-entity-phone" type="tel" value={editor.phone || ''} onChange={e => setEditor({ ...editor, phone: e.target.value })} /></Field></div>{warehouse ? <Field label="Status" id="chain-entity-status"><select id="chain-entity-status" className="h-10 w-full rounded-lg border bg-background px-3 text-sm" value={editor.active === false ? 'inactive' : 'active'} onChange={e => setEditor({ ...editor, active: e.target.value === 'active' })}><option value="active">Active</option><option value="inactive">Inactive</option></select></Field> : <Field label="Payment terms" id="chain-entity-terms"><Input id="chain-entity-terms" value={editor.terms || ''} onChange={e => setEditor({ ...editor, terms: e.target.value })} placeholder="e.g. Cash on delivery, Net 30" /></Field>}{editError && <p role="alert" className="text-sm text-destructive">{editError}</p>}<div className="flex justify-end gap-2 border-t pt-4"><Button type="button" variant="outline" disabled={saving} onClick={() => setEditor(null)}>Cancel</Button><Button type="submit" disabled={saving || !editor.name.trim()}>{saving ? 'Saving…' : customer ? 'Save preview' : 'Save changes'}</Button></div></form>}</DialogContent></Dialog>
+    <Dialog open={!!editor} onOpenChange={open => { if (!open && !saving) setEditor(null); }}><DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-xl"><DialogHeader><DialogTitle>{editor?.id ? 'Edit' : 'Add'} {singular}</DialogTitle><DialogDescription>{customer ? 'Customer profiles can be used in Order Entry to create orders.' : `The ${warehouse ? 'name, location, and status' : 'name'} will be saved. Contact details${!warehouse ? ', address, and payment terms' : ''} are session previews.`}</DialogDescription></DialogHeader>{editor && <form onSubmit={event => { event.preventDefault(); void saveEntity(); }} className="space-y-4"><Field label="Name" id="chain-entity-name"><Input id="chain-entity-name" required value={editor.name} onChange={e => setEditor({ ...editor, name: e.target.value })} /></Field><Field label={warehouse ? "Location" : "Address"} id="chain-entity-address"><Input id="chain-entity-address" value={editor.address || ''} onChange={e => setEditor({ ...editor, address: e.target.value })} placeholder={warehouse ? "e.g. Hub 1" : "Street, city, province"} /></Field><div className="grid gap-4 sm:grid-cols-2"><Field label="Contact person" id="chain-entity-contact"><Input id="chain-entity-contact" value={editor.contact || ''} onChange={e => setEditor({ ...editor, contact: e.target.value })} /></Field><Field label="Contact number" id="chain-entity-phone"><Input id="chain-entity-phone" type="tel" value={editor.phone || ''} onChange={e => setEditor({ ...editor, phone: e.target.value })} /></Field></div>{warehouse ? <Field label="Status" id="chain-entity-status"><select id="chain-entity-status" className="h-10 w-full rounded-lg border bg-background px-3 text-sm" value={editor.active === false ? 'inactive' : 'active'} onChange={e => setEditor({ ...editor, active: e.target.value === 'active' })}><option value="active">Active</option><option value="inactive">Inactive</option></select></Field> : <Field label="Payment terms" id="chain-entity-terms"><Input id="chain-entity-terms" value={editor.terms || ''} onChange={e => setEditor({ ...editor, terms: e.target.value })} placeholder="e.g. Cash on delivery, Net 30" /></Field>}{editError && <p role="alert" className="text-sm text-destructive">{editError}</p>}<div className="flex justify-end gap-2 border-t pt-4"><Button type="button" variant="outline" disabled={saving} onClick={() => setEditor(null)}>Cancel</Button><Button type="submit" disabled={saving || !editor.name.trim()}>{saving ? 'Saving…' : customer ? 'Save customer' : 'Save changes'}</Button></div></form>}</DialogContent></Dialog>
 
-    <Dialog open={removing} onOpenChange={setRemoving}><DialogContent className="sm:max-w-md"><DialogHeader><DialogTitle>Remove {current?.name}?</DialogTitle><DialogDescription>{customer ? 'This hides the customer from this session preview. Existing orders and balances are preserved.' : warehouse ? 'The existing warehouse removal flow will show the stock impact before deletion.' : 'The existing supplier removal flow will show which product assignments are affected.'}</DialogDescription></DialogHeader><div className="flex justify-end gap-2"><Button variant="outline" onClick={() => setRemoving(false)}>Cancel</Button><Button variant="destructive" onClick={() => { if (!current) return; if (customer) { setHiddenCustomers(ids => [...ids, current.id]); setEntityId(''); } else if (warehouse) { const record = warehouses.find(w => w.id === current.id); if (record) onRemoveWarehouse(record); } else onRemoveSupplier(current.name); setRemoving(false); }}>{customer ? 'Remove from preview' : 'Continue'}</Button></div></DialogContent></Dialog>
+    <Dialog open={removing} onOpenChange={setRemoving}><DialogContent className="sm:max-w-md"><DialogHeader><DialogTitle>Remove {current?.name}?</DialogTitle><DialogDescription>{customer ? 'This removes the customer from the directory and Order Entry. Existing orders and balances are preserved.' : warehouse ? 'The existing warehouse removal flow will show the stock impact before deletion.' : 'The existing supplier removal flow will show which product assignments are affected.'}</DialogDescription></DialogHeader><div className="flex justify-end gap-2"><Button variant="outline" onClick={() => setRemoving(false)}>Cancel</Button><Button variant="destructive" onClick={() => { if (!current) return; if (customer) {
+      setHiddenCustomers(ids => {
+        const next = [...ids, current.id];
+        try { localStorage.setItem('activepro_supply_chain_hidden_customers', JSON.stringify(next)); } catch {}
+        return next;
+      });
+      setCustomerDrafts(items => {
+        const next = items.filter(c => c.id !== current.id && c.name.toLowerCase() !== current.name.toLowerCase());
+        try { localStorage.setItem('activepro_supply_chain_customers', JSON.stringify(next)); } catch {}
+        window.dispatchEvent(new CustomEvent('activepro_customers_changed'));
+        return next;
+      });
+      setEntityId('');
+    } else if (warehouse) { const record = warehouses.find(w => w.id === current.id); if (record) onRemoveWarehouse(record); } else onRemoveSupplier(current.name); setRemoving(false); }}>{customer ? 'Remove customer' : 'Continue'}</Button></div></DialogContent></Dialog>
   </>}
   </div>;
 }

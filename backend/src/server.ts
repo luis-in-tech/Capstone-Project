@@ -54,9 +54,12 @@ import { requestLogger } from './middleware/requestLogger';
 import { errorHandler }  from './middleware/errorHandler';
 
 // ── Routes ────────────────────────────────────────────────────────────────────
-import filesRoutes   from './routes/files.routes';
-import agentRoutes   from './routes/agent.routes';
-import restoreRoutes from './routes/restore.routes';
+import filesRoutes     from './routes/files.routes';
+import agentRoutes     from './routes/agent.routes';
+import restoreRoutes   from './routes/restore.routes';
+import transfersRoutes from './routes/transfers.routes';
+import logisticsRoutes from './routes/logistics.routes';
+import ordersRoutes    from './routes/orders.routes';
 
 // ── WebSocket / FS Watcher ────────────────────────────────────────────────────
 import { createFsWatcher } from './ws/fsWatcher';
@@ -116,9 +119,12 @@ async function bootstrap(): Promise<void> {
 
   // ── API Routes ──────────────────────────────────────────────────────────────
 
-  app.use('/api/v1/files',   filesRoutes);
-  app.use('/api/v1/agent',   agentRoutes);
-  app.use('/api/v1/restore', restoreRoutes);
+  app.use('/api/v1/files',     filesRoutes);
+  app.use('/api/v1/agent',     agentRoutes);
+  app.use('/api/v1/restore',   restoreRoutes);
+  app.use('/api/v1/transfers', transfersRoutes);
+  app.use('/api/v1/logistics', logisticsRoutes);
+  app.use('/api/v1/orders',    ordersRoutes);
 
   // ── 404 Handler — for any unmatched route ───────────────────────────────────
 

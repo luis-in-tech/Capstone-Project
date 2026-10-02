@@ -52,8 +52,31 @@ export function createFsWatcher(httpServer: HttpServer): {
     path:   '/ws',       // ws://localhost:4000/ws
   });
 
+  // ── Heartbeat Mechanism to Prevent Connection & Memory Leaks ──────────────
+  const heartbeatInterval = setInterval(() => {
+    wss.clients.forEach((client) => {
+      const extSocket = client as WebSocket & { isAlive?: boolean };
+      if (extSocket.isAlive === false) {
+        return client.terminate();
+      }
+      extSocket.isAlive = false;
+      client.ping();
+    });
+  }, 30000);
+
+  wss.on('close', () => {
+    clearInterval(heartbeatInterval);
+  });
+
   wss.on('connection', (socket: WebSocket, req: IncomingMessage) => {
     const clientIp = req.socket.remoteAddress ?? 'unknown';
+    const extSocket = socket as WebSocket & { isAlive: boolean };
+    extSocket.isAlive = true;
+
+    socket.on('pong', () => {
+      extSocket.isAlive = true;
+    });
+
     console.log(`🔌  WebSocket client connected (${clientIp}) — ${wss.clients.size} total`);
 
     // Send a greeting so the client knows the connection is live
@@ -96,12 +119,17 @@ export function createFsWatcher(httpServer: HttpServer): {
   // ── Chokidar Watcher ─────────────────────────────────────────────────────
 
   function startWatcher(): FSWatcher {
+    const normBackendRoot = path.normalize(BACKEND_ROOT).toLowerCase();
+
     const watcher = chokidar.watch(FRONTEND_ROOT, {
       // Ignore node_modules, .git, backend/ itself, and .trash/
       ignored: [
         /(^|[/\\])\../,             // Hidden files/dirs (e.g. .git, .env)
         /node_modules/,
-        new RegExp(BACKEND_ROOT.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+        (targetPath: string) => {
+          const norm = path.normalize(targetPath).toLowerCase();
+          return norm === normBackendRoot || norm.startsWith(normBackendRoot + path.sep);
+        },
         /\.trash/,
         /dist/,
       ],

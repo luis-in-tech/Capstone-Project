@@ -1,4 +1,3 @@
-import { PageHeading } from './PageHeading';
 import React, { useState, useEffect, useMemo } from 'react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import {
@@ -19,7 +18,9 @@ import {
   Volume2,
   VolumeX,
   Layers,
-  Activity
+  Activity,
+  Boxes,
+  Network
 } from 'lucide-react';
 import { useTheme } from './ThemeProvider';
 import { useAuth } from '../hooks/useAuth';
@@ -45,9 +46,41 @@ interface DispatchTrip {
   dispatched_by?: string;
 }
 
+interface InventoryMovementDoc {
+  id: string;
+  movementNumber?: string;
+  type?: string;
+  supplierName?: string;
+  sourceWarehouseName?: string;
+  destinationWarehouseName?: string;
+  totalValue?: number;
+  items?: Array<{ name?: string; quantity: number }>;
+  recordedByName?: string;
+  createdAt?: string | { toDate?: () => Date };
+}
+
+interface SupplyChainEntityDoc {
+  id: string;
+  name?: string;
+  location?: string;
+  active?: boolean;
+  createdAt?: string | { toDate?: () => Date };
+  updatedAt?: string | { toDate?: () => Date };
+}
+
+interface DelegationDoc {
+  id: string;
+  staffEmail?: string;
+  agentId?: string;
+  canAdjustInventory?: boolean;
+  canAdjustPricelist?: boolean;
+  active?: boolean;
+  createdAt?: string | { toDate?: () => Date };
+}
+
 interface NotificationItem {
   id: string;
-  type: 'order' | 'logistics' | 'transfer';
+  type: 'order' | 'logistics' | 'transfer' | 'movement' | 'supply_chain';
   title: string;
   description: string;
   timestamp: Date;
@@ -68,9 +101,12 @@ export function Settings() {
   const [orders, setOrders] = useState<Order[]>([]);
   const [trips, setTrips] = useState<DispatchTrip[]>([]);
   const [transfers, setTransfers] = useState<Transfer[]>([]);
+  const [movements, setMovements] = useState<InventoryMovementDoc[]>([]);
+  const [warehousesDoc, setWarehousesDoc] = useState<SupplyChainEntityDoc[]>([]);
+  const [delegations, setDelegations] = useState<DelegationDoc[]>([]);
 
   // Filter and preference states
-  const [activeFilter, setActiveFilter] = useState<'all' | 'order' | 'logistics' | 'transfer'>('all');
+  const [activeFilter, setActiveFilter] = useState<'all' | 'order' | 'logistics' | 'transfer' | 'movement' | 'supply_chain'>('all');
   const [readIds, setReadIds] = useState<Set<string>>(() => {
     try {
       const saved = localStorage.getItem(NOTIF_READ_KEY);
@@ -84,13 +120,17 @@ export function Settings() {
     orderAlerts: boolean;
     logisticsAlerts: boolean;
     transferAlerts: boolean;
+    movementAlerts: boolean;
+    supplyChainAlerts: boolean;
     toastAlerts: boolean;
   }>(() => {
     try {
       const saved = localStorage.getItem(NOTIF_PREFS_KEY);
-      return saved ? JSON.parse(saved) : { orderAlerts: true, logisticsAlerts: true, transferAlerts: true, toastAlerts: true };
+      return saved
+        ? JSON.parse(saved)
+        : { orderAlerts: true, logisticsAlerts: true, transferAlerts: true, movementAlerts: true, supplyChainAlerts: true, toastAlerts: true };
     } catch {
-      return { orderAlerts: true, logisticsAlerts: true, transferAlerts: true, toastAlerts: true };
+      return { orderAlerts: true, logisticsAlerts: true, transferAlerts: true, movementAlerts: true, supplyChainAlerts: true, toastAlerts: true };
     }
   });
 
@@ -122,10 +162,37 @@ export function Settings() {
       (err) => console.warn('Transfers notification subscription failed:', err)
     );
 
+    const unsubMovements = onSnapshot(
+      query(collection(db, 'inventory_movements'), orderBy('createdAt', 'desc'), limit(20)),
+      (snap) => {
+        setMovements(snap.docs.map(d => ({ id: d.id, ...d.data() } as InventoryMovementDoc)));
+      },
+      (err) => console.warn('Inventory movements notification subscription failed:', err)
+    );
+
+    const unsubWarehouses = onSnapshot(
+      query(collection(db, 'warehouses'), orderBy('updatedAt', 'desc'), limit(15)),
+      (snap) => {
+        setWarehousesDoc(snap.docs.map(d => ({ id: d.id, ...d.data() } as SupplyChainEntityDoc)));
+      },
+      (err) => console.warn('Warehouses notification subscription failed:', err)
+    );
+
+    const unsubDelegations = onSnapshot(
+      query(collection(db, 'delegations'), orderBy('createdAt', 'desc'), limit(15)),
+      (snap) => {
+        setDelegations(snap.docs.map(d => ({ id: d.id, ...d.data() } as DelegationDoc)));
+      },
+      (err) => console.warn('Delegations notification subscription failed:', err)
+    );
+
     return () => {
       unsubOrders();
       unsubTrips();
       unsubTransfers();
+      unsubMovements();
+      unsubWarehouses();
+      unsubDelegations();
     };
   }, []);
 
@@ -170,8 +237,8 @@ export function Settings() {
           statusColor: o.status === 'delivered' || o.status === 'completed'
             ? 'bg-emerald-500/10 text-emerald-600 border-emerald-500/20'
             : o.status === 'out_for_delivery' || o.status === 'preparing'
-            ? 'bg-blue-500/10 text-blue-600 border-blue-500/20'
-            : 'bg-amber-500/10 text-amber-600 border-amber-500/20',
+              ? 'bg-blue-500/10 text-blue-600 border-blue-500/20'
+              : 'bg-amber-500/10 text-amber-600 border-amber-500/20',
           meta: o.deliveryCity ? `Delivery: ${o.deliveryCity}` : undefined
         });
       });
@@ -207,15 +274,73 @@ export function Settings() {
           statusColor: tr.status === 'received'
             ? 'bg-emerald-500/10 text-emerald-600 border-emerald-500/20'
             : tr.status === 'in_transit'
-            ? 'bg-sky-500/10 text-sky-600 border-sky-500/20'
-            : 'bg-amber-500/10 text-amber-600 border-amber-500/20',
+              ? 'bg-sky-500/10 text-sky-600 border-sky-500/20'
+              : 'bg-amber-500/10 text-amber-600 border-amber-500/20',
           meta: tr.status === 'in_transit' ? 'In Transit' : tr.status === 'received' ? 'Received' : 'Pending'
         });
       });
     }
 
+    if (prefs.movementAlerts) {
+      movements.forEach(m => {
+        const date = parseDate(m.createdAt);
+        const totalUnits = m.items?.reduce((sum, item) => sum + (item.quantity || 0), 0) || 0;
+        const isExternal = m.type === 'external';
+        const valFormatted = m.totalValue ? `₱${Number(m.totalValue).toLocaleString()}` : undefined;
+
+        list.push({
+          id: `mov-${m.id}`,
+          type: 'movement',
+          title: `Inventory Movement ${m.movementNumber || m.id.slice(-6).toUpperCase()}`,
+          description: isExternal
+            ? `Supplier Receipt: ${m.supplierName || 'Supplier'} → ${m.destinationWarehouseName || 'Warehouse'} (${totalUnits} units)`
+            : `Internal Transfer: ${m.sourceWarehouseName || 'Source'} → ${m.destinationWarehouseName || 'Destination'} (${totalUnits} units)`,
+          timestamp: date,
+          statusBadge: isExternal ? 'Supplier Receipt' : 'Warehouse Transfer',
+          statusColor: isExternal
+            ? 'bg-blue-500/10 text-blue-600 border-blue-500/20'
+            : 'bg-purple-500/10 text-purple-600 border-purple-500/20',
+          meta: valFormatted ? `Purchase Value: ${valFormatted} • Recorded by ${m.recordedByName || 'Staff'}` : `Recorded by ${m.recordedByName || 'Staff'}`
+        });
+      });
+    }
+
+    if (prefs.supplyChainAlerts) {
+      warehousesDoc.forEach(w => {
+        const date = parseDate(w.updatedAt || w.createdAt);
+        list.push({
+          id: `wh-${w.id}`,
+          type: 'supply_chain',
+          title: `Facility Node: ${w.name || 'Warehouse'}`,
+          description: `Location: ${w.location || 'Facility Hub'} • Status: ${w.active === false ? 'Inactive' : 'Active Facility'}`,
+          timestamp: date,
+          statusBadge: w.active === false ? 'Inactive Facility' : 'Active Facility',
+          statusColor: w.active === false
+            ? 'bg-amber-500/10 text-amber-600 border-amber-500/20'
+            : 'bg-emerald-500/10 text-emerald-600 border-emerald-500/20',
+          meta: 'Supply Chain Infrastructure'
+        });
+      });
+
+      delegations.forEach(del => {
+        const date = parseDate(del.createdAt);
+        list.push({
+          id: `del-${del.id}`,
+          type: 'supply_chain',
+          title: `Executive Access Delegation: ${del.staffEmail || 'Staff User'}`,
+          description: `Permissions: ${del.canAdjustInventory ? 'Inventory Adjust Enabled' : 'View Only'} • ${del.canAdjustPricelist ? 'Pricelist Edit Enabled' : 'Pricelist Locked'}`,
+          timestamp: date,
+          statusBadge: del.active === false ? 'Access Revoked' : 'Access Granted',
+          statusColor: del.active === false
+            ? 'bg-red-500/10 text-red-600 border-red-500/20'
+            : 'bg-emerald-500/10 text-emerald-600 border-emerald-500/20',
+          meta: 'Security & Key Personnel Access'
+        });
+      });
+    }
+
     return list.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
-  }, [orders, trips, transfers, prefs]);
+  }, [orders, trips, transfers, movements, warehousesDoc, delegations, prefs]);
 
   const filteredNotifications = useMemo(() => {
     if (activeFilter === 'all') return allNotifications;
@@ -264,7 +389,9 @@ export function Settings() {
   return (
     <div className="space-y-8 pb-12">
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <PageHeading title="Settings" subtitle="Manage your personal preferences, live alerts, and system telemetry." />
+        <div>
+          <p className="text-muted-foreground font-medium">Manage your personal preferences, live alerts, and system telemetry.</p>
+        </div>
         <div className="flex items-center gap-2 self-start md:self-center bg-muted/50 p-1.5 rounded-2xl border border-border">
           <Button
             variant={theme === 'light' ? 'default' : 'ghost'}
@@ -470,7 +597,29 @@ export function Settings() {
                   </label>
                   <label className="flex items-center justify-between p-2.5 rounded-xl border border-border bg-background/60 hover:bg-background cursor-pointer transition-colors text-xs font-semibold">
                     <span className="flex items-center gap-2">
-                      {prefs.toastAlerts ? <Volume2 className="w-3.5 h-3.5 text-amber-500" /> : <VolumeX className="w-3.5 h-3.5 text-muted-foreground" />} Toast Notifications
+                      <Boxes className="w-3.5 h-3.5 text-purple-500" /> Inventory Movements
+                    </span>
+                    <input
+                      type="checkbox"
+                      checked={prefs.movementAlerts}
+                      onChange={() => togglePref('movementAlerts')}
+                      className="size-4 rounded accent-primary cursor-pointer"
+                    />
+                  </label>
+                  <label className="flex items-center justify-between p-2.5 rounded-xl border border-border bg-background/60 hover:bg-background cursor-pointer transition-colors text-xs font-semibold">
+                    <span className="flex items-center gap-2">
+                      <Network className="w-3.5 h-3.5 text-amber-500" /> Supply Chain &amp; Security
+                    </span>
+                    <input
+                      type="checkbox"
+                      checked={prefs.supplyChainAlerts}
+                      onChange={() => togglePref('supplyChainAlerts')}
+                      className="size-4 rounded accent-primary cursor-pointer"
+                    />
+                  </label>
+                  <label className="flex items-center justify-between p-2.5 rounded-xl border border-border bg-background/60 hover:bg-background cursor-pointer transition-colors text-xs font-semibold">
+                    <span className="flex items-center gap-2">
+                      {prefs.toastAlerts ? <Volume2 className="w-3.5 h-3.5 text-emerald-500" /> : <VolumeX className="w-3.5 h-3.5 text-muted-foreground" />} Toast Notifications
                     </span>
                     <input
                       type="checkbox"
@@ -490,15 +639,16 @@ export function Settings() {
                 { id: 'order', label: 'Orders', icon: ShoppingBag, count: allNotifications.filter(n => n.type === 'order').length },
                 { id: 'logistics', label: 'Logistics', icon: Truck, count: allNotifications.filter(n => n.type === 'logistics').length },
                 { id: 'transfer', label: 'Transfers', icon: ArrowLeftRight, count: allNotifications.filter(n => n.type === 'transfer').length },
+                { id: 'movement', label: 'Movements', icon: Boxes, count: allNotifications.filter(n => n.type === 'movement').length },
+                { id: 'supply_chain', label: 'Supply Chain', icon: Network, count: allNotifications.filter(n => n.type === 'supply_chain').length },
               ].map(tab => (
                 <Button
                   key={tab.id}
                   variant={activeFilter === tab.id ? 'default' : 'ghost'}
                   size="sm"
                   onClick={() => setActiveFilter(tab.id as any)}
-                  className={`h-7 px-3 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all flex items-center gap-1.5 flex-shrink-0 ${
-                    activeFilter === tab.id ? 'shadow-sm' : 'text-muted-foreground hover:text-foreground bg-muted/30'
-                  }`}
+                  className={`h-7 px-3 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all flex items-center gap-1.5 flex-shrink-0 ${activeFilter === tab.id ? 'shadow-sm' : 'text-muted-foreground hover:text-foreground bg-muted/30'
+                    }`}
                 >
                   <tab.icon className="w-3 h-3" />
                   {tab.label}
@@ -518,27 +668,33 @@ export function Settings() {
                     <div
                       key={item.id}
                       onClick={() => markItemAsRead(item.id)}
-                      className={`p-3.5 rounded-2xl border transition-all cursor-pointer relative group ${
-                        isRead
+                      className={`p-3.5 rounded-2xl border transition-all cursor-pointer relative group ${isRead
                           ? 'bg-muted/20 border-border opacity-75 hover:opacity-100 hover:border-primary/30'
                           : 'bg-card border-border hover:border-primary/40 shadow-xs'
-                      }`}
+                        }`}
                     >
                       <div className="flex items-start justify-between gap-3">
                         <div className="flex items-start gap-3 min-w-0">
-                          <div className={`p-2 rounded-xl flex-shrink-0 mt-0.5 ${
-                            item.type === 'order'
+                          <div className={`p-2 rounded-xl flex-shrink-0 mt-0.5 ${item.type === 'order'
                               ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
                               : item.type === 'logistics'
-                              ? 'bg-indigo-500/10 text-indigo-600 dark:text-indigo-400'
-                              : 'bg-sky-500/10 text-sky-600 dark:text-sky-400'
-                          }`}>
+                                ? 'bg-indigo-500/10 text-indigo-600 dark:text-indigo-400'
+                                : item.type === 'transfer'
+                                  ? 'bg-sky-500/10 text-sky-600 dark:text-sky-400'
+                                  : item.type === 'movement'
+                                    ? 'bg-purple-500/10 text-purple-600 dark:text-purple-400'
+                                    : 'bg-amber-500/10 text-amber-600 dark:text-amber-400'
+                            }`}>
                             {item.type === 'order' ? (
                               <ShoppingBag className="w-4 h-4" />
                             ) : item.type === 'logistics' ? (
                               <Truck className="w-4 h-4" />
-                            ) : (
+                            ) : item.type === 'transfer' ? (
                               <ArrowLeftRight className="w-4 h-4" />
+                            ) : item.type === 'movement' ? (
+                              <Boxes className="w-4 h-4" />
+                            ) : (
+                              <Network className="w-4 h-4" />
                             )}
                           </div>
 

@@ -1,6 +1,4 @@
-import { PageHeading } from './PageHeading';
-import { SearchBar } from '@/components/ui/search-bar';
-import { hasAdminRole, permitsMovement } from '../lib/staffPermissions';
+import { hasAdminRole } from '../lib/staffPermissions';
 import { useStaffAccess } from '../hooks/useStaffAccess';
 import React, { useState, useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
@@ -12,9 +10,10 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Card, CardContent } from '@/components/ui/card';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter, DialogDescription } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
-import { Plus, QrCode, Package, Warehouse as WarehouseIcon, AlertTriangle, Eye, CircleDollarSign, SlidersHorizontal, Tag, Pencil, Trash2, ImagePlus, X, Download, Upload, FileSpreadsheet, FileText, BarChart3, Info } from 'lucide-react';
+import { Search, Plus, QrCode, Package, Warehouse as WarehouseIcon, AlertTriangle, Eye, CircleDollarSign, SlidersHorizontal, Tag, Pencil, Trash2, ImagePlus, X, Download, Upload, FileSpreadsheet, FileText, BarChart3, Info, Printer } from 'lucide-react';
+import { QRCodeSVG } from 'qrcode.react';
 import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useAuth } from '../hooks/useAuth';
@@ -24,7 +23,6 @@ import { WarehouseLayout } from './WarehouseLayout';
 import { ProductVariationEditor } from './ProductVariationEditor';
 import { emptyVariations, variationDraft, validateVariations, variantLabel, variantFields, stockForProduct } from '../lib/productVariations';
 import { saveProductVariations } from '../lib/saveProductVariations';
-import { InventoryBatchTraceability } from './InventoryBatchTraceability';
 
 const PRODUCT_TEMPLATE_HEADERS = ['SKU Code', 'Item Name', 'Category', 'Supplier Name', 'Base Price / Retail Price', 'Metro Manila Price', 'Provincial Price', 'Cost', 'Minimum Stock Level', 'Reorder Point'];
 type ImportRow = Record<string, string | number | undefined>;
@@ -41,6 +39,7 @@ export function Inventory() {
   const [editVariations, setEditVariations] = useState(emptyVariations);
   const [selectedVariantId, setSelectedVariantId] = useState('');
   const [detailTab, setDetailTab] = useState<'overview' | 'variants'>('overview');
+  const [qrProduct, setQrProduct] = useState<Product | null>(null);
   const [isAdjusting, setIsAdjusting] = useState(false);
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
@@ -107,8 +106,34 @@ export function Inventory() {
 
   const isAdmin = hasAdminRole(profile) && permissions.inventory === 'adjust';
   const canAdjustStock = permissions.inventory === 'adjust';
-  const parentProducts = products.filter(p => !p.parentProductId);
-  const childrenOf = (id: string) => products.filter(p => p.parentProductId === id);
+  const extractSkuNumber = (sku?: string): number | null => {
+    if (!sku) return null;
+    const match = sku.match(/(\d+)/);
+    return match ? parseInt(match[1], 10) : null;
+  };
+
+  const compareProducts = (a: Product, b: Product): number => {
+    const numA = extractSkuNumber(a.sku);
+    const numB = extractSkuNumber(b.sku);
+
+    if (numA !== null && numB !== null) {
+      if (numA !== numB) return numA - numB;
+    } else if (numA !== null) {
+      return -1;
+    } else if (numB !== null) {
+      return 1;
+    }
+
+    const skuComp = (a.sku || '').localeCompare(b.sku || '', undefined, { numeric: true, sensitivity: 'base' });
+    if (skuComp !== 0) return skuComp;
+
+    return (a.name || '').localeCompare(b.name || '', undefined, { numeric: true, sensitivity: 'base' });
+  };
+
+  const parentProducts = products
+    .filter(p => !p.parentProductId)
+    .sort(compareProducts);
+  const childrenOf = (id: string) => products.filter(p => p.parentProductId === id).sort(compareProducts);
   const hasStock = (ids: string[]) => inventory.some(i => ids.includes(i.productId) && i.quantity !== 0);
   const variantModeLocked = !!editingProduct && hasStock([editingProduct.id, ...childrenOf(editingProduct.id).map(p => p.id)]);
   const adjustmentProduct = selectedProduct?.hasVariations ? childrenOf(selectedProduct.id).find(p => p.id === selectedVariantId) : selectedProduct;
@@ -518,10 +543,10 @@ export function Inventory() {
       for (const item of inventoryItems) {
         await deleteDoc(doc(db, 'inventory', item.id));
       }
-      
+
       for (const childId of childIds) await deleteDoc(doc(db, 'products', childId));
       await deleteDoc(doc(db, 'products', productToDelete.id));
-      
+
       toast.success('Product deleted successfully');
       setProductToDelete(null);
     } catch (error) {
@@ -650,7 +675,7 @@ export function Inventory() {
       && (supplierFilter === 'all' || product.supplier === supplierFilter)
       && (stockFilter === 'all' || getProductStatus(product, stock, warehouseFilter) === stockFilter)
       && (!hideZeroStock || stock > 0);
-  });
+  }).sort(compareProducts);
 
   const totalProducts = parentProducts.length;
   const lowStockProducts = parentProducts.filter(product => {
@@ -684,10 +709,149 @@ export function Inventory() {
         {variantFields.map(([key]) => <TableCell key={key}>{v[key] == null ? '—' : Number(v[key]).toLocaleString()}</TableCell>)}
         {warehouses.map(w => <TableCell key={w.id}>{getStockCount(v.id, w.id).toLocaleString()}</TableCell>)}
         <TableCell className="font-bold">{getStockCount(v.id).toLocaleString()}</TableCell><TableCell>{getProductStatus(v, getStockCount(v.id)) === 'out' ? 'Out of Stock' : getProductStatus(v, getStockCount(v.id)) === 'low' ? 'Low Stock' : 'In Stock'}</TableCell>
-        <TableCell><div className="flex gap-1">{canAdjustStock && <Button type="button" variant="outline" size="icon" aria-label={`Adjust ${v.sku}`} onClick={() => { setSelectedVariantId(v.id); setIsDetailOpen(false); setIsStockUpdateOpen(true); }}><SlidersHorizontal className="h-4 w-4" /></Button>}</div></TableCell>
+        <TableCell><div className="flex gap-1"><Button type="button" variant="outline" size="icon" aria-label={`QR label for ${v.sku}`} onClick={() => setQrProduct(v)}><QrCode className="h-4 w-4" /></Button>{canAdjustStock && <Button type="button" variant="outline" size="icon" aria-label={`Adjust ${v.sku}`} onClick={() => { setSelectedVariantId(v.id); setIsDetailOpen(false); setIsStockUpdateOpen(true); }}><SlidersHorizontal className="h-4 w-4" /></Button>}</div></TableCell>
       </TableRow>)}</TableBody>
     </Table></div>
   </section>;
+
+  const printThermalLabel = (product: Product, svgContainerId?: string) => {
+    let svgHtml = '';
+    if (svgContainerId) {
+      const container = document.getElementById(svgContainerId);
+      const svg = container?.querySelector('svg');
+      if (svg) svgHtml = svg.outerHTML;
+    }
+    if (!svgHtml) {
+      const anySvg = document.querySelector('[role="dialog"] svg');
+      if (anySvg) svgHtml = anySvg.outerHTML;
+    }
+
+    const priceFormatted = (product.wholesalePrice || product.basePrice || 0).toLocaleString();
+    const printFrame = document.createElement('iframe');
+    printFrame.style.position = 'fixed';
+    printFrame.style.right = '0';
+    printFrame.style.bottom = '0';
+    printFrame.style.width = '0';
+    printFrame.style.height = '0';
+    printFrame.style.border = '0';
+    document.body.appendChild(printFrame);
+
+    const htmlContent = `
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <title>Label - ${product.sku}</title>
+          <style>
+            @page {
+              size: 50mm 30mm;
+              margin: 0;
+            }
+            @media print {
+              html, body {
+                width: 50mm;
+                height: 30mm;
+                margin: 0;
+                padding: 0;
+              }
+            }
+            body {
+              margin: 0;
+              padding: 2mm 3mm;
+              font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+              width: 50mm;
+              height: 30mm;
+              box-sizing: border-box;
+              display: flex;
+              align-items: center;
+              justify-content: space-between;
+              background: #fff;
+              color: #000;
+              overflow: hidden;
+            }
+            .qr-side {
+              width: 22mm;
+              height: 22mm;
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              flex-shrink: 0;
+            }
+            .qr-side svg {
+              width: 100% !important;
+              height: 100% !important;
+              display: block;
+            }
+            .info-side {
+              flex: 1;
+              display: flex;
+              flex-direction: column;
+              justify-content: center;
+              padding-left: 2mm;
+              overflow: hidden;
+            }
+            .brand {
+              font-size: 5.5pt;
+              font-weight: 800;
+              text-transform: uppercase;
+              letter-spacing: 0.5px;
+              color: #555;
+              margin-bottom: 0.5mm;
+            }
+            .prod-name {
+              font-size: 7.5pt;
+              font-weight: 800;
+              line-height: 1.15;
+              color: #000;
+              margin-bottom: 1mm;
+              word-break: break-word;
+              display: -webkit-box;
+              -webkit-line-clamp: 2;
+              -webkit-box-orient: vertical;
+              overflow: hidden;
+            }
+            .prod-sku {
+              font-family: "Courier New", Courier, monospace;
+              font-size: 6.5pt;
+              font-weight: 700;
+              color: #222;
+            }
+            .prod-price {
+              font-size: 7.5pt;
+              font-weight: 800;
+              color: #000;
+              margin-top: 1mm;
+            }
+          </style>
+        </head>
+        <body>
+          <div class="qr-side">${svgHtml}</div>
+          <div class="info-side">
+            <div class="brand">ActivePro Asset</div>
+            <div class="prod-name">${product.name}</div>
+            <div class="prod-sku">${product.sku}</div>
+            <div class="prod-price">₱${priceFormatted}</div>
+          </div>
+        </body>
+      </html>
+    `;
+
+    const frameDoc = printFrame.contentWindow?.document || printFrame.contentDocument;
+    if (frameDoc) {
+      frameDoc.open();
+      frameDoc.write(htmlContent);
+      frameDoc.close();
+      setTimeout(() => {
+        printFrame.contentWindow?.focus();
+        printFrame.contentWindow?.print();
+        setTimeout(() => {
+          if (document.body.contains(printFrame)) {
+            document.body.removeChild(printFrame);
+          }
+        }, 1500);
+      }, 250);
+    }
+  };
+
 
   const inventoryNavigation = <div className="flex gap-1 rounded-xl bg-muted/60 p-1 w-fit" aria-label="Inventory views">
     <Button variant={inventoryView === 'stock' ? 'default' : 'ghost'} aria-pressed={inventoryView === 'stock'} onClick={() => setInventoryView('stock')}><Package className="size-4" />Products & Stock</Button>
@@ -700,7 +864,9 @@ export function Inventory() {
     <div className="space-y-5 pb-20">
       {inventoryNavigation}
       <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-        <PageHeading title="Inventory" subtitle="Manage products, stock levels, suppliers, and warehouse inventory." />
+        <div>
+          <p className="mt-1 text-sm text-muted-foreground">Manage products, stock levels, suppliers, and warehouse inventory.</p>
+        </div>
         <div className="flex flex-wrap gap-2">
           <Button type="button" variant="outline" onClick={() => navigate('/pricelist')} className="h-11 gap-3 rounded-xl border-zinc-200 bg-white px-5 text-base font-semibold text-zinc-500 shadow-sm hover:bg-zinc-50 hover:text-zinc-700">
             <Tag className="h-5 w-5 text-zinc-500" strokeWidth={2.25} /> Pricelist
@@ -730,7 +896,8 @@ export function Inventory() {
         <CardContent className="p-0">
           <div className="border-b border-border p-4">
             <div className="relative max-w-xl">
-              <SearchBar value={searchTerm} onValueChange={setSearchTerm} placeholder="Search products, SKU, category, or supplier..." className="h-11 rounded-xl bg-background pl-10" />
+              <Search className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input value={searchTerm} onChange={(event) => setSearchTerm(event.target.value)} placeholder="Search products, SKU, category, or supplier..." className="h-11 rounded-xl bg-background pl-10" />
             </div>
           </div>
           <div className="grid grid-cols-1 gap-3 p-4 sm:grid-cols-2 xl:grid-cols-[1fr_1fr_1fr_1fr_auto] xl:items-end">
@@ -746,14 +913,15 @@ export function Inventory() {
       <div className="overflow-hidden rounded-2xl border border-border/70 bg-card shadow-sm">
         <div className="overflow-x-auto">
           <Table>
-            <TableHeader className="bg-muted/40"><TableRow><TableHead className="min-w-28 text-[10px] font-bold uppercase">SKU</TableHead><TableHead className="min-w-64 text-[10px] font-bold uppercase">Product</TableHead><TableHead className="min-w-36 text-[10px] font-bold uppercase">Pricing (₱)</TableHead><TableHead className="min-w-24 text-[10px] font-bold uppercase">Cost (₱)</TableHead><TableHead className="min-w-28 text-center text-[10px] font-bold uppercase">Stock</TableHead><TableHead className="min-w-32 text-[10px] font-bold uppercase">Stock Levels</TableHead><TableHead className="min-w-40 text-[10px] font-bold uppercase">Supplier</TableHead><TableHead className="min-w-32 text-center text-[10px] font-bold uppercase">Status</TableHead><TableHead className="min-w-28 text-right text-[10px] font-bold uppercase">Actions</TableHead></TableRow></TableHeader>
+            <TableHeader className="bg-muted/40"><TableRow><TableHead className="w-12 text-center text-[10px] font-bold uppercase">#</TableHead><TableHead className="min-w-28 text-[10px] font-bold uppercase">SKU</TableHead><TableHead className="min-w-64 text-[10px] font-bold uppercase">Product</TableHead><TableHead className="min-w-36 text-[10px] font-bold uppercase">Pricing (₱)</TableHead><TableHead className="min-w-24 text-[10px] font-bold uppercase">Cost (₱)</TableHead><TableHead className="min-w-28 text-center text-[10px] font-bold uppercase">Stock</TableHead><TableHead className="min-w-32 text-[10px] font-bold uppercase">Stock Levels</TableHead><TableHead className="min-w-40 text-[10px] font-bold uppercase">Supplier</TableHead><TableHead className="min-w-32 text-center text-[10px] font-bold uppercase">Status</TableHead><TableHead className="min-w-28 text-right text-[10px] font-bold uppercase">Actions</TableHead></TableRow></TableHeader>
             <TableBody>
-              {filteredProducts.map(product => {
+              {filteredProducts.map((product, index) => {
                 const stock = getStockCount(product.id, warehouseFilter);
                 const status = getProductStatus(product, stock, warehouseFilter);
                 const statusClass = status === 'out' ? 'border-red-200 bg-red-50 text-red-600' : status === 'low' ? 'border-amber-200 bg-amber-50 text-amber-600' : 'border-emerald-200 bg-emerald-50 text-emerald-600';
                 return (
                   <TableRow key={product.id} className="cursor-pointer hover:bg-muted/30" onClick={() => { setSelectedProduct(product); setIsDetailOpen(true); }}>
+                    <TableCell className="text-center font-mono text-xs text-muted-foreground">{index + 1}</TableCell>
                     <TableCell className="font-mono text-xs text-muted-foreground">{product.sku}</TableCell>
                     <TableCell><div className="flex items-center gap-3"><div className="flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-border bg-muted">{product.photoUrl ? <img src={product.photoUrl} alt={product.name} className="h-full w-full object-cover" /> : <Package className="h-5 w-5 text-muted-foreground" />}</div><div className="min-w-0"><p className="truncate text-sm font-bold">{product.name}</p>{product.hasVariations && <Badge variant="secondary" className="my-1 text-[10px]">{childrenOf(product.id).filter(v => v.variantEnabled !== false).length} Variants</Badge>}<p className="truncate text-xs text-muted-foreground">{product.category || 'Uncategorized'}</p></div></div></TableCell>
                     <TableCell>{product.hasVariations ? <div className="space-y-1 text-xs">{variantFields.slice(0, 3).map(([key, label]) => <p key={key}><span className="text-muted-foreground">{label}: </span><strong>{variantRange(product, key)}</strong></p>)}</div> : <div className="grid grid-cols-[2.75rem_auto] text-xs"><span className="text-muted-foreground">Retail:</span><strong>₱{(product.basePrice || 0).toLocaleString()}</strong><span className="text-muted-foreground">MM:</span><strong>₱{(product.mmPrice ?? product.wholesalePrice ?? 0).toLocaleString()}</strong><span className="text-muted-foreground">Prov.:</span><strong>₱{(product.provincialPrice ?? product.dealerPrice ?? 0).toLocaleString()}</strong></div>}</TableCell>
@@ -767,13 +935,14 @@ export function Inventory() {
                         <Button variant="outline" size="icon" className="h-9 w-9" title="View product" onClick={() => { setSelectedProduct(product); setIsDetailOpen(true); }}><Eye className="h-4 w-4" /></Button>
                         {isAdmin && <Button variant="outline" size="icon" className="h-9 w-9" title="Edit product" onClick={() => setEditingProduct(product)}><Pencil className="h-4 w-4" /></Button>}
                         {isAdmin && <Button variant="outline" size="icon" className="h-9 w-9 text-red-500 hover:text-red-600 hover:bg-red-50 hover:border-red-200" title="Delete product" onClick={() => setProductToDelete(product)}><Trash2 className="h-4 w-4" /></Button>}
+                        <>{product.hasVariations ? <Button variant="outline" size="icon" title="Variant QR labels" onClick={() => { setSelectedProduct(product); setIsDetailOpen(true); setDetailTab('variants'); }}><QrCode className="h-4 w-4" /></Button> : <Dialog><DialogTrigger className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-border hover:bg-muted"><QrCode className="h-4 w-4" /></DialogTrigger><DialogContent className="text-center sm:max-w-xs"><DialogHeader><DialogTitle className="text-center">Asset QR Label</DialogTitle></DialogHeader><div className="flex flex-col items-center gap-4 py-8"><div id={`qr-svg-table-${product.id}`} className="rounded-2xl border-2 border-primary p-4"><QRCodeSVG value={product.id} size={180} /></div><div><p className="font-black">{product.name}</p><p className="font-mono text-xs text-muted-foreground">{product.sku}</p></div></div><Button variant="outline" onClick={() => printThermalLabel(product, `qr-svg-table-${product.id}`)}><Printer className="mr-2 h-4 w-4" />Print Label</Button></DialogContent></Dialog>}</>
                         {canAdjustStock && <Button variant="outline" size="icon" className="h-9 w-9" title="Adjust stock" onClick={() => { setSelectedProduct(product); setIsStockUpdateOpen(true); }}><SlidersHorizontal className="h-4 w-4" /></Button>}
                       </div>
                     </TableCell>
                   </TableRow>
                 );
               })}
-              {filteredProducts.length === 0 && <TableRow><TableCell colSpan={9} className="h-40 text-center text-sm text-muted-foreground">No products match the current filters.</TableCell></TableRow>}
+              {filteredProducts.length === 0 && <TableRow><TableCell colSpan={10} className="h-40 text-center text-sm text-muted-foreground">No products match the current filters.</TableCell></TableRow>}
             </TableBody>
           </Table>
         </div>
@@ -889,8 +1058,8 @@ export function Inventory() {
                 </div>
               </section>
             </div>
-            <ProductVariationEditor value={addVariations} onChange={setAddVariations} sku={addSku}  />
-{!addVariations.enabled && <><section className="space-y-3">
+            <ProductVariationEditor value={addVariations} onChange={setAddVariations} sku={addSku} />
+            {!addVariations.enabled && <><section className="space-y-3">
               <h3 className="border-b border-border pb-2 text-sm font-bold">Pricing</h3>
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
                 <div className="space-y-2"><Label htmlFor="basePrice">Price (₱)</Label><Input id="basePrice" name="basePrice" type="number" min="0" step="0.01" required /></div>
@@ -900,15 +1069,15 @@ export function Inventory() {
                 <div className="space-y-2"><Label htmlFor="provincialPrice">Provincial Wholesale (₱)</Label><Input id="provincialPrice" name="provincialPrice" type="number" min="0" step="0.01" /></div>
               </div>
             </section>
-            <section className="space-y-3">
-              <h3 className="border-b border-border pb-2 text-sm font-bold">Stock Controls</h3>
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-                <div className="space-y-2"><Label htmlFor="minStockLevel">Critical Stock Level</Label><Input id="minStockLevel" name="minStockLevel" type="number" min="0" defaultValue="0" /></div>
-                <div className="space-y-2"><Label htmlFor="reorderPoint">Restock Level</Label><Input id="reorderPoint" name="reorderPoint" type="number" min="0" defaultValue="0" /></div>
-              </div>
-            </section>
+              <section className="space-y-3">
+                <h3 className="border-b border-border pb-2 text-sm font-bold">Stock Controls</h3>
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+                  <div className="space-y-2"><Label htmlFor="minStockLevel">Critical Stock Level</Label><Input id="minStockLevel" name="minStockLevel" type="number" min="0" defaultValue="0" /></div>
+                  <div className="space-y-2"><Label htmlFor="reorderPoint">Restock Level</Label><Input id="reorderPoint" name="reorderPoint" type="number" min="0" defaultValue="0" /></div>
+                </div>
+              </section>
             </>}
-<DialogFooter>
+            <DialogFooter>
               <Button type="submit" disabled={isSubmittingProduct || isAddSkuDuplicate || isAddNameDuplicate}>
                 {isSubmittingProduct ? 'Adding...' : 'Add Product'}
               </Button>
@@ -1067,7 +1236,7 @@ export function Inventory() {
               </div>
 
               <ProductVariationEditor value={editVariations} onChange={setEditVariations} sku={editSku} key={editingProduct.id} locked={variantModeLocked} />
-{!editVariations.enabled && <><section className="space-y-3">
+              {!editVariations.enabled && <><section className="space-y-3">
                 <h3 className="border-b border-border pb-2 text-sm font-bold">Pricing</h3>
                 <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
                   <div className="space-y-2">
@@ -1093,22 +1262,22 @@ export function Inventory() {
                 </div>
               </section>
 
-              <section className="space-y-3">
-                <h3 className="border-b border-border pb-2 text-sm font-bold">Stock Controls</h3>
-                <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-                  <div className="space-y-2">
-                    <Label htmlFor="edit-minStockLevel">Critical Stock Level</Label>
-                    <Input id="edit-minStockLevel" name="minStockLevel" type="number" min="0" defaultValue={editingProduct.minStockLevel} />
+                <section className="space-y-3">
+                  <h3 className="border-b border-border pb-2 text-sm font-bold">Stock Controls</h3>
+                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+                    <div className="space-y-2">
+                      <Label htmlFor="edit-minStockLevel">Critical Stock Level</Label>
+                      <Input id="edit-minStockLevel" name="minStockLevel" type="number" min="0" defaultValue={editingProduct.minStockLevel} />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="edit-reorderPoint">Restock Level</Label>
+                      <Input id="edit-reorderPoint" name="reorderPoint" type="number" min="0" defaultValue={editingProduct.reorderPoint} />
+                    </div>
                   </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="edit-reorderPoint">Restock Level</Label>
-                    <Input id="edit-reorderPoint" name="reorderPoint" type="number" min="0" defaultValue={editingProduct.reorderPoint} />
-                  </div>
-                </div>
-              </section>
+                </section>
 
               </>}
-<DialogFooter>
+              <DialogFooter>
                 <Button type="button" variant="outline" onClick={() => { setEditingProduct(null); setEditProductImage(null); setEditProductImagePreview(''); }}>Cancel</Button>
                 <Button type="submit" disabled={isSubmittingProduct || isEditSkuDuplicate || isEditNameDuplicate || !editSku.trim() || !editName.trim()}>
                   {isSubmittingProduct ? 'Saving...' : 'Save Changes'}
@@ -1126,7 +1295,7 @@ export function Inventory() {
               <AlertTriangle className="h-5 w-5" /> Delete Product
             </DialogTitle>
             <DialogDescription>
-              Are you sure you want to delete <span className="font-bold">{productToDelete?.name}</span>? 
+              Are you sure you want to delete <span className="font-bold">{productToDelete?.name}</span>?
               This will also remove all its inventory records across all warehouses. This action cannot be undone.
             </DialogDescription>
           </DialogHeader>
@@ -1228,55 +1397,60 @@ export function Inventory() {
               </section>
 
               <>{selectedProduct.hasVariations && <div className="flex gap-2 border-b pb-3" role="tablist" aria-label="Product details"><Button role="tab" aria-selected={detailTab === 'overview'} variant={detailTab === 'overview' ? 'default' : 'outline'} onClick={() => setDetailTab('overview')}>Overview</Button><Button role="tab" aria-selected={detailTab === 'variants'} variant={detailTab === 'variants' ? 'default' : 'outline'} onClick={() => setDetailTab('variants')}>Variants ({childrenOf(selectedProduct.id).filter(v => v.variantEnabled !== false).length})</Button></div>}
-{selectedProduct.hasVariations && detailTab === 'variants' ? renderVariantDetails(selectedProduct) : <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-                <section className="rounded-xl border border-border/80 p-4 shadow-sm">
-                  <div className="flex items-center gap-3 border-b border-border pb-3"><span className="font-mono text-sm font-black text-muted-foreground">01</span><FileText className="h-5 w-5" /><h3 className="text-base font-bold uppercase tracking-wider">Product Information</h3></div>
-                  <dl className="grid grid-cols-[minmax(8rem,1fr)_minmax(0,1fr)] gap-x-5 gap-y-3 py-3 text-sm">
-                    <dt className="text-muted-foreground">SKU Code</dt><dd className="font-medium">{selectedProduct.sku}</dd>
-                    <dt className="text-muted-foreground">Item Name</dt><dd className="font-medium">{selectedProduct.name}</dd>
-                    <dt className="text-muted-foreground">Category</dt><dd className="font-medium">{selectedProduct.category || 'Uncategorized'}</dd>
-                    <dt className="text-muted-foreground">Preferred Supplier</dt><dd className="font-medium">{selectedProduct.supplier || 'N/A'}</dd>
-                  </dl>
-                  <div className="mt-2 flex items-center gap-3 border-y border-border py-3"><span className="font-mono text-sm font-black text-muted-foreground">02</span><Tag className="h-5 w-5" /><h3 className="text-base font-bold uppercase tracking-wider">Pricing (₱)</h3></div>
-                  <dl className="grid grid-cols-[minmax(8rem,1fr)_minmax(0,1fr)] gap-x-5 gap-y-3 pt-3 text-sm">
-                    <dt className="text-muted-foreground">Base Price / Retail</dt><dd className="font-medium">{selectedProduct.hasVariations ? variantRange(selectedProduct, 'basePrice') : (selectedProduct.basePrice || 0).toLocaleString()}</dd>
-                    <dt className="text-muted-foreground">Cost</dt><dd className="font-medium">{selectedProduct.hasVariations ? variantRange(selectedProduct, 'costPrice') : (selectedProduct.costPrice || 0).toLocaleString()}</dd>
-                    <dt className="text-muted-foreground">Promo Price</dt><dd className="font-medium">{selectedProduct.hasVariations ? variantRange(selectedProduct, 'promoPrice') : selectedProduct.promoPrice != null ? selectedProduct.promoPrice.toLocaleString() : '—'}</dd>
-                    <dt className="text-muted-foreground">Metro Manila Wholesale</dt><dd className="font-medium">{selectedProduct.hasVariations ? variantRange(selectedProduct, 'mmPrice') : (selectedProduct.mmPrice ?? selectedProduct.wholesalePrice ?? 0).toLocaleString()}</dd>
-                    <dt className="text-muted-foreground">Provincial Wholesale</dt><dd className="font-medium">{selectedProduct.hasVariations ? variantRange(selectedProduct, 'provincialPrice') : (selectedProduct.provincialPrice ?? selectedProduct.dealerPrice ?? 0).toLocaleString()}</dd>
-                  </dl>
-                </section>
+                {selectedProduct.hasVariations && detailTab === 'variants' ? renderVariantDetails(selectedProduct) : <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+                  <section className="rounded-xl border border-border/80 p-4 shadow-sm">
+                    <div className="flex items-center gap-3 border-b border-border pb-3"><span className="font-mono text-sm font-black text-muted-foreground">01</span><FileText className="h-5 w-5" /><h3 className="text-base font-bold uppercase tracking-wider">Product Information</h3></div>
+                    <dl className="grid grid-cols-[minmax(8rem,1fr)_minmax(0,1fr)] gap-x-5 gap-y-3 py-3 text-sm">
+                      <dt className="text-muted-foreground">SKU Code</dt><dd className="font-medium">{selectedProduct.sku}</dd>
+                      <dt className="text-muted-foreground">Item Name</dt><dd className="font-medium">{selectedProduct.name}</dd>
+                      <dt className="text-muted-foreground">Category</dt><dd className="font-medium">{selectedProduct.category || 'Uncategorized'}</dd>
+                      <dt className="text-muted-foreground">Preferred Supplier</dt><dd className="font-medium">{selectedProduct.supplier || 'N/A'}</dd>
+                    </dl>
+                    <div className="mt-2 flex items-center gap-3 border-y border-border py-3"><span className="font-mono text-sm font-black text-muted-foreground">02</span><Tag className="h-5 w-5" /><h3 className="text-base font-bold uppercase tracking-wider">Pricing (₱)</h3></div>
+                    <dl className="grid grid-cols-[minmax(8rem,1fr)_minmax(0,1fr)] gap-x-5 gap-y-3 pt-3 text-sm">
+                      <dt className="text-muted-foreground">Base Price / Retail</dt><dd className="font-medium">{selectedProduct.hasVariations ? variantRange(selectedProduct, 'basePrice') : (selectedProduct.basePrice || 0).toLocaleString()}</dd>
+                      <dt className="text-muted-foreground">Cost</dt><dd className="font-medium">{selectedProduct.hasVariations ? variantRange(selectedProduct, 'costPrice') : (selectedProduct.costPrice || 0).toLocaleString()}</dd>
+                      <dt className="text-muted-foreground">Promo Price</dt><dd className="font-medium">{selectedProduct.hasVariations ? variantRange(selectedProduct, 'promoPrice') : selectedProduct.promoPrice != null ? selectedProduct.promoPrice.toLocaleString() : '—'}</dd>
+                      <dt className="text-muted-foreground">Metro Manila Wholesale</dt><dd className="font-medium">{selectedProduct.hasVariations ? variantRange(selectedProduct, 'mmPrice') : (selectedProduct.mmPrice ?? selectedProduct.wholesalePrice ?? 0).toLocaleString()}</dd>
+                      <dt className="text-muted-foreground">Provincial Wholesale</dt><dd className="font-medium">{selectedProduct.hasVariations ? variantRange(selectedProduct, 'provincialPrice') : (selectedProduct.provincialPrice ?? selectedProduct.dealerPrice ?? 0).toLocaleString()}</dd>
+                    </dl>
+                  </section>
 
-                <section className="rounded-xl border border-border/80 p-4 shadow-sm">
-                  <div className="flex items-center gap-3 border-b border-border pb-3"><span className="font-mono text-sm font-black text-muted-foreground">03</span><Package className="h-5 w-5" /><h3 className="text-base font-bold uppercase tracking-wider">Inventory</h3></div>
-                  <div className="flex items-center justify-between py-3"><h4 className="font-bold">Warehouse Stock</h4><span className="text-xs font-semibold text-muted-foreground">All Warehouses</span></div>
-                  <div className="overflow-hidden rounded-lg border border-border">
-                    {warehouses.map((warehouse, index) => { const count = getStockCount(selectedProduct.id, warehouse.id); return <div key={warehouse.id} className={`flex items-center justify-between px-4 py-3 text-sm ${index ? 'border-t border-border' : ''}`}><div className="flex items-center gap-3"><WarehouseIcon className="h-4 w-4 text-muted-foreground" /><span className="font-medium">{warehouse.name}</span></div><span className={`font-bold ${count < 0 ? 'text-red-600' : ''}`}>{count.toLocaleString()} units</span></div>; })}
-                    <div className="flex items-center justify-between border-t border-border bg-emerald-50 px-4 py-3 text-sm"><span className="font-bold">Total Stock (All Warehouses)</span><span className="font-black">{totalStock.toLocaleString()} units</span></div>
-                  </div>
-                  <div className="mt-4 flex items-center gap-3 border-y border-border py-3"><span className="font-mono text-sm font-black text-muted-foreground">04</span><BarChart3 className="h-5 w-5" /><h3 className="text-base font-bold uppercase tracking-wider">Stock Controls</h3></div>
-                  <dl className="grid grid-cols-[1fr_auto] gap-x-5 gap-y-3 pt-3 text-sm">
-                    <dt className="text-muted-foreground">Critical Stock Level</dt><dd className="font-medium">{selectedProduct.hasVariations ? 'Per variant' : `${selectedProduct.minStockLevel || 0} units`}</dd>
-                    <dt className="text-muted-foreground">Reorder Point</dt><dd className="font-medium">{selectedProduct.hasVariations ? 'Per variant' : `${selectedProduct.reorderPoint || 0} units`}</dd>
-                    <dt className="text-muted-foreground">Stock Status</dt><dd className={`flex items-center gap-2 font-bold ${statusTone}`}><span className="h-2.5 w-2.5 rounded-full bg-current" />{statusLabel}</dd>
-                  </dl>
-                  <p className="mt-3 flex items-center gap-2 text-xs text-muted-foreground"><Info className="h-4 w-4 shrink-0" />{selectedProduct.hasVariations ? <>Open Variants to review individual stock thresholds and status.</> : <>Current stock is {totalStock > (selectedProduct.minStockLevel || 0) ? 'above' : 'at or below'} the critical level.</>}</p>
-                </section>
+                  <section className="rounded-xl border border-border/80 p-4 shadow-sm">
+                    <div className="flex items-center gap-3 border-b border-border pb-3"><span className="font-mono text-sm font-black text-muted-foreground">03</span><Package className="h-5 w-5" /><h3 className="text-base font-bold uppercase tracking-wider">Inventory</h3></div>
+                    <div className="flex items-center justify-between py-3"><h4 className="font-bold">Warehouse Stock</h4><span className="text-xs font-semibold text-muted-foreground">All Warehouses</span></div>
+                    <div className="overflow-hidden rounded-lg border border-border">
+                      {warehouses.map((warehouse, index) => { const count = getStockCount(selectedProduct.id, warehouse.id); return <div key={warehouse.id} className={`flex items-center justify-between px-4 py-3 text-sm ${index ? 'border-t border-border' : ''}`}><div className="flex items-center gap-3"><WarehouseIcon className="h-4 w-4 text-muted-foreground" /><span className="font-medium">{warehouse.name}</span></div><span className={`font-bold ${count < 0 ? 'text-red-600' : ''}`}>{count.toLocaleString()} units</span></div>; })}
+                      <div className="flex items-center justify-between border-t border-border bg-emerald-50 px-4 py-3 text-sm"><span className="font-bold">Total Stock (All Warehouses)</span><span className="font-black">{totalStock.toLocaleString()} units</span></div>
+                    </div>
+                    <div className="mt-4 flex items-center gap-3 border-y border-border py-3"><span className="font-mono text-sm font-black text-muted-foreground">04</span><BarChart3 className="h-5 w-5" /><h3 className="text-base font-bold uppercase tracking-wider">Stock Controls</h3></div>
+                    <dl className="grid grid-cols-[1fr_auto] gap-x-5 gap-y-3 pt-3 text-sm">
+                      <dt className="text-muted-foreground">Critical Stock Level</dt><dd className="font-medium">{selectedProduct.hasVariations ? 'Per variant' : `${selectedProduct.minStockLevel || 0} units`}</dd>
+                      <dt className="text-muted-foreground">Reorder Point</dt><dd className="font-medium">{selectedProduct.hasVariations ? 'Per variant' : `${selectedProduct.reorderPoint || 0} units`}</dd>
+                      <dt className="text-muted-foreground">Stock Status</dt><dd className={`flex items-center gap-2 font-bold ${statusTone}`}><span className="h-2.5 w-2.5 rounded-full bg-current" />{statusLabel}</dd>
+                    </dl>
+                    <p className="mt-3 flex items-center gap-2 text-xs text-muted-foreground"><Info className="h-4 w-4 shrink-0" />{selectedProduct.hasVariations ? <>Open Variants to review individual stock thresholds and status.</> : <>Current stock is {totalStock > (selectedProduct.minStockLevel || 0) ? 'above' : 'at or below'} the critical level.</>}</p>
+                  </section>
 
-                <section className="flex flex-col rounded-xl border border-border/80 p-4 shadow-sm">
-                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                    <div className="flex items-start gap-3"><span className="font-mono text-sm font-black text-muted-foreground">05</span><QrCode className="mt-0.5 h-5 w-5" /><div><h3 className="text-base font-bold uppercase tracking-wider">CI Traceability</h3></div></div>
-                  </div>
-                  <p className="mt-4 text-sm text-muted-foreground">SKU identifies the product or variant. A CI Traceability Code identifies a received batch.</p>
-                  {isDetailOpen && <InventoryBatchTraceability key={selectedProduct.id} product={selectedProduct} variants={selectedProduct.hasVariations ? childrenOf(selectedProduct.id) : []} canView={permitsMovement(permissions.movementView, 'external')} />}
-                </section>
-              </div>}</>
+                  <section className="flex flex-col rounded-xl border border-border/80 p-4 shadow-sm">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                      <div className="flex items-start gap-3"><span className="font-mono text-sm font-black text-muted-foreground">05</span><QrCode className="mt-0.5 h-5 w-5" /><div><h3 className="text-base font-bold uppercase tracking-wider">Asset Traceability</h3></div></div>
+                    </div>
+                    <p className="mt-4 text-xs text-muted-foreground">Scan or print the product identity record associated with this item.</p>
+                    <div className="mt-4 flex flex-1 flex-col items-center justify-center gap-4 rounded-lg border border-border p-5">
+                      <div id={`qr-svg-detail-${selectedProduct.id}`} className="rounded-lg bg-white p-2">{selectedProduct.hasVariations ? <p className="max-w-40 text-center text-sm text-muted-foreground">Choose a variant to view and print its QR label.</p> : <QRCodeSVG value={selectedProduct.id} size={150} />}</div>
+                      <div className="text-center"><p className="text-xs uppercase tracking-wider text-muted-foreground">SKU</p><p className="font-bold">{selectedProduct.sku}</p><p className="mt-4 text-xs uppercase tracking-wider text-muted-foreground">Unique node ID</p><p className="mt-1 break-all font-mono text-xs">{selectedProduct.id}</p></div>
+                    </div>
+                    <Button variant="outline" className="mt-4 h-11" onClick={() => selectedProduct.hasVariations ? setDetailTab('variants') : printThermalLabel(selectedProduct, `qr-svg-detail-${selectedProduct.id}`)}><Printer className="mr-2 h-4 w-4" />Print Label</Button>
+                  </section>
+                </div>}</>
             </div>;
           })()}
           <DialogFooter className="border-t border-border bg-muted/20 px-6 py-4"><Button variant="outline" onClick={() => setIsDetailOpen(false)} className="h-11 min-w-28 rounded-lg px-8 font-bold">Close</Button></DialogFooter>
         </DialogContent>
       </Dialog>
 
+      <Dialog open={!!qrProduct} onOpenChange={open => !open && setQrProduct(null)}><DialogContent className="sm:max-w-sm"><DialogHeader><DialogTitle>Variant QR Label</DialogTitle><DialogDescription>{qrProduct?.name}</DialogDescription></DialogHeader>{qrProduct && <div className="flex flex-col items-center gap-3 py-4"><div id={`qr-variant-${qrProduct.id}`} className="rounded-xl bg-white p-4"><QRCodeSVG value={qrProduct.id} size={180} /></div><p className="font-mono font-bold">{qrProduct.sku}</p><p className="text-xs text-muted-foreground">Parent: {products.find(p => p.id === qrProduct.parentProductId)?.name}</p><Button variant="outline" onClick={() => printThermalLabel(qrProduct, `qr-variant-${qrProduct.id}`)}><Printer className="mr-2 h-4 w-4" />Print Label</Button></div>}</DialogContent></Dialog>
       {/* Previous product detail layout retained temporarily for reference */}
       {false && (
         <Dialog open={isDetailOpen} onOpenChange={setIsDetailOpen}>
@@ -1382,8 +1556,8 @@ export function Inventory() {
                       <QrCode className="w-8 h-8 text-zinc-400" />
                     </div>
                     <div className="flex-1">
-                      <p className="text-[10px] font-black uppercase text-zinc-500 mb-1">CI Traceability</p>
-                      <p className="text-[10px] text-zinc-400 font-medium italic">SKU: {selectedProduct?.sku}</p>
+                      <p className="text-[10px] font-black uppercase text-zinc-500 mb-1">Asset Traceability</p>
+                      <p className="text-[10px] text-zinc-400 font-medium italic">Unique node ID: {selectedProduct?.id}</p>
                     </div>
                   </div>
                 </div>

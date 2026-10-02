@@ -125,3 +125,43 @@ test("percentage discounts round to cents and recompute after quantity changes",
   assert.equal(groupedOrderTotals([{...groupLines[0], quantity: 1}], discount).groups[0].amount, 33.33);
   assert.equal(groupedOrderTotals(groupLines, [], 5).total, orderTotals(groupLines, 5).total);
 });
+
+test("existing customers includes supply chain customers and preserves their details", () => {
+  const orders = [
+    {
+      clientId: "cli-1",
+      clientName: "Alpha Mart",
+      deliveryRegion: "Metro Manila",
+      receiptDetails: { address: "100 Ayala Ave" },
+    },
+  ] as ReceiptOrder[];
+  const supplyChainCustomers = [
+    {
+      id: "customer:beta corp",
+      name: "Beta Corp",
+      address: "200 Ortigas Ave",
+      region: "Luzon",
+      terms: "30 Days",
+      contact: "Jane",
+      phone: "09170000000",
+    },
+  ];
+  const merged = existingCustomers(orders, supplyChainCustomers);
+  assert.equal(merged.length, 2);
+  assert.deepEqual(merged[0], {
+    id: "cli-1",
+    name: "Alpha Mart",
+    address: "100 Ayala Ave",
+    region: "Metro Manila",
+  });
+  assert.deepEqual(merged[1], {
+    id: "customer:beta corp",
+    name: "Beta Corp",
+    address: "200 Ortigas Ave",
+    region: "Luzon",
+    terms: "30 Days",
+    contact: "Jane",
+    phone: "09170000000",
+  });
+});
+
