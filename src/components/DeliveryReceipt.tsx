@@ -175,6 +175,9 @@ export function DeliveryReceipt({
                           {item.entryDetails?.variation
                             ? ` — ${item.entryDetails.variation}`
                             : ""}
+                          {(item.locationAisle || item.locationBin) && (
+                            <div style={{ fontSize: "10px", color: "#64748b", marginTop: "2px" }}>Loc: {item.locationAisle || "-"} / {item.locationBin || "-"}</div>
+                          )}
                         </td>
                         <td className="dr-right">{money(item.unitPrice)}</td>
                         <td className="dr-right">{money(item.subtotal)}</td>
@@ -209,21 +212,41 @@ export function DeliveryReceipt({
                           <br />
                           {details?.preparedBy || ""}
                         </div>
-                        <div>Checked By</div>
-                        <div>Received By</div>
+                        <div>
+                          Dispatched By (Driver)
+                          <br />
+                          <br />
+                          __________________
+                        </div>
+                        <div>
+                          Received By (Client)
+                          <br />
+                          <br />
+                          __________________
+                        </div>
                       </div>
-                      <p>
-                        Arrival Time: __________________ &nbsp; Departure Time:
-                        __________________
-                      </p>
-                      <p>
-                        Remarks:
-                        __________________________________________________________________
-                      </p>
-                      <p>
-                        Note:
-                        ______________________________________________________________________
-                      </p>
+                      <div style={{ display: "flex", gap: "20px", marginTop: "20px" }}>
+                        <div style={{ flex: 1 }}>
+                          <p>
+                            Arrival Time: __________________ &nbsp; Departure Time:
+                            __________________
+                          </p>
+                          <p>
+                            Remarks:
+                            __________________________________________________________________
+                          </p>
+                          <p>
+                            Note:
+                            ______________________________________________________________________
+                          </p>
+                        </div>
+                        {order.photoValidationUrl && (
+                          <div style={{ width: "120px", textAlign: "center" }}>
+                            <p style={{ margin: "0 0 5px", fontSize: "10px", fontWeight: "bold" }}>Dispatch Photo</p>
+                            <img src={order.photoValidationUrl} alt="Validation" style={{ width: "100%", height: "80px", objectFit: "cover", border: "1px solid #94a3b8" }} />
+                          </div>
+                        )}
+                      </div>
                     </footer>
                   </>
                 ) : (

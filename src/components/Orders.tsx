@@ -31,6 +31,10 @@ import {
   X as XIcon,
   XCircle,
   ImageIcon,
+  ShieldAlert,
+  Download,
+  ListFilter,
+  CheckCheck,
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { useAuth } from '../hooks/useAuth';
@@ -40,6 +44,17 @@ import { OrderEntry } from './OrderEntry';
 import { DeliveryReceipt } from './DeliveryReceipt';
 import { supabase } from '../lib/supabase';
 import { type ReceiptOrder, type ReceiptItem, money } from '../lib/orderEntry';
+import {
+  evaluateAndSyncSLAIncidents,
+  getLocalIncidents,
+  resolveITILIncident,
+  exportIncidentsCSV,
+} from '../lib/itilService';
+import { prioritizeOrderQueue } from '../lib/fifoQueueEngine';
+import type { ITILIncident } from '../types';
+import { compressImage } from '../lib/imageCompressor';
+
+import { ITILIncidentConsole } from './ITILIncidentConsole';
 
 export function Orders() {
   const { profile } = useAuth();
@@ -67,6 +82,15 @@ export function Orders() {
   const statusLock = useRef(false);
   const [isReverting, setIsReverting] = useState(false);
 
+  // ITIL 4 Incident Management & SLA Tracking (FR-06)
+  const [incidents, setIncidents] = useState<ITILIncident[]>(() => getLocalIncidents());
+  const [isIncidentsDialogOpen, setIsIncidentsDialogOpen] = useState(false);
+  const [incidentFilter, setIncidentFilter] = useState<'all' | 'SLA_BREACH' | 'DEFECTIVE_ASSET'>('all');
+  const [orderViewMode, setOrderViewMode] = useState<'all' | 'fifo_queue'>('all');
+  const [resolvingIncident, setResolvingIncident] = useState<ITILIncident | null>(null);
+  const [resolutionInput, setResolutionInput] = useState('');
+  const [isSubmittingResolution, setIsSubmittingResolution] = useState(false);
+
   const [activeTab, setActiveTab] = useState<'items' | 'history'>('items');
 
   const filteredOrders = orders.filter(order => {
@@ -78,6 +102,14 @@ export function Orders() {
     const matchesRegion = order.deliveryRegion?.toLowerCase().includes(queryStr);
     return matchesSku || matchesOrderNumber || matchesClient || matchesCity || matchesRegion;
   });
+
+  // FR-09: Algorithmic FIFO queue ordering vs standard descending creation view
+  const fulfillmentStrategy = (localStorage.getItem('activepro.fulfillment_strategy') as 'FIFO'|'LIFO') || 'FIFO';
+  const displayOrders = orderViewMode === 'fifo_queue'
+    ? prioritizeOrderQueue(filteredOrders, fulfillmentStrategy)
+    : filteredOrders;
+
+  const activeIncidents = incidents.filter(i => i.status !== 'RESOLVED' && i.status !== 'CLOSED');
 
   const getOrderOverrides = (): Record<string, Partial<Order>> => {
     try {
@@ -99,6 +131,16 @@ export function Orders() {
   };
 
   useEffect(() => {
+    const handleIncidentsChanged = () => setIncidents(getLocalIncidents());
+    window.addEventListener('activepro_incidents_changed', handleIncidentsChanged);
+    window.addEventListener('storage', handleIncidentsChanged);
+    return () => {
+      window.removeEventListener('activepro_incidents_changed', handleIncidentsChanged);
+      window.removeEventListener('storage', handleIncidentsChanged);
+    };
+  }, []);
+
+  useEffect(() => {
     const isAdminOrSecretary = hasAdminRole(profile) || profile?.role === 'secretary' || profile?.role === 'staff';
     const q = isAdminOrSecretary
       ? query(collection(db, 'orders'), orderBy('createdAt', 'desc'))
@@ -109,6 +151,8 @@ export function Orders() {
       const rawOrders = snap.docs.map(d => ({ id: d.id, ...d.data() } as Order));
       const fetchedOrders = rawOrders.map(order => overrides[order.id] ? { ...order, ...overrides[order.id] } : order);
       setOrders(fetchedOrders);
+      // Auto-evaluate continuous SLAs & generate ITIL incident tickets (FR-06)
+      evaluateAndSyncSLAIncidents(fetchedOrders, profile).then(synced => setIncidents(synced));
     }, (error) => {
       handleSupabaseError(error, OperationType.GET, 'orders');
     });
@@ -276,9 +320,10 @@ export function Orders() {
       let downloadUrl = photoPreview || '';
       try {
         const { ref, uploadBytes, getDownloadURL } = await import('../lib/supabaseAdapter');
-        const filePath = `dispatch-proofs/${dispatchOrder.id}_${Date.now()}_${photoFile.name}`;
+        const compressedFile = await compressImage(photoFile);
+        const filePath = `dispatch-proofs/${dispatchOrder.id}_${Date.now()}_${compressedFile.name}`;
         const storageRef = ref(storage, filePath);
-        await uploadBytes(storageRef, photoFile);
+        await uploadBytes(storageRef, compressedFile);
         downloadUrl = await getDownloadURL(storageRef);
       } catch (storageErr) {
         console.warn('Storage upload warning, falling back to data URL:', storageErr);
@@ -359,7 +404,26 @@ export function Orders() {
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3">
         <PageHeading title="Order Entry" subtitle="Create orders and track items, deliveries, and fulfillment status." />
-        {canCreate && <Button onClick={() => setIsNewOrderOpen(true)}><Plus className="size-4" />Create Order</Button>}
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            className={`gap-1.5 text-xs font-semibold ${
+              activeIncidents.length > 0
+                ? 'border-red-300 bg-red-50 text-red-700 hover:bg-red-100 dark:border-red-900/60 dark:bg-red-950/40 dark:text-red-300'
+                : 'text-zinc-600'
+            }`}
+            onClick={() => setIsIncidentsDialogOpen(true)}
+          >
+            <ShieldAlert className="size-4 shrink-0 text-red-500" />
+            <span>ITIL Incidents</span>
+            {activeIncidents.length > 0 && (
+              <Badge variant="destructive" className="h-5 px-1.5 text-[10px] font-bold">
+                {activeIncidents.length}
+              </Badge>
+            )}
+          </Button>
+          {canCreate && <Button onClick={() => setIsNewOrderOpen(true)}><Plus className="size-4" />Create Order</Button>}
+        </div>
         {profile && canCreate && <OrderEntry key={`${profile.uid}:${orderEntryKey}`} open={isNewOrderOpen} onClose={() => setIsNewOrderOpen(false)} orders={orders} products={products} inventory={inventory} profile={profile} onSaved={(order, items) => {
           saveOrderOverride(order.id, order);
           setOrders(current => [order, ...current.filter(item => item.id !== order.id)]);
@@ -369,6 +433,14 @@ export function Orders() {
           setReceiptOrder(order);
         }} />}
         <DeliveryReceipt order={receiptOrder} items={receiptItems} onClose={() => setReceiptOrder(null)} />
+
+        <ITILIncidentConsole
+          open={isIncidentsDialogOpen}
+          onClose={() => setIsIncidentsDialogOpen(false)}
+          incidents={incidents}
+          onRefresh={() => setIncidents(getLocalIncidents())}
+          profile={profile}
+        />
 
         <Dialog open={isOrderDetailsOpen} onOpenChange={setIsOrderDetailsOpen}>
           <DialogContent className="sm:max-w-5xl w-[95vw] max-h-[90vh] overflow-y-auto">
@@ -497,18 +569,28 @@ export function Orders() {
                   </div>
 
                   <div className="space-y-1">
-                    <p className="text-[10px] font-black uppercase tracking-tighter text-zinc-400">SLA Requirements</p>
-                    <div className="flex items-center gap-2 bg-muted p-2 rounded-md border border-border">
-                      <Calendar className="w-3 h-3 text-zinc-400" />
-                      <div>
-                        <p className="text-xs font-bold text-zinc-900">
-                          {selectedOrder?.deliveryDeadline && (
-                            typeof selectedOrder.deliveryDeadline.toDate === 'function'
-                              ? format(selectedOrder.deliveryDeadline.toDate(), 'PPP')
-                              : format(new Date(selectedOrder.deliveryDeadline), 'PPP')
-                          )}
-                        </p>
-                        <p className="text-[9px] uppercase font-black text-zinc-500 tracking-tight">Contractual Deadline</p>
+                    <p className="text-[10px] font-black uppercase tracking-tighter text-zinc-400">ITIL SLA & Queueing Policy</p>
+                    <div className="space-y-1.5 bg-muted p-2.5 rounded-md border border-border">
+                      <div className="flex items-center gap-2">
+                        <Calendar className="w-3.5 h-3.5 text-zinc-400" />
+                        <div>
+                          <p className="text-xs font-bold text-zinc-900 dark:text-white">
+                            {selectedOrder?.deliveryDeadline && (
+                              typeof selectedOrder.deliveryDeadline.toDate === 'function'
+                                ? format(selectedOrder.deliveryDeadline.toDate(), 'PPP')
+                                : format(new Date(selectedOrder.deliveryDeadline), 'PPP')
+                            )}
+                          </p>
+                          <p className="text-[9px] uppercase font-black text-zinc-500 tracking-tight">
+                            {selectedOrder?.deliveryRegion === 'Metro Manila' ? '7-Day SLA Baseline (Metro Manila)' : '14-Day SLA Baseline (Mindanao / Provincial)'}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex items-center justify-between pt-1 border-t border-border/50 text-[10px]">
+                        <span className="text-muted-foreground font-medium">Batch Queue:</span>
+                        <Badge variant="outline" className="text-[9px] font-bold bg-background">
+                          {selectedOrder?.allocationStrategy || 'FIFO'} (Oldest Batch First)
+                        </Badge>
                       </div>
                     </div>
                   </div>
@@ -683,18 +765,47 @@ export function Orders() {
 
       </div >
 
-      <div className="flex items-center gap-2 bg-card p-3 border border-border rounded-xl">
-        <SearchBar
-          placeholder="Search order number, customer, or SKU…"
-          className="h-8 text-xs border-none shadow-none focus-visible:ring-0"
-          value={searchQuery}
-          onValueChange={setSearchQuery}
-        />
+      <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+        <div className="flex-1 bg-card p-3 border border-border rounded-xl">
+          <SearchBar
+            placeholder="Search order number, customer, or SKU…"
+            className="h-8 text-xs border-none shadow-none focus-visible:ring-0"
+            value={searchQuery}
+            onValueChange={setSearchQuery}
+          />
+        </div>
+        <div className="flex items-center gap-1.5 bg-muted p-1 rounded-xl shrink-0">
+          <button
+            type="button"
+            className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-all ${
+              orderViewMode === 'all'
+                ? 'bg-background shadow-xs text-foreground font-semibold'
+                : 'text-muted-foreground hover:text-foreground'
+            }`}
+            onClick={() => setOrderViewMode('all')}
+          >
+            All Orders ({filteredOrders.length})
+          </button>
+          <button
+            type="button"
+            className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-all flex items-center gap-1.5 ${
+              orderViewMode === 'fifo_queue'
+                ? 'bg-background shadow-xs text-foreground font-semibold'
+                : 'text-muted-foreground hover:text-foreground'
+            }`}
+            onClick={() => setOrderViewMode('fifo_queue')}
+            title="Sort orders by ITIL FIFO fulfillment priority (oldest & overdue first)"
+          >
+            <ListFilter className="size-3.5" />
+            <span>FIFO Queue</span>
+            <Badge variant="secondary" className="h-4 px-1 text-[9px] font-bold">FR-09</Badge>
+          </button>
+        </div>
       </div>
 
       {/* Mobile Card View */}
       <div className="lg:hidden space-y-3">
-        {filteredOrders.map(order => {
+        {displayOrders.map(order => {
           const deadlineDate = typeof order.deliveryDeadline?.toDate === 'function' ? order.deliveryDeadline.toDate() : order.deliveryDeadline ? new Date(order.deliveryDeadline) : null;
           const isOverdue = deadlineDate && deadlineDate < new Date() && !['delivered', 'completed', 'cancelled', 'escalated'].includes(order.status);
           return (
@@ -790,10 +901,14 @@ export function Orders() {
             </div>
           );
         })}
-        {filteredOrders.length === 0 && (
+        {displayOrders.length === 0 && (
           <div className="flex flex-col items-center gap-2 py-12 text-zinc-400">
             <ShoppingCart className="w-8 h-8 opacity-20" />
-            <p className="text-xs font-medium italic">No orders match your search criteria.</p>
+            <p className="text-xs font-medium italic">
+              {orderViewMode === 'fifo_queue'
+                ? 'No pending orders currently in the FIFO fulfillment queue.'
+                : 'No orders match your search criteria.'}
+            </p>
           </div>
         )}
       </div>
@@ -813,7 +928,7 @@ export function Orders() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {filteredOrders.map(order => {
+              {displayOrders.map(order => {
                 const deadlineDate = typeof order.deliveryDeadline?.toDate === 'function' ? order.deliveryDeadline.toDate() : order.deliveryDeadline ? new Date(order.deliveryDeadline) : null;
                 const isOverdue = deadlineDate && deadlineDate < new Date() && !['delivered', 'completed', 'cancelled', 'escalated'].includes(order.status);
                 return (

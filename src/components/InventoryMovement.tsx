@@ -31,7 +31,7 @@ function Choice({ id, label, value, onChange, options, placeholder = 'Select an 
 }) {
   return <div className="space-y-2"><Label htmlFor={id} className="text-xs font-semibold">{label}</Label>
     <Select value={value} onValueChange={value => onChange(value ?? '')}>
-      <SelectTrigger id={id} className="w-full h-10! rounded-lg bg-background"><SelectValue placeholder={placeholder}>{options.find(option => option.id === value)?.name || placeholder}</SelectValue></SelectTrigger>
+      <SelectTrigger id={id} className="w-full h-10! rounded-lg bg-background"><SelectValue placeholder={placeholder} /></SelectTrigger>
       <SelectContent>{options.map(option => <SelectItem key={option.id} value={option.id}>{option.name}</SelectItem>)}</SelectContent>
     </Select>
   </div>;

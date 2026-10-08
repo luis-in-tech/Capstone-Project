@@ -25,7 +25,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true);
   const inactivityTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const INACTIVITY_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+  const INACTIVITY_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes
 
   const clearInactivityTimer = () => {
     if (inactivityTimer.current) {
@@ -40,7 +40,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     inactivityTimer.current = setTimeout(async () => {
       await supabase.auth.signOut();
       toast.warning('Session expired', {
-        description: 'You were logged out due to 5 minutes of inactivity.',
+        description: 'You were logged out due to 15 minutes of inactivity.',
         duration: 6000,
       });
     }, INACTIVITY_TIMEOUT_MS);

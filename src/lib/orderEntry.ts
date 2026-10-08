@@ -24,6 +24,8 @@ export interface CartLine {
   priceType: SellingPrice;
   unitPrice: number;
   prices: PriceSnapshot;
+  locationAisle?: string;
+  locationBin?: string;
 }
 export interface ReceiptDetails {
   address: string;

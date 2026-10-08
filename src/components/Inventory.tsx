@@ -23,6 +23,10 @@ import { WarehouseLayout } from './WarehouseLayout';
 import { ProductVariationEditor } from './ProductVariationEditor';
 import { emptyVariations, variationDraft, validateVariations, variantLabel, variantFields, stockForProduct } from '../lib/productVariations';
 import { saveProductVariations } from '../lib/saveProductVariations';
+import { DefectiveStockModal } from './DefectiveStockModal';
+import { QuarantineLedger } from './QuarantineLedger';
+import { getLocalDefectiveTickets, exportDefectiveProductsReportCSV } from '../lib/itilService';
+import type { DefectiveStockTicket } from '../types';
 
 const PRODUCT_TEMPLATE_HEADERS = ['SKU Code', 'Item Name', 'Category', 'Supplier Name', 'Base Price / Retail Price', 'Metro Manila Price', 'Provincial Price', 'Cost', 'Minimum Stock Level', 'Reorder Point'];
 type ImportRow = Record<string, string | number | undefined>;
@@ -80,10 +84,24 @@ export function Inventory() {
 
   // Warehouse Filter State (for filtering inventory view)
   const [warehouseFilter, setWarehouseFilter] = useState<string>('all');
-  const [inventoryView, setInventoryView] = useState<'stock' | 'layout'>('stock');
+  const [inventoryView, setInventoryView] = useState<'stock' | 'layout' | 'quarantine'>('stock');
   const [managedCategories, setManagedCategories] = useState<NamedOption[]>([]);
   const [managedSuppliers, setManagedSuppliers] = useState<NamedOption[]>([]);
   const [hasDelegatedAccess, setHasDelegatedAccess] = useState(false);
+
+  // FR-11: Defective Stock Exception Logging & Quarantine
+  const [isDefectiveModalOpen, setIsDefectiveModalOpen] = useState(false);
+  const [defectiveTickets, setDefectiveTickets] = useState<DefectiveStockTicket[]>(() => getLocalDefectiveTickets());
+
+  useEffect(() => {
+    const handleTicketsChanged = () => setDefectiveTickets(getLocalDefectiveTickets());
+    window.addEventListener('activepro_defective_tickets_changed', handleTicketsChanged);
+    window.addEventListener('storage', handleTicketsChanged);
+    return () => {
+      window.removeEventListener('activepro_defective_tickets_changed', handleTicketsChanged);
+      window.removeEventListener('storage', handleTicketsChanged);
+    };
+  }, []);
 
   useEffect(() => {
     const category = searchParams.get('category');
@@ -338,6 +356,8 @@ export function Inventory() {
         costPrice,
         promoPrice: promoPriceValue ? Number(promoPriceValue) : undefined,
         photoUrl,
+        locationAisle: String(formData.get('locationAisle') || '').trim(),
+        locationBin: String(formData.get('locationBin') || '').trim(),
         minStockLevel: Number(formData.get('minStockLevel')) || 0,
         reorderPoint: Number(formData.get('reorderPoint')) || 0,
         createdAt: new Date(),
@@ -509,6 +529,8 @@ export function Inventory() {
         costPrice: Number(form.get('costPrice')) || 0,
         promoPrice,
         photoUrl,
+        locationAisle: String(form.get('locationAisle') || '').trim(),
+        locationBin: String(form.get('locationBin') || '').trim(),
         minStockLevel: Number(form.get('minStockLevel')) || 0,
         reorderPoint: Number(form.get('reorderPoint')) || 0,
         updatedAt: new Date(),
@@ -853,12 +875,93 @@ export function Inventory() {
   };
 
 
+  const exportMultiWarehouseLedger = () => {
+    const csvRows = [];
+    csvRows.push(['SKU', 'Product Name', 'Supplier', 'Category', 'Aisle/Bin', 'Warehouse A Stock', 'Warehouse B Stock', 'Quarantined Stock', 'Unit Cost', 'Total Asset Value'].join(','));
+    
+    const whA = warehouses.find(w => w.name.includes('Valenzuela A')) || warehouses[0];
+    const whB = warehouses.find(w => w.name.includes('Valenzuela B')) || warehouses[1];
+
+    products.filter(p => !p.parentProductId).forEach(p => {
+      if (p.hasVariations) {
+         const variants = childrenOf(p.id);
+         variants.forEach(v => {
+            const stockA = inventory.find(i => i.productId === v.id && i.warehouseId === whA?.id)?.quantity || 0;
+            const stockB = inventory.find(i => i.productId === v.id && i.warehouseId === whB?.id)?.quantity || 0;
+            const quarantine = inventory.find(i => i.productId === v.id)?.quarantineQuantity || 0;
+            const cost = v.costPrice || p.costPrice || 0;
+            const totalValue = (stockA + stockB + quarantine) * cost;
+            csvRows.push([
+              `"${v.sku || ''}"`,
+              `"${p.name} - ${variantLabel(v)}"`,
+              `"${p.supplier || 'N/A'}"`,
+              `"${p.category || 'N/A'}"`,
+              `"${p.locationAisle || ''}/${p.locationBin || ''}"`,
+              stockA, stockB, quarantine, cost, totalValue
+            ].join(','));
+         });
+      } else {
+        const stockA = inventory.find(i => i.productId === p.id && i.warehouseId === whA?.id)?.quantity || 0;
+        const stockB = inventory.find(i => i.productId === p.id && i.warehouseId === whB?.id)?.quantity || 0;
+        const quarantine = inventory.find(i => i.productId === p.id)?.quarantineQuantity || 0;
+        const cost = p.costPrice || 0;
+        const totalValue = (stockA + stockB + quarantine) * cost;
+        csvRows.push([
+          `"${p.sku || ''}"`,
+          `"${p.name}"`,
+          `"${p.supplier || 'N/A'}"`,
+          `"${p.category || 'N/A'}"`,
+          `"${p.locationAisle || ''}/${p.locationBin || ''}"`,
+          stockA, stockB, quarantine, cost, totalValue
+        ].join(','));
+      }
+    });
+
+    const blob = new Blob([csvRows.join('\n')], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `multi_warehouse_ledger_${new Date().toISOString().split('T')[0]}.csv`;
+    link.click();
+    toast.success('Multi-Warehouse Ledger exported successfully');
+  };
+
   const inventoryNavigation = <div className="flex gap-1 rounded-xl bg-muted/60 p-1 w-fit" aria-label="Inventory views">
     <Button variant={inventoryView === 'stock' ? 'default' : 'ghost'} aria-pressed={inventoryView === 'stock'} onClick={() => setInventoryView('stock')}><Package className="size-4" />Products & Stock</Button>
     <Button variant={inventoryView === 'layout' ? 'default' : 'ghost'} aria-pressed={inventoryView === 'layout'} onClick={() => setInventoryView('layout')}><WarehouseIcon className="size-4" />Warehouse Layout</Button>
+    <Button variant={inventoryView === 'quarantine' ? 'default' : 'ghost'} aria-pressed={inventoryView === 'quarantine'} onClick={() => setInventoryView('quarantine')}>
+      <AlertTriangle className="size-4 text-amber-500" />
+      <span>Quarantine & Returns</span>
+      {defectiveTickets.filter(t => t.status === 'QUARANTINED').length > 0 && (
+        <Badge variant="destructive" className="ml-1 h-4 px-1 text-[9px] font-bold">
+          {defectiveTickets.filter(t => t.status === 'QUARANTINED').length}
+        </Badge>
+      )}
+    </Button>
   </div>;
 
   if (inventoryView === 'layout') return <div className="space-y-5 pb-20">{inventoryNavigation}<WarehouseLayout warehouses={warehouses} products={products.filter(p => !p.hasVariations)} inventory={inventory} /></div>;
+  if (inventoryView === 'quarantine') return (
+    <div className="space-y-5 pb-20">
+      {inventoryNavigation}
+      <QuarantineLedger
+        tickets={defectiveTickets}
+        inventory={inventory}
+        profile={profile}
+        onOpenLogModal={() => setIsDefectiveModalOpen(true)}
+        onRefresh={() => setDefectiveTickets(getLocalDefectiveTickets())}
+      />
+      <DefectiveStockModal
+        open={isDefectiveModalOpen}
+        onClose={() => setIsDefectiveModalOpen(false)}
+        products={products}
+        inventory={inventory}
+        warehouses={warehouses}
+        profile={profile}
+        onSuccess={() => setDefectiveTickets(getLocalDefectiveTickets())}
+      />
+    </div>
+  );
 
   return (
     <div className="space-y-5 pb-20">
@@ -868,8 +971,19 @@ export function Inventory() {
           <p className="mt-1 text-sm text-muted-foreground">Manage products, stock levels, suppliers, and warehouse inventory.</p>
         </div>
         <div className="flex flex-wrap gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => setIsDefectiveModalOpen(true)}
+            className="h-11 gap-2 rounded-xl border-amber-300 bg-amber-50/70 text-amber-800 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-800 px-4 font-bold shadow-sm hover:bg-amber-100"
+          >
+            <AlertTriangle className="h-4 w-4 text-amber-600" /> Log Damaged Stock
+          </Button>
           <Button type="button" variant="outline" onClick={() => navigate('/pricelist')} className="h-11 gap-3 rounded-xl border-zinc-200 bg-white px-5 text-base font-semibold text-zinc-500 shadow-sm hover:bg-zinc-50 hover:text-zinc-700">
             <Tag className="h-5 w-5 text-zinc-500" strokeWidth={2.25} /> Pricelist
+          </Button>
+          <Button type="button" variant="outline" onClick={exportMultiWarehouseLedger} className="h-11 gap-2 rounded-xl px-5 font-bold shadow-sm">
+            <Download className="h-4 w-4" /> Export Ledger
           </Button>
           {isAdmin && <Button type="button" variant="outline" onClick={() => setIsImportOpen(true)} className="h-11 gap-2 rounded-xl px-5 font-bold shadow-sm"><Upload className="h-4 w-4" /> Import Products</Button>}
           {isAdmin && <Button type="button" onClick={() => setIsAddProductOpen(true)} className="h-11 gap-2 rounded-xl bg-[#101d33] px-5 font-bold text-white shadow-lg hover:bg-[#172842]"><Plus className="h-4 w-4" /> Add Product</Button>}
@@ -1055,6 +1169,14 @@ export function Inventory() {
                       />
                     )}
                   </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="locationAisle">Aisle Location</Label>
+                    <Input id="locationAisle" name="locationAisle" placeholder="e.g. A1" />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="locationBin">Bin Location</Label>
+                    <Input id="locationBin" name="locationBin" placeholder="e.g. B-23" />
+                  </div>
                 </div>
               </section>
             </div>
@@ -1231,6 +1353,14 @@ export function Inventory() {
                         />
                       )}
                     </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="edit-locationAisle">Aisle Location</Label>
+                      <Input id="edit-locationAisle" name="locationAisle" placeholder="e.g. A1" defaultValue={editingProduct.locationAisle} />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="edit-locationBin">Bin Location</Label>
+                      <Input id="edit-locationBin" name="locationBin" placeholder="e.g. B-23" defaultValue={editingProduct.locationBin} />
+                    </div>
                   </div>
                 </section>
               </div>
@@ -1405,6 +1535,7 @@ export function Inventory() {
                       <dt className="text-muted-foreground">Item Name</dt><dd className="font-medium">{selectedProduct.name}</dd>
                       <dt className="text-muted-foreground">Category</dt><dd className="font-medium">{selectedProduct.category || 'Uncategorized'}</dd>
                       <dt className="text-muted-foreground">Preferred Supplier</dt><dd className="font-medium">{selectedProduct.supplier || 'N/A'}</dd>
+                      <dt className="text-muted-foreground">Location (Aisle/Bin)</dt><dd className="font-medium">{selectedProduct.locationAisle || selectedProduct.locationBin ? `${selectedProduct.locationAisle || 'N/A'} / ${selectedProduct.locationBin || 'N/A'}` : 'Not Assigned'}</dd>
                     </dl>
                     <div className="mt-2 flex items-center gap-3 border-y border-border py-3"><span className="font-mono text-sm font-black text-muted-foreground">02</span><Tag className="h-5 w-5" /><h3 className="text-base font-bold uppercase tracking-wider">Pricing (₱)</h3></div>
                     <dl className="grid grid-cols-[minmax(8rem,1fr)_minmax(0,1fr)] gap-x-5 gap-y-3 pt-3 text-sm">
@@ -1586,6 +1717,16 @@ export function Inventory() {
             </DialogFooter>
           </DialogContent>
         </Dialog>)}
+
+      <DefectiveStockModal
+        open={isDefectiveModalOpen}
+        onClose={() => setIsDefectiveModalOpen(false)}
+        products={products}
+        inventory={inventory}
+        warehouses={warehouses}
+        profile={profile}
+        onSuccess={() => setDefectiveTickets(getLocalDefectiveTickets())}
+      />
     </div>
   );
 }

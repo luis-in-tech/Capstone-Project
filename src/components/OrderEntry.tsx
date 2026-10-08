@@ -4,6 +4,7 @@ import {
   Check,
   ChevronDown,
   ClipboardList,
+  Clock,
   Pencil,
   Plus,
   ScanBarcode,
@@ -13,6 +14,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -90,6 +92,7 @@ export function OrderEntry({
   const [customerSearch, setCustomerSearch] = useState("");
   const [address, setAddress] = useState("");
   const [region, setRegion] = useState("Metro Manila");
+  const [queueStrategy, setQueueStrategy] = useState<"FIFO" | "LIFO">("FIFO");
   const [terms, setTerms] = useState("COD");
   const [customTerms, setCustomTerms] = useState("");
   const [mode, setMode] = useState<"select" | "sku" | "scan">("select");
@@ -345,6 +348,8 @@ export function OrderEntry({
       priceType: draft.priceType,
       unitPrice: roundMoney(draftPrice),
       prices: draftPrices,
+      locationAisle: product.locationAisle,
+      locationBin: product.locationBin,
     };
     setLines((current) =>
       draft.id
@@ -428,10 +433,15 @@ export function OrderEntry({
           },
         });
         if (!error && data?.order && Array.isArray(data.items)) {
+          const autoDeadline = data.order.deliveryDeadline || new Date(
+            Date.now() + (region === "Metro Manila" ? 7 : 14) * 24 * 60 * 60 * 1000
+          ).toISOString();
           savedOrder = {
             ...data.order,
             clientName: customerName.trim(),
             deliveryRegion: region,
+            deliveryDeadline: autoDeadline,
+            allocationStrategy: queueStrategy,
             receiptDetails: {
               ...(data.order.receiptDetails || {}),
               address: address.trim(),
@@ -446,6 +456,8 @@ export function OrderEntry({
               await updateDoc(doc(db, "orders", data.order.id), {
                 clientName: customerName.trim(),
                 deliveryRegion: region,
+                deliveryDeadline: autoDeadline,
+                allocationStrategy: queueStrategy,
                 receiptDetails: savedOrder.receiptDetails,
               });
             } catch (syncErr) {
@@ -476,6 +488,7 @@ export function OrderEntry({
           deliveryRegion: region,
           deliveryCity: address.split(",")[1]?.trim() || address.trim(),
           deliveryDeadline: deadline,
+          allocationStrategy: queueStrategy,
           statusHistory: [
             {
               status: "pending",
@@ -508,6 +521,8 @@ export function OrderEntry({
           quantity: line.quantity,
           unitPrice: line.unitPrice,
           subtotal: roundMoney(line.quantity * line.unitPrice),
+          locationAisle: line.locationAisle,
+          locationBin: line.locationBin,
           entryDetails: {
             priceType: line.priceType,
             prices: line.prices,
@@ -819,14 +834,26 @@ export function OrderEntry({
                       onChange={(e) => setRegion(e.target.value)}
                     >
                       <option value="Metro Manila">
-                        Metro Manila · 7 days
+                        Metro Manila · 7 days SLA
                       </option>
-                      <option value="Luzon">Provincial Luzon · 14 days</option>
-                      <option value="Visayas">Visayas · 14 days</option>
-                      <option value="Mindanao">Mindanao · 14 days</option>
+                      <option value="Luzon">Provincial Luzon · 14 days SLA</option>
+                      <option value="Visayas">Visayas · 14 days SLA</option>
+                      <option value="Mindanao">Mindanao · 14 days SLA</option>
                     </select>
                   </div>
                   <div className="space-y-1.5">
+                    <Label htmlFor="entry-strategy">Order Queue Strategy (FR-09)</Label>
+                    <select
+                      id="entry-strategy"
+                      className={selectClass}
+                      value={queueStrategy}
+                      onChange={(e) => setQueueStrategy(e.target.value as "FIFO" | "LIFO")}
+                    >
+                      <option value="FIFO">FIFO (First-In, First-Out · Oldest Batch First)</option>
+                      <option value="LIFO">LIFO (Last-In, First-Out · Newest Batch First)</option>
+                    </select>
+                  </div>
+                  <div className="sm:col-span-2 space-y-1.5">
                     <Label htmlFor="entry-address">Delivery address</Label>
                     <Input
                       id="entry-address"
@@ -837,11 +864,22 @@ export function OrderEntry({
                     />
                   </div>
                 </div>
-                <p className="text-xs text-muted-foreground">
-                  Select from existing order clients or create a new client. Delivery is
-                  due {region === "Metro Manila" ? "7" : "14"} days after
-                  saving.
-                </p>
+
+                {/* ITIL 4 SLA Guarantee Card */}
+                <div className="rounded-lg border border-blue-200 bg-blue-50/70 p-3 text-xs text-blue-900 dark:border-blue-900/50 dark:bg-blue-950/30 dark:text-blue-200 flex items-start gap-2.5">
+                  <Clock className="size-4 shrink-0 mt-0.5 text-blue-600 dark:text-blue-400" />
+                  <div className="space-y-0.5 flex-1">
+                    <div className="font-semibold flex flex-wrap items-center justify-between gap-1">
+                      <span>ITIL 4 SLA Fulfillment Guarantee: {region === "Metro Manila" ? "7 Days (Metro Manila)" : "14 Days (Mindanao / Provincial)"}</span>
+                      <Badge variant="outline" className="text-[10px] font-bold bg-white/80 dark:bg-black/30 border-blue-300">
+                        Target: {new Date(Date.now() + (region === "Metro Manila" ? 7 : 14) * 24 * 60 * 60 * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
+                      </Badge>
+                    </div>
+                    <p className="text-[11px] text-blue-700 dark:text-blue-300">
+                      Automated escalation active: breach auto-generates an ITIL incident ticket with CI details. Stock depleted via {queueStrategy} batch allocation.
+                    </p>
+                  </div>
+                </div>
               </section>
               <section className="space-y-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
