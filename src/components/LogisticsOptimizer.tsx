@@ -466,25 +466,10 @@ export function LogisticsOptimizer() {
         description: `Dispatched with ${orderCount} customer deliveries. Route is in transit and tracked in database.`,
         icon: <Truck className="w-5 h-5 text-emerald-500" />
       });
-    } catch (err) {
+    } catch (err: any) {
       console.error('Dispatch recording error:', err);
-      // Graceful fallback to guarantee UI continuity
-      const plate = `NCB-${Math.floor(1000 + Math.random() * 9000)}`;
-      const driver = truckName.includes('Van') ? 'Rogelio Mendoza' : 'Danilo Santos';
-      const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-      const dispatchRecord = { truckId: truckName, plate, driver, timestamp: now };
-      setDispatchedTrucks(prev => {
-        const next = { ...prev, [routeId]: dispatchRecord };
-        if (typeof window !== 'undefined') {
-          try {
-            localStorage.setItem('activepro_optimizer_dispatched_trucks', JSON.stringify(next));
-          } catch {}
-        }
-        return next;
-      });
-      toast.success(`Dispatched ${truckName}!`, {
-        description: `Dispatched with ${orderCount} customer deliveries. Following the Clarke-Wright optimized sequence.`,
-        icon: <Truck className="w-5 h-5 text-emerald-500" />
+      toast.error('Dispatch Failed', {
+        description: err?.message || 'Could not record dispatch trip to database. Please check your connection and try again.',
       });
     } finally {
       setIsProcessing(false);
@@ -515,8 +500,15 @@ export function LogisticsOptimizer() {
 
     // Check real inventory if available
     if (dbWarehouses.length >= 2 && dbInventory.length > 0 && dbProducts.length > 0) {
+      const invByProduct = new Map<string, typeof dbInventory>();
+      for (const item of dbInventory) {
+        const existing = invByProduct.get(item.productId);
+        if (existing) existing.push(item);
+        else invByProduct.set(item.productId, [item]);
+      }
+
       for (const prod of dbProducts) {
-        const stocks = dbInventory.filter(i => i.productId === prod.id);
+        const stocks = invByProduct.get(prod.id) || [];
         const depleted = stocks.find(s => s.quantity === 0);
         const surplus = stocks.find(s => s.quantity >= 30);
         if (depleted && surplus && depleted.warehouseId !== surplus.warehouseId) {
@@ -574,6 +566,13 @@ export function LogisticsOptimizer() {
     setIsProcessing(true);
     const protocolId = `${imbalance.productId}-${imbalance.depletedWarehouse.id}`;
 
+    const qty = Number(imbalance.recommendedTransferQty);
+    if (!Number.isInteger(qty) || qty <= 0) {
+      toast.error('Invalid rebalance quantity. Must be a positive whole number.');
+      setIsProcessing(false);
+      return;
+    }
+
     try {
       // 1. Locate source and destination inventory records in dbInventory
       const sourceInv = dbInventory.find(i => i.productId === imbalance.productId && i.warehouseId === imbalance.surplusWarehouse.id);
@@ -582,7 +581,7 @@ export function LogisticsOptimizer() {
       // 2. Deduct transferred stock from surplus warehouse in inventory table
       if (sourceInv) {
         await updateDoc(doc(db, 'inventory', sourceInv.id), {
-          quantity: Math.max(0, sourceInv.quantity - imbalance.recommendedTransferQty),
+          quantity: Math.max(0, sourceInv.quantity - qty),
           lastUpdated: serverTimestamp()
         });
       }
@@ -590,14 +589,14 @@ export function LogisticsOptimizer() {
       // 3. Add transferred stock to depleted warehouse in inventory table
       if (destInv) {
         await updateDoc(doc(db, 'inventory', destInv.id), {
-          quantity: destInv.quantity + imbalance.recommendedTransferQty,
+          quantity: destInv.quantity + qty,
           lastUpdated: serverTimestamp()
         });
       } else {
         await addDoc(collection(db, 'inventory'), {
           productId: imbalance.productId,
           warehouseId: imbalance.depletedWarehouse.id,
-          quantity: imbalance.recommendedTransferQty,
+          quantity: qty,
           lastUpdated: serverTimestamp()
         });
       }
@@ -607,12 +606,12 @@ export function LogisticsOptimizer() {
         sourceWarehouseId: imbalance.surplusWarehouse.id,
         destinationWarehouseId: imbalance.depletedWarehouse.id,
         productId: imbalance.productId,
-        quantity: imbalance.recommendedTransferQty,
-        status: 'completed',
-        completedAt: serverTimestamp(),
+        quantity: qty,
+        status: 'received',
+        receivedAt: serverTimestamp(),
         initiatedBy: profile?.displayName || profile?.email || 'Automated Load Balancer',
         createdAt: serverTimestamp(),
-        notes: `Automated rebalance of ${imbalance.recommendedTransferQty} units from ${imbalance.surplusWarehouse.name} to ${imbalance.depletedWarehouse.name}`
+        notes: `Automated rebalance of ${qty} units from ${imbalance.surplusWarehouse.name} to ${imbalance.depletedWarehouse.name}`
       });
 
       // 5. Record stock adjustments audit log
@@ -620,7 +619,7 @@ export function LogisticsOptimizer() {
         await addDoc(collection(db, 'stockAdjustments'), {
           productId: imbalance.productId,
           warehouseId: imbalance.surplusWarehouse.id,
-          adjustmentAmount: -imbalance.recommendedTransferQty,
+          adjustmentAmount: -qty,
           reason: `Rebalance transfer out to ${imbalance.depletedWarehouse.name}`,
           recordedBy: profile?.displayName || 'Automated Load Balancer',
           timestamp: serverTimestamp()
@@ -628,7 +627,7 @@ export function LogisticsOptimizer() {
         await addDoc(collection(db, 'stockAdjustments'), {
           productId: imbalance.productId,
           warehouseId: imbalance.depletedWarehouse.id,
-          adjustmentAmount: imbalance.recommendedTransferQty,
+          adjustmentAmount: qty,
           reason: `Rebalance transfer in from ${imbalance.surplusWarehouse.name}`,
           recordedBy: profile?.displayName || 'Automated Load Balancer',
           timestamp: serverTimestamp()
@@ -649,24 +648,13 @@ export function LogisticsOptimizer() {
       });
 
       toast.success(`Warehouse Balance Synchronized!`, {
-        description: `Successfully transferred ${imbalance.recommendedTransferQty} units to ${imbalance.depletedWarehouse.name}. Stock updated in database.`,
+        description: `Successfully transferred ${qty} units to ${imbalance.depletedWarehouse.name}. Stock updated in database.`,
         icon: <Boxes className="w-5 h-5 text-emerald-500" />
       });
-    } catch (err) {
+    } catch (err: any) {
       console.error('Failed to execute transfer:', err);
-      // Fallback
-      setTriggeredProtocols(prev => {
-        const next = [...new Set([...prev, protocolId])];
-        if (typeof window !== 'undefined') {
-          try {
-            localStorage.setItem('activepro_optimizer_triggered_transfers', JSON.stringify(next));
-          } catch {}
-        }
-        return next;
-      });
-      toast.success(`Stock Transfer Request Logged`, {
-        description: `Scheduled ${imbalance.recommendedTransferQty} boxes from ${imbalance.surplusWarehouse.name} to ${imbalance.depletedWarehouse.name}.`,
-        icon: <CheckCircle2 className="w-5 h-5 text-emerald-500" />
+      toast.error('Rebalance Transfer Failed', {
+        description: err?.message || 'Could not update inventory in database. No stock was transferred.',
       });
     } finally {
       setIsProcessing(false);

@@ -232,12 +232,30 @@ export function solveCapacityConstrainedVRP(
 
   const maxVehicleCapacity = Math.max(...fleet.map((v) => v.capacity));
 
-  const stops: DeliveryStopDto[] = orders.map((order) => {
+  const stops: DeliveryStopDto[] = [];
+  for (const order of orders) {
     const city = order.deliveryCity || order.deliveryRegion || 'Metro Manila';
     const coord = resolveLocationCoord(city, depot);
-    const units = extractOrderDemand(order);
-    return { order, city, coord, units };
-  });
+    const demand = extractOrderDemand(order);
+
+    if (demand > maxVehicleCapacity) {
+      let remaining = demand;
+      let part = 1;
+      while (remaining > 0) {
+        const chunk = Math.min(maxVehicleCapacity, remaining);
+        stops.push({
+          order: { ...order, id: `${order.id}-part${part}` },
+          city,
+          coord,
+          units: chunk,
+        });
+        remaining -= chunk;
+        part++;
+      }
+    } else {
+      stops.push({ order, city, coord, units: demand });
+    }
+  }
 
   if (stops.length === 1) {
     const stop = stops[0];
@@ -556,6 +574,15 @@ export async function rerouteTrafficIncident(incidentId: string): Promise<Traffi
 export async function triggerRebalance(payload: StockRebalancePayload) {
   if (!payload.productId || !payload.surplusWarehouseId || !payload.depletedWarehouseId) {
     throw new AppError(400, 'VALIDATION_ERROR', 'Product and warehouse identifiers are required for rebalance.');
+  }
+
+  if (payload.surplusWarehouseId === payload.depletedWarehouseId) {
+    throw new AppError(400, 'INVALID_TRANSFER', 'Surplus and depleted warehouses must be different.');
+  }
+
+  const transferQty = Number(payload.recommendedTransferQty);
+  if (!Number.isInteger(transferQty) || transferQty <= 0) {
+    throw new AppError(400, 'INVALID_QUANTITY', 'Recommended transfer quantity must be a positive integer.');
   }
 
   const created = await transfersService.initiateTransfers({

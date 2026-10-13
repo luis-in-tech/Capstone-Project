@@ -28,6 +28,8 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import type { Product, InventoryItem, Warehouse as WarehouseType, UserProfile, DefectiveStockTicket } from '../types';
 import { logDefectiveStockException, exportDefectiveProductsReportCSV } from '../lib/itilService';
+import { compressImage } from '../lib/imageCompressor';
+import { storage, ref, uploadBytes, getDownloadURL } from '../lib/supabaseAdapter';
 import { toast } from 'sonner';
 
 interface DefectiveStockModalProps {
@@ -187,17 +189,21 @@ export function DefectiveStockModal({
     setWarehouseSearch('');
   };
 
-  const handlePhotoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handlePhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     if (file.size > 10 * 1024 * 1024) {
       toast.error('Image too large (max 10MB)');
       return;
     }
-    setPhotoFile(file);
-    const reader = new FileReader();
-    reader.onload = (ev) => setPhotoPreview(ev.target?.result as string);
-    reader.readAsDataURL(file);
+    try {
+      const compressed = await compressImage(file, 1024, 768, 0.75);
+      setPhotoFile(compressed);
+      setPhotoPreview(URL.createObjectURL(compressed));
+    } catch {
+      setPhotoFile(file);
+      setPhotoPreview(URL.createObjectURL(file));
+    }
   };
 
   const qtyNumber = parseInt(quantity, 10);
@@ -241,6 +247,21 @@ export function DefectiveStockModal({
 
     setIsSubmitting(true);
     try {
+      let resolvedPhotoUrl = '';
+      if (photoFile) {
+        try {
+          const safeName = photoFile.name.replace(/[^a-zA-Z0-9._-]/g, '');
+          const nonce = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID().slice(0, 8) : Math.random().toString(36).substring(2, 8);
+          const storagePath = `quarantine/${Date.now()}_${nonce}_${safeName}`;
+          const fileRef = ref(storage, storagePath);
+          await uploadBytes(fileRef, photoFile);
+          resolvedPhotoUrl = await getDownloadURL(fileRef);
+        } catch (uploadErr) {
+          console.warn('Storage upload fallback:', uploadErr);
+          resolvedPhotoUrl = '';
+        }
+      }
+
       const { ticket } = await logDefectiveStockException({
         productId: selectedProduct.id,
         sku: selectedProduct.sku,
@@ -252,7 +273,7 @@ export function DefectiveStockModal({
         defectReason,
         loggedBy: profile?.uid || 'user',
         loggedByName: profile?.displayName || profile?.email || 'Warehouse Staff',
-        photoUrl: photoPreview,
+        photoUrl: resolvedPhotoUrl,
         supplierName: supplierName || selectedProduct.supplier || 'Primary Supplier',
         notes,
         inventory,

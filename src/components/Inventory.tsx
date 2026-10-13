@@ -1,6 +1,6 @@
 import { hasAdminRole } from '../lib/staffPermissions';
 import { useStaffAccess } from '../hooks/useStaffAccess';
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { db } from '../lib/supabaseAdapter';
 import { collection, onSnapshot, query, where, addDoc, updateDoc, doc, serverTimestamp, deleteDoc } from '../lib/supabaseAdapter';
@@ -32,6 +32,17 @@ const PRODUCT_TEMPLATE_HEADERS = ['SKU Code', 'Item Name', 'Category', 'Supplier
 type ImportRow = Record<string, string | number | undefined>;
 interface ProductImportPreview { row: number; data: Omit<Product, 'id'>; errors: string[]; }
 interface NamedOption { id: string; name: string; active?: boolean; }
+
+export const cleanItemName = (name: string): string => {
+  if (!name) return '';
+  return name
+    .replace(/#\d+(\.\d+)?\s*[-–—]?\s*/g, '')
+    .replace(/\s*[-–—]?\s*#\d+(\.\d+)?/g, '')
+    .replace(/^\.5\s*[-–—]?\s*/g, '')
+    .replace(/(?:^|\s)\.5\s+/g, ' ')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+};
 
 export function Inventory() {
   const { profile } = useAuth();
@@ -92,6 +103,7 @@ export function Inventory() {
   // FR-11: Defective Stock Exception Logging & Quarantine
   const [isDefectiveModalOpen, setIsDefectiveModalOpen] = useState(false);
   const [defectiveTickets, setDefectiveTickets] = useState<DefectiveStockTicket[]>(() => getLocalDefectiveTickets());
+  const cleanedProductIdsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     const handleTicketsChanged = () => setDefectiveTickets(getLocalDefectiveTickets());
@@ -213,7 +225,26 @@ export function Inventory() {
 
   useEffect(() => {
     const unsubProducts = onSnapshot(collection(db, 'products'), (snap) => {
-      setProducts(snap.docs.map((d: { id: string; data: () => Record<string, unknown> }) => ({ id: d.id, ...d.data() } as Product)));
+      const mapped = snap.docs.map((d: { id: string; data: () => Record<string, unknown> }) => {
+        const data = d.data();
+        const rawName = String(data.name || '');
+        const sanitizedName = cleanItemName(rawName);
+
+        // Auto-clean database record if it contains '#000' or '#12' format in the name (once per document)
+        if (rawName && rawName !== sanitizedName && !cleanedProductIdsRef.current.has(d.id)) {
+          cleanedProductIdsRef.current.add(d.id);
+          updateDoc(doc(db, 'products', d.id), { name: sanitizedName }).catch((err) => {
+            console.warn(`Failed to auto-clean product name for ${d.id}:`, err);
+          });
+        }
+
+        return {
+          id: d.id,
+          ...data,
+          name: sanitizedName,
+        } as Product;
+      });
+      setProducts(mapped);
     }, (error) => {
       handleSupabaseError(error, OperationType.GET, 'products');
     });
@@ -306,7 +337,7 @@ export function Inventory() {
     e.preventDefault();
     const formData = new FormData(e.currentTarget);
     const sku = String(formData.get('sku') || addSku || '').trim();
-    const name = String(formData.get('name') || addName || '').trim();
+    const name = cleanItemName(String(formData.get('name') || addName || '').trim());
     const category = String(addCategory || formData.get('category') || 'Uncategorized').trim() || 'Uncategorized';
     const supplier = String(addSupplier || formData.get('supplier') || 'N/A').trim() || 'N/A';
 
@@ -412,7 +443,7 @@ export function Inventory() {
       const fileNames = new Set<string>();
       const preview = rows.map((row, index) => {
         const sku = String(row['SKU Code'] ?? '').trim();
-        const name = String(row['Item Name'] ?? '').trim();
+        const name = cleanItemName(String(row['Item Name'] ?? '').trim());
         const errors: string[] = [];
         if (!sku) errors.push('SKU Code is required');
         if (!name) errors.push('Item Name is required');
@@ -483,7 +514,7 @@ export function Inventory() {
     if (!!editingProduct.hasVariations !== editVariations.enabled && variantModeLocked) { toast.error('Clear existing stock through Adjust Stock before changing variation mode.'); return; }
     const form = new FormData(event.currentTarget);
     const sku = String(editSku || form.get('sku') || '').trim();
-    const name = String(editName || form.get('name') || '').trim();
+    const name = cleanItemName(String(editName || form.get('name') || '').trim());
     const category = String(editCategory || form.get('category') || 'Uncategorized').trim() || 'Uncategorized';
     const supplier = String(editSupplier || form.get('supplier') || 'N/A').trim() || 'N/A';
 
@@ -664,7 +695,7 @@ export function Inventory() {
     addSku.trim() && products.some(p => p.sku.trim().toLowerCase() === addSku.trim().toLowerCase())
   );
   const isAddNameDuplicate = Boolean(
-    addName.trim() && products.some(p => p.name.trim().toLowerCase() === addName.trim().toLowerCase())
+    cleanItemName(addName).trim() && products.some(p => p.name.trim().toLowerCase() === cleanItemName(addName).trim().toLowerCase())
   );
 
   const isEditSkuDuplicate = Boolean(
@@ -672,8 +703,8 @@ export function Inventory() {
     products.some(p => p.id !== editingProduct.id && p.sku.trim().toLowerCase() === editSku.trim().toLowerCase())
   );
   const isEditNameDuplicate = Boolean(
-    editingProduct && editName.trim() &&
-    products.some(p => p.id !== editingProduct.id && p.name.trim().toLowerCase() === editName.trim().toLowerCase())
+    editingProduct && cleanItemName(editName).trim() &&
+    products.some(p => p.id !== editingProduct.id && p.name.trim().toLowerCase() === cleanItemName(editName).trim().toLowerCase())
   );
   const getProductStatus = (product: Product, stock: number, _checkWarehouseId?: string) => {
     if (product.hasVariations) {
@@ -1037,7 +1068,7 @@ export function Inventory() {
                   <TableRow key={product.id} className="cursor-pointer hover:bg-muted/30" onClick={() => { setSelectedProduct(product); setIsDetailOpen(true); }}>
                     <TableCell className="text-center font-mono text-xs text-muted-foreground">{index + 1}</TableCell>
                     <TableCell className="font-mono text-xs text-muted-foreground">{product.sku}</TableCell>
-                    <TableCell><div className="flex items-center gap-3"><div className="flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-border bg-muted">{product.photoUrl ? <img src={product.photoUrl} alt={product.name} className="h-full w-full object-cover" /> : <Package className="h-5 w-5 text-muted-foreground" />}</div><div className="min-w-0"><p className="truncate text-sm font-bold">{product.name}</p>{product.hasVariations && <Badge variant="secondary" className="my-1 text-[10px]">{childrenOf(product.id).filter(v => v.variantEnabled !== false).length} Variants</Badge>}<p className="truncate text-xs text-muted-foreground">{product.category || 'Uncategorized'}</p></div></div></TableCell>
+                    <TableCell><div className="flex items-center gap-3"><div className="flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-border bg-muted">{product.photoUrl ? <img src={product.photoUrl} alt={cleanItemName(product.name)} className="h-full w-full object-cover" /> : <Package className="h-5 w-5 text-muted-foreground" />}</div><div className="min-w-0"><p className="truncate text-sm font-bold">{cleanItemName(product.name)}</p>{product.hasVariations && <Badge variant="secondary" className="my-1 text-[10px]">{childrenOf(product.id).filter(v => v.variantEnabled !== false).length} Variants</Badge>}<p className="truncate text-xs text-muted-foreground">{product.category || 'Uncategorized'}</p></div></div></TableCell>
                     <TableCell>{product.hasVariations ? <div className="space-y-1 text-xs">{variantFields.slice(0, 3).map(([key, label]) => <p key={key}><span className="text-muted-foreground">{label}: </span><strong>{variantRange(product, key)}</strong></p>)}</div> : <div className="grid grid-cols-[2.75rem_auto] text-xs"><span className="text-muted-foreground">Retail:</span><strong>₱{(product.basePrice || 0).toLocaleString()}</strong><span className="text-muted-foreground">MM:</span><strong>₱{(product.mmPrice ?? product.wholesalePrice ?? 0).toLocaleString()}</strong><span className="text-muted-foreground">Prov.:</span><strong>₱{(product.provincialPrice ?? product.dealerPrice ?? 0).toLocaleString()}</strong></div>}</TableCell>
                     <TableCell className="text-sm font-semibold">{product.hasVariations ? variantRange(product, 'costPrice') : `₱${(product.costPrice || 0).toLocaleString()}`}</TableCell>
                     <TableCell className="text-center"><Badge variant="outline" className={'rounded-full px-3 ' + statusClass}>{stock.toLocaleString()} units</Badge></TableCell>
@@ -1516,7 +1547,7 @@ export function Inventory() {
                   </div>
                   <div className="min-w-0">
                     <div className="mb-2 flex flex-wrap items-center gap-2"><Badge className="rounded-md border border-emerald-200 bg-emerald-50 px-3 uppercase text-emerald-700 hover:bg-emerald-50"><span className="mr-2 h-2 w-2 rounded-full bg-emerald-500" />Active</Badge><Badge variant="outline" className="rounded-md px-3">{selectedProduct.category || 'Uncategorized'}</Badge></div>
-                    <h2 className="truncate text-4xl font-black tracking-tight">{selectedProduct.name}</h2>
+                    <h2 className="truncate text-4xl font-black tracking-tight">{cleanItemName(selectedProduct.name)}</h2>
                     <div className="mt-1 text-sm font-semibold tracking-wide text-muted-foreground">{selectedProduct.sku}</div>
                   </div>
                 </div>
@@ -1532,7 +1563,7 @@ export function Inventory() {
                     <div className="flex items-center gap-3 border-b border-border pb-3"><span className="font-mono text-sm font-black text-muted-foreground">01</span><FileText className="h-5 w-5" /><h3 className="text-base font-bold uppercase tracking-wider">Product Information</h3></div>
                     <dl className="grid grid-cols-[minmax(8rem,1fr)_minmax(0,1fr)] gap-x-5 gap-y-3 py-3 text-sm">
                       <dt className="text-muted-foreground">SKU Code</dt><dd className="font-medium">{selectedProduct.sku}</dd>
-                      <dt className="text-muted-foreground">Item Name</dt><dd className="font-medium">{selectedProduct.name}</dd>
+                      <dt className="text-muted-foreground">Item Name</dt><dd className="font-medium">{cleanItemName(selectedProduct.name)}</dd>
                       <dt className="text-muted-foreground">Category</dt><dd className="font-medium">{selectedProduct.category || 'Uncategorized'}</dd>
                       <dt className="text-muted-foreground">Preferred Supplier</dt><dd className="font-medium">{selectedProduct.supplier || 'N/A'}</dd>
                       <dt className="text-muted-foreground">Location (Aisle/Bin)</dt><dd className="font-medium">{selectedProduct.locationAisle || selectedProduct.locationBin ? `${selectedProduct.locationAisle || 'N/A'} / ${selectedProduct.locationBin || 'N/A'}` : 'Not Assigned'}</dd>

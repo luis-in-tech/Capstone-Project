@@ -340,13 +340,31 @@ export function solveCapacityConstrainedVRP(
 
   const maxVehicleCapacity = Math.max(...fleet.map(v => v.capacity));
 
-  // Build delivery stops
-  const stops: DeliveryStop[] = orders.map(order => {
+  // Build delivery stops, splitting any stop exceeding max fleet capacity
+  const stops: DeliveryStop[] = [];
+  for (const order of orders) {
     const city = order.deliveryCity || order.deliveryRegion || 'Metro Manila';
     const coord = resolveLocationCoord(city, depot);
-    const units = extractOrderDemand(order);
-    return { order, city, coord, units };
-  });
+    const demand = extractOrderDemand(order);
+
+    if (demand > maxVehicleCapacity) {
+      let remaining = demand;
+      let part = 1;
+      while (remaining > 0) {
+        const chunk = Math.min(maxVehicleCapacity, remaining);
+        stops.push({
+          order: { ...order, id: `${order.id}-part${part}` },
+          city,
+          coord,
+          units: chunk,
+        });
+        remaining -= chunk;
+        part++;
+      }
+    } else {
+      stops.push({ order, city, coord, units: demand });
+    }
+  }
 
   // Handle single order case directly
   if (stops.length === 1) {

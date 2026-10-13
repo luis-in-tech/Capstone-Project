@@ -105,6 +105,7 @@ export interface Order {
   status: OrderStatus;
   skus?: string[];
   totalAmount: number;
+  amountPaid?: number;
   paymentStatus: PaymentStatus;
   deliveryRegion: string;
   deliveryCity?: string;
