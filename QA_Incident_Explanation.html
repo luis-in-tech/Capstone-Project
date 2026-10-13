@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>QA Verification - Defective Stock Modal Remediation (FR-11)</title>
+<style>
+  body {
+    background-color: #ffffff;
+    color: #202124;
+    font-family: Arial, sans-serif;
+    line-height: 1.6;
+    padding: 30px;
+    max-width: 820px;
+    margin: 0 auto;
+  }
+  h3, h4 {
+    color: #1a73e8;
+    margin-bottom: 6px;
+  }
+  p {
+    margin-top: 0px;
+    margin-bottom: 12px;
+  }
+  ul, ol {
+    margin-top: 4px;
+    margin-bottom: 16px;
+    padding-left: 24px;
+  }
+  li {
+    margin-bottom: 6px;
+  }
+  .highlight-blue {
+    color: #1a73e8;
+    font-weight: bold;
+  }
+  .highlight-orange {
+    color: #d97706;
+    font-weight: bold;
+  }
+  .highlight-green {
+    color: #188038;
+    font-weight: bold;
+  }
+  .console-clean {
+    color: #1a73e8;
+    font-family: monospace;
+    background-color: #f1f3f4;
+    padding: 6px 10px;
+    border-radius: 4px;
+    display: inline-block;
+  }
+  code {
+    font-family: monospace;
+    background-color: #f1f3f4;
+    padding: 2px 5px;
+    border-radius: 4px;
+  }
+</style>
+</head>
+<body>
+
+<h3>QA Verification: [Inventory] Defect Remediation &amp; Usability Optimization — Damaged Asset Quarantine Modal (FR-11)</h3>
+
+<p>
+  <b>Severity / Impact:</b> Medium (Usability, Data Integrity &amp; Error Prevention)<br>
+  <b>Component:</b> <code>src/components/DefectiveStockModal.tsx</code><br>
+  <b>Status:</b> <span class="highlight-green">Resolved &amp; Verified Clean</span><br>
+  <b>Heuristic Standards:</b> Nielsen Heuristic #1 (Visibility of System Status), Heuristic #5 (Error Prevention), ISO/IEC 25010 Usability
+</p>
+
+<h4>Description:</h4>
+<p>
+  Comprehensive audit, bug remediation, and user experience enhancement of the <b>Log Damaged / Defective Stock</b> modal under FR-11. Corrected front-end raw database UUID exposure in selection triggers, resolved string truncation across product labels, implemented real-time keyword search across all inventory Configuration Items (CIs), eliminated premature false-positive quantity alert validations, and enforced strict zero-stock guardrails that prevent fraudulent or erroneous quarantine ticket generation against depleted warehouse balances.
+</p>
+
+<h4>Environment:</h4>
+<ul>
+  <li><b>URL:</b> <code>http://localhost:3000/inventory</code></li>
+  <li><b>Module:</b> Inventory Management &gt; Quarantine &amp; Returns (FR-11)</li>
+  <li><b>Branch:</b> <code>test</code></li>
+</ul>
+
+<h4>Error Log / Console Output:</h4>
+<p class="console-clean">Clean Console Output — 0 Errors, 0 Warnings (Verified via Vite HMR &amp; TypeScript build)</p>
+
+<h4>Key Observations &amp; Remediations:</h4>
+<ol>
+  <li>
+    <b>Elimination of Raw UUID Exposure:</b> Resolved an issue where selecting items rendered internal database IDs (e.g., <code>cace1082-6fa8-4b41-8c6a-8de414f16659</code>) in the input trigger. Both Configuration Item (CI) and Warehouse selectors now permanently render human-readable SKU pills, product names, and facility names (e.g., <code>MAX-MIN-DHF-29 · Maxxis Minion DHF 29" Tire</code> and <code>Valenzuela B (Sub)</code>).
+  </li>
+  <li>
+    <b>Expanded Layout &amp; Truncation Elimination:</b> Expanded the modal layout to a responsive wide-profile dialog (<code>sm:max-w-2xl md:max-w-3xl</code>). All product titles across <span class="highlight-orange">1,000 SKUs</span> now display with full horizontal text wrapping, eliminating clipped dropdown options (e.g., <code>SKU-2001 - HANDLE GRIP SAG...</code>).
+  </li>
+  <li>
+    <b>Searchable Combobox &amp; Auto-Filtering:</b> Integrated live keyword filtering that auto-evaluates against product SKU, descriptive title, brand, and category, allowing operators to locate equipment even when only partial descriptors are known.
+  </li>
+  <li>
+    <b>Prevention of False-Alarm Premature Validation:</b> Resolved a usability flaw where the Defective Quantity field flashed red with false-positive warnings (<code>Quantity exceeds available stock of 0 unit(s)</code>) prior to warehouse facility selection. Validation logic was refactored to be progressive—only triggering stock ceiling checks once a specific originating facility is designated.
+  </li>
+  <li>
+    <b>Smart Facility Auto-Resolution &amp; Sorting:</b> When a product CI is selected, the modal automatically scans physical inventory and pre-selects the facility holding active stock (e.g., automatically resolving to <b>Valenzuela B (Sub)</b> for Maxxis Minion DHF with <span class="highlight-orange">24 units</span>). Furthermore, warehouse options dynamically sort facilities with positive stock to the top of the dropdown list.
+  </li>
+  <li>
+    <b>Zero-Stock Quarantine Guardrail:</b> Implemented defensive validation that automatically triggers when the selected facility has <span class="highlight-orange">0 units</span> available. The system enforces an alert banner, disables the Defective Quantity field, and locks the <code>Quarantine Stock &amp; Create Slip</code> submission button, safeguarding against negative inventory anomalies.
+  </li>
+  <li>
+    <b>Automated Supplier Association:</b> Selecting any valid product CI automatically queries and populates the linked vendor (e.g., <code>Kenda Distributors</code>, <code>Neo Cycling Corp</code>) directly into the Supplier Name field, streamlining return slip generation.
+  </li>
+</ol>
+
+<h4>Observed Result:</h4>
+<p>
+  Verified clean execution with no UI clipping, zero false-alarm validation errors, and complete UUID elimination. Submitting a valid in-stock asset successfully segregates physical units into the Quarantine CMDB partition, issues a formatted ITIL Supplier Defective Product Return Slip (<code>DEF-2026-XXXX</code>), and updates live telemetry on the governance dashboard.
+</p>
+
+<h4>UX &amp; Business Impact:</h4>
+<p>
+  Protects daily warehouse operations from confusion and human error by providing clear, human-readable labels, progressive validation that prevents false-positive panic, and automated routing to facilities with available stock. Directly strengthens audit compliance for Active Pro Marketing Corporation's supplier return agreements.
+</p>
+
+<h4>Research Paper &amp; ITIL Alignment:</h4>
+<p>
+  Directly satisfies <b>FR-11 (Defective / Damaged Asset Quarantine Logging &amp; Supplier Return Slip Generation)</b> and adheres to <b>ITIL 4 Service Configuration Management &amp; Incident Management</b> practices as documented in Capstone 2 Chapter 3.
+</p>
+
+</body>
+</html>

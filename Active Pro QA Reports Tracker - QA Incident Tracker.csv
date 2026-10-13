@@ -1,7 +1,7 @@
 ,,,,,,,,,,,,,
 ,QA INCIDENT TRACKER • FULL-STACK DEFECT TRIAGE DASHBOARD,,,,,,,,,,,,
 ,TOTAL INCIDENTS,,CRITICAL BLOCKERS,,ACTIVE TRIAGE,,RECTIFICATION RATE,,,,,,
-,7,,0,,6,,14.3%,,,,,,
+,12,,0,,6,,41.7%,,,,,,
 ,,,,,,,,,,,,,
 ,Report ID,Date Logged (UTC+8),Feature/Component,Issue Title,Exact Steps to Reproduce,Expected Behavior,Actual Output,Environment,Severity,Resolution Status,PR by,Assignee,Deployment/PR Link
 ,RPT-2026-001,9/9/2026,,,,,,Local,Medium,QA Review,Luis Vicente,Lance Siyhian,PR #142 (fix/ssr-hydration-promo)
@@ -10,4 +10,17 @@
 ,RPT-2026-004,9/14/2026,,,,,,,,,,,Active Pro — Frontend QA Findings & UX Recommendations - 1915 × 865px AP Front-End Bugs
 ,RPT-2026-005,9/16/2026,Removed redundant titles,,,,,,,,,,https://docs.google.com/document/d/1OktV-aP3XrfAi_ayl9rF34BDi3GrcgyDsgA8b-B3mks/edit?tab=t.0
 ,RPT-2026-006,9/19/2026,New features,Backend & APIs,,,,,,,,,
-,RPT-2026-007,9/22/2026,Logistics Optimizer & Orders,Vite build crash from Git conflict markers and leftover code in Orders,"1. Pull Cristine-Branch. 2. Run 'npm run dev'. 3. Observe terminal output.",App builds cleanly without errors and calculates routes with vehicle capacities.,Vite crashed with 'Unexpected token (39:1)' in LogisticsOptimizer.tsx due to Git conflict markers + 50 TypeScript errors in Orders.tsx.,Local,High,Rectified,Lance Siyhian,Lance Siyhian,https://github.com/luis-in-tech/Capstone-Project/commit/8797098
+,RPT-2026-007,9/22/2026,"Supply Chain, Inventory Movement, & Logistic Optimizer",App build crashed from merged conflicts in Logistics & Orders,1. npm run dev (cd Capstone-Project),App should start cleanly with no errors and calculate delivery routes,Unexpected token crash in Vite + ~50 TypeScript errors in Orders.tsx,Local,High,Rectified,Lance Siyhian,Lance Siyhian,Commit 8797098 on Cristine-Branch
+,RPT-2026-008,9/23/2026,Supply Chain & Logistic Optimizer,Backend Fix Instructions,1. Click the Backend Fix Instruction link.                                               2. Copy the SQL Code Block                                     3. Paste the Query Script in Supabase                4. Insert or Enter,Supply Chain' Tab * 'Logistic Optimizer' Tab should be clear of 404 disconnection error. (Since it's asking for Tables and Columns that aren't existent yet in Supabase),The Inspect 'Console' of Supply Chain & Logistic Optimizer has been cleared from 404 disconnection error from the Supabase.,Local,High,Rectified,,Téa Lorainne Chua,Backend Fix Instructions
+,RPT-2026-009,9/24/2026,Inventory,polishing of Inventory Tab. (User Experience),1. Click the pencil icon of any product.                    2. Click either 'Category' or 'Supplier Name'      3. You can select from the existing 'Category' or 'Supplier Name' or 'Uncategorzied' (Category) or 'N/A' (Supplier Name)                                                    4. Click +Add then type your input.,"The 'Category' or 'Supplier Name' should appear bottom down, you can select from existing inputs or Uncategorized / NA. +Add new Category/Supplier Name. Then it should appear (Category subtitle under Product) and (Supplier Name at Supplier column)",Inputs and edits of the Inventory product appear as intended,Local,Medium,Rectified,Lance Siyhian,Lance Siyhian,Commit 23afec8 on Lance-Branch
+,RPT-2026-010,9/24/2026,Orders & Pricelist,"feat: pricelist image scanner, dark mode fix, role-based landing",,,,Staging,Medium,Backlog,Luis Vicente,Téa Lorainne Chua,Commit 196f8ff - dev
+,RPT-2026-011,9/24/2026,Inventory Movement,Backend Fix Instructions: warehouse_zones & allocations 404,"1. npm run dev (navigate to localhost:3000/transfers)
+2. Click 'Inventory Movement' Tab
+3. Open Inspect -> Console
+4. Observe 404 GET errors for warehouse_zones and warehouse_zone_allocations","'Inventory Movement' Tab should be clear of 404 disconnection error. (warehouse_zones and warehouse_zone_allocations tables should be existent and return 200 from Supabase)","The Inspect 'Console' of Inventory Movement shows 404 (Not Found) for warehouse_zones and warehouse_zone_allocations from the Supabase.",Local,High,Backlog,,Téa Lorainne Chua,supabase/migrations/20260927_warehouse_layout.sql
+,RPT-2026-012,10/13/2026,Inventory (Quarantine & Defective Asset Governance - FR-11),"UX Bug & Missing Guardrail: Raw UUID Exposure, Text Truncation, Premature Validation, and Empty Stock Quarantining","1. Navigate to localhost:3000/inventory > Click 'Quarantine & Returns' tab.
+2. Click 'Log Damaged Stock'.
+3. Observe clipped product titles across 1,000 SKUs.
+4. Select CI and observe raw UUID strings (cace1082...) instead of SKU/names.
+5. Observe false-alarm red alert on quantity before warehouse is selected.
+6. Observe missing guardrail when quarantining 0-stock items.","Modal should be wide with searchable auto-filter; display human-readable SKU badges and facility names; auto-route to stocked facilities; enforce zero-stock guardrails blocking submission on empty inventory.","Clean wide dialog verified; raw UUIDs replaced with structured badges; progressive validation timing enforced; smart facility auto-resolution implemented; zero-stock guardrail locking verified.",Local,Medium,Rectified,Lance Siyhian,Lance Siyhian,src/components/DefectiveStockModal.tsx (test branch)
