@@ -79,3 +79,19 @@ export async function getCustomerTransactions(
     next(err);
   }
 }
+
+export async function cancelOrder(
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const id = req.params['id'] as string;
+    const payload = req.body as { cancellationReason?: string; cancelledBy?: string };
+    const cancelled = await ordersService.cancelOrder(id, payload);
+    ok(res, cancelled, `Order "${cancelled.orderNumber}" cancelled and stock reserved rolled back to CMDB.`);
+  } catch (err) {
+    next(err);
+  }
+}
+

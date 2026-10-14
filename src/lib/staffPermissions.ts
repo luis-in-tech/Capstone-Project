@@ -6,7 +6,7 @@ export function getSupplyChainViews(value: StaffPermissions['supplyChain']): Sup
 }
 export const hasAdminRole = (profile: UserProfile | null) => profile?.role === 'admin';
 export function canManageUser(actor: UserProfile | null, target: UserProfile) {
-  return hasAdminRole(actor) && actor?.uid !== target.uid;
+  return hasAdminRole(actor) && actor?.uid !== target.uid && target.role !== 'admin';
 }
 
 export const defaultPermissions: StaffPermissions = {
@@ -27,8 +27,8 @@ export function normalizePermissions(value: StaffPermissions): StaffPermissions 
   return { ...value, supplyChain: getSupplyChainViews(value.supplyChain), movementCreate, warehouseIds: value.warehouseAccess === 'all' ? [] : [...new Set(value.warehouseIds)] };
 }
 export function resolvePermissions(profile: UserProfile | null, delegation?: StaffDelegation): StaffPermissions {
-  if (delegation?.active === false) return { ...defaultPermissions, warehouseAccess: 'selected' };
-  if (profile?.role === 'admin') return { ...defaultPermissions, inventory: 'adjust', pricelist: 'edit', orders: 'create', movementView: 'both', movementCreate: 'both', supplyChain: [...supplyChainViews] };
+  if (profile?.role === 'admin') return { ...defaultPermissions, inventory: 'adjust', pricelist: 'edit', orders: 'create', movementView: 'both', movementCreate: 'both', warehouseAccess: 'all', supplyChain: [...supplyChainViews] };
+  if (delegation?.active === false) return { ...defaultPermissions, warehouseAccess: 'selected', warehouseIds: [] };
   if (delegation?.permissions) return normalizePermissions(delegation.permissions);
   return { ...defaultPermissions, inventory: delegation?.canAdjustInventory ? 'adjust' : 'view', pricelist: delegation?.canAdjustPricelist ? 'edit' : 'view',
     orders: profile?.role === 'staff' ? 'none' : 'create', movementView: profile?.role === 'secretary' ? 'both' : 'none', movementCreate: profile?.role === 'secretary' ? 'both' : 'none' };

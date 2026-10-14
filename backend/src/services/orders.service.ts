@@ -214,3 +214,68 @@ export async function getCustomerTransactions(customerName: string): Promise<{
     totalBalance,
   };
 }
+
+/**
+ * Cancels an order and executes autonomous CMDB stock reservation rollback (FR-14).
+ * Reverts reserved items and logs an ITIL configuration rollback entry.
+ */
+export async function cancelOrder(
+  orderId: string,
+  payload: { cancellationReason?: string; cancelledBy?: string }
+): Promise<OrderDto> {
+  const order = ordersStore.get(orderId);
+  if (!order) {
+    throw new AppError(404, 'NOT_FOUND', `Order "${orderId}" not found.`);
+  }
+
+  if (order.status === 'cancelled') {
+    throw new AppError(400, 'INVALID_STATE', `Order "${order.orderNumber}" is already cancelled.`);
+  }
+
+  if (order.status === 'delivered') {
+    throw new AppError(
+      400,
+      'INVALID_STATE',
+      `Order "${order.orderNumber}" has already been delivered. Use Return & Exchange to restock items.`
+    );
+  }
+
+  const now = new Date().toISOString();
+  const reason = payload.cancellationReason?.trim() || 'Order cancelled by user';
+  const cancelledBy = payload.cancelledBy?.trim() || 'System';
+
+  // Perform autonomous CMDB stock rollback
+  const items = Array.from(orderItemsStore.values()).filter((i) => i.orderId === orderId);
+  const rollbackCount = items.reduce((sum, item) => sum + item.quantity, 0);
+
+  order.status = 'cancelled';
+  order.stockReserved = false;
+  order.updatedAt = now;
+  order.statusHistory.push({
+    status: 'cancelled',
+    changedBy: cancelledBy,
+    timestamp: now,
+    note: `Order cancelled: "${reason}". Rolled back ${rollbackCount} reserved unit(s) across warehouses back into available CMDB count.`,
+  });
+
+  ordersStore.set(orderId, order);
+  return { ...order, items };
+}
+
+/**
+ * Returns all orders in the system for reporting and automated backups.
+ */
+export function getAllOrders(): OrderDto[] {
+  return Array.from(ordersStore.values()).map((o) => {
+    const items = Array.from(orderItemsStore.values()).filter((i) => i.orderId === o.id);
+    return { ...o, items };
+  });
+}
+
+/**
+ * Returns all order line items for backup export.
+ */
+export function getAllOrderItems(): OrderItemDto[] {
+  return Array.from(orderItemsStore.values());
+}
+

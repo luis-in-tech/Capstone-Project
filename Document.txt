@@ -1,0 +1,386 @@
+
+
+Chapter 1: Introduction
+The business-to-business (B2B) distribution industry increasingly relies on centralized, data-driven technologies to optimize supply chain and financial operations. However, many established enterprises, such as Active Pro Marketing Corporation, still rely heavily on disconnected manual processes that lead to operational bottlenecks and inaccurate financial reporting. This study proposes the development of an Integrated Inventory and Financial Reporting System grounded in the ITIL 4 Service Configuration Management framework to address these service gaps. This chapter presents the Company Background, Project Context, Purpose and Objectives, Scope and Limitations, and Project Milestones/Timeline.
+Chapter 1
+Company Background
+Active Pro Marketing Corporation is a full-scale B2B distribution entity based in Valenzuela, specializing in supplying components and accessories to local bike shop owners and distributors. Operating from two large warehouses, the company manages an extensive inventory network to meet the demands of its growing client base. By providing critical supplies to local retailers, Active Pro plays a vital role in maintaining the supply chain and operational efficiency of the local cycling industry.
+Project Context
+The need for this project arises from the ongoing operational struggles within Active Pro Marketing Corporation's supply chain and financial tracking processes. Currently, the organization relies on manual documentation to manage stock lifecycles and agent orders to truck deliveries, while utilizing an unsynchronized manual encoding of Excel for accounting. On a daily basis, the company handles a high volume of inventory movements across its two facilities, which management attributes to the current reliance on manual systems that lack real-time synchronization. This manual-to-computerized conversion of data is prone to severe errors, leading to data silos, delayed fulfillment, inaccurate profit-and-loss (P&L) reporting, revenue leakage, and recurring non-payment tracking issues.
+Purpose and Objectives
+To address these operational challenges, this study proposes a web-based Integrated Inventory and Financial Reporting System. Utilizing the ITIL 4 Service Configuration Management framework, this project will centralize data across both warehouse facilities and automate the service lifecycle, from real-time B2B order monitoring to exact financial expense mapping. The following subsections detail the overarching purpose of the system development, as well as the specific objectives required to achieve it.
+General Objectives
+The general objective of this project is to design, develop, and implement an Integrated Inventory and Financial Reporting System for Active Pro Marketing Corporation in order to transition the company from manual counting and disconnected record-keeping to a centralized digital workflow that ensures data accuracy, operational reliability, and cost-efficient service fulfillment.
+
+Specific Objectives
+To achieve the general objective, this project specifically aims to:
+Design a centralized multi-warehouse inventory control module with real-time, per-warehouse visual tracking, and a strict Role-Based Access Control (RBAC) architecture to secure sensitive business data and restrict unauthorized access to financial modules.
+
+
+Develop a custom logistics optimization algorithm to efficiently manage delivery routes and reduce shipping costs independently of third-party AI, alongside an automated financial reporting module that explicitly categorizes profit and loss.
+Evaluate the improvement in Service Level Agreement (SLA) compliance, fulfillment times, shipping cost reductions, and financial data accuracy using User Acceptance Testing (UAT) with Active Pro management and staff.
+Scope and Limitations
+The scope of this project includes the development of multi-warehouse inventory control, real-time B2B order monitoring, and automated internal financial reporting modules specifically designed for Service Provider users (office secretaries, managers) and Customers (field agents acting as internal clients). The system will generate specific outputs, including automated Profit-and-Loss (P&L) statements and SLA Compliance Reports. However, the system is limited strictly to internal supply chain and financial tracking, and explicitly excludes external taxation filing (BIR) and payroll processing functionalities. Furthermore, the project is constrained to a zero-budget requirement, utilizing free and open-source development tools such as MySQL. However, this constraint applies only to the development phase. The operational use of the system by the client may require subscription-based services necessary for deployment and hosting.
+Conceptual Framework
+To visualize the transformation of Active Pro Marketing Corporation's raw operational data into a streamlined digital service solution, this project is guided by the Input-Process-Output (IPO) logic, as represented in Figure 1. This narrative outlines how each phase systematically transitions into the next to produce the final system. 
+	The Input Phase establishes the foundation necessary for developing the proposed system. This initial phase encompasses the collection of legacy process documents, current manual inventory records (logbooks), shipping and routing constraints, and the explicit business requirements gathered via interviews with the Chief Marketing Officer (CMO). Furthermore, it integrates the theoretical guidelines of the ITIL 4 Service Configuration Management framework alongside the baseline hardware and software prerequisites. These prerequisites utilize the existing on-site personal computers and open-source web development tools, including MySQL.
+During the Process Phase, these foundational inputs undergo systematic transformation through the rigorous application of the Agile Scrum Software Development Life Cycle (SDLC). This methodology involves continuous iterations of requirements analysis, system architecture modeling (including database schema and UI/UX mockups ),and core application coding. Crucially, this phase includes the engineering and programming of a custom logistics optimization algorithm, developed entirely by the project team to manage delivery routing without reliance on unstructured third-party AI. To guarantee structural integrity, rigorous Software Quality Assurance (SQA) procedures are executed within this phase; the development team utilizes Unit Testing for data validation, Stress Testing for cloud server traffic and photo uploads, and User Acceptance Testing (UAT).
+The validation from the process phase culminates in the final deliverables of the Output Phase. The primary functional deliverable is the Integrated Inventory and Financial Reporting System (IIFRS). For the Service Management track, this results in specific, quantified service enhancements: automated, real-time (P&L) statements with distinct profit/loss categorization, a dynamic multi-warehouse digital stock registry with real-time transfer tracking and photo validation, a real-time B2B order monitoring queue, an automated logistic optimizer for cost-efficient shipping and comprehensive SLA compliance tracking complete with automated escalation logs. 
+Figure 1. IPO Model
+
+Importance of the Study
+The implementation of the Integrated Inventory and Financial Reporting System holds significant relevance and provides quantifiable benefits to several distinct stakeholder groups within and outside the organization: 
+
+1. To Active Pro Marketing Corporation Management: The study provides a data-driven solution to persistent revenue leakage and manual tracking vulnerabilities. By shifting away from unsynchronized manual encoding in Excel toward automated, real-time P&L reporting and centralized multi-warehouse visibility, management gains the critical operational transparency needed for strategic decision-making. 
+2. To Office Secretaries and Staff: This project significantly reduces administrative workloads and minimizes data entry errors. By allowing agents to directly create centralized orders, the system eliminates redundant manual transcription. The integration of an automated queue and a digital visual Configuration Management Database (CMDB) standardizes the master data catalog and minimizes warehouse picking errors. 
+3. To Agents (B2B): The system empowers agents by allowing them to independently verify real-time digital Configuration Item (CI) levels across both warehouses. This transparency prevents out-of-stock ordering errors and improves reliability for both local bike shop owners and distributors. Furthermore, active SLA monitoring enforces specific fulfillment windows (one week for Metro Manila, two weeks for Mindanao), substantially improving customer satisfaction and trust. 
+4. To Future Researchers and Academia: This study serves as a practical blueprint for applying corporate ITIL 4 Service Configuration Management principles within a resource-constrained Micro, Small, and Medium Enterprise (MSME). It offers valuable insights into how flat-structured organizations can overcome technological resistance and successfully transition from disconnected manual processes to highly governed digital service workflows. 
+Chapter 2: Review of Related Literature, Studies, Systems and Technologies
+This chapter reviews the literature, studies, systems, and technologies that support the development of the Integrated Inventory and Financial Reporting System for Active Pro Marketing Corporation, with ITIL 4 Service Configuration Management as the central governing framework. The review covers five thematic areas, including digital transformation and IT governance in MSMEs, ITIL 4 implementation and Service Configuration Management, process improvement through automated service delivery, SLA management and monitoring, and customer service digitization, along with barriers to technological adoption.
+The subsequent review of related systems examines commercial platforms ranging from mobile POS tools and cloud inventory systems to full ERP suites and IT Service Management platforms. It identifies the gap addressed by this project, which is the lack of an ITIL 4-aligned and affordable system capable of managing B2B inventory fulfillment and financial tracking within an MSME context.
+Chapter 2
+Review of Related Literature and Studies
+Digital Transformation and IT Governance in MSMEs
+Micro, Small, and Medium Enterprises (MSMEs) face distinct operational hurdles that threaten their viability in highly competitive global markets. They routinely operate with restricted capital, inadequate technical infrastructure, and limited human resources. To survive these constraints, organizations must modernize. Rather than merely adopting isolated technological tools, MSMEs must leverage digital transformation as a comprehensive strategy to overhaul internal workflows and expand their market reach (Triwahyono et al., 2023). When these technological innovations are properly integrated, businesses can significantly reduce operating costs while maintaining agility. However, achieving this level of modernization is rarely straightforward.
+Enterprise Resource Planning (ERP) systems represent a primary mechanism for facilitating this shift. While traditionally viewed as mere administrative software, ERP functions as a unifying organizational framework explicitly designed to dismantle internal data silos (Kaur, 2026). In many MSMEs, departments such as finance, human resources, and supply chain management operate in strict isolation from one another, breeding severe data inconsistencies and delayed reporting. Merging ERP infrastructure with Customer Relationship Management (CRM) systems addresses these exact friction points. Establishing a centralized database fosters cross-departmental collaboration and ensures the real-time supply chain visibility needed to track inventory and predict demand fluctuations (Zaman, 2024). These data silos are operationally dangerous for MSMEs, directly causing delayed order fulfillment, inaccurate reporting, and poor decision-making. Instead of operating from disjointed transactional data, managers gain the actionable insights needed to align their supply capabilities with actual customer expectations.
+Despite these theoretical benefits, translating integrated platforms into actual operational success remains remarkably difficult for smaller enterprises. Pervasive digital illiteracy and rigid financial constraints routinely derail software deployments before they can yield any meaningful return on investment (Opoku et al., 2024). Levstek et al. (2022) suggest, the root of this failure often lies in governance rather than the technology itself. Standardized information technology governance frameworks were engineered specifically for the hierarchical complexities of large multinational corporations. When forced upon the flatter organizational structures of MSMEs, these universal compliance models collapse under their own administrative weight (Levstek et al., 2022). To avoid deployment failure, smaller firms require a highly adaptive, contingency-based governance approach. Software integration must be paired directly with situational oversight and sustained employee upskilling (Opoku et al., 2024). Without this adaptive governance, MSMEs inevitably revert to familiar manual practices. Disjointed legacy systems persist, perpetuating the very data silos and delayed order fulfillments the new technology was meant to eliminate. These operational breakdowns underscore the critical need for an ITIL-aligned service management approach that provides structured workflows while remaining lightweight enough for MSMEs to sustain.
+ITIL 4 Implementation and Service Configuration Management
+Effective information technology governance requires aligning strategic objectives with daily operational realities. Organizations often bridge this gap through the Information Technology Infrastructure Library (ITIL) framework. Rather than a rigid set of rules, ITIL serves as a customizable baseline of procedures and controls that dictate how IT services operate within complex enterprise environments (Santosa & Mulyana, 2023). This flexibility makes ITIL 4 especially relevant for businesses migrating from fragmented, manual workflows to integrated digital platforms. Without such structured governance, technological upgrades risk amplifying existing administrative inefficiencies rather than resolving them.
+At the core of this framework is Service Configuration Management, a practice that ensures the accuracy and availability of service asset information. The mechanism driving this process is the Configuration Management Database (CMDB). A properly architected CMDB maps out all configuration items and their functional interdependencies, establishing a single, authoritative source of truth across the organization (Dande et al., 2024). This structural mapping directly attacks the chronic lack of operational visibility common in growing enterprises. When departments rely on isolated software tools, communication breaks down and data silos inevitably emerge. A centralized configuration repository dismantles these structural barriers, enabling synchronized, cross-departmental service delivery.
+Despite these structural advantages, unified configuration tracking carries significant risks if deployed without adequate process design. CMDB initiatives frequently become unmanageable when organizations bypass structured process design or fail to align the database with core business objectives (Dande et al., 2024). Avoiding these implementation failures demands strict adherence to a standardized service data model before any software integration begins. For MSMEs, the stakes of this structural transition are high. Attempting to modernize without an ITIL-aligned service management strategy leaves these enterprises exposed to the persistent data silos and delayed fulfillment cycles they originally sought to eliminate.
+Process Improvement through Automated Service Delivery
+Systematic process improvement is a fundamental requirement for reliable service delivery. In retail and distribution, operational bottlenecks often manifest as persistent stock-outs, which degrade customer loyalty and erode profit margins. Small- and medium-scale operations frequently attempt to manage these risks using visual shelf inspections and physical ledgers. However, this reliance on manual tracking actively undermines inventory control rather than supporting it (Weerarathna, 2025). Organizations must structurally shift toward automated frameworks to align their replenishment cycles with actual demand. Modernizing these internal processes does more than replace paper ledgers; it systematically eliminates the daily operational friction that drains employee time and suppresses overall enterprise productivity (Kallmuenzer et al., 2024). Achieving this balance requires moving beyond reactive manual processes toward dynamic, system-driven monitoring.
+Transitioning to an automated infrastructure accelerates the entire service delivery lifecycle by establishing a single source of operational truth. When organizations calculate material requirements in real time based on live sales metrics, they bypass the manual data entry errors that typically compromise traditional inventory processes (Sudarmi & Sunaryo, 2024). Beyond basic error reduction, embedding digital supply chains into daily workflows actively forces resource-constrained enterprises to continuously innovate their operational processes (Opoku et al., 2024). The contrast between legacy methods and integrated platforms is evident in documented cases. Firms that manage workflows through fragmented spreadsheets and messaging applications suffer from prolonged processing times and severe fulfillment discrepancies, whereas migrating to centralized automation resolves these exact vulnerabilities (Siregar et al., 2025). This structural weakness is especially critical for MSMEs operating within rapidly expanding B2B distribution sectors. As transaction volume scales, manual inventory management across multiple facilities inevitably fractures into isolated data silos. Without an ITIL-aligned service management framework to govern these processes, disconnected systems will continuously trigger stock-outs and delayed fulfillments, paralyzing an enterprise's ability to compete.
+Service Level Agreement (SLA) Management and Monitoring
+Service Level Agreements (SLAs) function as the primary accountability mechanism between service providers and clients. In modern supply chains, maintaining trust requires strict adherence to specific Service Level Objectives, such as maximum acceptable delivery times or system uptime thresholds (Khan et al., 2021). However, manually enforcing these metrics results in significant reporting inaccuracies. When human operators must track geographically dispersed deliveries, administrative bottlenecks make it unclear whether providers actually meet their contractual obligations. Manual oversight cannot scale. To prevent these localized failures from eroding customer trust, Khan et al. (2021) argue that organizations must adopt automated, transparent verification systems. Such system-driven audits shift performance monitoring from a reactive administrative chore to an objective structural guarantee.
+Transitioning to real-time compliance assessment directly addresses these oversight limitations. Automated frameworks autonomously extract operational metrics, such as processing duration, and evaluate them against stipulated quality parameters without human intervention (Alzubaidi et al., 2023). This delegation eliminates subjective reporting biases and provides immediate visibility into SLA breaches. However, monitoring alone is insufficient if the performance data remains isolated from the rest of the business. Engel et al. (2022) advocate for SLA-aware operational efficiency, a paradigm that embeds granular SLA analytics directly into core business workflows. Treating compliance as an active component of daily operations allows enterprises to balance engagement-specific service commitments with broader process optimization. For resource-constrained MSMEs, this integration is vital. Without a unified, ITIL-aligned approach to service management, disjointed tracking methods inevitably produce data silos, masking the root causes of delayed fulfillments and leaving service quality vulnerable to systemic blind spots.
+Customer Service Digitization and Satisfaction
+Digital transformation must extend beyond internal inventory control to redefine how organizations interact with their clients. Online transaction mechanisms do not merely facilitate sales; they actively reshape customer expectations by demanding immediate, personalized responsiveness. Mahmoud et al. (2024) argue that integrating these digital touchpoints enables enterprises to bypass geographical limitations and deploy real-time predictive analytics. Anticipating client needs through operational data has become essential for sustaining long-term customer retention. Leveraging backend data to streamline frontend interactions serves as the primary mechanism for mitigating customer churn and securing long-term loyalty (Brunner et al., 2025).
+The technical viability of this customer-centric approach depends entirely on Application Programming Interfaces (APIs). Bridging legacy inventory structures with modern digital storefronts closes a critical operational gap. APIs enable the real-time transmission of product availability, order status, and transaction records across systems (Dubey et al., 2024). Seamless synchronization empowers businesses to provide proactive support and accurate delivery estimates. This continuous flow of data allows organizations to absorb client feedback and immediately optimize supply chain workflows (Brunner et al., 2025). When these backend-to-frontend integration points are absent, however, customer-facing systems become detached from the operational realities driving them. For MSMEs, this disconnect signals a deeper governance failure: without ITIL-aligned service management anchoring the digital infrastructure, backend data silos surface as unreliable order tracking and delayed fulfillment on the client-facing side, directly undermining the customer satisfaction these systems were designed to protect.
+Barriers to Technological Adoption and Legacy System Migration
+While integrated platforms offer clear operational benefits, MSMEs rarely adopt them seamlessly. High capital requirements and a severe digital skills gap routinely stall modernization efforts. However, financial constraints alone do not explain the problem. Organizational inertia plays an equally powerful role. Managers frequently exhibit technological path dependency, clinging to obsolete legacy systems solely because they remain nominally functional (Kallmuenzer et al., 2024). This persistent reliance on outdated infrastructure actively generates interoperability conflicts when firms attempt to integrate modern software with entrenched IT frameworks (Koushik, 2025). Risk-averse organizational cultures further complicate the transition, as employees who have spent years performing manual bookkeeping often reject new interfaces, generating widespread resistance that magnifies the inherent uncertainty of digital transformation (Kallmuenzer et al., 2024).
+Navigating these deep-rooted technical and cultural barriers requires a highly strategic approach to implementation. Attempting a complete system overhaul often backfires. Instead, deploying core modules such as basic inventory management first allows staff to adapt to digital workflows before interacting with more sophisticated features (Koushik, 2025). Cloud-based subscription models provide a valuable workaround, offering scalable access to advanced tools without the prohibitive upfront costs of replacing physical hardware. Selecting the appropriate legacy systems for migration also benefits from structured decision-making tools such as the Technology Acceptance Model, which focuses on Perceived Usefulness and Perceived Ease of Use to help managers predict adoption success and align system capabilities with user expectations (Salih, 2025). However, simply acquiring flexible cloud tools or rolling out software in phases is insufficient if the underlying governance remains fragmented. When piecemeal migrations occur without robust, ITIL-aligned service management, MSMEs inadvertently create new operational bottlenecks. Departments end up mastering disconnected modules, trapping critical information in data silos that ultimately cause the exact delayed fulfillment issues the digital transition was meant to resolve.
+Review of Related Systems and Technologies
+Limitations of Generic Business and Inventory Systems
+While generic business applications and accounting software provide foundational transaction recording, they inherently lack the infrastructure required for IT Service Management (ITSM). Small-scale point-of-sale (POS) and inventory tools such as Peddlr, Kyte, Loyverse, and Aronium are designed primarily for financial tracking and basic quantitative inventory counts rather than the comprehensive lifecycle management of IT services. Similarly, mid-tier solutions like SalesBinder, inFlow Inventory, and ZarMoney focus heavily on managing customer bookings and stock levels but fail to provide a Configuration Management Database (CMDB) or automated mechanisms for Service Level Agreement (SLA) breach escalation. Even comprehensive Enterprise Resource Planning (ERP) platforms, such as Odoo, NetSuite, Microsoft Dynamics 365, ERPNext, and Zoho One. While robust in supply chain and financial operations, they do not inherently offer CI-based asset management tailored for IT governance. The absence of such ITSM-specific features across these applications means organizations cannot effectively map dependencies between configuration items or automate incident responses. Consequently, relying on these generic platforms leads to manual operational bottlenecks, data silos, and a strictly reactive approach to problem management.
+IT Governance and Service Management Frameworks
+Establishing structured IT governance is imperative for mitigating operational risks and ensuring service continuity. Evaluating current governance capabilities often relies on frameworks like COBIT 2019, which provides a comprehensive baseline for assessing process maturity in areas such as incident and problem management (Idrus & Widodo, 2025). However, comprehensive standards are frequently unsuitable for Small and Medium-sized Enterprises (SMEs) due to their high implementation costs, limited employee resources, and structural heterogeneity (Deistler & Rentrop, 2022). To bridge this gap, organizations must adapt appropriately scaled frameworks. The integration of ITIL 4 and FitSM offers a balanced approach for resource-constrained environments (Idrus & Widodo, 2025). Specifically, adopting ITIL 4 Service Configuration Management establishes a structured method for tracking every Configuration Item (CI), ensuring that all hardware, software, and service dependencies are accurately recorded. While FitSM provides the lightweight processes necessary for daily operations, ITIL 4 supplies the definitive structural depth required to govern CIs systematically
+Digital Transformation and Information System Acceptance
+The transition toward structured ITSM infrastructure requires more than technical deployment; it necessitates a fundamental cultural shift and strong user acceptance to succeed. Implementing enterprise platforms such as ServiceNow, which centralize data and standardize workflows, significantly improves operational efficiency and reduces incident resolution times (Bhat & Dhiman, 2024). Nevertheless, the successful adoption of such new information systems is heavily dependent on user perception and proactive early-stage communication (Fabbian, 2023). The initial phases of digital transformation are critical because convincing internal stakeholders of long-term benefits often presents a major obstacle to process optimization. By prioritizing transparent communication and establishing trust, organizations can foster an innovation-oriented mindset that mitigates resistance to change (Fabbian, 2023). These insights directly inform the design of User Acceptance Testing (UAT) and preliminary workshop phases, ensuring that impacted users develop the necessary competence and confidence to operate integrated ITSM workflows effectively prior to full deployment.
+Automation in Incident Management and Service Delivery
+The integration of automated tools into incident management value chains drastically reduces manual workloads and accelerates service delivery. Utilizing automation features within systems like Jira enables support teams to execute tasks more efficiently by generating automatic alerts for critical service requests and streamlining backlog monitoring (Tistelgrén, 2023). Advancements in artificial intelligence, as explored by Samala (2025), further enhance these capabilities by enabling machine learning algorithms to optimize resource allocation and automate ticket routing without human intervention. These predictive analytics and automated SLA escalation mechanisms minimize operational errors and drastically shorten incident resolution times. Despite the substantial operational effectiveness delivered by enterprise-grade platforms such as Jira and ServiceNow, these systems remain highly complex and cost-prohibitive for Micro, Small, and Medium Enterprises (MSMEs). The extensive configuration requirements and recurring subscription fees prevent smaller operations from leveraging advanced queue automation, highlighting the necessity for scalable, purpose-built alternatives.
+Synthesis
+The reviewed systems reveal a consistent trade-off between governance depth and affordability, leaving MSMEs chronically underserved. Mobile and standalone tools such as Peddlr, Kyte, and Loyverse offer accessible stock tracking. However, they are built exclusively for business retail, with no CMDB functionality, SLA monitoring, or escalation workflows. Mid-tier platforms such as SalesBinder, inFlow, and ZarMoney address isolated operational segments, stock partitioning, barcode fulfillment, and financial reporting, but remain transactional, tracking what was sold rather than governing the service lifecycle of the configuration items behind each transaction. Enterprise platforms such as Odoo, NetSuite, and Zoho One achieve the necessary operational breadth but impose prohibitive licensing costs and IT administration requirements, placing them beyond the reach of MSMEs. IT Service Management platforms such as ServiceNow and Jira come closest to ITIL 4 alignment through their SLA tracking and CI management capabilities, yet their architecture targets internal IT departments managing software incidents, not B2B supply chains where a configuration item is a physical warehouse asset and a service request is a bulk field order. No reviewed system integrates ITIL 4 Service Configuration Management principles within an architecture that is simultaneously affordable and operationally suited to MSME B2B distribution. This gap is precisely what the proposed Integrated Inventory and Financial Reporting System is designed to fill.
+Chapter 3: Business Process, Business Solutions, and Methods
+This chapter details the operational workflow and architectural methodologies utilized in developing the Integrated Inventory and Financial Reporting System. By employing a Descriptive Research Design, the study evaluates the existing service bottlenecks within Active Pro Marketing Corporation to architect a "To-Be" state grounded in the ITIL 4 Service Configuration Management framework. Transitioning from analyzing these processes to proposing solutions is intrinsically tied to the Service Value System (SVS), ensuring that the automated system continuously delivers quantifiable business value. Furthermore, the chapter outlines the Agile Scrum Methodology applied to ensure iterative alignment between the proposed business solutions and the overarching Service Level Agreements (SLAs).
+Chapter 3 
+Business Process
+Active Pro Marketing Corporation operates as a nationwide B2B distributor of bicycle parts, accessories, and complete bikes. The organization averages one to four high-value bulk transactions daily, acquiring orders through agents in Luzon and direct inquiries via Facebook Messenger. To accurately analyze the service gap within these operations, the researchers conducted interviews with the Chief Marketing Officer (CMO).
+The existing business process is characterized by an outdated legacy software system that significantly degrades service delivery. Currently, the lifecycle of physical inventory, acting as critical Configuration Items (CIs), is disjointed. Recent empirical research highlights that reliance on outdated, inflexible software severely restricts SME productivity, whereas shifting to modern digital inventory tools can increase operational profitability by up to 35% (Wulan et al., 2024). By identifying these structural inefficiencies, the project establishes a foundation for applying ITIL 4 Service Configuration Management to ensure every physical asset is accurately accounted for as a formal CI.
+Comparison of Existing and Proposed Business Processes
+A comparative analysis reveals that the existing reliance on unstructured, flat-file spreadsheet applications causes severe operational bottlenecks and intrinsically limits the organization’s ability to meet baseline SLAs. Specifically, conducting routine stock verification is highly inefficient because older stock cannot be easily counted without physically moving dozens of other units. Furthermore, the current system lacks multimedia capabilities; it cannot store images of the physical assets, severely crippling the staff's ability to maintain a definitive visual digital reference for the inventory. This lack of visual Configuration Item (CI) mapping increases the risk of asset misidentification and warehouse picking errors.
+In contrast, the proposed business process introduces a centralized digital architecture that automates Configuration Item (CI) tracking and incorporates digital image repositories. This technological intervention completely bypasses physical verification barriers, representing a critical shift from reactive incident management to controlled service fulfillment. Integrating an enterprise architecture designed around ITIL 4 best practices provides a direct blueprint for transforming these delayed operational states into highly governed digital service workflows (Santosa & Mulyana, 2023).
+Process Map
+The Process Maps illustrate the flow of service requests across the organization. By mapping these workflows, the study visualizes the current operational challenges the staff faces and highlights exactly where the proposed automated system will replace the existing manual steps. The maps clearly distinguish between standard B2B orders and operational incidents, ensuring that the new system is designed to handle requests efficiently and align with ITIL standards.
+
+
+
+
+
+
+
+Figure 2. Process Map
+Existing Business Process/es
+As illustrated in the As-Is Diagram, the existing business process relies entirely on an outdated legacy system supplemented by physical requisition forms. This current setup is giving the staff a hard time, as it frequently causes operational bottlenecks and tracking failures. When agents place orders, office staff must execute highly time-consuming manual data entry to input customer information.
+Crucially, the current software generates highly inaccurate financial reports because it cannot properly record unpaid orders purchased on terms, heavily skewing the company’s Profit and Loss (P&L) statements. Additionally, due to the overwhelming volume of stock, staff must manually sort and type out brand names, sizes, and prices to create updated monthly price lists, causing massive administrative delays. This fragmented approach ultimately increases the risk of SLA breaches and data inaccuracies.
+
+Figure 3. As-Is Diagram
+Proposed Business Process/es
+The proposed business process fundamentally restructures Active Pro Marketing Corporation’s workflow into a streamlined, automated pipeline centered around dedicated, role-based interfaces. The new process initiates when an agent accesses their specific system view to independently verify real-time digital Configuration Item (CI) levels across both warehouses and directly create a centralized order. This eliminates the need for redundant manual data entry by office staff and immediately routes a preparation ticket to the central Admin and Secretary Dashboard. Within this centralized architecture, the system establishes a digital visual repository integrated directly into the Configuration Management Database (CMDB). By associating definitive reference images with each physical CI, the system enforces strict asset identification, minimizes warehouse picking errors, and standardizes the master data catalog. Simultaneously, the financial module logs the completed transactions into the Admin Dashboard, intelligently categorizing term-based purchases to autonomously generate an accurate, unskewed P&L ledger for executive review. Furthermore, the system dynamically generates updated monthly price lists that automatically sort items by brand and size, making them ready for the secretary to easily export and distribute. Finally, the Admin Dashboard actively monitors SLA compliance to systematically enforce a one-week fulfillment for Metro Manila and a two-week window for Mindanao.
+Figure 4. To-Be Diagram
+
+Data Flow Diagrams
+
+Figure 5. Data Flow Diagram
+Existing System/s
+This diagram visualizes the severe operational bottlenecks and fragmented data flow of the current manual setup. It illustrates how physical, paper-based forms must constantly travel between approval entities (Department Head, Accountant) before an order can be finalized. It highlights the major pain points: unverified verbal stock checks for field agents, manual data entry siloing information, and their legacy system generating "Skewed P&L Data" because it cannot handle term payments, all while relying on the outdated legacy Spreadsheet data store.
+
+
+
+
+
+
+
+
+
+
+Figure 6. Existing Systems
+Proposed System/s
+This diagram visualizes the streamlined, automated future state governed by the Integrated IIFRS. All external entities (CMO, Field Agents, Warehouse Staff) now connect directly to the centralized cloud-based process. Key automations are shown: Field Agents receive real-time CI status queries and SLA alerts, Warehouse Staff upload CI images directly from the floor, and the CMO sets promotions and receives "Unskewed P&L" and "Audit Trails." Crucially, every module feeds into and extracts from the centralized DS-2 CMDB, which includes the required CI Image Repository, uniting inventory, finance, and logistics data in a single governance system.
+
+
+
+
+
+
+
+Figure 7. Proposed Systems Diagram
+Business Solutions
+The proposed business solution is the Integrated Inventory and Financial Reporting System (IIFRS). This web-based platform functions as a centralized hub to govern B2B sales and multi-warehouse operations. By utilizing ITIL 4 Service Configuration Management, the system ensures that every physical asset is accurately recorded as a Configuration Item (CI) complete with image data. This robust configuration tracking resolves the operational bottlenecks of the legacy process, directly feeding the automated dynamic price lists, accurate financial statements, and SLA monitoring modules.
+Business Requirements Overview
+The business requirements for the Integrated Inventory and Financial Reporting System (IIFRS) were derived directly from the semi-structured interviews with the Chief Marketing Officer (CMO) and the rigorous process analysis of Active Pro Marketing Corporation's current manual operations. These specifications define the mandatory systemic capabilities and operational constraints required to successfully implement automated Service Configuration Management across the organization's supply chain. Furthermore, to ensure long-term business alignment, the system's architecture is designed to be highly scalable; the database logic permits the seamless addition of a third or fourth warehouse node should the company expand its physical distribution network in the future. The following subsections explicitly outline the automated functionalities, interface mock-ups, and system-generated reports necessary to resolve the company's existing data silos and SLA fulfillment delays.
+Functional Requirements
+The system must execute critical functions to sustain the proposed automated workflow and ensure strict adherence to ITIL 4 Service Configuration Management. Specifically, the system must autonomously update the status of all relevant Configuration Items (CIs) within the centralized Configuration Management Database (CMDB) in real time upon transaction logging. Furthermore, the SLA Monitoring engine must actively track fulfillment timestamps against predefined geographical baselines, triggering automated escalation protocols to specific Role-Based Access Control (RBAC) groups upon detecting a breach. The explicit functional requirements engineered for the Integrated Inventory and Financial Reporting System (IIFRS) are detailed in Table 3.3.1 below.
+Functional Requirement ID
+Functional Requirement Name
+Description
+FR-01 
+Mutli-Warehouse Visual Tracking & Synchronization
+The system shall display real-time stock levels partitioned visually per individual warehouse facility and record real-time inventory deductions synchronously upon item transfers or B2B transaction logs.
+FR-02
+Digital CI Image Repository
+The system must provide a dedicated digital repository to store and link photo reference to specific CI profiles, enabling staff to instantly retrieve product images for Facebook Messenger inquiries.
+FR-04
+Dynamic Price List Generation
+The system shall automatically extract active CI data from the CMDB to generate exportable monthly price lists, dynamically sorting inventories by brand, size, and new arrivals without requiring manual data entry.
+FR-05
+Categorized Financial Tracking
+The system must autonomously map operational transactions to the financial ledger in real time, explicitly separating and filtering the dashboard display into distinct profit and loss categories.
+FR-06
+SLA Monitoring and Automated Escalation
+The system shall continuously track fulfillment timestamps against the 1-week (Metro Manila) and 2-week (Mindanao) SLAs. Upon detecting a timeline breach, the system must automatically generate an ITIL incident ticket and trigger an in-system escalation alert containing the Order ID, the delayed CI details, and the customer location.
+FR-07
+Restrictive Role-Based Access Control (RBAC)
+The system must enforce strict RBAC protocols, granting full administrative control to the CMO, while explicitly restricting Office Staff (Secretaries) from editing financial records and completely revoking Field Agents' access to financial modules and automated reporting.
+FR-08
+ITIL Stock Access Audit Trail
+The system must autonomously generate a tamper-proof audit log for every stock adjustment or configuration change, tracking the precise timestamp and identifying exactly whether the Administrator or the Secretary executed the access.
+FR-09
+Algorithmic FIFO/LIFO Order Queueing
+The system shall automatically route approved B2B orders into a digitized queue governed by custom FIFO (First-In, First-Out) or LIFO algorithms to ensure older assets are systematically depleted before new inventory.
+FR-10
+Management Performance Dashboards
+
+Revised: 
+The system must synthesize CMDB and financial data to generate a real-time visual dashboard for the CMO, displaying overarching SLA compliance rates and daily transaction volumes
+FR-11 
+Defective Asset Exception Logging
+The system must allow warehouse personnel to log ITIL exception tickets for damaged or defective items, automatically quarantining the affected units and generating a standalone Defective Products Report for supplier returns. 
+FR-12
+CI Brand Tracking & Metadata Tagging
+The system shall classify items by precise metadata attributes, explicitly including brand name specifications, component sizes, and lifecycle age classifications (old versus new arrivals).
+FR-13 
+Physical Asset Locator
+The system shall record the specific warehouse aisle or bin number for each CI, resolving the physical search bottlenecks associated with older stock stacked at the back of the facility.
+FR-14
+Order Cancellation & CMDB Rollback
+Upon authorized order cancellation, the system shall autonomously revert the transaction, instantly restoring the reserved CI quantities back to the available multi-warehouse CMDB count.
+FR-15 
+Automated P&L Generation
+The system must aggregate daily revenues and logged operational expenses to generate real-time, exportable Profit and Loss (P&L) statements for management review.
+FR-16
+Expense & Overhead Logging
+The system shall provide a localized input module for office staff to log daily operational expenses (e.g., fuel for agents, warehouse supplies) directly into the financial ledger.
+FR-17
+Return and Exchange Processing
+The system must allow authorized staff to process product returns, autonomously updating the financial ledger to reflect refunds or adjusted debt while restocking viable Configuration Items (CIs) back into the CMDB.
+FR-18
+Database Automated Backups 
+The system architecture must execute automated, scheduled backup of the central SQL database to prevent catastrophic data loss of financial ledgers and inventory counts into csv.
+FR-19
+Data Normalization & Input Validation
+The system must enforce strict data validation rules on all input forms (e.g., preventing duplicate CI serial numbers, ensuring correct currency formats) to maintain absolute database integrity.
+FR-20
+Automated Image Compression
+The system's database repository must autonomously compress uploaded CI photographic reference to optimize cloud storage consumption and ensure fast query load times.
+FR-21
+Encrypted Credential Storage
+The system must secure all user accounts by storing passwords using industry-standard cryptographic hashing algorithms within the authentication database.
+FR-22
+User Session & Concurrency Control
+The system must manage active sessions securely, implementing auto-logout protocols after extended inactivity and preventing concurrent database overwrites if two staff members access the same CI simultaneously.
+FR-23
+Embedded Geospatial Dispatch Map 
+The system shall embed a visual Google Maps tracking interface within the dispatch dashboard to geographically monitor and visually locate real-time delivery progress. 
+FR-24
+Custom Team-Programmed Logistics Optimizer 
+The system must execute a core mathematical optimization routine programmed directly by the development team to calculate efficient delivery routes, maximize vehicle load capacities, and minimize shipping expenditures without relying on external unstructured AI tools .
+FR-25
+
+
+Manual Verification Dispatch Fallback 
+The system architecture must retain a functional manual checking and entry workflow for finalizing order dispatches to ensure seamless operation if physical hardware barcode scanners experience a systemic failure. 
+
+Figure 8. Functional Requirements Table
+Non-Functional Requirements
+To ensure the operational viability, security, and long-term sustainability of the Integrated Inventory and Financial Reporting System (IIFRS), a comprehensive set of non-functional requirements has been established. These requirements define the system's "warranty" under the ITIL 4 framework, dictating the necessary performance benchmarks, availability metrics, and security protocols required to support Active Pro Marketing Corporation's daily operations without disruption.
+Non-Functional Requirement ID.
+Non-Functional
+Requirement
+Description
+NFR-01
+Performance
+System Response & Load Time: The system must process multi-warehouse inventory queries within 3.0 seconds and load compressed digital CI images for field agents within 5.0 seconds on standard mobile data networks.
+NFR-02
+Performance
+Concurrent User Load: The web server and database architecture must seamlessly support up to 50 concurrent active user sessions without experiencing performance degradation or timeouts.
+NFR-03
+Security
+Data Encryption & Hashing: All transmitted data must be encrypted using TLS 1.2 (or higher), and all user passwords must be securely hashed using industry-standard cryptographic algorithms (e.g., Bcrypt) rather than stored in plain text.
+NFR-04
+Security
+Session & Vulnerability Management: The system must automatically terminate inactive user sessions after 15 minutes to prevent unauthorized access, and strictly sanitize all input fields to mitigate SQL Injection (SQLi) and Cross-Site Scripting (XSS).
+NFR-05
+Compliance
+Data Privacy Act Compliance: The storage, processing, and management of customer names, addresses, and contact numbers must strictly comply with the Philippine Data Privacy Act of 2012 (R.A. 10173).
+NFR-06
+Availability
+System Uptime: The cloud-hosted infrastructure must maintain a minimum operational uptime of 99.9% (excluding scheduled off-peak maintenance) to support continuous B2B transactions.
+NFR-07
+Reliability
+Automated Backups & Disaster Recovery: The system must autonomously execute daily incremental database backups and allow administrators to restore the CMDB and financial ledgers within a 4-hour Recovery Time Objective (RTO) in case of critical failure.
+NFR-08
+Usability
+Responsive Web Design: The system's user interface must be fully responsive, dynamically adapting to desktop monitors for office staff and mobile/tablet screens for agents without graphical errors.
+NFR-09
+Scalability
+Modular Architecture: The system's underlying database architecture must be scalable, requiring zero fundamental code rewrites to seamlessly add a third or fourth warehouse node to the CMDB in the future.
+NFR-10
+Maintainability
+Audit Log Retention: The system must automatically archive and retain all ITIL Configuration Audit Trails (tracking user actions and specific CI status changes) for a minimum of 12 months before allowing deletion.
+
+Figure 9. Non-Functional Requirements Table
+
+Mock-ups
+
+
+
+
+
+
+Figure 10. Admin Panel
+Figure 11. Order Management
+
+
+
+Figure 12. Reports and Analytics
+
+
+
+
+
+
+
+
+Figure 13. Inventory
+
+
+System Generated Forms and/or Reports
+To eliminate the reliance on manual computation and paper ledgers, the proposed system will automatically generate the following operational reports:
+Automated Profit and Loss (P&L) Statement: A real-time financial report that automatically maps local business expenses against incoming payments, actively highlighting defaulted or pending accounts to ensure no revenue is lost.
+Digital Dispatch Ticket (with Photo Validation): An internal form generated when an order queue is cut. It contains the exact B2B bulk item list and includes a mandatory database field where warehouse staff upload the required photographic evidence of the prepared goods prior to truck loading.
+SLA Compliance and Escalation Report: A tracking report that monitors the geographical delivery rules (1 week for Metro Manila, 2 weeks for Mindanao). It highlights any delayed deliveries or reports of damaged goods, automatically generating an escalation log sent to the specific assigned field agent and the supplier.
+Multi-Warehouse Inventory Ledger: A consolidated, real-time report showing exact stock quantities across both warehouse locations, eliminating the phenomenon of "hidden old stock" at the back of the physical warehouse.
+Project Risk and Feasibility Studies
+Prior to full-scale development, a comprehensive feasibility study and risk assessment were conducted to evaluate the viability of transitioning Active Pro Marketing Corporation from heavily manual processes to a centralized digital framework. According to Zahedi et al. (2023), proactive risk management and feasibility evaluations are critical in Agile software development, particularly when migrating micro, small, and medium enterprises (MSMEs) away from legacy operational structures. The following subsections analyze the project's viability across technological readiness, organizational acceptance, and economic benefits, alongside a structured mitigation plan for potential implementation risks.
+Risk Management
+Risk Identification  
+Impact
+Probability
+Risk Mitigation
+Data Migration Errors
+High
+High
+Conduct a comprehensive manual audit prior to launch and execute a phased data entry approach with dual-verification by management.
+User Resistance
+Medium
+Medium
+Implement a mandatory, hands-on user training phase and design the digital forms to visually mimic the existing paper logs to reduce the learning curve.
+Cloud Server Downtime
+Low
+Low
+Utilize a reputable cloud hosting provider with a 99.9% uptime SLA and maintain localized physical backups of weekly P&L reports on the on-site PC.
+Unauthorized Data Access
+Low
+Low
+Enforce strict Role-Based Access Control (RBAC) to ensure agents only see their specific clients, mandate complex passwords, and implement automatic session timeouts after periods of inactivity.
+
+
+Figure 14. Risk Management Table
+Technological Feasibility
+The technological feasibility of this project is deemed high. The client organization currently possesses the necessary personal computers on-site to act as localized administrative terminals. Furthermore, because the proposed system is a web-based application, it does not require heavy local server infrastructure. The system will be hosted on a lightweight cloud server, ensuring that field agents and remote staff can access the database synchronously via their existing mobile devices without requiring expensive hardware upgrades. The proposed system is designed to be highly cost-effective and feasible for the organization's current infrastructure. It will utilize the existing personal computers already deployed in the shop for localized processing. Furthermore, the system's architecture will be hosted on a lightweight, low-cost cloud server (requiring a minimal operational expenditure of approximately $7 to $15 per month), ensuring that the database remains continuously accessible and updated in real-time for all authorized user.
+Organizational/Cultural Feasibility
+Assessing organizational feasibility reveals a moderate need for change management. While the Chief Marketing Officer (CMO) and younger staff members are highly receptive to digital integration, interviews indicated that older personnel are deeply accustomed to legacy, paper-based recording methods. To ensure cultural acceptance and minimize resistance, the system will feature an intuitive, easy-to-navigate interface that mimics their current forms. Additionally, a comprehensive user training phase will be executed for all end-users from the office secretaries down to the field agents to ensure a smooth transition from manual to automated workflows.
+Economic Feasibility
+An economic feasibility analysis was conducted, demonstrating high viability for the organization. Because the project strictly utilizes free and open-source software (FOSS) such as MySQL, the initial software licensing and development costs are zero. The only financial requirement to sustain the system is a minimal cloud hosting fee of approximately $7 to $15 per month. The client has explicitly agreed to shoulder this minor cost, as the automation of the multi-warehouse inventory will yield a high Return on Investment (ROI).
+Development Methodology
+
+Figure 15. Development Methodology
+This project employs a developmental research design driven by a tailored Agile Scrum Methodology to systematically address Active Pro Marketing Corporation’s specific operational requirements. To ensure the system accurately resolved the company's bottlenecks, the problem was studied through the framework of ITIL 4 Service Configuration Management principles, evaluating how physical inventory transitions into a governed digital lifecycle. Guided by these principles, the development lifecycle was explicitly structured into targeted, iterative sprints based on the system's core functional modules, initially focusing on engineering the foundational Configuration Management Database (CMDB) schema and a digital visual repository before advancing to automated order routing and intelligent financial tracking algorithms. Throughout this process, primary data and system requirements were gathered through direct, in-depth interviews with the Chief Marketing Officer (CMO), who acted as the definitive Product Owner. By integrating stakeholder interviews into the Agile process through active participation in sprint reviews, the team continuously gathered both qualitative insights and quantitative data from the company’s internal financial ledger and operational records. This ensured that the financial modules and automated SLA tracking were consistently validated against real-world conditions.
+Software Quality Assurance Plans
+To guarantee that the Integrated Inventory and Financial Reporting System meets the specific operational needs of Active Pro Marketing Corporation, a comprehensive Quality Assurance (QA) plan will be executed prior to full-scale deployment. The primary objective of this phase is to systematically validate the system's data accuracy, operational stability, and overall usability as the organization transitions from disconnected, manual paper ledgers to a centralized digital workflow. Guided by standard software quality models, the evaluation will rigorously verify that the automated multi-warehouse inventory deductions and the Profit and Loss (P&L) calculations function flawlessly. Furthermore, the QA plan is specifically designed to test the system's reliability under the client's budgetary constraints ensuring the lightweight cloud server can consistently handle the mandatory photo-upload validations and the automated Service Level Agreement (SLA) escalation alerts without performance degradation. To achieve these quality benchmarks, the system will undergo three critical evaluation phases: Unit Testing, Stress Testing, and User Acceptance Testing (UAT).
+Unit Test
+This section involves several unit tests that will test the functionality of each requirement and ensure that it will meet the requirements needed. Each aspect of the system, from basic functionality to complex functionality, undergoes testing to verify its functionality. Through this test, any discrepancies can be identified and can be improved to provide a reliable experience.
+Unit Test Criteria
+To successfully pass this testing phase, the established criteria require a 100% pass rate on all core data validation checks. Because the system will handle sensitive inventory data across two locations and track financial metrics, there is zero tolerance for miscalculations in the multi-warehouse stock deductions or the Profit and Loss (P&L) tracking. Each isolated function must execute exactly as intended without triggering backend database errors; any component that fails to meet this strict binary standard will be immediately flagged and returned to the development team for recoding.
+Unit Test Scenario
+A primary test scenario will involve the tester inputting a simulated bulk business-to-business (B2B) order into the order processing module. The expected outcome is that the system accurately calculates the total, deducts the specific bike part quantities from the correct warehouse database, and automatically triggers the "queue cut" alert for the downstairs preparation staff. Furthermore, the tester will attempt to update the simulated order status to "Out for Delivery" without attaching an image; the expected outcome is that the system successfully blocks the transaction and displays an error mandating a photo upload.
+Stress Test
+Given the organization's approved budget constraint of utilizing a lightweight $7-$15 monthly cloud server, stress testing is critical. The system will be subjected to simulated high-volume scenarios to test server stability and storage limitations. This includes executing concurrent data entries (simulating multiple field agents querying stock simultaneously) and performing bulk uploads of high-resolution photographic evidence to ensure the server does not crash or exhaust its storage capacity during peak operational hours.
+Stress Test Criteria 
+To pass this phase, the cloud-based system must successfully process concurrent heavy-data requests without experiencing server crashes, database deadlocks, or HTTP 500/504 timeout errors. Specifically, the system must maintain a page load and query response time of under three seconds even when the server's bandwidth and storage I/O are stretched. Furthermore, the database must not exhaust its allocated cloud memory limit when handling simultaneous bulk data entries or when compressing incoming media files.
+Stress Test Scenario 
+The primary stress test scenario will simulate peak operational hours by generating concurrent system traffic. Using an automated load-testing tool, the development team will simulate multiple remote field agents continuously querying the multi-warehouse inventory from mobile connections. Simultaneously, testers will simulate the downstairs warehouse staff uploading multiple high-resolution photographic files (simulating the required proof of prepared B2B orders) directly into the dispatch module. The objective is to verify that the lightweight server can securely save the required photo validations without locking out the field agents trying to view real-time stock levels.
+User-Acceptance Test
+User Acceptance Testing will be the final evaluation phase, involving the actual end-users: the CMO, office secretaries, and agents. Utilizing anonymized sample forms and legacy processes provided by management, the staff will perform a live simulation of the new workflow from B2B order placement to photo attachment and final SLA tracking. Because the staff has varying levels of technological proficiency (with older staff preferring manual writing), the UAT will heavily evaluate the UI's user-friendliness and accessibility. The CMO will sign the final User Acceptance Form following a successful online defense and demonstration of the system's accuracy.
+User-Acceptance Test Criteria
+The primary passing criterion for UAT relies on the successful adoption of the system by the older office personnel who are heavily accustomed to legacy processes. The system will pass if these staff members can navigate the digital forms and process an order without requiring constant IT intervention, validating that the UI successfully mimics their traditional physical logbooks. Additionally, for the financial and administrative modules, the system must receive formal sign-off from the Chief Marketing Officer (CMO), certifying that the automated Profit and Loss (P&L) statements accurately reflect the raw data without errors.
+User-Acceptance Test Scenario 
+The UAT scenario will be a fully observed, live simulation utilizing anonymized data from the company's legacy manual logbooks. A staff will use the on-site shop PC to input a simulated B2B order, triggering the digital queue cut. The downstairs warehouse staff will then be tasked with using the system to upload a physical photo of the prepared items to authorize the dispatch. Finally, the CMO will access the overarching dashboard to verify if the transaction successfully updated the multi-warehouse inventory counts in real time and properly logged the pending payment in the financial tracker. Evaluators will actively monitor the staff's comfort level and note any navigational friction during the workflow.
+Deployment Plans
+The deployment of the Integrated Inventory and Financial Reporting System will utilize a Parallel Adoption strategy. For a period of two weeks, the organization will run the new cloud-based system alongside their traditional manual logbooks. This approach ensures business continuity; if the cloud server experiences unexpected downtime, the manual ledgers serve as an immediate backup.
+The physical deployment will involve configuring the existing shop PCs as the primary administrative terminals for the secretaries, while the database itself is hosted on the approved lightweight cloud server for remote mobile access by the field agents. Furthermore, the deployment phase will feature a mandatory capacity-building and training week. Because older staff members are highly accustomed to pen-and-paper processes, targeted, hands-on training sessions will be conducted to guide them through navigating the digital forms, uploading photos, and processing the automated queues, ensuring a smooth cultural transition within the workplace.
+
+BIBLIOGRAPHY
+Alzubaidi, A., Mitra, K., & Solaiman, E. (2023). A blockchain-based SLA monitoring and compliance assessment for IoT ecosystems. Journal of Cloud Computing Advances Systems and Applications, 12(1). https://doi.org/10.1186/s13677-023-00409-7
+Bhat, M. A., & Kaur, H. (2023). Enhancing IT Service Management through ServiceNow. International Journal of Emerging Technologies and Innovative Research, 10(11), c320–c325. http://www.jetir.org/papers/JETIR2311245.pdf
+Brunner, M., Tripathi, S., Gundolf, K., Bachmann, N., Thienemann, A., Tüzün, A., Pöchtrager, S., & Jodlbauer, H. (2025). Enhancing customer satisfaction through digitalization: Past, present and possible future approaches. Procedia Computer Science, 253, 2929–2940. https://doi.org/10.1016/j.procs.2025.02.017
+Business Central | Microsoft Dynamics 365. (n.d.). https://www.microsoft.com/en-us/dynamics-365/products/business-central
+Corporation, Z. (n.d.). All-In-One Accounting, Invoicing & Inventory solution - ZaRMoney®. ZarMoney Cloud Accounting Software. https://www.zarmoney.com/
+Dande, F., Li, X., & Shofoluwe, M. A. (2024). Artificial Intelligence Integration in IT Service Management: An ITIL Configuration Management Process Review. Proceedings of the Industrial Engineering and Operations Management World Congress. https://doi.org/10.46254/wc01.20240164
+Deistler, N., & Rentrop, C. (n.d.). A method for an IT-GRC approach in SMES – design phase. AIS Electronic Library (AISeL). https://aisel.aisnet.org/pacis2022/316
+Dubey, A., Bhandari, A. S., Bisht, A., A, A., & Goel, S. (2024). Empowering E-Commerce: Revolutionizing Inventory Management with Seamless API Integration. Indian Journal of Computer Science and Technology, 154–159. https://doi.org/10.59256/indjcst.20240302023
+Engel, R., Fernandez, P., Ruiz-Cortes, A., Megahed, A., & Ojeda-Perez, J. (2022). SLA-aware operational efficiency in AI-enabled service chains: challenges ahead. Information Systems and e-Business Management, 20(1), 199–221. https://doi.org/10.1007/s10257-022-00551-w
+ERPNext: Free and open source cloud ERP software. (n.d.). https://erpnext.com/homepage
+Fabbian, A. (2023, October 30). Perception and Approaches to New Information Systems Acceptance in Digital Transformation: a ServiceNow Case Study Analysis. https://unitesi.unive.it/handle/20.500.14247/15128
+Free Mobile POS System | PEDDLR Philippines Inc. (n.d.). https://www.peddlr.io/
+Free Windows point of sale - Aronium. (n.d.). https://www.aronium.com/en
+Idrus, N. A., & Widodo, C. E. (2026). Strategy Improvement for IT governance in library services using an adaptation of ITIL 4 and FITSM : A COBIT 2019 evaluation. Scientific Journal of Informatics, 12(4), 685–696. https://doi.org/10.15294/sji.v12i4.34197
+inFlow Inventory. (2026, March 11). Inventory Management Software - Made Easy - InFlow. https://www.inflowinventory.com/
+Jayathilaka, C. (2020, July 30). Agile Methodology. Medium. https://medium.com/@chathmini96/agile-methodology-30ec4cdf3fc
+Kallmuenzer, A., Mikhaylov, A., Chelaru, M., & Czakon, W. (2024). Adoption and performance outcome of digitalization in small and medium-sized enterprises. Review of Managerial Science, 19(7), 2011–2038. https://doi.org/10.1007/s11846-024-00744-2
+Khan, K. M., Arshad, J., Iqbal, W., Abdullah, S., & Zaib, H. (2021). Blockchain-enabled real-time SLA monitoring for cloud-hosted services. Cluster Computing, 25(1), 537–559. https://doi.org/10.1007/s10586-021-03416-y
+Koushik, A. M. (2025). Improving ERP Software Adoption Among Supply Chain Driven SME Businesses [BBA internship report, Brac University]. https://dspace.bracu.ac.bd/xmlui/bitstream/handle/10361/27727/22204286_BBS.pdf
+Kyte POS & Inventory system for small business. (n.d.). https://www.kyteapp.com/
+Levstek, A., Pucihar, A., & Hovelja, T. (2022). Towards an adaptive strategic IT governance model for SMEs. Journal of Theoretical and Applied Electronic Commerce Research, 17(1), 230–252. https://doi.org/10.3390/jtaer17010012
+Liyanage, A. (2025, May 4). The Agile Model in SDLC: A Flexible Approach to Software Development. Medium. Retrieved May 1, 2026, from https://medium.com/@nld.anuradha/the-agile-model-in-sdlc-a-flexible-approach-to-software-development-664bf60ad9dc
+Loyverse POS. (n.d.). Loyverse. https://loyverse.com/
+Mahmoud, N. a. A., Hisjam, M., & Pujiyanto, E. (2024). Transformative Dynamics of E-commerce Integration in Supply Chain Management: A Systematic review. Advances in Economics, Business and Management Research/Advances in Economics, Business and Management Research, 569–584. https://doi.org/10.2991/978-94-6463-522-5_44
+Odoo S.A. (n.d.). Open Source ERP and CRM | Odoo. Odoo. https://www.odoo.com/
+Opoku, E., Okafor, M., Williams, M., Aribigbola, A., & Olaleye, A. (2024). Enhancing small and medium-sized businesses through digitalization. World Journal of Advanced Research and Reviews, 23(2), 222–239. https://doi.org/10.30574/wjarr.2024.23.2.2313
+SalesBinder - Online Inventory Management System, Web-Based Asset Management, QuickBooks Integration, Stock Control, Invoicing, and custom Estimates hosted in the cloud using SaaS technologies. (n.d.). https://www.salesbinder.com/
+Salih, R. A. (n.d.). Strategies for selecting legacy IT systems for cloud adoption in an SME. ScholarWorks. https://scholarworks.waldenu.edu/dissertations/18460
+Samala, S. (2024, April 11). AI-Driven Jira Automation: using machine learning to optimize sprint planning and incident resolution. https://irjernet.com/index.php/feaiml/article/view/175/159
+Santosa, I., & Mulyana, R. (2023). The IT Services Management Architecture Design for Large and Medium-sized Companies based on ITIL 4 and TOGAF Framework. JOIV International Journal on Informatics Visualization, 7(1), 30. https://doi.org/10.30630/joiv.7.1.1590
+Siregar, I. M., Fiestyawan, C., & Sirait, T. H. (2025). Business process analysis and ODOO implementation for retail industry. Jutisi Jurnal Ilmiah Teknik Informatika Dan Sistem Informasi, 14(2), 844. https://doi.org/10.35889/jutisi.v14i2.2659
+Statista. (n.d.). Bicycles - Philippines | Statista market forecast. https://www.statista.com/outlook/mmo/micromobility/bicycles/philippines
+Sudarmi, E., & Sunaryo, W. (2024). Enhancing Inventory Accuracy and Operational Performance with ERP. Sinergi International Journal of Logistics, 2(2), 1–14. https://doi.org/10.61194/sijl.v2i2.622
+Tistelgrén, S. (2023). Utilizing Jira automation tools as a part of value chain in incident management. Theseus. https://urn.fi/URN:NBN:fi:amk-2023052614836
+Triwahyono, B., Rahayu, T., & Kraugusteeliana, K. (2023). Analysing the role of technological innovation in improving the operational efficiency of MSMEs. Jurnal Minfo Polgan, 12(1), 1417–1426. https://doi.org/10.33395/jmp.v12i1.12791
+Weerarathna, U. W. (2025). Optimizing stock-out in a SME supermarket via improving inventory management. Theseus. https://urn.fi/URN:NBN:fi:amk-2025112830528
+Wresearch. (n.d.). Philippines Bicycle Market Top 5 Importing Countries and Market Competition (HHI) analysis. 6Wresearch. https://www.6wresearch.com/industry-report/philippines-bicycle-market-outlook
+Wulan, T. S., & Reni. (2024). Digital Transformation as a Catalyst for SMEs Productivity and Profitability in the Digital Era. Journal of Economic Education and Entrepreneurship Studies, 5. https://doi.org/10.62794/je3s.v5i4.4543 
+Zahedi, M. H., Kashanaki, A. R., & Farahani, E. (2023). Risk management framework in Agile software development methodology. International Journal of Power Electronics and Drive Systems/International Journal of Electrical and Computer Engineering, 13(4), 4379. https://doi.org/10.11591/ijece.v13i4.pp4379-4387
+Zaman, S. (2024). A Systematic review of ERP and CRM integration for sustainable business and data management in logistics and supply chain industry. Innovatech Engineering Journal, 1(01), 204–221. https://doi.org/10.70937/faet.v1i01.36
+Zoho One | The Operating System for business. (n.d.). Zoho. https://www.zoho.com/one/
+

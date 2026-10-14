@@ -81,6 +81,9 @@ export function DefectiveStockModal({
       toast.error('Image too large (max 10MB)');
       return;
     }
+    if (photoPreview) {
+      URL.revokeObjectURL(photoPreview);
+    }
     try {
       const compressed = await compressImage(file, 1024, 768, 0.75);
       setPhotoFile(compressed);
@@ -161,6 +164,9 @@ export function DefectiveStockModal({
   };
 
   const handleCloseAll = () => {
+    if (photoPreview) {
+      URL.revokeObjectURL(photoPreview);
+    }
     setSelectedProductId('');
     setSelectedWarehouseId('');
     setQuantity('1');
@@ -170,6 +176,7 @@ export function DefectiveStockModal({
     setGeneratedTicket(null);
     onClose();
   };
+
 
   return (
     <Dialog open={open} onOpenChange={(val) => !val && handleCloseAll()}>

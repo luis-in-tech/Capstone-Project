@@ -17,6 +17,8 @@ const router = Router();
 router.post('/', ordersCtrl.createOrder);
 router.get('/', ordersCtrl.listOrders);
 router.get('/:id', ordersCtrl.getOrderById);
+router.post('/:id/cancel', ordersCtrl.cancelOrder);
 router.get('/customer/:customerName/transactions', ordersCtrl.getCustomerTransactions);
 
 export default router;
+

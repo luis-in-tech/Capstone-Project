@@ -81,4 +81,43 @@ describe('Orders Service', () => {
     expect(list.items.length).toBeGreaterThanOrEqual(1);
     expect(list.items.every((o) => o.clientName.toLowerCase().includes('testing'))).toBe(true);
   });
+
+  it('should cancel an order and roll back reserved CMDB stock (FR-14)', async () => {
+    const created = await ordersService.createOrder({
+      clientName: 'Cancellation Test Client',
+      address: '77 Quezon Ave, QC',
+      deliveryRegion: 'Metro Manila',
+      paymentTerms: 'COD',
+      items: [
+        {
+          productId: 'prod_cancel_1',
+          warehouseId: 'wh-a',
+          sku: 'SHI-M7100',
+          name: 'Shimano SLX',
+          quantity: 3,
+          unitPrice: 800,
+        },
+      ],
+      preparedBy: 'Agent Leo',
+    });
+
+    expect(created.order.status).toBe('pending');
+    expect(created.order.stockReserved).toBe(true);
+
+    const cancelled = await ordersService.cancelOrder(created.order.id, {
+      cancellationReason: 'Client requested order cancellation before dispatch',
+      cancelledBy: 'Supervisor Jane',
+    });
+
+    expect(cancelled.status).toBe('cancelled');
+    expect(cancelled.stockReserved).toBe(false);
+    expect(cancelled.statusHistory.some((s) => s.status === 'cancelled')).toBe(true);
+    expect(cancelled.statusHistory[cancelled.statusHistory.length - 1].note).toContain('Rolled back 3 reserved unit(s)');
+
+    // Attempting to cancel again should fail
+    await expect(
+      ordersService.cancelOrder(created.order.id, { cancellationReason: 'Double cancel' })
+    ).rejects.toThrow('is already cancelled');
+  });
 });
+
