@@ -1,3 +1,4 @@
+import { describe, it, expect } from '@jest/globals';
 import * as ordersService from './orders.service';
 
 describe('Orders Service', () => {
@@ -23,6 +24,18 @@ describe('Orders Service', () => {
         items: [],
       })
     ).rejects.toThrow('At least one line item is required');
+  });
+
+  it('should reject order creation if delivery address is missing', async () => {
+    await expect(
+      ordersService.createOrder({
+        clientName: 'testing',
+        address: '',
+        deliveryRegion: 'Metro Manila',
+        paymentTerms: 'COD',
+        items: [{ productId: 'p1', warehouseId: 'wh1', sku: 'SKU1', name: 'Product 1', quantity: 1, unitPrice: 100 }],
+      })
+    ).rejects.toThrow('Delivery address is required');
   });
 
   it('should create an order for customer "testing" and retrieve it in customer transactions', async () => {

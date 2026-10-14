@@ -1,3 +1,4 @@
+import { describe, it, expect } from '@jest/globals';
 import * as logisticsService from './logistics.service';
 
 describe('Logistics Optimizer Service', () => {

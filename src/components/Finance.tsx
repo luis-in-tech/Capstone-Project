@@ -31,7 +31,8 @@ import {
   ArrowUpDown,
   Download,
   Calendar,
-  FileSpreadsheet
+  FileSpreadsheet,
+  Printer
 } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, PieChart, Pie, Cell, LineChart, Line } from 'recharts';
 import { Badge } from '@/components/ui/badge';
@@ -110,6 +111,12 @@ export function Finance() {
   type SortDirection = 'asc' | 'desc';
   const [sortKey, setSortKey] = useState<SortKey>('date');
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
+
+  const uncollectedReceivables = React.useMemo(() => {
+    return orders
+      .filter(o => o.paymentStatus === 'unpaid' || o.paymentStatus === 'partially_paid')
+      .reduce((sum, o) => sum + ((o.totalAmount || 0) - (o.amountPaid || 0)), 0);
+  }, [orders]);
 
   useEffect(() => {
     const unsubExpenses = onSnapshot(query(collection(db, 'expenses'), orderBy('date', 'desc')), (snap) => {
@@ -1137,13 +1144,25 @@ export function Finance() {
                     Active Pro B2B Supplies — Profit and Loss Statement
                   </h4>
                   <p className="text-[10px] text-muted-foreground font-medium mt-0.5">
-                    January through March 2025 (FY 2025 Q1 Official Audited Statement)
+                    {selectedPeriod === '2025' ? 'January through March 2025 (FY 2025 Q1 Official Audited Statement)' : selectedPeriod === '2026' ? 'Quarterly 2026' : 'All Time'}
                   </p>
                 </div>
-                <div className="flex items-center gap-2">
-                  <Badge className="bg-emerald-100 text-emerald-800 text-[10px] font-bold border-none">
-                    Audited Closed Period
-                  </Badge>
+                <div className="flex flex-wrap items-center gap-2">
+                  {uncollectedReceivables > 0 && (
+                    <Badge className="bg-rose-100 text-rose-800 text-[10px] font-bold border-none">
+                      Uncollected Receivables: {formatCurrency(uncollectedReceivables)}
+                    </Badge>
+                  )}
+                  <Select value={selectedPeriod} onValueChange={(v: '2025'|'2026'|'all') => setSelectedPeriod(v)}>
+                    <SelectTrigger className="h-7 text-[10px] uppercase font-bold tracking-wider px-2 border-dashed">
+                      <SelectValue placeholder="Period" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="2025">Monthly 2025 (Q1)</SelectItem>
+                      <SelectItem value="2026">Quarterly 2026</SelectItem>
+                      <SelectItem value="all">All Time</SelectItem>
+                    </SelectContent>
+                  </Select>
                   <Button
                     variant="outline"
                     size="sm"
@@ -1152,11 +1171,49 @@ export function Finance() {
                   >
                     <Download className="w-3 h-3 text-emerald-600" /> CSV
                   </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-7 gap-1.5 px-2.5 text-[10px] font-black uppercase tracking-wider"
+                    onClick={() => {
+                      const printContents = document.getElementById('pl-statement-print-area')?.outerHTML;
+                      if (printContents) {
+                        const frame = document.createElement('iframe');
+                        frame.style.cssText = 'position:fixed;width:0;height:0;border:0;';
+                        document.body.appendChild(frame);
+                        const doc = frame.contentDocument;
+                        if (!doc || !frame.contentWindow) return;
+                        doc.head.innerHTML = `
+                          <style>
+                            @page { size: A4 portrait; margin: 15mm; }
+                            body { font-family: Arial, sans-serif; font-size: 11px; color: #111827; }
+                            h4 { margin: 0 0 5px 0; font-size: 14px; text-transform: uppercase; }
+                            p { margin: 0 0 15px 0; font-size: 10px; color: #64748b; }
+                            table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
+                            th, td { text-align: left; padding: 6px; border-bottom: 1px solid #e2e8f0; }
+                            th { background-color: #f8fafc; font-weight: bold; text-transform: uppercase; font-size: 9px; color: #64748b; }
+                            td.text-right, th.text-right { text-align: right; }
+                            .font-bold { font-weight: bold; }
+                            .font-black { font-weight: 900; }
+                            .pl-12 { padding-left: 2rem !important; }
+                            .pl-8 { padding-left: 1rem !important; }
+                            @media print { body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
+                          </style>
+                        `;
+                        doc.body.innerHTML = `<div><h4>Active Pro B2B Supplies — Profit and Loss Statement</h4><p>${selectedPeriod === '2025' ? 'January through March 2025' : 'Period: ' + selectedPeriod}</p>${printContents}</div>`;
+                        frame.contentWindow.focus();
+                        frame.contentWindow.print();
+                        setTimeout(() => frame.remove(), 250);
+                      }
+                    }}
+                  >
+                    <Printer className="w-3 h-3 text-emerald-600" /> Print
+                  </Button>
                 </div>
               </div>
 
               <div className="overflow-x-auto w-full">
-                <Table>
+                <Table id="pl-statement-print-area">
                   <TableHeader className="bg-muted/70">
                     <TableRow className="hover:bg-transparent">
                       <TableHead className="text-[10px] font-black uppercase tracking-widest text-muted-foreground py-3 pl-6 min-w-[260px]">

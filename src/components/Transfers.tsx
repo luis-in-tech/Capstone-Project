@@ -98,12 +98,17 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
       return;
     }
 
-    // Check availability in source facility
+    // Check availability in source facility and enforce strictly positive integer quantity
     for (const item of validItems) {
+      const qty = Number(item.quantity);
+      if (!Number.isInteger(qty) || qty <= 0) {
+        toast.error(`Invalid quantity for ${item.productName}. Quantity must be a positive whole number.`);
+        return;
+      }
       const prodId = products.find(p => p.name === item.productName)?.id || item.productName;
       const sourceInv = inventory.find(i => i.productId === prodId && i.warehouseId === sourceWh);
-      if (!sourceInv || sourceInv.quantity < item.quantity) {
-        toast.error(`Insufficient stock for ${item.productName} in source warehouse (Available: ${sourceInv?.quantity ?? 0})`);
+      if (!sourceInv || sourceInv.quantity < qty) {
+        toast.error(`Insufficient stock for ${item.productName} in source warehouse (Available: ${sourceInv?.quantity ?? 0}, Requested: ${qty})`);
         return;
       }
     }
@@ -111,11 +116,12 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
     try {
       for (const item of validItems) {
         const prodId = products.find(p => p.name === item.productName)?.id || item.productName;
+        const qty = Number(item.quantity);
         const newTransfer: Omit<Transfer, 'id'> = {
           sourceWarehouseId: sourceWh,
           destinationWarehouseId: destWh,
           productId: prodId,
-          quantity: item.quantity,
+          quantity: qty,
           status: 'pending',
           initiatedBy: profile?.uid || 'Unknown',
           createdAt: serverTimestamp()

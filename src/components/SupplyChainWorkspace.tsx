@@ -267,6 +267,27 @@ export function SupplyChainWorkspace({ sourceLoading, sourceError, onRetrySource
     finally { setSaving(false); }
   }
 
+  const handleCommitPreviews = async () => {
+    try {
+      for (const preview of previews) {
+        if (preview.type === 'Refund' || preview.type === 'Purchase Refund' || preview.type === 'Payment' || preview.type === 'Bill Payment') {
+          await addDoc(collection(db, 'expenses'), {
+            amount: preview.amount,
+            category: preview.type.includes('Refund') ? 'Refund / Return' : 'Supply Chain Ledger',
+            date: preview.date,
+            description: preview.notes || `Supply Chain Transaction: ${preview.reference}`,
+            type: preview.type.includes('Payment') ? 'income' : 'expense'
+          });
+        }
+      }
+      setPreviews([]);
+      setSelectedId('');
+      toast.success('All transactions successfully committed to the ledger.');
+    } catch (err) {
+      toast.error('Failed to commit transactions. Please try again.');
+    }
+  };
+
   return <div className="space-y-5">
     <div className="flex flex-wrap items-start justify-between gap-3"><PageHeading title="Supply Chain" subtitle="Your customers, suppliers, warehouses, and categories. Connected in one place." /></div>
     <div className="flex flex-wrap gap-1 rounded-2xl border bg-muted/40 p-1.5" role="group" aria-label="Supply Chain views">{allowedViews.map(({ id, name, icon: Icon }) => <button key={id} type="button" aria-pressed={!showCategories && view === id} onClick={() => { setShowCategories(false); switchView(id); }} className={`flex min-w-0 flex-1 items-center justify-center gap-2 rounded-xl px-3 py-3 text-sm font-semibold transition-colors ${!showCategories && view === id ? 'bg-background text-foreground shadow-sm ring-1 ring-border' : 'text-muted-foreground hover:bg-background/60 hover:text-foreground'}`}><Icon className="size-4" />{name}</button>)}{canManage && <button type="button" aria-pressed={showCategories} onClick={() => setShowCategories(true)} className={`flex min-w-0 flex-1 items-center justify-center gap-2 rounded-xl px-3 py-3 text-sm font-semibold transition-colors ${showCategories ? 'bg-background text-foreground shadow-sm ring-1 ring-border' : 'text-muted-foreground hover:bg-background/60 hover:text-foreground'}`}><Package className="size-4" />Categories</button>}</div>
@@ -293,7 +314,7 @@ export function SupplyChainWorkspace({ sourceLoading, sourceError, onRetrySource
               {!loading && filteredRows.map(row => <TableRow key={row.id} tabIndex={0} aria-selected={selectedId === row.id} onClick={() => setSelectedId(row.id)} onDoubleClick={() => setDetails(row)} onKeyDown={event => { if (event.target !== event.currentTarget) return; if (event.key === 'Enter') { event.preventDefault(); setDetails(row); } if (event.key === ' ') { event.preventDefault(); setSelectedId(row.id); } }} className={`cursor-pointer focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary ${selectedId === row.id ? 'bg-primary/10 hover:bg-primary/15' : ''} ${isOverdue(row) ? 'bg-red-500/5' : ''}`}><TableCell><div className="flex items-center gap-2 whitespace-nowrap">{row.direction === 'in' ? <ArrowDownLeft className="size-4 text-emerald-600" /> : row.direction === 'out' ? <ArrowUpRight className="size-4 text-orange-600" /> : <CreditCard className="size-4 text-muted-foreground" />}<span className="text-sm font-medium">{row.type}</span>{row.draft && <Badge variant="outline">Preview</Badge>}</div></TableCell><TableCell className="whitespace-nowrap text-xs text-muted-foreground">{formatDate(row.date)}</TableCell><TableCell className="font-mono text-xs">{row.reference}</TableCell><TableCell className="text-right tabular-nums">{chainMoney(row.amount)}</TableCell>{warehouse ? <TableCell><Badge variant="secondary" className="capitalize">{row.status.replaceAll('_', ' ')}</Badge></TableCell> : <><TableCell className={`text-right font-medium tabular-nums ${isOverdue(row) ? 'text-red-600' : ''}`}>{chainMoney(row.remaining)}</TableCell><TableCell className="whitespace-nowrap text-xs">{formatDate(row.dueDate)}{isOverdue(row) && <span className="mt-1 block font-semibold text-red-600">Overdue</span>}</TableCell></>}<TableCell><Button variant="ghost" size="icon" aria-label={`View ${row.reference}`} onClick={event => { event.stopPropagation(); setDetails(row); }}><Eye className="size-4" /></Button></TableCell></TableRow>)}
               {(loading || !filteredRows.length) && <TableRow><TableCell colSpan={warehouse ? 6 : 7} className="h-56 text-center"><div className="mx-auto flex max-w-sm flex-col items-center gap-2 text-muted-foreground">{loading ? <Loader2 className="size-7 animate-spin" /> : <Package className="size-8 opacity-40" />}<p className="font-medium text-foreground">{loading ? 'Loading history…' : loadError ? 'History unavailable' : search || typeFilter !== 'All' ? 'No matching transactions' : 'No transactions yet'}</p><p className="text-xs">{loading ? 'Getting your latest records.' : search || typeFilter !== 'All' ? 'Try another search or transaction type.' : `Activity for ${current.name} will appear here.`}</p>{(search || typeFilter !== 'All') && <Button size="sm" variant="outline" onClick={() => { setSearch(''); setTypeFilter('All'); }}>Reset filters</Button>}</div></TableCell></TableRow>}
             </TableBody></Table></div>
-            <div className="flex flex-wrap items-center justify-between gap-2 border-t px-4 py-3 text-xs text-muted-foreground"><span>{filteredRows.length} {filteredRows.length === 1 ? 'entry' : 'entries'}{warehouse && ' · ↑ Outgoing  ↓ Incoming'}</span>{previews.length > 0 && <Button size="sm" variant="ghost" onClick={() => { setPreviews([]); setSelectedId(''); }}>Clear transaction previews</Button>}</div>
+            <div className="flex flex-wrap items-center justify-between gap-2 border-t px-4 py-3 text-xs text-muted-foreground"><span>{filteredRows.length} {filteredRows.length === 1 ? 'entry' : 'entries'}{warehouse && ' · ↑ Outgoing  ↓ Incoming'}</span>{previews.length > 0 && <div className="flex items-center gap-2"><Button size="sm" variant="ghost" onClick={() => { setPreviews([]); setSelectedId(''); }}>Clear previews</Button><Button size="sm" onClick={handleCommitPreviews}>Commit {previews.length} Previews to Ledger</Button></div>}</div>
           </section>
           <p className="text-xs leading-relaxed text-muted-foreground">{warehouse ? 'History uses inventory receipts, transfers, and orders with a recorded warehouse. Financial previews do not change stock.' : 'Payments and refunds are interactive previews. Due dates appear only when recorded; delivery deadlines are not treated as payment due dates.'}</p>
         </> : <div className="flex min-h-80 flex-col items-center justify-center rounded-2xl border border-dashed p-8 text-center"><Users className="mb-3 size-9 text-muted-foreground/40" /><h2 className="font-semibold">{loading ? 'Loading directory…' : `Select a ${singular}`}</h2><p className="mt-2 text-sm text-muted-foreground">Choose a record on the left, or add one to get started.</p></div>}

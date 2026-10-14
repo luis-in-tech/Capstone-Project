@@ -1,6 +1,6 @@
 import { hasAdminRole } from '../lib/staffPermissions';
 import { useStaffAccess } from '../hooks/useStaffAccess';
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { db } from '../lib/supabaseAdapter';
 import { collection, onSnapshot, query, where, addDoc, updateDoc, doc, serverTimestamp, deleteDoc } from '../lib/supabaseAdapter';
@@ -23,11 +23,26 @@ import { WarehouseLayout } from './WarehouseLayout';
 import { ProductVariationEditor } from './ProductVariationEditor';
 import { emptyVariations, variationDraft, validateVariations, variantLabel, variantFields, stockForProduct } from '../lib/productVariations';
 import { saveProductVariations } from '../lib/saveProductVariations';
+import { DefectiveStockModal } from './DefectiveStockModal';
+import { QuarantineLedger } from './QuarantineLedger';
+import { getLocalDefectiveTickets, exportDefectiveProductsReportCSV } from '../lib/itilService';
+import type { DefectiveStockTicket } from '../types';
 
 const PRODUCT_TEMPLATE_HEADERS = ['SKU Code', 'Item Name', 'Category', 'Supplier Name', 'Base Price / Retail Price', 'Metro Manila Price', 'Provincial Price', 'Cost', 'Minimum Stock Level', 'Reorder Point'];
 type ImportRow = Record<string, string | number | undefined>;
 interface ProductImportPreview { row: number; data: Omit<Product, 'id'>; errors: string[]; }
 interface NamedOption { id: string; name: string; active?: boolean; }
+
+export const cleanItemName = (name: string): string => {
+  if (!name) return '';
+  return name
+    .replace(/#\d+(\.\d+)?\s*[-–—]?\s*/g, '')
+    .replace(/\s*[-–—]?\s*#\d+(\.\d+)?/g, '')
+    .replace(/^\.5\s*[-–—]?\s*/g, '')
+    .replace(/(?:^|\s)\.5\s+/g, ' ')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+};
 
 export function Inventory() {
   const { profile } = useAuth();
@@ -80,10 +95,25 @@ export function Inventory() {
 
   // Warehouse Filter State (for filtering inventory view)
   const [warehouseFilter, setWarehouseFilter] = useState<string>('all');
-  const [inventoryView, setInventoryView] = useState<'stock' | 'layout'>('stock');
+  const [inventoryView, setInventoryView] = useState<'stock' | 'layout' | 'quarantine'>('stock');
   const [managedCategories, setManagedCategories] = useState<NamedOption[]>([]);
   const [managedSuppliers, setManagedSuppliers] = useState<NamedOption[]>([]);
   const [hasDelegatedAccess, setHasDelegatedAccess] = useState(false);
+
+  // FR-11: Defective Stock Exception Logging & Quarantine
+  const [isDefectiveModalOpen, setIsDefectiveModalOpen] = useState(false);
+  const [defectiveTickets, setDefectiveTickets] = useState<DefectiveStockTicket[]>(() => getLocalDefectiveTickets());
+  const cleanedProductIdsRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    const handleTicketsChanged = () => setDefectiveTickets(getLocalDefectiveTickets());
+    window.addEventListener('activepro_defective_tickets_changed', handleTicketsChanged);
+    window.addEventListener('storage', handleTicketsChanged);
+    return () => {
+      window.removeEventListener('activepro_defective_tickets_changed', handleTicketsChanged);
+      window.removeEventListener('storage', handleTicketsChanged);
+    };
+  }, []);
 
   useEffect(() => {
     const category = searchParams.get('category');
@@ -195,7 +225,26 @@ export function Inventory() {
 
   useEffect(() => {
     const unsubProducts = onSnapshot(collection(db, 'products'), (snap) => {
-      setProducts(snap.docs.map((d: { id: string; data: () => Record<string, unknown> }) => ({ id: d.id, ...d.data() } as Product)));
+      const mapped = snap.docs.map((d: { id: string; data: () => Record<string, unknown> }) => {
+        const data = d.data();
+        const rawName = String(data.name || '');
+        const sanitizedName = cleanItemName(rawName);
+
+        // Auto-clean database record if it contains '#000' or '#12' format in the name (once per document)
+        if (rawName && rawName !== sanitizedName && !cleanedProductIdsRef.current.has(d.id)) {
+          cleanedProductIdsRef.current.add(d.id);
+          updateDoc(doc(db, 'products', d.id), { name: sanitizedName }).catch((err) => {
+            console.warn(`Failed to auto-clean product name for ${d.id}:`, err);
+          });
+        }
+
+        return {
+          id: d.id,
+          ...data,
+          name: sanitizedName,
+        } as Product;
+      });
+      setProducts(mapped);
     }, (error) => {
       handleSupabaseError(error, OperationType.GET, 'products');
     });
@@ -288,7 +337,7 @@ export function Inventory() {
     e.preventDefault();
     const formData = new FormData(e.currentTarget);
     const sku = String(formData.get('sku') || addSku || '').trim();
-    const name = String(formData.get('name') || addName || '').trim();
+    const name = cleanItemName(String(formData.get('name') || addName || '').trim());
     const category = String(addCategory || formData.get('category') || 'Uncategorized').trim() || 'Uncategorized';
     const supplier = String(addSupplier || formData.get('supplier') || 'N/A').trim() || 'N/A';
 
@@ -338,6 +387,8 @@ export function Inventory() {
         costPrice,
         promoPrice: promoPriceValue ? Number(promoPriceValue) : undefined,
         photoUrl,
+        locationAisle: String(formData.get('locationAisle') || '').trim(),
+        locationBin: String(formData.get('locationBin') || '').trim(),
         minStockLevel: Number(formData.get('minStockLevel')) || 0,
         reorderPoint: Number(formData.get('reorderPoint')) || 0,
         createdAt: new Date(),
@@ -392,7 +443,7 @@ export function Inventory() {
       const fileNames = new Set<string>();
       const preview = rows.map((row, index) => {
         const sku = String(row['SKU Code'] ?? '').trim();
-        const name = String(row['Item Name'] ?? '').trim();
+        const name = cleanItemName(String(row['Item Name'] ?? '').trim());
         const errors: string[] = [];
         if (!sku) errors.push('SKU Code is required');
         if (!name) errors.push('Item Name is required');
@@ -463,7 +514,7 @@ export function Inventory() {
     if (!!editingProduct.hasVariations !== editVariations.enabled && variantModeLocked) { toast.error('Clear existing stock through Adjust Stock before changing variation mode.'); return; }
     const form = new FormData(event.currentTarget);
     const sku = String(editSku || form.get('sku') || '').trim();
-    const name = String(editName || form.get('name') || '').trim();
+    const name = cleanItemName(String(editName || form.get('name') || '').trim());
     const category = String(editCategory || form.get('category') || 'Uncategorized').trim() || 'Uncategorized';
     const supplier = String(editSupplier || form.get('supplier') || 'N/A').trim() || 'N/A';
 
@@ -509,6 +560,8 @@ export function Inventory() {
         costPrice: Number(form.get('costPrice')) || 0,
         promoPrice,
         photoUrl,
+        locationAisle: String(form.get('locationAisle') || '').trim(),
+        locationBin: String(form.get('locationBin') || '').trim(),
         minStockLevel: Number(form.get('minStockLevel')) || 0,
         reorderPoint: Number(form.get('reorderPoint')) || 0,
         updatedAt: new Date(),
@@ -642,7 +695,7 @@ export function Inventory() {
     addSku.trim() && products.some(p => p.sku.trim().toLowerCase() === addSku.trim().toLowerCase())
   );
   const isAddNameDuplicate = Boolean(
-    addName.trim() && products.some(p => p.name.trim().toLowerCase() === addName.trim().toLowerCase())
+    cleanItemName(addName).trim() && products.some(p => p.name.trim().toLowerCase() === cleanItemName(addName).trim().toLowerCase())
   );
 
   const isEditSkuDuplicate = Boolean(
@@ -650,8 +703,8 @@ export function Inventory() {
     products.some(p => p.id !== editingProduct.id && p.sku.trim().toLowerCase() === editSku.trim().toLowerCase())
   );
   const isEditNameDuplicate = Boolean(
-    editingProduct && editName.trim() &&
-    products.some(p => p.id !== editingProduct.id && p.name.trim().toLowerCase() === editName.trim().toLowerCase())
+    editingProduct && cleanItemName(editName).trim() &&
+    products.some(p => p.id !== editingProduct.id && p.name.trim().toLowerCase() === cleanItemName(editName).trim().toLowerCase())
   );
   const getProductStatus = (product: Product, stock: number, _checkWarehouseId?: string) => {
     if (product.hasVariations) {
@@ -853,12 +906,93 @@ export function Inventory() {
   };
 
 
+  const exportMultiWarehouseLedger = () => {
+    const csvRows = [];
+    csvRows.push(['SKU', 'Product Name', 'Supplier', 'Category', 'Aisle/Bin', 'Warehouse A Stock', 'Warehouse B Stock', 'Quarantined Stock', 'Unit Cost', 'Total Asset Value'].join(','));
+    
+    const whA = warehouses.find(w => w.name.includes('Valenzuela A')) || warehouses[0];
+    const whB = warehouses.find(w => w.name.includes('Valenzuela B')) || warehouses[1];
+
+    products.filter(p => !p.parentProductId).forEach(p => {
+      if (p.hasVariations) {
+         const variants = childrenOf(p.id);
+         variants.forEach(v => {
+            const stockA = inventory.find(i => i.productId === v.id && i.warehouseId === whA?.id)?.quantity || 0;
+            const stockB = inventory.find(i => i.productId === v.id && i.warehouseId === whB?.id)?.quantity || 0;
+            const quarantine = inventory.find(i => i.productId === v.id)?.quarantineQuantity || 0;
+            const cost = v.costPrice || p.costPrice || 0;
+            const totalValue = (stockA + stockB + quarantine) * cost;
+            csvRows.push([
+              `"${v.sku || ''}"`,
+              `"${p.name} - ${variantLabel(v)}"`,
+              `"${p.supplier || 'N/A'}"`,
+              `"${p.category || 'N/A'}"`,
+              `"${p.locationAisle || ''}/${p.locationBin || ''}"`,
+              stockA, stockB, quarantine, cost, totalValue
+            ].join(','));
+         });
+      } else {
+        const stockA = inventory.find(i => i.productId === p.id && i.warehouseId === whA?.id)?.quantity || 0;
+        const stockB = inventory.find(i => i.productId === p.id && i.warehouseId === whB?.id)?.quantity || 0;
+        const quarantine = inventory.find(i => i.productId === p.id)?.quarantineQuantity || 0;
+        const cost = p.costPrice || 0;
+        const totalValue = (stockA + stockB + quarantine) * cost;
+        csvRows.push([
+          `"${p.sku || ''}"`,
+          `"${p.name}"`,
+          `"${p.supplier || 'N/A'}"`,
+          `"${p.category || 'N/A'}"`,
+          `"${p.locationAisle || ''}/${p.locationBin || ''}"`,
+          stockA, stockB, quarantine, cost, totalValue
+        ].join(','));
+      }
+    });
+
+    const blob = new Blob([csvRows.join('\n')], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `multi_warehouse_ledger_${new Date().toISOString().split('T')[0]}.csv`;
+    link.click();
+    toast.success('Multi-Warehouse Ledger exported successfully');
+  };
+
   const inventoryNavigation = <div className="flex gap-1 rounded-xl bg-muted/60 p-1 w-fit" aria-label="Inventory views">
     <Button variant={inventoryView === 'stock' ? 'default' : 'ghost'} aria-pressed={inventoryView === 'stock'} onClick={() => setInventoryView('stock')}><Package className="size-4" />Products & Stock</Button>
     <Button variant={inventoryView === 'layout' ? 'default' : 'ghost'} aria-pressed={inventoryView === 'layout'} onClick={() => setInventoryView('layout')}><WarehouseIcon className="size-4" />Warehouse Layout</Button>
+    <Button variant={inventoryView === 'quarantine' ? 'default' : 'ghost'} aria-pressed={inventoryView === 'quarantine'} onClick={() => setInventoryView('quarantine')}>
+      <AlertTriangle className="size-4 text-amber-500" />
+      <span>Quarantine & Returns</span>
+      {defectiveTickets.filter(t => t.status === 'QUARANTINED').length > 0 && (
+        <Badge variant="destructive" className="ml-1 h-4 px-1 text-[9px] font-bold">
+          {defectiveTickets.filter(t => t.status === 'QUARANTINED').length}
+        </Badge>
+      )}
+    </Button>
   </div>;
 
   if (inventoryView === 'layout') return <div className="space-y-5 pb-20">{inventoryNavigation}<WarehouseLayout warehouses={warehouses} products={products.filter(p => !p.hasVariations)} inventory={inventory} /></div>;
+  if (inventoryView === 'quarantine') return (
+    <div className="space-y-5 pb-20">
+      {inventoryNavigation}
+      <QuarantineLedger
+        tickets={defectiveTickets}
+        inventory={inventory}
+        profile={profile}
+        onOpenLogModal={() => setIsDefectiveModalOpen(true)}
+        onRefresh={() => setDefectiveTickets(getLocalDefectiveTickets())}
+      />
+      <DefectiveStockModal
+        open={isDefectiveModalOpen}
+        onClose={() => setIsDefectiveModalOpen(false)}
+        products={products}
+        inventory={inventory}
+        warehouses={warehouses}
+        profile={profile}
+        onSuccess={() => setDefectiveTickets(getLocalDefectiveTickets())}
+      />
+    </div>
+  );
 
   return (
     <div className="space-y-5 pb-20">
@@ -868,8 +1002,19 @@ export function Inventory() {
           <p className="mt-1 text-sm text-muted-foreground">Manage products, stock levels, suppliers, and warehouse inventory.</p>
         </div>
         <div className="flex flex-wrap gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => setIsDefectiveModalOpen(true)}
+            className="h-11 gap-2 rounded-xl border-amber-300 bg-amber-50/70 text-amber-800 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-800 px-4 font-bold shadow-sm hover:bg-amber-100"
+          >
+            <AlertTriangle className="h-4 w-4 text-amber-600" /> Log Damaged Stock
+          </Button>
           <Button type="button" variant="outline" onClick={() => navigate('/pricelist')} className="h-11 gap-3 rounded-xl border-zinc-200 bg-white px-5 text-base font-semibold text-zinc-500 shadow-sm hover:bg-zinc-50 hover:text-zinc-700">
             <Tag className="h-5 w-5 text-zinc-500" strokeWidth={2.25} /> Pricelist
+          </Button>
+          <Button type="button" variant="outline" onClick={exportMultiWarehouseLedger} className="h-11 gap-2 rounded-xl px-5 font-bold shadow-sm">
+            <Download className="h-4 w-4" /> Export Ledger
           </Button>
           {isAdmin && <Button type="button" variant="outline" onClick={() => setIsImportOpen(true)} className="h-11 gap-2 rounded-xl px-5 font-bold shadow-sm"><Upload className="h-4 w-4" /> Import Products</Button>}
           {isAdmin && <Button type="button" onClick={() => setIsAddProductOpen(true)} className="h-11 gap-2 rounded-xl bg-[#101d33] px-5 font-bold text-white shadow-lg hover:bg-[#172842]"><Plus className="h-4 w-4" /> Add Product</Button>}
@@ -923,7 +1068,7 @@ export function Inventory() {
                   <TableRow key={product.id} className="cursor-pointer hover:bg-muted/30" onClick={() => { setSelectedProduct(product); setIsDetailOpen(true); }}>
                     <TableCell className="text-center font-mono text-xs text-muted-foreground">{index + 1}</TableCell>
                     <TableCell className="font-mono text-xs text-muted-foreground">{product.sku}</TableCell>
-                    <TableCell><div className="flex items-center gap-3"><div className="flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-border bg-muted">{product.photoUrl ? <img src={product.photoUrl} alt={product.name} className="h-full w-full object-cover" /> : <Package className="h-5 w-5 text-muted-foreground" />}</div><div className="min-w-0"><p className="truncate text-sm font-bold">{product.name}</p>{product.hasVariations && <Badge variant="secondary" className="my-1 text-[10px]">{childrenOf(product.id).filter(v => v.variantEnabled !== false).length} Variants</Badge>}<p className="truncate text-xs text-muted-foreground">{product.category || 'Uncategorized'}</p></div></div></TableCell>
+                    <TableCell><div className="flex items-center gap-3"><div className="flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-border bg-muted">{product.photoUrl ? <img src={product.photoUrl} alt={cleanItemName(product.name)} className="h-full w-full object-cover" /> : <Package className="h-5 w-5 text-muted-foreground" />}</div><div className="min-w-0"><p className="truncate text-sm font-bold">{cleanItemName(product.name)}</p>{product.hasVariations && <Badge variant="secondary" className="my-1 text-[10px]">{childrenOf(product.id).filter(v => v.variantEnabled !== false).length} Variants</Badge>}<p className="truncate text-xs text-muted-foreground">{product.category || 'Uncategorized'}</p></div></div></TableCell>
                     <TableCell>{product.hasVariations ? <div className="space-y-1 text-xs">{variantFields.slice(0, 3).map(([key, label]) => <p key={key}><span className="text-muted-foreground">{label}: </span><strong>{variantRange(product, key)}</strong></p>)}</div> : <div className="grid grid-cols-[2.75rem_auto] text-xs"><span className="text-muted-foreground">Retail:</span><strong>₱{(product.basePrice || 0).toLocaleString()}</strong><span className="text-muted-foreground">MM:</span><strong>₱{(product.mmPrice ?? product.wholesalePrice ?? 0).toLocaleString()}</strong><span className="text-muted-foreground">Prov.:</span><strong>₱{(product.provincialPrice ?? product.dealerPrice ?? 0).toLocaleString()}</strong></div>}</TableCell>
                     <TableCell className="text-sm font-semibold">{product.hasVariations ? variantRange(product, 'costPrice') : `₱${(product.costPrice || 0).toLocaleString()}`}</TableCell>
                     <TableCell className="text-center"><Badge variant="outline" className={'rounded-full px-3 ' + statusClass}>{stock.toLocaleString()} units</Badge></TableCell>
@@ -1054,6 +1199,14 @@ export function Inventory() {
                         autoFocus
                       />
                     )}
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="locationAisle">Aisle Location</Label>
+                    <Input id="locationAisle" name="locationAisle" placeholder="e.g. A1" />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="locationBin">Bin Location</Label>
+                    <Input id="locationBin" name="locationBin" placeholder="e.g. B-23" />
                   </div>
                 </div>
               </section>
@@ -1231,6 +1384,14 @@ export function Inventory() {
                         />
                       )}
                     </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="edit-locationAisle">Aisle Location</Label>
+                      <Input id="edit-locationAisle" name="locationAisle" placeholder="e.g. A1" defaultValue={editingProduct.locationAisle} />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="edit-locationBin">Bin Location</Label>
+                      <Input id="edit-locationBin" name="locationBin" placeholder="e.g. B-23" defaultValue={editingProduct.locationBin} />
+                    </div>
                   </div>
                 </section>
               </div>
@@ -1386,7 +1547,7 @@ export function Inventory() {
                   </div>
                   <div className="min-w-0">
                     <div className="mb-2 flex flex-wrap items-center gap-2"><Badge className="rounded-md border border-emerald-200 bg-emerald-50 px-3 uppercase text-emerald-700 hover:bg-emerald-50"><span className="mr-2 h-2 w-2 rounded-full bg-emerald-500" />Active</Badge><Badge variant="outline" className="rounded-md px-3">{selectedProduct.category || 'Uncategorized'}</Badge></div>
-                    <h2 className="truncate text-4xl font-black tracking-tight">{selectedProduct.name}</h2>
+                    <h2 className="truncate text-4xl font-black tracking-tight">{cleanItemName(selectedProduct.name)}</h2>
                     <div className="mt-1 text-sm font-semibold tracking-wide text-muted-foreground">{selectedProduct.sku}</div>
                   </div>
                 </div>
@@ -1402,9 +1563,10 @@ export function Inventory() {
                     <div className="flex items-center gap-3 border-b border-border pb-3"><span className="font-mono text-sm font-black text-muted-foreground">01</span><FileText className="h-5 w-5" /><h3 className="text-base font-bold uppercase tracking-wider">Product Information</h3></div>
                     <dl className="grid grid-cols-[minmax(8rem,1fr)_minmax(0,1fr)] gap-x-5 gap-y-3 py-3 text-sm">
                       <dt className="text-muted-foreground">SKU Code</dt><dd className="font-medium">{selectedProduct.sku}</dd>
-                      <dt className="text-muted-foreground">Item Name</dt><dd className="font-medium">{selectedProduct.name}</dd>
+                      <dt className="text-muted-foreground">Item Name</dt><dd className="font-medium">{cleanItemName(selectedProduct.name)}</dd>
                       <dt className="text-muted-foreground">Category</dt><dd className="font-medium">{selectedProduct.category || 'Uncategorized'}</dd>
                       <dt className="text-muted-foreground">Preferred Supplier</dt><dd className="font-medium">{selectedProduct.supplier || 'N/A'}</dd>
+                      <dt className="text-muted-foreground">Location (Aisle/Bin)</dt><dd className="font-medium">{selectedProduct.locationAisle || selectedProduct.locationBin ? `${selectedProduct.locationAisle || 'N/A'} / ${selectedProduct.locationBin || 'N/A'}` : 'Not Assigned'}</dd>
                     </dl>
                     <div className="mt-2 flex items-center gap-3 border-y border-border py-3"><span className="font-mono text-sm font-black text-muted-foreground">02</span><Tag className="h-5 w-5" /><h3 className="text-base font-bold uppercase tracking-wider">Pricing (₱)</h3></div>
                     <dl className="grid grid-cols-[minmax(8rem,1fr)_minmax(0,1fr)] gap-x-5 gap-y-3 pt-3 text-sm">
@@ -1586,6 +1748,16 @@ export function Inventory() {
             </DialogFooter>
           </DialogContent>
         </Dialog>)}
+
+      <DefectiveStockModal
+        open={isDefectiveModalOpen}
+        onClose={() => setIsDefectiveModalOpen(false)}
+        products={products}
+        inventory={inventory}
+        warehouses={warehouses}
+        profile={profile}
+        onSuccess={() => setDefectiveTickets(getLocalDefectiveTickets())}
+      />
     </div>
   );
 }

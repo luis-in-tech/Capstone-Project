@@ -60,9 +60,11 @@ import restoreRoutes   from './routes/restore.routes';
 import transfersRoutes from './routes/transfers.routes';
 import logisticsRoutes from './routes/logistics.routes';
 import ordersRoutes    from './routes/orders.routes';
+import pnlRoutes       from './routes/pnl.routes';
 
 // ── WebSocket / FS Watcher ────────────────────────────────────────────────────
 import { createFsWatcher } from './ws/fsWatcher';
+import { attachPnLBroadcaster } from './ws/pnlBroadcaster';
 
 // ═════════════════════════════════════════════════════════════════════════════
 //  App Bootstrap
@@ -125,6 +127,7 @@ async function bootstrap(): Promise<void> {
   app.use('/api/v1/transfers', transfersRoutes);
   app.use('/api/v1/logistics', logisticsRoutes);
   app.use('/api/v1/orders',    ordersRoutes);
+  app.use('/api/v1/pnl',       pnlRoutes);
 
   // ── 404 Handler — for any unmatched route ───────────────────────────────────
 
@@ -153,7 +156,8 @@ async function bootstrap(): Promise<void> {
 
   // ── WebSocket + FS Watcher ──────────────────────────────────────────────────
 
-  const { startWatcher } = createFsWatcher(httpServer);
+  const { wss, startWatcher } = createFsWatcher(httpServer);
+  attachPnLBroadcaster(wss);
 
   // ── Database Connection Check ───────────────────────────────────────────────
 

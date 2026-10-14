@@ -26,6 +26,10 @@ export async function createOrder(payload: CreateOrderPayload): Promise<{ order:
     throw new AppError(400, 'VALIDATION_ERROR', 'Customer name is required.');
   }
 
+  if (!payload.address || typeof payload.address !== 'string' || payload.address.trim().length === 0) {
+    throw new AppError(400, 'VALIDATION_ERROR', 'Delivery address is required.');
+  }
+
   if (!Array.isArray(payload.items) || payload.items.length === 0) {
     throw new AppError(400, 'VALIDATION_ERROR', 'At least one line item is required.');
   }
@@ -84,7 +88,14 @@ export async function createOrder(payload: CreateOrderPayload): Promise<{ order:
   }
 
   const discount = Number(payload.discount || 0);
+  if (!Number.isFinite(discount) || discount < 0 || discount > subtotal) {
+    throw new AppError(400, 'VALIDATION_ERROR', 'Discount cannot be negative or exceed order subtotal.');
+  }
   const totalAmount = Math.max(0, Math.round((subtotal - discount) * 100) / 100);
+
+  const trimmedAddress = payload.address.trim();
+  const addressParts = trimmedAddress.split(',');
+  const deliveryCity = (addressParts.length > 1 ? addressParts[1].trim() : trimmedAddress) || 'Metro Manila';
 
   const order: OrderDto = {
     id: orderId,
@@ -97,7 +108,7 @@ export async function createOrder(payload: CreateOrderPayload): Promise<{ order:
     totalAmount,
     paymentStatus: 'unpaid',
     deliveryRegion: region,
-    deliveryCity: payload.address.split(',')[1]?.trim() || payload.address.trim(),
+    deliveryCity,
     deliveryDeadline: deadline,
     statusHistory: [
       {
@@ -108,7 +119,7 @@ export async function createOrder(payload: CreateOrderPayload): Promise<{ order:
       },
     ],
     receiptDetails: {
-      address: payload.address.trim(),
+      address: trimmedAddress,
       paymentTerms: payload.paymentTerms || 'COD',
       subtotal: Math.round(subtotal * 100) / 100,
       discount,
