@@ -1,7 +1,7 @@
 import { ProductSelectionModes } from './ProductSelectionModes';
 import { ProductPicker, ProductPickerRow } from './ProductPicker';
 import { useState } from 'react';
-import { ArrowDownLeft, ArrowUpRight, Check, ChevronLeft, CreditCard, Package, Banknote, FileCheck, Info } from 'lucide-react';
+import { ArrowDownLeftIcon as ArrowDownLeft, ArrowUpRightIcon as ArrowUpRight, CheckIcon as Check, CaretLeftIcon as ChevronLeft, CreditCardIcon as CreditCard, PackageIcon as Package, MoneyIcon as Banknote, FileTextIcon as FileCheck, InfoIcon as Info } from '@phosphor-icons/react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';

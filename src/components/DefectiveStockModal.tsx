@@ -1,19 +1,19 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import {
-  AlertTriangle,
-  Package,
-  Warehouse,
-  Printer,
-  Download,
-  CheckCircle2,
-  Search,
-  X,
-  ChevronDown,
-  ChevronsUpDown,
-  ShieldAlert,
-  AlertCircle,
-  Check,
-} from 'lucide-react';
+  WarningIcon as AlertTriangle,
+  PackageIcon as Package,
+  WarehouseIcon as Warehouse,
+  PrinterIcon as Printer,
+  DownloadIcon as Download,
+  CheckCircleIcon as CheckCircle2,
+  MagnifyingGlassIcon as Search,
+  XIcon as X,
+  CaretDownIcon as ChevronDown,
+  CaretUpDownIcon as ChevronsUpDown,
+  ShieldWarningIcon as ShieldAlert,
+  WarningCircleIcon as AlertCircle,
+  CheckIcon as Check,
+} from '@phosphor-icons/react';
 import {
   Dialog,
   DialogContent,

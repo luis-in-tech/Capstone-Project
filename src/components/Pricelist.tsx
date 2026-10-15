@@ -14,7 +14,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { Check, Download, Eye, FileText, Loader2, Pencil, Plus, ScanLine, Trash2 } from 'lucide-react';
+import { CheckIcon as Check, DownloadIcon as Download, EyeIcon as Eye, FileTextIcon as FileText, SpinnerGapIcon as Loader2, PencilIcon as Pencil, PlusIcon as Plus, ScanIcon as ScanLine, TrashIcon as Trash2 } from '@phosphor-icons/react';
 import { useAuth } from '../hooks/useAuth';
 import { toast } from 'sonner';
 

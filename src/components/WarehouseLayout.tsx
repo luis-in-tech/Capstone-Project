@@ -1,7 +1,7 @@
 import { SearchBar } from '@/components/ui/search-bar';
 import { useEffect, useState } from 'react';
 import { WarehouseFloorplan } from './WarehouseFloorplan';
-import { ArrowLeft, Grid2X2, Info, Loader2, Package, Warehouse as WarehouseIcon } from 'lucide-react';
+import { ArrowLeftIcon as ArrowLeft, SquaresFourIcon as Grid2X2, InfoIcon as Info, SpinnerGapIcon as Loader2, PackageIcon as Package, WarehouseIcon } from '@phosphor-icons/react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';

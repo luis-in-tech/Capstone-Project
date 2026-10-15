@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type PointerEvent } from 'react';
-import { DoorOpen, Pencil, Plus, Save, Trash2 } from 'lucide-react';
+import { DoorOpenIcon as DoorOpen, PencilIcon as Pencil, PlusIcon as Plus, FloppyDiskIcon as Save, TrashIcon as Trash2 } from '@phosphor-icons/react';
 import { Button } from '@/components/ui/button';
 import { supabase } from '../lib/supabase';
 import { toast } from 'sonner';

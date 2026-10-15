@@ -1,17 +1,17 @@
 import React, { useEffect, useRef, useState } from "react";
 import {
-  Camera,
-  Check,
-  ChevronDown,
-  ClipboardList,
-  Clock,
-  Pencil,
-  Plus,
-  ScanBarcode,
-  Search,
-  ShoppingCart,
-  Trash2,
-} from "lucide-react";
+  CameraIcon as Camera,
+  CheckIcon as Check,
+  CaretDownIcon as ChevronDown,
+  ClipboardTextIcon as ClipboardList,
+  ClockIcon as Clock,
+  PencilIcon as Pencil,
+  PlusIcon as Plus,
+  BarcodeIcon as ScanBarcode,
+  MagnifyingGlassIcon as Search,
+  ShoppingCartIcon as ShoppingCart,
+  TrashIcon as Trash2,
+} from "@phosphor-icons/react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";

@@ -1,23 +1,23 @@
 import { PageHeading } from './PageHeading';
 import React, { useState, useEffect, useMemo } from 'react';
 import {
-  Truck,
-  TrendingUp,
-  MapPin,
-  CheckCircle2,
-  Clock,
-  Navigation,
-  RefreshCw,
-  Boxes,
-  Info,
-  AlertCircle,
-  ChevronRight,
-  ChevronDown,
-  ArrowRight,
-  ListOrdered,
-  FileText,
-  Coins
-} from 'lucide-react';
+  TruckIcon as Truck,
+  TrendUpIcon as TrendingUp,
+  MapPinIcon as MapPin,
+  CheckCircleIcon as CheckCircle2,
+  ClockIcon as Clock,
+  NavigationArrowIcon as Navigation,
+  ArrowsClockwiseIcon as RefreshCw,
+  StackIcon as Boxes,
+  InfoIcon as Info,
+  WarningCircleIcon as AlertCircle,
+  CaretRightIcon as ChevronRight,
+  CaretDownIcon as ChevronDown,
+  ArrowRightIcon as ArrowRight,
+  ListNumbersIcon as ListOrdered,
+  FileTextIcon as FileText,
+  CoinsIcon as Coins
+} from '@phosphor-icons/react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';

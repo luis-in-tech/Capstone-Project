@@ -12,7 +12,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Card, CardContent } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter, DialogDescription } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
-import { Search, Plus, QrCode, Package, Warehouse as WarehouseIcon, AlertTriangle, Eye, CircleDollarSign, SlidersHorizontal, Tag, Pencil, Trash2, ImagePlus, X, Download, Upload, FileSpreadsheet, FileText, BarChart3, Info, Printer } from 'lucide-react';
+import { MagnifyingGlassIcon as Search, PlusIcon as Plus, QrCodeIcon as QrCode, PackageIcon as Package, WarehouseIcon, WarningIcon as AlertTriangle, EyeIcon as Eye, CurrencyCircleDollarIcon as CircleDollarSign, SlidersHorizontalIcon as SlidersHorizontal, TagIcon as Tag, PencilIcon as Pencil, TrashIcon as Trash2, ImageSquareIcon as ImagePlus, XIcon as X, DownloadIcon as Download, UploadSimpleIcon as Upload, FileXlsIcon as FileSpreadsheet, FileTextIcon as FileText, ChartBarIcon as BarChart3, InfoIcon as Info, PrinterIcon as Printer } from '@phosphor-icons/react';
 import { QRCodeSVG } from 'qrcode.react';
 import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -998,10 +998,10 @@ export function Inventory() {
     <div className="space-y-5 pb-20">
       {inventoryNavigation}
       <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-        <div>
+        <div className="min-w-0 flex-1">
           <p className="mt-1 text-sm text-muted-foreground">Manage products, stock levels, suppliers, and warehouse inventory.</p>
         </div>
-        <div className="flex flex-wrap gap-2">
+        <div className="flex max-w-full flex-nowrap gap-2 overflow-x-auto lg:shrink-0 [&>button]:shrink-0">
           <Button
             type="button"
             variant="outline"
@@ -1011,7 +1011,7 @@ export function Inventory() {
             <AlertTriangle className="h-4 w-4 text-amber-600" /> Log Damaged Stock
           </Button>
           <Button type="button" variant="outline" onClick={() => navigate('/pricelist')} className="h-11 gap-3 rounded-xl border-zinc-200 bg-white px-5 text-base font-semibold text-zinc-500 shadow-sm hover:bg-zinc-50 hover:text-zinc-700">
-            <Tag className="h-5 w-5 text-zinc-500" strokeWidth={2.25} /> Pricelist
+            <Tag className="h-5 w-5 text-zinc-500" weight="bold" /> Pricelist
           </Button>
           <Button type="button" variant="outline" onClick={exportMultiWarehouseLedger} className="h-11 gap-2 rounded-xl px-5 font-bold shadow-sm">
             <Download className="h-4 w-4" /> Export Ledger

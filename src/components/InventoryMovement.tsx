@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { ReceiptBatchLabels } from './ReceiptBatchLabels';
 import { receiptDateToday } from '../lib/receiptBatches';
-import { ArrowDownToLine, ArrowRight, ArrowRightLeft, Check, CheckCircle2, ChevronLeft, Clock3, Eye, History, Loader2, Package, Plus, Search, Trash2, UserRound } from 'lucide-react';
+import { DownloadSimpleIcon as ArrowDownToLine, ArrowRightIcon as ArrowRight, ArrowsLeftRightIcon as ArrowRightLeft, CheckIcon as Check, CheckCircleIcon as CheckCircle2, CaretLeftIcon as ChevronLeft, ClockIcon as Clock3, EyeIcon as Eye, ClockCounterClockwiseIcon as History, SpinnerGapIcon as Loader2, PackageIcon as Package, PlusIcon as Plus, MagnifyingGlassIcon as Search, TrashIcon as Trash2, UserIcon as UserRound } from '@phosphor-icons/react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';

@@ -1,18 +1,18 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Link, useNavigate } from 'react-router-dom';
-import { 
-  Package, 
-  Warehouse, 
-  BarChart3, 
-  Rocket, 
-  ArrowRight, 
-  ArrowLeft,
-  CheckCircle2,
-  ChevronRight,
-  ShieldCheck,
-  Truck
-} from 'lucide-react';
+import {
+  PackageIcon as Package,
+  WarehouseIcon as Warehouse,
+  ChartBarIcon as BarChart3,
+  RocketIcon as Rocket,
+  ArrowRightIcon as ArrowRight,
+  ArrowLeftIcon as ArrowLeft,
+  CheckCircleIcon as CheckCircle2,
+  CaretRightIcon as ChevronRight,
+  ShieldCheckIcon as ShieldCheck,
+  TruckIcon as Truck
+} from '@phosphor-icons/react';
 import { Button } from '@/components/ui/button';
 
 const STEPS = [

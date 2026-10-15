@@ -1,16 +1,16 @@
 import React, { useState } from 'react';
 import {
-  AlertTriangle,
-  Download,
-  Plus,
-  RefreshCw,
-  Package,
-  Truck,
-  CheckCircle2,
-  XCircle,
-  Printer,
-  Calendar,
-} from 'lucide-react';
+  WarningIcon as AlertTriangle,
+  DownloadIcon as Download,
+  PlusIcon as Plus,
+  ArrowsClockwiseIcon as RefreshCw,
+  PackageIcon as Package,
+  TruckIcon as Truck,
+  CheckCircleIcon as CheckCircle2,
+  XCircleIcon as XCircle,
+  PrinterIcon as Printer,
+  CalendarIcon as Calendar,
+} from '@phosphor-icons/react';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';

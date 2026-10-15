@@ -2,26 +2,26 @@ import { useStaffAccess } from '../hooks/useStaffAccess';
 import { canVisit } from '../lib/staffPermissions';
 import { Link, useLocation } from 'react-router-dom';
 import {
-  BarChart3,
-  Package,
-  Building2,
-  ShoppingCart,
-  Truck,
-  DollarSign,
-  Settings,
-  Menu,
-  LogOut,
-  ChevronRight,
-  ChevronLeft,
-  User as UserIcon,
-  UserCog,
-  Shield,
-  HelpCircle,
-  Sun,
-  Moon,
-  Tag,
-  Activity,
-} from 'lucide-react';
+  ChartBarIcon as BarChart3,
+  PackageIcon as Package,
+  BuildingsIcon as Building2,
+  ShoppingCartIcon as ShoppingCart,
+  TruckIcon as Truck,
+  CurrencyDollarIcon as DollarSign,
+  GearIcon as Settings,
+  ListIcon as Menu,
+  SignOutIcon as LogOut,
+  CaretRightIcon as ChevronRight,
+  CaretLeftIcon as ChevronLeft,
+  UserIcon,
+  UserGearIcon as UserCog,
+  SquaresFourIcon,
+  QuestionIcon as HelpCircle,
+  SunIcon as Sun,
+  MoonIcon as Moon,
+  TagIcon as Tag,
+  PulseIcon as Activity,
+} from '@phosphor-icons/react';
 import { useState } from 'react';
 import { useAuth } from '../hooks/useAuth';
 import { useTheme } from './ThemeProvider';
@@ -33,7 +33,7 @@ import { TutorialOverlay } from './TutorialOverlay';
 import { SidebarCollapsedContext } from './PageHeading';
 
 const navigation = [
-  { name: 'Overview', href: '/admin', icon: Shield, roles: ['admin'] },
+  { name: 'Overview', href: '/admin', icon: SquaresFourIcon, roles: ['admin'] },
   { name: 'Analytics', href: '/dashboard', icon: BarChart3, roles: ['admin'] },
   { name: 'Inventory', href: '/inventory', icon: Package, roles: ['admin', 'secretary', 'agent', 'staff'] },
   { name: 'Supply Chain', href: '/supply-chain', icon: Building2, roles: ['admin', 'secretary', 'agent', 'staff'] },

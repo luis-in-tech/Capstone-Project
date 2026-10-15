@@ -1,17 +1,17 @@
 import React, { useState } from 'react';
 import {
-  ShieldAlert,
-  AlertTriangle,
-  Clock,
-  CheckCircle2,
-  Download,
-  AlertCircle,
-  Package,
-  Calendar,
-  User,
-  MapPin,
-  Check,
-} from 'lucide-react';
+  ShieldWarningIcon as ShieldAlert,
+  WarningIcon as AlertTriangle,
+  ClockIcon as Clock,
+  CheckCircleIcon as CheckCircle2,
+  DownloadIcon as Download,
+  WarningCircleIcon as AlertCircle,
+  PackageIcon as Package,
+  CalendarIcon as Calendar,
+  UserIcon as User,
+  MapPinIcon as MapPin,
+  CheckIcon as Check,
+} from '@phosphor-icons/react';
 import {
   Dialog,
   DialogContent,

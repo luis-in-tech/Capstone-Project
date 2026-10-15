@@ -1,5 +1,5 @@
 import * as React from "react"
-import { Search, X } from "lucide-react"
+import { MagnifyingGlassIcon as Search, XIcon as X } from "@phosphor-icons/react"
 
 import { Input } from "@/components/ui/input"
 import { cn } from "@/lib/utils"

@@ -10,7 +10,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
-import { Plus, AlertTriangle, Pencil, Trash2, CheckCircle2 } from 'lucide-react';
+import { PlusIcon as Plus, WarningIcon as AlertTriangle, PencilIcon as Pencil, TrashIcon as Trash2, CheckCircleIcon as CheckCircle2 } from '@phosphor-icons/react';
 import { useAuth } from '../hooks/useAuth';
 import { toast } from 'sonner';
 

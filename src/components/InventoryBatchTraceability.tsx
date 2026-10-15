@@ -1,5 +1,5 @@
 import { useEffect, useId, useState } from 'react';
-import { Loader2 } from 'lucide-react';
+import { SpinnerGapIcon as Loader2 } from '@phosphor-icons/react';
 import { Button } from '@/components/ui/button';
 import { collection, db, onSnapshot, query, where } from '../lib/supabaseAdapter';
 import type { InventoryMovementRecord } from '../lib/inventoryMovement';

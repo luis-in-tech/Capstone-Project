@@ -1,24 +1,24 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { 
-  X, 
-  ChevronRight, 
-  ChevronLeft, 
-  Package, 
-  ShoppingCart, 
-  BarChart3, 
-  Truck, 
-  ShieldCheck,
-  Zap,
-  Shield,
-  Activity,
-  Tag,
-  UserCog,
-  Settings,
-  DollarSign,
-  Play,
-  Monitor
-} from 'lucide-react';
+import {
+  XIcon as X,
+  CaretRightIcon as ChevronRight,
+  CaretLeftIcon as ChevronLeft,
+  PackageIcon as Package,
+  ShoppingCartIcon as ShoppingCart,
+  ChartBarIcon as BarChart3,
+  TruckIcon as Truck,
+  ShieldCheckIcon as ShieldCheck,
+  LightningIcon as Zap,
+  ShieldIcon as Shield,
+  PulseIcon as Activity,
+  TagIcon as Tag,
+  UserGearIcon as UserCog,
+  GearIcon as Settings,
+  CurrencyDollarIcon as DollarSign,
+  PlayIcon as Play,
+  MonitorIcon as Monitor
+} from '@phosphor-icons/react';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,

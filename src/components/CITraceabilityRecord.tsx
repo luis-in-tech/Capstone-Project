@@ -1,4 +1,4 @@
-import { ArrowLeft, ArrowUpRight, Package, CheckCircle2 } from 'lucide-react';
+import { ArrowLeftIcon as ArrowLeft, ArrowUpRightIcon as ArrowUpRight, PackageIcon as Package, CheckCircleIcon as CheckCircle2 } from '@phosphor-icons/react';
 import { Button } from '@/components/ui/button';
 import type { Product } from '../types';
 import type { InventoryMovementRecord, MovementLine } from '../lib/inventoryMovement';

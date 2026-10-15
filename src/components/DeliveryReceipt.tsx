@@ -1,5 +1,5 @@
 import React, { useRef } from "react";
-import { Printer } from "lucide-react";
+import { PrinterIcon as Printer } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,

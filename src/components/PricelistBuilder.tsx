@@ -2,7 +2,7 @@ import { ProductSelectionModes } from './ProductSelectionModes';
 import { ProductPicker, ProductPickerRow } from './ProductPicker';
 import { useState } from 'react';
 import { Tooltip } from '@base-ui/react/tooltip';
-import { TriangleAlert } from 'lucide-react';
+import { WarningIcon as TriangleAlert } from '@phosphor-icons/react';
 import { Product } from '../types';
 import { PricelistItem, PricelistSection, PriceType, SavedPricelist, reorder, sectionsFor } from '../lib/pricelistSections';
 import { Button } from '@/components/ui/button';

@@ -1,7 +1,7 @@
 import React from 'react';
 import { motion } from 'motion/react';
 import { Link } from 'react-router-dom';
-import { ArrowLeft, Shield } from 'lucide-react';
+import { ArrowLeftIcon as ArrowLeft, ShieldIcon as Shield } from '@phosphor-icons/react';
 import { Button } from '@/components/ui/button';
 
 export const Privacy = () => {

@@ -6,7 +6,7 @@ import { handleSupabaseError, OperationType } from '../lib/supabaseErrorHandler'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
-import { ArrowDownRight, ArrowUpRight, BarChart3, Download, Filter, PhilippinePeso, ShoppingCart, Target } from 'lucide-react';
+import { ArrowDownRightIcon as ArrowDownRight, ArrowUpRightIcon as ArrowUpRight, ChartBarIcon as BarChart3, DownloadIcon as Download, FunnelIcon as Filter, CoinsIcon as PhilippinePeso, ShoppingCartIcon as ShoppingCart, TargetIcon as Target } from '@phosphor-icons/react';
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 
 type RangeDays = 7 | 30 | 90;

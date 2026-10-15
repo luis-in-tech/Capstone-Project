@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { AlertCircle, ImagePlus, Plus, X } from 'lucide-react';
+import { WarningCircleIcon as AlertCircle, ImageSquareIcon as ImagePlus, PlusIcon as Plus, XIcon as X } from '@phosphor-icons/react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';

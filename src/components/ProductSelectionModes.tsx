@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
-import { Camera, ClipboardList, ScanBarcode, Search } from 'lucide-react';
+import { CameraIcon as Camera, ClipboardTextIcon as ClipboardList, BarcodeIcon as ScanBarcode, MagnifyingGlassIcon as Search } from '@phosphor-icons/react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';

@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { useAuth } from '../hooks/useAuth';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from '@/components/ui/card';
-import { Warehouse, LogIn, ArrowLeft, Mail, Lock, Eye, EyeOff, UserPlus, HelpCircle } from 'lucide-react';
+import { WarehouseIcon as Warehouse, SignInIcon as LogIn, ArrowLeftIcon as ArrowLeft, EnvelopeIcon as Mail, LockIcon as Lock, EyeIcon as Eye, EyeSlashIcon as EyeOff, UserPlusIcon as UserPlus, QuestionIcon as HelpCircle } from '@phosphor-icons/react';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Separator } from '@/components/ui/separator';

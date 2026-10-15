@@ -1,29 +1,29 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import {
-  User,
-  Bell,
-  CheckCircle2,
-  Edit2,
-  CheckCircle,
-  Sun,
-  Moon,
-  ShoppingBag,
-  Truck,
-  ArrowLeftRight,
-  CheckCheck,
-  SlidersHorizontal,
-  Sparkles,
-  Clock,
-  Volume2,
-  VolumeX,
-  Layers,
-  Activity,
-  Boxes,
-  Network,
-  Database,
-  Download
-} from 'lucide-react';
+  UserIcon as User,
+  BellIcon as Bell,
+  CheckCircleIcon as CheckCircle2,
+  PencilSimpleIcon as Edit2,
+  CheckCircleIcon as CheckCircle,
+  SunIcon as Sun,
+  MoonIcon as Moon,
+  ShoppingBagIcon as ShoppingBag,
+  TruckIcon as Truck,
+  ArrowsLeftRightIcon as ArrowLeftRight,
+  ChecksIcon as CheckCheck,
+  SlidersHorizontalIcon as SlidersHorizontal,
+  SparkleIcon as Sparkles,
+  ClockIcon as Clock,
+  SpeakerHighIcon as Volume2,
+  SpeakerSlashIcon as VolumeX,
+  StackIcon as Layers,
+  PulseIcon as Activity,
+  StackIcon as Boxes,
+  GraphIcon as Network,
+  DatabaseIcon as Database,
+  DownloadIcon as Download
+} from '@phosphor-icons/react';
 import { useTheme } from './ThemeProvider';
 import { useAuth } from '../hooks/useAuth';
 import { Button } from '@/components/ui/button';

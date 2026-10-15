@@ -9,7 +9,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useAuth } from '../hooks/useAuth';
-import { Activity, AlertTriangle, ArrowRight, CheckCircle2, Clock3, Package, PhilippinePeso, RefreshCw, ShoppingCart, Truck } from 'lucide-react';
+import { PulseIcon as Activity, WarningIcon as AlertTriangle, ArrowRightIcon as ArrowRight, CheckCircleIcon as CheckCircle2, ClockIcon as Clock3, PackageIcon as Package, CoinsIcon as PhilippinePeso, ArrowsClockwiseIcon as RefreshCw, ShoppingCartIcon as ShoppingCart, TruckIcon as Truck } from '@phosphor-icons/react';
 
 const toDate = (value: any) => {
   if (!value) return null;

@@ -1,7 +1,7 @@
 import { PageHeading } from './PageHeading';
 import { SearchBar } from '@/components/ui/search-bar';
 import { useEffect, useMemo, useState } from 'react';
-import { Loader2, Pencil, Plus, ShieldCheck, UserRound, Users, Warehouse as WarehouseIcon, CircleAlert, ShieldOff } from 'lucide-react';
+import { SpinnerGapIcon as Loader2, PencilIcon as Pencil, PlusIcon as Plus, ShieldCheckIcon as ShieldCheck, UserIcon as UserRound, UsersIcon as Users, WarehouseIcon, WarningCircleIcon as CircleAlert, ShieldSlashIcon as ShieldOff } from '@phosphor-icons/react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';

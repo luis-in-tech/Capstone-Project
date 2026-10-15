@@ -14,7 +14,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter, DialogDescription } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Truck, ArrowRightLeft, Clock, CheckCircle2, History, Plus, X, AlertTriangle, XCircle, Ban, SlidersHorizontal, User, ShieldAlert, FileText } from 'lucide-react';
+import { TruckIcon as Truck, ArrowsLeftRightIcon as ArrowRightLeft, ClockIcon as Clock, CheckCircleIcon as CheckCircle2, ClockCounterClockwiseIcon as History, PlusIcon as Plus, XIcon as X, WarningIcon as AlertTriangle, XCircleIcon as XCircle, ProhibitIcon as Ban, SlidersHorizontalIcon as SlidersHorizontal, UserIcon as User, ShieldWarningIcon as ShieldAlert, FileTextIcon as FileText } from '@phosphor-icons/react';
 import { Badge } from '@/components/ui/badge';
 import { useAuth } from '../hooks/useAuth';
 import { toast } from 'sonner';

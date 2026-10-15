@@ -3,7 +3,7 @@ import { SearchBar } from '@/components/ui/search-bar';
 import { getSupplyChainViews, hasAdminRole } from '../lib/staffPermissions';
 import { useStaffAccess } from '../hooks/useStaffAccess';
 import { useEffect, useState } from 'react';
-import { Users, Truck, Warehouse as WarehouseIcon, Plus, Pencil, Trash2, MapPin, Phone, UserRound, CalendarDays, ArrowDownLeft, ArrowUpRight, CreditCard, RotateCcw, Eye, Package, Loader2, AlertCircle, X } from 'lucide-react';
+import { UsersIcon as Users, TruckIcon as Truck, WarehouseIcon, PlusIcon as Plus, PencilIcon as Pencil, TrashIcon as Trash2, MapPinIcon as MapPin, PhoneIcon as Phone, UserIcon as UserRound, CalendarDotsIcon as CalendarDays, ArrowDownLeftIcon as ArrowDownLeft, ArrowUpRightIcon as ArrowUpRight, CreditCardIcon as CreditCard, ArrowCounterClockwiseIcon as RotateCcw, EyeIcon as Eye, PackageIcon as Package, SpinnerGapIcon as Loader2, WarningCircleIcon as AlertCircle, XIcon as X } from '@phosphor-icons/react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';

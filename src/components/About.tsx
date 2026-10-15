@@ -1,6 +1,6 @@
 import React from 'react';
 import { motion } from 'motion/react';
-import { ShieldCheck, Target, Zap, Globe, Package, Users } from 'lucide-react';
+import { ShieldCheckIcon as ShieldCheck, TargetIcon as Target, LightningIcon as Zap, GlobeIcon as Globe, PackageIcon as Package, UsersIcon as Users } from '@phosphor-icons/react';
 import { Link } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 

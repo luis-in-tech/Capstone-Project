@@ -2,7 +2,7 @@ import { SearchBar } from '@/components/ui/search-bar';
 import { hasAdminRole } from '../lib/staffPermissions';
 import { useEffect, useState, type FormEvent } from 'react';
 import { Link } from 'react-router-dom';
-import { Plus, Pencil, Archive, Trash2 } from 'lucide-react';
+import { PlusIcon as Plus, PencilIcon as Pencil, ArchiveIcon as Archive, TrashIcon as Trash2 } from '@phosphor-icons/react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
