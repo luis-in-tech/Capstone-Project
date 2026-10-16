@@ -332,7 +332,14 @@ export function InventoryMovement() {
       const preparedItems = draft.items.map(item => {
         const matching = products.find(p => p.id === item.productId || p.sku === item.sku || p.name === item.name);
         const resolvedId = matching?.id || item.productId;
-        return { productId: resolvedId, quantity: item.quantity, unitCost: external ? item.unitCost : 0, supplierLot: item.supplierLot?.trim() || '' };
+        return {
+          productId: resolvedId,
+          name: item.name || matching?.name || '',
+          sku: item.sku || matching?.sku || '',
+          quantity: item.quantity,
+          unitCost: external ? item.unitCost : 0,
+          supplierLot: item.supplierLot?.trim() || ''
+        };
       });
 
       const todayStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
@@ -428,47 +435,36 @@ export function InventoryMovement() {
         const now = new Date().toISOString();
         for (const item of preparedItems) {
           if (external) {
-            const existing = inventory.find(i => i.productId === item.productId && i.warehouseId === draft.destinationWarehouseId);
-            if (existing) {
-              await updateDoc(doc(db, 'inventory', existing.id), {
-                quantity: existing.quantity + item.quantity,
-                lastUpdated: now
-              });
-            } else {
-              await addDoc(collection(db, 'inventory'), {
-                productId: item.productId,
-                warehouseId: draft.destinationWarehouseId,
-                quantity: item.quantity,
-                lastUpdated: now
-              });
-            }
-            try {
-              await addDoc(collection(db, 'stockAdjustments'), {
-                productId: item.productId,
-                warehouseId: draft.destinationWarehouseId,
-                adjustmentAmount: item.quantity,
-                reason: `${fallbackMovNumber} external receipt`,
-                recordedBy: profile?.uid || 'user',
-                timestamp: now
-              });
-            } catch (adjErr) {
-              console.warn('Stock adjustment fallback error:', adjErr);
-            }
-          } else {
-            if (draft.sourceWarehouseId) {
-              const sourceInv = inventory.find(i => i.productId === item.productId && i.warehouseId === draft.sourceWarehouseId);
-              if (sourceInv) {
-                await updateDoc(doc(db, 'inventory', sourceInv.id), {
-                  quantity: Math.max(0, sourceInv.quantity - item.quantity),
+            const { error: rpcErr } = await supabase.rpc('adjust_inventory_atomic', {
+              p_product_id: item.productId,
+              p_warehouse_id: draft.destinationWarehouseId,
+              p_delta: item.quantity,
+              p_recorded_by: profile?.uid || 'system',
+              p_reason: `${fallbackMovNumber} external receipt: ${item.name || item.sku}`
+            });
+
+            if (rpcErr) {
+              console.warn('adjust_inventory_atomic fallback in external receipt:', rpcErr);
+              const existing = inventory.find(i => i.productId === item.productId && i.warehouseId === draft.destinationWarehouseId);
+              if (existing) {
+                await updateDoc(doc(db, 'inventory', existing.id), {
+                  quantity: existing.quantity + item.quantity,
+                  lastUpdated: now
+                });
+              } else {
+                await addDoc(collection(db, 'inventory'), {
+                  productId: item.productId,
+                  warehouseId: draft.destinationWarehouseId,
+                  quantity: item.quantity,
                   lastUpdated: now
                 });
               }
               try {
                 await addDoc(collection(db, 'stockAdjustments'), {
                   productId: item.productId,
-                  warehouseId: draft.sourceWarehouseId,
-                  adjustmentAmount: -item.quantity,
-                  reason: `${fallbackMovNumber} internal transfer sent`,
+                  warehouseId: draft.destinationWarehouseId,
+                  adjustmentAmount: item.quantity,
+                  reason: `${fallbackMovNumber} external receipt`,
                   recordedBy: profile?.uid || 'user',
                   timestamp: now
                 });
@@ -476,31 +472,52 @@ export function InventoryMovement() {
                 console.warn('Stock adjustment fallback error:', adjErr);
               }
             }
-            const destInv = inventory.find(i => i.productId === item.productId && i.warehouseId === draft.destinationWarehouseId);
-            if (destInv) {
-              await updateDoc(doc(db, 'inventory', destInv.id), {
-                quantity: destInv.quantity + item.quantity,
-                lastUpdated: now
+          } else {
+            if (draft.sourceWarehouseId) {
+              const { error: srcRpcErr } = await supabase.rpc('adjust_inventory_atomic', {
+                p_product_id: item.productId,
+                p_warehouse_id: draft.sourceWarehouseId,
+                p_delta: -item.quantity,
+                p_recorded_by: profile?.uid || 'system',
+                p_reason: `${fallbackMovNumber} internal transfer sent: ${item.name || item.sku}`
               });
-            } else {
-              await addDoc(collection(db, 'inventory'), {
-                productId: item.productId,
-                warehouseId: draft.destinationWarehouseId,
-                quantity: item.quantity,
-                lastUpdated: now
-              });
+
+              if (srcRpcErr) {
+                console.warn('adjust_inventory_atomic fallback for source warehouse:', srcRpcErr);
+                const sourceInv = inventory.find(i => i.productId === item.productId && i.warehouseId === draft.sourceWarehouseId);
+                if (sourceInv) {
+                  await updateDoc(doc(db, 'inventory', sourceInv.id), {
+                    quantity: Math.max(0, sourceInv.quantity - item.quantity),
+                    lastUpdated: now
+                  });
+                }
+              }
             }
-            try {
-              await addDoc(collection(db, 'stockAdjustments'), {
-                productId: item.productId,
-                warehouseId: draft.destinationWarehouseId,
-                adjustmentAmount: item.quantity,
-                reason: `${fallbackMovNumber} internal transfer received`,
-                recordedBy: profile?.uid || 'user',
-                timestamp: now
-              });
-            } catch (adjErr) {
-              console.warn('Stock adjustment fallback error:', adjErr);
+
+            const { error: dstRpcErr } = await supabase.rpc('adjust_inventory_atomic', {
+              p_product_id: item.productId,
+              p_warehouse_id: draft.destinationWarehouseId,
+              p_delta: item.quantity,
+              p_recorded_by: profile?.uid || 'system',
+              p_reason: `${fallbackMovNumber} internal transfer received: ${item.name || item.sku}`
+            });
+
+            if (dstRpcErr) {
+              console.warn('adjust_inventory_atomic fallback for destination warehouse:', dstRpcErr);
+              const destInv = inventory.find(i => i.productId === item.productId && i.warehouseId === draft.destinationWarehouseId);
+              if (destInv) {
+                await updateDoc(doc(db, 'inventory', destInv.id), {
+                  quantity: destInv.quantity + item.quantity,
+                  lastUpdated: now
+                });
+              } else {
+                await addDoc(collection(db, 'inventory'), {
+                  productId: item.productId,
+                  warehouseId: draft.destinationWarehouseId,
+                  quantity: item.quantity,
+                  lastUpdated: now
+                });
+              }
             }
           }
         }

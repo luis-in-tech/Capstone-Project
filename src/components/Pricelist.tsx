@@ -4,7 +4,7 @@ import { PricelistBuilder } from './PricelistBuilder';
 import { PriceType, PricelistItem, SavedPricelist, sectionsFor } from '../lib/pricelistSections';
 import { useStaffAccess } from '../hooks/useStaffAccess';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { addDoc, collection, db, deleteDoc, doc, getDocs, onSnapshot, serverTimestamp, setDoc, updateDoc } from '../lib/supabaseAdapter';
+import { addDoc, collection, db, deleteDoc, doc, getDocs, onSnapshot, serverTimestamp, setDoc, updateDoc, writeBatch } from '../lib/supabaseAdapter';
 import { Product, Warehouse } from '../types';
 import { handleSupabaseError, OperationType } from '../lib/supabaseErrorHandler';
 import { Badge } from '@/components/ui/badge';
@@ -82,8 +82,8 @@ async function compressImageForOcr(file: File, maxDimension = 2400, quality = 0.
 }
 
 async function scanPricelistImage(file: File, startingSkuNumber = 1, existingProducts: Product[] = []): Promise<PricelistItem[]> {
-  if (!GEMINI_API_KEY || GEMINI_API_KEY.includes('MY_')) {
-    throw new Error('Missing Gemini API Key in .env. Please update VITE_GEMINI_API_KEY in your .env file.');
+  if (!GEMINI_API_KEY || GEMINI_API_KEY.trim() === '' || GEMINI_API_KEY.includes('MY_')) {
+    throw new Error('AI Pricelist Scanner requires an API key. Please configure VITE_GEMINI_API_KEY in your environment or manually add items.');
   }
 
   const { base64, mimeType } = await compressImageForOcr(file);
@@ -506,14 +506,19 @@ export function Pricelist() {
           syncedProducts.push(newProduct as Product);
           newCount++;
 
-          for (const wh of activeWarehouses) {
+          if (activeWarehouses.length > 0) {
             try {
-              await addDoc(collection(db, 'inventory'), {
-                productId: newId,
-                warehouseId: wh.id,
-                quantity: 0,
-                lastUpdated: serverTimestamp(),
-              });
+              const whBatch = writeBatch(db);
+              for (const wh of activeWarehouses) {
+                const invRef = doc(collection(db, 'inventory'));
+                whBatch.set(invRef, {
+                  productId: newId,
+                  warehouseId: wh.id,
+                  quantity: 0,
+                  lastUpdated: serverTimestamp(),
+                });
+              }
+              await whBatch.commit();
             } catch {
               // ignore inventory initialisation error
             }

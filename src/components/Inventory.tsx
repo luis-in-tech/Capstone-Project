@@ -2,8 +2,9 @@ import { hasAdminRole } from '../lib/staffPermissions';
 import { useStaffAccess } from '../hooks/useStaffAccess';
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
+import { supabase } from '../lib/supabase';
 import { db } from '../lib/supabaseAdapter';
-import { collection, onSnapshot, query, where, addDoc, updateDoc, doc, serverTimestamp, deleteDoc } from '../lib/supabaseAdapter';
+import { collection, onSnapshot, query, where, addDoc, updateDoc, doc, serverTimestamp, deleteDoc, writeBatch } from '../lib/supabaseAdapter';
 import { Product, InventoryItem, Warehouse } from '../types';
 import { handleSupabaseError, OperationType } from '../lib/supabaseErrorHandler';
 import { Button } from '@/components/ui/button';
@@ -495,10 +496,21 @@ export function Inventory() {
     if (!importPreview.length || importPreview.some((row) => row.errors.length)) return;
     setIsImporting(true);
     try {
+      const batch = writeBatch(db);
       for (const row of importPreview) {
-        const productRef = await addDoc(collection(db, 'products'), row.data);
-        for (const warehouse of warehouses) await addDoc(collection(db, 'inventory'), { productId: productRef.id, warehouseId: warehouse.id, quantity: 0, lastUpdated: serverTimestamp() });
+        const productRef = doc(collection(db, 'products'));
+        batch.set(productRef, row.data);
+        for (const warehouse of warehouses) {
+          const invRef = doc(collection(db, 'inventory'));
+          batch.set(invRef, {
+            productId: productRef.id,
+            warehouseId: warehouse.id,
+            quantity: 0,
+            lastUpdated: serverTimestamp()
+          });
+        }
       }
+      await batch.commit();
       toast.success(`${importPreview.length} products added to Inventory`);
       setIsImportOpen(false); setImportPreview([]); setImportFileName('');
     } catch (error) {
@@ -624,31 +636,39 @@ export function Inventory() {
     if (selectedProduct && profile) {
       setIsAdjusting(true);
       try {
-        if (item) {
-          // 1a. Existing row — update the inventory level
-          await updateDoc(doc(db, 'inventory', item.id), {
-            quantity: item.quantity + quantity,
-            lastUpdated: serverTimestamp()
-          });
-        } else {
-          // 1b. No row for this product+warehouse yet — insert one
-          await addDoc(collection(db, 'inventory'), {
+        const { error: rpcErr } = await supabase.rpc('adjust_inventory_atomic', {
+          p_product_id: adjustmentProduct.id,
+          p_warehouse_id: warehouseId,
+          p_delta: quantity,
+          p_recorded_by: profile.uid,
+          p_reason: reason.trim(),
+        });
+
+        if (rpcErr) {
+          console.warn('adjust_inventory_atomic RPC failed on manual adjustment, falling back:', rpcErr);
+          if (item) {
+            await updateDoc(doc(db, 'inventory', item.id), {
+              quantity: item.quantity + quantity,
+              lastUpdated: serverTimestamp()
+            });
+          } else {
+            await addDoc(collection(db, 'inventory'), {
+              productId: adjustmentProduct.id,
+              warehouseId,
+              quantity,
+              lastUpdated: serverTimestamp()
+            });
+          }
+
+          await addDoc(collection(db, 'stockAdjustments'), {
             productId: adjustmentProduct.id,
             warehouseId,
-            quantity,
-            lastUpdated: serverTimestamp()
+            adjustmentAmount: quantity,
+            reason,
+            recordedBy: profile.uid,
+            timestamp: serverTimestamp()
           });
         }
-
-        // 2. Log the adjustment for auditing
-        await addDoc(collection(db, 'stockAdjustments'), {
-          productId: adjustmentProduct.id,
-          warehouseId,
-          adjustmentAmount: quantity,
-          reason,
-          recordedBy: profile.uid,
-          timestamp: serverTimestamp()
-        });
 
         setIsStockUpdateOpen(false);
         toast.success('Inventory balance synchronized and adjustment logged');

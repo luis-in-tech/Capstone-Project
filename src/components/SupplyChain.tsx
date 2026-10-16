@@ -3,7 +3,7 @@ import { useStaffAccess } from '../hooks/useStaffAccess';
 import React, { useState, useEffect } from 'react';
 import { CategoryWorkspace } from './CategoryWorkspace';
 import { SupplyChainWorkspace } from './SupplyChainWorkspace';
-import { db, collection, onSnapshot, addDoc, updateDoc, deleteDoc, doc, serverTimestamp } from '../lib/supabaseAdapter';
+import { db, collection, onSnapshot, addDoc, updateDoc, deleteDoc, doc, serverTimestamp, writeBatch } from '../lib/supabaseAdapter';
 import { Product, InventoryItem, Warehouse } from '../types';
 import { handleSupabaseError, OperationType } from '../lib/supabaseErrorHandler';
 import { Button } from '@/components/ui/button';
@@ -100,10 +100,12 @@ export function SupplyChain() {
 
     setWarehouseActionId(warehouse.id);
     try {
+      const batch = writeBatch(db);
       for (const item of warehouseInventory) {
-        await deleteDoc(doc(db, 'inventory', item.id));
+        batch.delete(doc(db, 'inventory', item.id));
       }
-      await deleteDoc(doc(db, 'warehouses', warehouse.id));
+      batch.delete(doc(db, 'warehouses', warehouse.id));
+      await batch.commit();
       toast.success(`Warehouse "${warehouse.name}" deleted`);
     } catch (err) {
       handleSupabaseError(err, OperationType.DELETE, `warehouses/${warehouse.id}`);
@@ -141,8 +143,13 @@ export function SupplyChain() {
       const collectionName = referenceManager === 'category' ? 'productCategories' : 'suppliers';
       if (record) await updateDoc(doc(db, collectionName, record.id), { name, updatedAt: serverTimestamp() });
       else await addDoc(collection(db, collectionName), { name, createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
-      for (const product of products.filter(item => referenceManager === 'category' ? item.category === oldName : item.supplier === oldName)) {
-        await updateDoc(doc(db, 'products', product.id), { [referenceManager === 'category' ? 'category' : 'supplier']: name, updatedAt: new Date() });
+      const affectedProducts = products.filter(item => referenceManager === 'category' ? item.category === oldName : item.supplier === oldName);
+      if (affectedProducts.length > 0) {
+        const prodBatch = writeBatch(db);
+        for (const product of affectedProducts) {
+          prodBatch.update(doc(db, 'products', product.id), { [referenceManager === 'category' ? 'category' : 'supplier']: name, updatedAt: new Date() });
+        }
+        await prodBatch.commit();
       }
       setEditingReferenceName(null);
       toast.success(`${referenceManager === 'category' ? 'Category' : 'Supplier'} updated`);
@@ -174,11 +181,16 @@ export function SupplyChain() {
       }
 
       // Reassign all affected products to 'Uncategorized' (or 'N/A')
-      for (const product of products.filter(item => type === 'category' ? item.category === name : item.supplier === name)) {
-        await updateDoc(doc(db, 'products', product.id), {
-          [type === 'category' ? 'category' : 'supplier']: type === 'category' ? 'Uncategorized' : 'N/A',
-          updatedAt: new Date()
-        });
+      const affectedProducts = products.filter(item => type === 'category' ? item.category === name : item.supplier === name);
+      if (affectedProducts.length > 0) {
+        const prodBatch = writeBatch(db);
+        for (const product of affectedProducts) {
+          prodBatch.update(doc(db, 'products', product.id), {
+            [type === 'category' ? 'category' : 'supplier']: type === 'category' ? 'Uncategorized' : 'N/A',
+            updatedAt: new Date()
+          });
+        }
+        await prodBatch.commit();
       }
 
       toast.success(

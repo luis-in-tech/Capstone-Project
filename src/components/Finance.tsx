@@ -1,7 +1,7 @@
 import { PageHeading } from './PageHeading';
 import React, { useState, useEffect } from 'react';
 import { db } from '../lib/supabaseAdapter';
-import { collection, onSnapshot, addDoc, query, orderBy, serverTimestamp, updateDoc, doc } from '../lib/supabaseAdapter';
+import { collection, onSnapshot, addDoc, query, orderBy, serverTimestamp, updateDoc, doc, writeBatch } from '../lib/supabaseAdapter';
 import { Expense, Order, ExpenseCategory } from '../types';
 import { handleSupabaseError, OperationType } from '../lib/supabaseErrorHandler';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
@@ -39,7 +39,8 @@ import {
   FileArrowUpIcon as FileUp,
   CheckCircleIcon as CheckCircle2,
   WarningCircleIcon as AlertCircle,
-  FileTextIcon as FileCheck
+  FileTextIcon as FileCheck,
+  ShieldWarningIcon as ShieldAlert
 } from '@phosphor-icons/react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, PieChart, Pie, Cell, LineChart, Line } from 'recharts';
 import { Badge } from '@/components/ui/badge';
@@ -433,47 +434,57 @@ function QuickBooksImportModal({ isOpen, onClose, categories }: QuickBooksImport
       const existingCats = new Set(categories.map(c => c.name.toLowerCase()));
 
       let importedCount = 0;
+      const CHUNK_SIZE = 400;
 
-      for (const row of parsedRows) {
-        if (effective === 'expenses') {
-          // Provision category if not exists
-          if (row.category && !existingCats.has(row.category.toLowerCase())) {
-            try {
-              await addDoc(collection(db, 'expenseCategories'), {
-                name: row.category,
-                description: 'Auto-provisioned from QuickBooks CSV import',
-                isActive: true,
-                createdAt: serverTimestamp(),
-              });
-              existingCats.add(row.category.toLowerCase());
-            } catch (catErr) {
-              console.warn('Could not auto-create category:', catErr);
+      for (let i = 0; i < parsedRows.length; i += CHUNK_SIZE) {
+        const chunk = parsedRows.slice(i, i + CHUNK_SIZE);
+        const batch = writeBatch(db);
+
+        for (const row of chunk) {
+          if (effective === 'expenses') {
+            // Provision category if not exists
+            if (row.category && !existingCats.has(row.category.toLowerCase())) {
+              try {
+                await addDoc(collection(db, 'expenseCategories'), {
+                  name: row.category,
+                  description: 'Auto-provisioned from QuickBooks CSV import',
+                  isActive: true,
+                  createdAt: serverTimestamp(),
+                });
+                existingCats.add(row.category.toLowerCase());
+              } catch (catErr) {
+                console.warn('Could not auto-create category:', catErr);
+              }
             }
-          }
 
-          await addDoc(collection(db, 'expenses'), {
-            category: row.category || 'Cost of Goods Sold',
-            amount: row.amount,
-            description: row.description,
-            date: row.date,
-            recordedBy: 'quickbooks_import',
-          });
-        } else {
-          // Orders / Sales
-          await addDoc(collection(db, 'orders'), {
-            orderNumber: row.orderNumber,
-            clientName: row.clientName,
-            clientId: `cli_qb_${Date.now()}_${importedCount}`,
-            agentId: 'system',
-            status: 'completed',
-            paymentStatus: 'paid',
-            totalAmount: row.amount,
-            deliveryRegion: 'Metro Manila',
-            createdAt: row.date,
-            updatedAt: row.date,
-          });
+            const expRef = doc(collection(db, 'expenses'));
+            batch.set(expRef, {
+              category: row.category || 'Cost of Goods Sold',
+              amount: row.amount,
+              description: row.description,
+              date: row.date,
+              recordedBy: 'quickbooks_import',
+            });
+          } else {
+            // Orders / Sales
+            const ordRef = doc(collection(db, 'orders'));
+            batch.set(ordRef, {
+              orderNumber: row.orderNumber,
+              clientName: row.clientName,
+              clientId: `cli_qb_${Date.now()}_${importedCount}`,
+              agentId: 'system',
+              status: 'completed',
+              paymentStatus: 'paid',
+              totalAmount: row.amount,
+              deliveryRegion: 'Metro Manila',
+              createdAt: row.date,
+              updatedAt: row.date,
+            });
+          }
+          importedCount++;
         }
-        importedCount++;
+
+        await batch.commit();
       }
 
       toast.success(`Successfully imported ${importedCount} QuickBooks ${effective} into Supabase!`);
@@ -743,6 +754,9 @@ export function Finance() {
   }, [orders]);
 
   useEffect(() => {
+    const isAuthorized = profile?.role === 'admin' || profile?.role === 'secretary';
+    if (!isAuthorized) return;
+
     const unsubExpenses = onSnapshot(query(collection(db, 'expenses'), orderBy('date', 'desc')), (snap) => {
       setExpenses(snap.docs.map(d => ({ id: d.id, ...d.data() } as Expense)));
     }, (error) => {
@@ -764,7 +778,7 @@ export function Finance() {
       unsubOrders();
       unsubCategories();
     };
-  }, []);
+  }, [profile?.role]);
 
   const parseDate = (d: any): Date | null => {
     if (!d) return null;
@@ -1649,6 +1663,20 @@ export function Finance() {
     if (valA > valB) return sortDirection === 'asc' ? 1 : -1;
     return 0;
   });
+
+  if (profile && profile.role !== 'admin' && profile.role !== 'secretary') {
+    return (
+      <div className="flex flex-col items-center justify-center p-16 text-center space-y-4">
+        <div className="h-16 w-16 rounded-full bg-destructive/10 flex items-center justify-center text-destructive">
+          <ShieldAlert className="w-8 h-8" />
+        </div>
+        <h2 className="text-2xl font-black uppercase tracking-wider text-destructive">Access Restricted</h2>
+        <p className="text-sm text-muted-foreground max-w-md">
+          Financial statements, expense ledgers, and revenue reporting are restricted to administrative personnel.
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-8">

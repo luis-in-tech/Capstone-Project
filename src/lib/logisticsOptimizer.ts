@@ -347,11 +347,12 @@ export function solveCapacityConstrainedVRP(
     const coord = resolveLocationCoord(city, depot);
     const demand = extractOrderDemand(order);
 
-    if (demand > maxVehicleCapacity) {
+    const safeMaxCapacity = Math.max(1, maxVehicleCapacity);
+    if (demand > safeMaxCapacity) {
       let remaining = demand;
       let part = 1;
-      while (remaining > 0) {
-        const chunk = Math.min(maxVehicleCapacity, remaining);
+      while (remaining > 0 && part <= 100) {
+        const chunk = Math.min(safeMaxCapacity, remaining);
         stops.push({
           order: { ...order, id: `${order.id}-part${part}` },
           city,
@@ -362,7 +363,7 @@ export function solveCapacityConstrainedVRP(
         part++;
       }
     } else {
-      stops.push({ order, city, coord, units: demand });
+      stops.push({ order, city, coord, units: Math.max(0, demand) });
     }
   }
 
@@ -392,8 +393,10 @@ export function solveCapacityConstrainedVRP(
     }];
   }
 
-  // 1. Initial routes: Each stop is in its own individual route [stop]
-  let routes: DeliveryStop[][] = stops.map(s => [s]);
+  // 1. Initial routes: Each stop is indexed with an O(1) route lookup map
+  const stopToRouteId: number[] = stops.map((_, idx) => idx);
+  const routeMap = new Map<number, DeliveryStop[]>();
+  stops.forEach((s, idx) => routeMap.set(idx, [s]));
 
   // 2. Pre-calculate savings matrix S(i, j) = d(0, i) + d(0, j) - d(i, j)
   interface SavingsPair {
@@ -418,29 +421,25 @@ export function solveCapacityConstrainedVRP(
   // 3. Sort pairs in descending order of savings
   savingsList.sort((a, b) => b.savings - a.savings);
 
-  // Helper to find which route contains a given stop index
-  const findRouteIndex = (currentRoutes: DeliveryStop[][], stopTarget: DeliveryStop): number => {
-    return currentRoutes.findIndex(r => r.some(s => s === stopTarget || (s.order?.id && s.order.id === stopTarget.order?.id)));
-  };
-
   // Helper to sum route units
   const getRouteUnits = (route: DeliveryStop[]): number => {
     return route.reduce((sum, s) => sum + s.units, 0);
   };
 
-  // 4. Merge routes based on Clarke-Wright savings
+  // 4. Merge routes based on Clarke-Wright savings with O(1) route lookups
   for (const { i, j } of savingsList) {
+    const routeIdI = stopToRouteId[i];
+    const routeIdJ = stopToRouteId[j];
+
+    // Cannot merge if already in the same route or already consolidated
+    if (routeIdI === routeIdJ) continue;
+
+    const routeI = routeMap.get(routeIdI);
+    const routeJ = routeMap.get(routeIdJ);
+    if (!routeI || !routeJ) continue;
+
     const stopI = stops[i];
     const stopJ = stops[j];
-
-    const routeIdxI = findRouteIndex(routes, stopI);
-    const routeIdxJ = findRouteIndex(routes, stopJ);
-
-    // Cannot merge if already in the same route
-    if (routeIdxI === -1 || routeIdxJ === -1 || routeIdxI === routeIdxJ) continue;
-
-    const routeI = routes[routeIdxI];
-    const routeJ = routes[routeIdxJ];
 
     // Capacity constraint check
     const combinedUnits = getRouteUnits(routeI) + getRouteUnits(routeJ);
@@ -458,24 +457,27 @@ export function solveCapacityConstrainedVRP(
       let merged: DeliveryStop[];
 
       if (isTailI && isHeadJ) {
-        // [ ...I ] + [ J... ]
         merged = [...routeI, ...routeJ];
       } else if (isTailI && isTailJ) {
-        // [ ...I ] + reverse([ ...J ])
         merged = [...routeI, ...routeJ.slice().reverse()];
       } else if (isHeadI && isHeadJ) {
-        // reverse([ I... ]) + [ J... ]
         merged = [...routeI.slice().reverse(), ...routeJ];
       } else {
-        // isHeadI && isTailJ -> [ ...J ] + [ I... ]
         merged = [...routeJ, ...routeI];
       }
 
-      // Replace routeI and remove routeJ
-      routes[routeIdxI] = merged;
-      routes.splice(routeIdxJ, 1);
+      // Update map and reassign stop indices
+      routeMap.set(routeIdI, merged);
+      routeMap.delete(routeIdJ);
+
+      for (const s of routeJ) {
+        const stopIdx = stops.findIndex(st => st.order.id === s.order.id);
+        if (stopIdx !== -1) stopToRouteId[stopIdx] = routeIdI;
+      }
     }
   }
+
+  const routes = Array.from(routeMap.values());
 
   // 5. Post-process each route with 2-Opt local search, select best vehicle & compute savings
   const results: OptimizedRoute[] = routes.map((rawStops, idx) => {

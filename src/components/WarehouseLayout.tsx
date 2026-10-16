@@ -55,13 +55,13 @@ export function WarehouseLayout({ warehouses, products, inventory }: { warehouse
           { table: 'warehouse_zones', error: z.error },
           { table: 'warehouse_zone_allocations', error: a.error },
         ].filter(result => result.error);
-        if (failures.length && failures.every(({ error }) => ['PGRST205', '42P01'].includes(error.code))) {
+        if (failures.length && failures.every(({ error }) => ['PGRST205', '42P01', '42703'].includes(error.code))) {
           const saved = readLocalLayout(localStorage, storageKey, id);
           setZones(saved.zones); setAllocations(validLocalAllocations(saved, inventory, id)); setTemporary(true);
           setSelected(previous => previous && previous !== 'unassigned' && !saved.zones.some(zone => zone.id === previous) ? 'unassigned' : previous);
         } else if (failures.length) {
           setError(failures.map(({ table, error }) => {
-            const guidance = ['PGRST205', '42P01'].includes(error.code)
+            const guidance = ['PGRST205', '42P01', '42703'].includes(error.code)
               ? 'The zone table is missing from this app’s connected database or its API schema cache.'
               : error.code === '42501' ? 'The database denied access to zone data.'
               : ['PGRST301', 'PGRST303'].includes(error.code) ? 'Your sign-in session could not be verified. Sign out and sign in again.'

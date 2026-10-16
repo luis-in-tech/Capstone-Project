@@ -32,7 +32,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, Dialog
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { toast } from 'sonner';
-import { collection, db, onSnapshot, query, orderBy, limit } from '../lib/supabaseAdapter';
+import { collection, db, onSnapshot, query, orderBy, limit, getDocs } from '../lib/supabaseAdapter';
 import { Order, Transfer } from '../types';
 
 interface DispatchTrip {
@@ -109,22 +109,63 @@ export function Settings() {
     toast.success(`Fulfillment Strategy updated to ${val}`);
   };
 
-  const handleDatabaseBackup = () => {
-    toast.info('Generating full database CSV backup...');
-    setTimeout(() => {
+  const handleDatabaseBackup = async () => {
+    toast.info('Generating live database CSV backup...');
+    try {
+      const [prodSnap, ordSnap, expSnap, trfSnap] = await Promise.all([
+        getDocs(collection(db, 'products')),
+        getDocs(collection(db, 'orders')),
+        getDocs(collection(db, 'expenses')),
+        getDocs(collection(db, 'transfers')),
+      ]);
+
       const dateStr = new Date().toISOString().split('T')[0];
-      const files = ['products_cmdb_backup', 'orders_ledger_backup', 'financial_expenses_backup', 'audit_trail_backup'];
-      
-      files.forEach(file => {
+      const collectionsToExport = [
+        { name: 'products_cmdb_backup', docs: prodSnap.docs },
+        { name: 'orders_ledger_backup', docs: ordSnap.docs },
+        { name: 'financial_expenses_backup', docs: expSnap.docs },
+        { name: 'transfers_backup', docs: trfSnap.docs },
+      ];
+
+      collectionsToExport.forEach(({ name, docs }) => {
+        if (!docs.length) return;
+        const allKeys = Array.from(
+          new Set(docs.flatMap(d => Object.keys(d.data())))
+        );
+        const headers = ['id', ...allKeys];
+        const csvRows = [
+          headers.join(','),
+          ...docs.map(d => {
+            const data = d.data();
+            return [
+              JSON.stringify(d.id),
+              ...allKeys.map(k => {
+                const val = data[k];
+                if (val === undefined || val === null) return '""';
+                if (typeof val === 'object') {
+                  if (typeof (val as any).toDate === 'function') return JSON.stringify((val as any).toDate().toISOString());
+                  return JSON.stringify(JSON.stringify(val));
+                }
+                return JSON.stringify(String(val));
+              })
+            ].join(',');
+          })
+        ];
+        const blob = new Blob([csvRows.join('\n')], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
         const link = document.createElement('a');
-        link.href = 'data:text/csv;charset=utf-8,ID,Data\\n1,Sample'; // Mock CSV content for backup
-        link.download = `${file}_${dateStr}.csv`;
+        link.href = url;
+        link.download = `${name}_${dateStr}.csv`;
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
+        URL.revokeObjectURL(url);
       });
-      toast.success('Database backup completed successfully.');
-    }, 1000);
+      toast.success('Live database backup completed successfully.');
+    } catch (err) {
+      console.error('Database backup export failed:', err);
+      toast.error('Failed to generate live database backup.');
+    }
   };
 
   // Raw data collections from Supabase

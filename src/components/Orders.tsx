@@ -123,10 +123,15 @@ export function Orders() {
   const saveOrderOverride = (orderId: string, updates: Partial<Order>) => {
     try {
       const current = getOrderOverrides();
-      current[orderId] = { ...(current[orderId] || {}), ...updates };
+      const sanitizedUpdates = { ...updates };
+      // Prevent exhausting browser 5MB localStorage quota with raw Base64 data URLs
+      if (typeof sanitizedUpdates.photoValidationUrl === 'string' && sanitizedUpdates.photoValidationUrl.startsWith('data:image')) {
+        delete sanitizedUpdates.photoValidationUrl;
+      }
+      current[orderId] = { ...(current[orderId] || {}), ...sanitizedUpdates };
       localStorage.setItem('activepro_order_overrides', JSON.stringify(current));
     } catch (e) {
-      console.warn('Failed to save order override:', e);
+      console.warn('Failed to save order override to localStorage:', e);
     }
   };
 
@@ -192,7 +197,6 @@ export function Orders() {
       statusHistory.push({ status: order.status, changedBy: profile?.uid || '', timestamp: new Date().toISOString() });
     }
     statusHistory.push({ status: newStatus, changedBy: profile?.uid || '', timestamp: new Date().toISOString() });
-    saveOrderOverride(order.id, { status: newStatus, statusHistory });
     try {
       let updatedData: any = null;
       const { data, error } = await supabase.rpc('transition_order_entry', { p_order_id: order.id, p_status: newStatus });
@@ -204,18 +208,16 @@ export function Orders() {
       } else {
         updatedData = data || { ...order, status: newStatus, statusHistory };
       }
+      saveOrderOverride(order.id, { status: newStatus, statusHistory });
       setOrders(current => current.map(item => item.id === order.id ? updatedData : item));
       setSelectedOrder(current => current?.id === order.id ? updatedData : current);
       toast.success(`Order ${order.orderNumber}: ${newStatus.replaceAll('_', ' ')}`, {
         description: ['cancelled', 'escalated'].includes(newStatus) ? 'Status and inventory restoration saved successfully.' : undefined,
       });
     } catch (error: any) {
-      console.warn('Order update error caught, applying local state fallback:', error);
-      const fallbackOrder = { ...order, status: newStatus, statusHistory };
-      setOrders(current => current.map(item => item.id === order.id ? fallbackOrder : item));
-      setSelectedOrder(current => current?.id === order.id ? fallbackOrder : current);
-      toast.success(`Order ${order.orderNumber}: ${newStatus.replaceAll('_', ' ')}`, {
-        description: ['cancelled', 'escalated'].includes(newStatus) ? 'Status updated successfully.' : undefined,
+      console.error('Order update error caught:', error);
+      toast.error(`Failed to update order ${order.orderNumber}`, {
+        description: error?.message || 'Database rejected the status transition.',
       });
     } finally { statusLock.current = false; }
   };
@@ -242,8 +244,6 @@ export function Orders() {
       timestamp: now,
       note: `Reverted to ${target.replaceAll('_', ' ')}`,
     });
-
-    saveOrderOverride(order.id, { status: target, statusHistory });
 
     try {
       let updatedData: any = null;
@@ -272,12 +272,10 @@ export function Orders() {
       setSelectedOrder(current => current?.id === order.id ? finalOrder : current);
       toast.success(`Order reverted to ${target.replaceAll('_', ' ')}`);
     } catch (error: any) {
-      console.warn('Revert order error caught, applying local state fallback:', error);
-      const fallbackOrder = { ...order, status: target, statusHistory };
-      saveOrderOverride(order.id, { status: target, statusHistory });
-      setOrders(current => current.map(item => item.id === order.id ? fallbackOrder : item));
-      setSelectedOrder(current => current?.id === order.id ? fallbackOrder : current);
-      toast.success(`Order reverted to ${target.replaceAll('_', ' ')}`);
+      console.error('Revert order error caught:', error);
+      toast.error(`Failed to revert order ${order.orderNumber}`, {
+        description: error?.message || 'Database rejected the status reversion.',
+      });
     } finally {
       statusLock.current = false;
       setIsReverting(false);
@@ -368,19 +366,11 @@ export function Orders() {
       setDispatchOrder(null);
       setPhotoFile(null);
       setPhotoPreview(null);
-      toast.success('Inventory dispatched for delivery');
-    } catch (err) {
-      console.warn('Order dispatch error caught, applying local state fallback:', err);
-      const fallbackUrl = photoPreview || '';
-      const fallbackOrder = { ...dispatchOrder, status: 'out_for_delivery' as OrderStatus, photoValidationUrl: fallbackUrl };
-      saveOrderOverride(dispatchOrder.id, { status: 'out_for_delivery', photoValidationUrl: fallbackUrl });
-      setOrders(current => current.map(item => item.id === dispatchOrder.id ? fallbackOrder : item));
-      setSelectedOrder(current => current?.id === dispatchOrder.id ? fallbackOrder : current);
-      setIsDispatchDialogOpen(false);
-      setDispatchOrder(null);
-      setPhotoFile(null);
-      setPhotoPreview(null);
-      toast.success('Inventory dispatched for delivery');
+    } catch (err: any) {
+      console.error('Order dispatch error caught:', err);
+      toast.error(`Dispatch Failed for ${dispatchOrder.orderNumber}`, {
+        description: err?.message || 'Database rejected order dispatch or photo upload failed. Physical stock was not deducted.',
+      });
     } finally {
       setIsUploading(false);
       statusLock.current = false;

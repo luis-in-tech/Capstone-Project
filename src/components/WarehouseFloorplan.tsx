@@ -45,7 +45,7 @@ export function WarehouseFloorplan({ warehouseId, storageKey, zones, canEdit, co
         const result = await supabase.from('warehouse_floorplans').select('layout').eq('warehouseId', warehouseId).maybeSingle();
         if (!active) return;
         let value: unknown = result.data?.layout || initial;
-        const fallback = !!result.error && ['PGRST205', '42P01'].includes(result.error.code);
+        const fallback = !!result.error && ['PGRST205', '42P01', '42703'].includes(result.error.code);
         if (result.error && !fallback) throw result.error;
         if (fallback) value = JSON.parse(localStorage.getItem(`${storageKey}:floorplan`) || 'null') || initial;
         if (!validPlan(value)) throw new Error('The saved floorplan is unreadable. It has not been overwritten.');
@@ -66,7 +66,14 @@ export function WarehouseFloorplan({ warehouseId, storageKey, zones, canEdit, co
       if (local) localStorage.setItem(`${storageKey}:floorplan`, JSON.stringify(next));
       else {
         const result = await supabase.from('warehouse_floorplans').upsert({ warehouseId, layout: next }, { onConflict: 'warehouseId' });
-        if (result.error) throw result.error;
+        if (result.error) {
+          if (['PGRST205', '42P01', '42703'].includes(result.error.code)) {
+            localStorage.setItem(`${storageKey}:floorplan`, JSON.stringify(next));
+            setLocal(true);
+          } else {
+            throw result.error;
+          }
+        }
       }
       saved.current = next; setPlan(next); setEditing(false); setChosen(''); toast.success('Layout saved');
     } catch (e) { toast.error((e as Error).message || 'Unable to save layout'); }

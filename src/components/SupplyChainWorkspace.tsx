@@ -9,7 +9,7 @@ import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { db, collection, onSnapshot, addDoc, updateDoc, doc, serverTimestamp } from '../lib/supabaseAdapter';
+import { db, collection, onSnapshot, addDoc, updateDoc, doc, serverTimestamp, writeBatch } from '../lib/supabaseAdapter';
 import type { InventoryItem, Order, OrderItem, Product, Transfer, Warehouse } from '../types';
 import type { InventoryMovementRecord } from '../lib/inventoryMovement';
 import { dateValue, isOverdue, orderBalance, supportsAction, type ChainTransaction, type SupplyView } from '../lib/supplyChain';
@@ -247,7 +247,14 @@ export function SupplyChainWorkspace({ sourceLoading, sourceError, onRetrySource
         if (id) await updateDoc(doc(db, 'warehouses', id), payload);
         else {
           const saved = await addDoc(collection(db, 'warehouses'), payload); id = saved.id;
-          for (const product of products) await addDoc(collection(db, 'inventory'), { productId: product.id, warehouseId: id, quantity: 0, lastUpdated: serverTimestamp() });
+          if (products.length > 0) {
+            const batch = writeBatch(db);
+            for (const product of products) {
+              const invRef = doc(collection(db, 'inventory'));
+              batch.set(invRef, { productId: product.id, warehouseId: id, quantity: 0, lastUpdated: serverTimestamp() });
+            }
+            await batch.commit();
+          }
         }
       } else {
         if (id) {
@@ -269,9 +276,14 @@ export function SupplyChainWorkspace({ sourceLoading, sourceError, onRetrySource
 
   const handleCommitPreviews = async () => {
     try {
-      for (const preview of previews) {
-        if (preview.type === 'Refund' || preview.type === 'Purchase Refund' || preview.type === 'Payment' || preview.type === 'Bill Payment') {
-          await addDoc(collection(db, 'expenses'), {
+      const eligible = previews.filter(
+        p => p.type === 'Refund' || p.type === 'Purchase Refund' || p.type === 'Payment' || p.type === 'Bill Payment'
+      );
+      if (eligible.length > 0) {
+        const batch = writeBatch(db);
+        for (const preview of eligible) {
+          const expRef = doc(collection(db, 'expenses'));
+          batch.set(expRef, {
             amount: preview.amount,
             category: preview.type.includes('Refund') ? 'Refund / Return' : 'Supply Chain Ledger',
             date: preview.date,
@@ -279,6 +291,7 @@ export function SupplyChainWorkspace({ sourceLoading, sourceError, onRetrySource
             type: preview.type.includes('Payment') ? 'income' : 'expense'
           });
         }
+        await batch.commit();
       }
       setPreviews([]);
       setSelectedId('');

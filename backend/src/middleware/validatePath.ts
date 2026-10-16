@@ -44,9 +44,19 @@ function buildForbiddenResponse(detail: string): ApiError {
   };
 }
 
+function isSensitivePath(targetPath: string): boolean {
+  const base = path.basename(targetPath).toLowerCase();
+  if (base === '.env' || base.startsWith('.env.') || base === '.git') {
+    return true;
+  }
+  const parts = targetPath.split(path.sep).map(p => p.toLowerCase());
+  return parts.includes('.git') || parts.includes('node_modules');
+}
+
 function validateSinglePath(rawPath: string): string | null {
   if (!rawPath || typeof rawPath !== 'string') return null;
   const absolute = path.resolve(FRONTEND_ROOT, rawPath);
+  if (isSensitivePath(absolute)) return null;
   return isPathSafe(absolute) ? absolute : null;
 }
 

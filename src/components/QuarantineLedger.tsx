@@ -21,6 +21,7 @@ import {
   exportDefectiveProductsReportCSV,
 } from '../lib/itilService';
 import { db, doc, updateDoc, serverTimestamp } from '../lib/supabaseAdapter';
+import { supabase } from '../lib/supabase';
 import { toast } from 'sonner';
 
 interface QuarantineLedgerProps {
@@ -64,15 +65,26 @@ export function QuarantineLedger({
           (i) => i.productId === ticket.productId && i.warehouseId === ticket.warehouseId
         );
         if (item) {
-          const newQty = item.quantity + ticket.quantity;
-          const newQuarantine = Math.max(0, (item.quarantineQuantity || 0) - ticket.quantity);
-          try {
+          const { error: rpcErr } = await supabase.rpc('adjust_inventory_atomic', {
+            p_product_id: ticket.productId,
+            p_warehouse_id: ticket.warehouseId,
+            p_delta: ticket.quantity,
+            p_recorded_by: profile?.uid || 'system',
+            p_reason: `Supplier replacement restock for ticket ${ticket.ticketNumber}`
+          });
+          if (rpcErr) {
+            console.warn('adjust_inventory_atomic fallback in replacement:', rpcErr);
+            const newQty = item.quantity + ticket.quantity;
             await updateDoc(doc(db, 'inventory', item.id), {
               quantity: newQty,
-              quarantineQuantity: newQuarantine,
               lastUpdated: serverTimestamp(),
             });
-          } catch {}
+          }
+          const newQuarantine = Math.max(0, (item.quarantineQuantity || 0) - ticket.quantity);
+          await updateDoc(doc(db, 'inventory', item.id), {
+            quarantineQuantity: newQuarantine,
+            lastUpdated: serverTimestamp(),
+          });
         }
         toast.success(`Replacement confirmed: ${ticket.quantity} units restocked to available inventory.`);
       } else if (newStatus === 'WRITTEN_OFF') {
@@ -81,12 +93,10 @@ export function QuarantineLedger({
         );
         if (item) {
           const newQuarantine = Math.max(0, (item.quarantineQuantity || 0) - ticket.quantity);
-          try {
-            await updateDoc(doc(db, 'inventory', item.id), {
-              quarantineQuantity: newQuarantine,
-              lastUpdated: serverTimestamp(),
-            });
-          } catch {}
+          await updateDoc(doc(db, 'inventory', item.id), {
+            quarantineQuantity: newQuarantine,
+            lastUpdated: serverTimestamp(),
+          });
         }
         toast.success(`Asset written off: removed from quarantine.`);
       } else {

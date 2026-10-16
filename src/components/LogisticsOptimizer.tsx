@@ -26,6 +26,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
+import { supabase } from '../lib/supabase';
 import { db, collection, onSnapshot, query, orderBy, addDoc, updateDoc, doc, serverTimestamp } from '../lib/supabaseAdapter';
 import { Order, InventoryItem, Warehouse, Product } from '../types';
 import { useAuth } from '../hooks/useAuth';
@@ -422,6 +423,7 @@ export function LogisticsOptimizer() {
       });
 
       // 2. Persist each stop as a trip_order row and transition associated orders to 'out_for_delivery'
+      const failedTransitions: string[] = [];
       if (route?.stops?.length) {
         for (let i = 0; i < route.stops.length; i++) {
           const stop = route.stops[i];
@@ -439,12 +441,18 @@ export function LogisticsOptimizer() {
 
           if (isRealOrder) {
             try {
-              await updateDoc(doc(db, 'orders', stop.order.id), {
-                status: 'out_for_delivery',
-                updatedAt: serverTimestamp(),
+              const { error: transitionErr } = await supabase.rpc('transition_order_entry', {
+                p_order_id: stop.order.id,
+                p_status: 'out_for_delivery',
+                p_photo_url: null,
               });
-            } catch (ordErr) {
-              console.warn('Could not update order status to out_for_delivery:', ordErr);
+              if (transitionErr) {
+                console.warn('transition_order_entry RPC error in consolidated dispatch:', transitionErr);
+                failedTransitions.push(`${stop.order.orderNumber} (${transitionErr.message || 'stock error'})`);
+              }
+            } catch (ordErr: any) {
+              console.warn('Could not transition order to out_for_delivery:', ordErr);
+              failedTransitions.push(`${stop.order.orderNumber} (${ordErr?.message || 'error'})`);
             }
           }
         }
@@ -462,10 +470,17 @@ export function LogisticsOptimizer() {
         return next;
       });
 
-      toast.success(`Dispatched ${truckName}!`, {
-        description: `Dispatched with ${orderCount} customer deliveries. Route is in transit and tracked in database.`,
-        icon: <Truck className="w-5 h-5 text-emerald-500" />
-      });
+      if (failedTransitions.length > 0) {
+        toast.warning(`Dispatched ${truckName} with warnings`, {
+          description: `Dispatched ${orderCount} deliveries, but stock deduction failed for: ${failedTransitions.join(', ')}. Please verify facility inventory.`,
+          icon: <AlertCircle className="w-5 h-5 text-amber-500" />
+        });
+      } else {
+        toast.success(`Dispatched ${truckName}!`, {
+          description: `Dispatched with ${orderCount} customer deliveries. Route is in transit and tracked in database.`,
+          icon: <Truck className="w-5 h-5 text-emerald-500" />
+        });
+      }
     } catch (err: any) {
       console.error('Dispatch recording error:', err);
       toast.error('Dispatch Failed', {
@@ -574,31 +589,28 @@ export function LogisticsOptimizer() {
     }
 
     try {
-      // 1. Locate source and destination inventory records in dbInventory
-      const sourceInv = dbInventory.find(i => i.productId === imbalance.productId && i.warehouseId === imbalance.surplusWarehouse.id);
-      const destInv = dbInventory.find(i => i.productId === imbalance.productId && i.warehouseId === imbalance.depletedWarehouse.id);
-
-      // 2. Deduct transferred stock from surplus warehouse in inventory table
-      if (sourceInv) {
-        await updateDoc(doc(db, 'inventory', sourceInv.id), {
-          quantity: Math.max(0, sourceInv.quantity - qty),
-          lastUpdated: serverTimestamp()
-        });
+      // 1. Deduct transferred stock from surplus warehouse atomically
+      const { error: srcErr } = await supabase.rpc('adjust_inventory_atomic', {
+        p_product_id: imbalance.productId,
+        p_warehouse_id: imbalance.surplusWarehouse.id,
+        p_delta: -qty,
+        p_recorded_by: profile?.uid || 'system',
+        p_reason: `Rebalance transfer out to ${imbalance.depletedWarehouse.name}`
+      });
+      if (srcErr) {
+        throw new Error(`Surplus warehouse deduction failed: ${srcErr.message}`);
       }
 
-      // 3. Add transferred stock to depleted warehouse in inventory table
-      if (destInv) {
-        await updateDoc(doc(db, 'inventory', destInv.id), {
-          quantity: destInv.quantity + qty,
-          lastUpdated: serverTimestamp()
-        });
-      } else {
-        await addDoc(collection(db, 'inventory'), {
-          productId: imbalance.productId,
-          warehouseId: imbalance.depletedWarehouse.id,
-          quantity: qty,
-          lastUpdated: serverTimestamp()
-        });
+      // 2. Increment transferred stock at depleted warehouse atomically
+      const { error: dstErr } = await supabase.rpc('adjust_inventory_atomic', {
+        p_product_id: imbalance.productId,
+        p_warehouse_id: imbalance.depletedWarehouse.id,
+        p_delta: qty,
+        p_recorded_by: profile?.uid || 'system',
+        p_reason: `Rebalance transfer in from ${imbalance.surplusWarehouse.name}`
+      });
+      if (dstErr) {
+        throw new Error(`Depleted warehouse restock failed: ${dstErr.message}`);
       }
 
       // 4. Record the completed transfer in the transfers collection

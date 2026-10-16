@@ -3,8 +3,9 @@ import { hasAdminRole } from '../lib/staffPermissions';
 import React, { useState, useEffect } from 'react';
 import { useStaffAccess } from '../hooks/useStaffAccess';
 import { permitsMovement } from '../lib/staffPermissions';
+import { supabase } from '../lib/supabase';
 import { db } from '../lib/supabaseAdapter';
-import { collection, onSnapshot, addDoc, updateDoc, doc, query, orderBy, serverTimestamp } from '../lib/supabaseAdapter';
+import { collection, onSnapshot, addDoc, updateDoc, doc, query, orderBy, serverTimestamp, writeBatch } from '../lib/supabaseAdapter';
 import { Transfer, Product, Warehouse, InventoryItem, TransferStatus } from '../types';
 import { handleSupabaseError, OperationType } from '../lib/supabaseErrorHandler';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
@@ -114,9 +115,13 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
     }
 
     try {
+      const manifestId = `TRF-MNF-${Date.now()}`;
+      const batch = writeBatch(db);
+
       for (const item of validItems) {
         const prodId = products.find(p => p.name === item.productName)?.id || item.productName;
         const qty = Number(item.quantity);
+        const transferRef = doc(collection(db, 'transfers'));
         const newTransfer: Omit<Transfer, 'id'> = {
           sourceWarehouseId: sourceWh,
           destinationWarehouseId: destWh,
@@ -124,13 +129,16 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
           quantity: qty,
           status: 'pending',
           initiatedBy: profile?.uid || 'Unknown',
+          manifestId,
           createdAt: serverTimestamp()
         };
-        await addDoc(collection(db, 'transfers'), newTransfer);
+        batch.set(transferRef, newTransfer);
       }
+
+      await batch.commit();
       setIsAddTransferOpen(false);
       setTransferItems([{ id: Date.now(), productName: '', quantity: 1 }]);
-      toast.success('Warehouse transport requests initiated');
+      toast.success(`Warehouse transport requests initiated (Manifest: ${manifestId})`);
     } catch (err) {
       handleSupabaseError(err, OperationType.CREATE, 'transfers');
     }
@@ -153,50 +161,50 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
         return;
       }
 
-      // 1. Immediately deduct from source warehouse (Eliminates Ghost Inventory!)
-      await updateDoc(doc(db, 'inventory', sourceInv.id), {
-        quantity: sourceInv.quantity - dispatchingTransfer.quantity,
-        lastUpdated: serverTimestamp()
+      // 1. Atomic inventory deduction (Eliminates Ghost Inventory and Lost Updates)
+      const { error: rpcErr } = await supabase.rpc('adjust_inventory_atomic', {
+        p_product_id: dispatchingTransfer.productId,
+        p_warehouse_id: dispatchingTransfer.sourceWarehouseId,
+        p_delta: -dispatchingTransfer.quantity,
+        p_recorded_by: profile?.uid || 'system',
+        p_reason: `Transport TFR-${dispatchingTransfer.id.slice(-6)} dispatched (in_transit)`
       });
 
-      // 2. Audit log
-      try {
-        await addDoc(collection(db, 'stockAdjustments'), {
-          productId: dispatchingTransfer.productId,
-          warehouseId: dispatchingTransfer.sourceWarehouseId,
-          adjustmentAmount: -dispatchingTransfer.quantity,
-          reason: `Transport TFR-${dispatchingTransfer.id.slice(-6)} dispatched (in_transit)`,
-          recordedBy: profile?.uid || 'system',
-          timestamp: serverTimestamp()
+      if (rpcErr) {
+        console.warn('Atomic adjust RPC unavailable, using fallback adjustment:', rpcErr);
+        await updateDoc(doc(db, 'inventory', sourceInv.id), {
+          quantity: sourceInv.quantity - dispatchingTransfer.quantity,
+          lastUpdated: serverTimestamp()
         });
-      } catch (logErr) {
-        console.warn('Stock adjustment audit log write failed:', logErr);
+        try {
+          await addDoc(collection(db, 'stockAdjustments'), {
+            productId: dispatchingTransfer.productId,
+            warehouseId: dispatchingTransfer.sourceWarehouseId,
+            adjustmentAmount: -dispatchingTransfer.quantity,
+            reason: `Transport TFR-${dispatchingTransfer.id.slice(-6)} dispatched (in_transit)`,
+            recordedBy: profile?.uid || 'system',
+            timestamp: serverTimestamp()
+          });
+        } catch (logErr) {
+          console.warn('Stock adjustment audit log write failed:', logErr);
+        }
       }
 
-      // 3. Update transfer status (with graceful schema fallback if columns are unmigrated in Supabase)
+      // 2. Update transfer status
       try {
-        try {
-          await updateDoc(doc(db, 'transfers', dispatchingTransfer.id), {
-            status: 'in_transit',
-            driverName: driverName.trim() || undefined,
-            vehiclePlate: vehiclePlate.trim().toUpperCase() || undefined,
-            dispatchedAt: serverTimestamp(),
-            dispatchedBy: profile?.uid,
-            updatedAt: serverTimestamp()
-          });
-        } catch (colErr: any) {
-          console.warn('Supabase transfers schema missing columns (PGRST204). Falling back to core status update:', colErr);
-          await updateDoc(doc(db, 'transfers', dispatchingTransfer.id), {
-            status: 'in_transit'
-          });
-        }
-      } catch (transferErr) {
-        // Rollback stock deduction on catastrophic transfer update failure
-        await updateDoc(doc(db, 'inventory', sourceInv.id), {
-          quantity: sourceInv.quantity,
-          lastUpdated: serverTimestamp()
-        }).catch(rbErr => console.error('Failed to rollback inventory quantity:', rbErr));
-        throw transferErr;
+        await updateDoc(doc(db, 'transfers', dispatchingTransfer.id), {
+          status: 'in_transit',
+          driverName: driverName.trim() || undefined,
+          vehiclePlate: vehiclePlate.trim().toUpperCase() || undefined,
+          dispatchedAt: serverTimestamp(),
+          dispatchedBy: profile?.uid,
+          updatedAt: serverTimestamp()
+        });
+      } catch (colErr: any) {
+        console.warn('Supabase transfers schema missing columns, updating core status:', colErr);
+        await updateDoc(doc(db, 'transfers', dispatchingTransfer.id), {
+          status: 'in_transit'
+        });
       }
 
       toast.success(`Transport dispatched! ${dispatchingTransfer.quantity} unit(s) deducted from origin facility.`);
@@ -215,39 +223,47 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
   const handleConfirmArrival = async (transfer: Transfer) => {
     setIsProcessing(true);
     try {
-      const destInv = inventory.find(
-        i => i.productId === transfer.productId && i.warehouseId === transfer.destinationWarehouseId
-      );
+      const { error: rpcErr } = await supabase.rpc('adjust_inventory_atomic', {
+        p_product_id: transfer.productId,
+        p_warehouse_id: transfer.destinationWarehouseId,
+        p_delta: transfer.quantity,
+        p_recorded_by: profile?.uid || 'system',
+        p_reason: `Transport TFR-${transfer.id.slice(-6)} received at destination facility`
+      });
 
-      if (destInv) {
-        await updateDoc(doc(db, 'inventory', destInv.id), {
-          quantity: destInv.quantity + transfer.quantity,
-          lastUpdated: serverTimestamp()
-        });
-      } else {
-        await addDoc(collection(db, 'inventory'), {
-          productId: transfer.productId,
-          warehouseId: transfer.destinationWarehouseId,
-          quantity: transfer.quantity,
-          lastUpdated: serverTimestamp()
-        });
+      if (rpcErr) {
+        console.warn('Atomic adjust RPC unavailable on arrival, using fallback:', rpcErr);
+        const destInv = inventory.find(
+          i => i.productId === transfer.productId && i.warehouseId === transfer.destinationWarehouseId
+        );
+        if (destInv) {
+          await updateDoc(doc(db, 'inventory', destInv.id), {
+            quantity: destInv.quantity + transfer.quantity,
+            lastUpdated: serverTimestamp()
+          });
+        } else {
+          await addDoc(collection(db, 'inventory'), {
+            productId: transfer.productId,
+            warehouseId: transfer.destinationWarehouseId,
+            quantity: transfer.quantity,
+            lastUpdated: serverTimestamp()
+          });
+        }
+        try {
+          await addDoc(collection(db, 'stockAdjustments'), {
+            productId: transfer.productId,
+            warehouseId: transfer.destinationWarehouseId,
+            adjustmentAmount: transfer.quantity,
+            reason: `Transport TFR-${transfer.id.slice(-6)} received at destination facility`,
+            recordedBy: profile?.uid || 'system',
+            timestamp: serverTimestamp()
+          });
+        } catch (logErr) {
+          console.warn('Stock adjustment audit log write failed:', logErr);
+        }
       }
 
-      // Audit log
-      try {
-        await addDoc(collection(db, 'stockAdjustments'), {
-          productId: transfer.productId,
-          warehouseId: transfer.destinationWarehouseId,
-          adjustmentAmount: transfer.quantity,
-          reason: `Transport TFR-${transfer.id.slice(-6)} received at destination facility`,
-          recordedBy: profile?.uid || 'system',
-          timestamp: serverTimestamp()
-        });
-      } catch (logErr) {
-        console.warn('Stock adjustment audit log write failed:', logErr);
-      }
-
-      // Update transfer status (with graceful schema fallback if columns are unmigrated in Supabase)
+      // Update transfer status
       try {
         await updateDoc(doc(db, 'transfers', transfer.id), {
           status: 'received',
@@ -256,7 +272,7 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
           updatedAt: serverTimestamp()
         });
       } catch (colErr: any) {
-        console.warn('Supabase transfers schema missing columns (PGRST204). Falling back to core status update:', colErr);
+        console.warn('Supabase transfers schema missing columns, updating status:', colErr);
         await updateDoc(doc(db, 'transfers', transfer.id), {
           status: 'received'
         });
@@ -278,53 +294,38 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
     setIsProcessing(true);
 
     try {
-      // If transfer was in_transit, stock was already deducted upon dispatch! We MUST restore it to source warehouse.
+      // If transfer was in_transit, stock was already deducted upon dispatch! Restore to source warehouse.
       if (cancellingTransfer.status === 'in_transit') {
-        const sourceInv = inventory.find(
-          i => i.productId === cancellingTransfer.productId && i.warehouseId === cancellingTransfer.sourceWarehouseId
-        );
-
-        if (sourceInv) {
-          await updateDoc(doc(db, 'inventory', sourceInv.id), {
-            quantity: sourceInv.quantity + cancellingTransfer.quantity,
-            lastUpdated: serverTimestamp()
-          });
-        } else {
-          await addDoc(collection(db, 'inventory'), {
-            productId: cancellingTransfer.productId,
-            warehouseId: cancellingTransfer.sourceWarehouseId,
-            quantity: cancellingTransfer.quantity,
-            lastUpdated: serverTimestamp()
-          });
-        }
-
-        try {
-          await addDoc(collection(db, 'stockAdjustments'), {
-            productId: cancellingTransfer.productId,
-            warehouseId: cancellingTransfer.sourceWarehouseId,
-            adjustmentAmount: cancellingTransfer.quantity,
-            reason: `Transport TFR-${cancellingTransfer.id.slice(-6)} cancelled: stock restored to origin facility`,
-            recordedBy: profile?.uid || 'system',
-            timestamp: serverTimestamp()
-          });
-        } catch (logErr) {
-          console.warn('Stock adjustment audit log write failed:', logErr);
-        }
-      }
-
-      // Update transfer record (with graceful schema fallback if columns are unmigrated in Supabase)
-      try {
-        await updateDoc(doc(db, 'transfers', cancellingTransfer.id), {
-          status: 'cancelled',
-          cancelledAt: serverTimestamp(),
-          cancelledBy: profile?.uid,
-          cancellationReason: cancellationReason.trim() || 'Cancelled by operator',
-          updatedAt: serverTimestamp()
+        const { error: rpcErr } = await supabase.rpc('adjust_inventory_atomic', {
+          p_product_id: cancellingTransfer.productId,
+          p_warehouse_id: cancellingTransfer.sourceWarehouseId,
+          p_delta: cancellingTransfer.quantity,
+          p_recorded_by: profile?.uid || 'system',
+          p_reason: `Transport TFR-${cancellingTransfer.id.slice(-6)} cancelled: stock restored to origin facility`
         });
-      } catch (colErr: any) {
-        console.warn('Supabase transfers schema constraint or missing columns. Updating local state:', colErr);
-        setTransfers(prev => prev.map(t => t.id === cancellingTransfer.id ? { ...t, status: 'cancelled' as any, cancellationReason } : t));
+
+        if (rpcErr) {
+          console.warn('Atomic adjust RPC unavailable on cancel, using fallback:', rpcErr);
+          const sourceInv = inventory.find(
+            i => i.productId === cancellingTransfer.productId && i.warehouseId === cancellingTransfer.sourceWarehouseId
+          );
+          if (sourceInv) {
+            await updateDoc(doc(db, 'inventory', sourceInv.id), {
+              quantity: sourceInv.quantity + cancellingTransfer.quantity,
+              lastUpdated: serverTimestamp()
+            });
+          }
+        }
       }
+
+      // Update transfer record truthfully
+      await updateDoc(doc(db, 'transfers', cancellingTransfer.id), {
+        status: 'cancelled',
+        cancelledAt: serverTimestamp(),
+        cancelledBy: profile?.uid,
+        cancellationReason: cancellationReason.trim() || 'Cancelled by operator',
+        updatedAt: serverTimestamp()
+      });
 
       const sourceWhName = warehouses.find(w => w.id === cancellingTransfer.sourceWarehouseId)?.name || 'origin warehouse';
       toast.success(
@@ -999,6 +1000,12 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
                   <span className="text-muted-foreground block text-xs font-medium">Initiated By</span>
                   <span className="font-bold truncate max-w-full block text-foreground" title={selectedTransfer.initiatedBy}>{selectedTransfer.initiatedBy || 'Unknown'}</span>
                 </div>
+                {selectedTransfer.manifestId && (
+                  <div>
+                    <span className="text-muted-foreground block text-xs font-medium">Manifest Batch</span>
+                    <span className="font-mono text-xs font-bold text-foreground">{selectedTransfer.manifestId}</span>
+                  </div>
+                )}
               </div>
 
               {(selectedTransfer.driverName || selectedTransfer.vehiclePlate) && (

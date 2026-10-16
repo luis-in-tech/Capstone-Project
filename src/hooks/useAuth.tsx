@@ -13,7 +13,7 @@ interface AuthContextType {
   signInWithEmail: (email: string, password: string) => Promise<void>;
   resetPassword: (email: string) => Promise<void>;
   logout: () => Promise<void>;
-  updateRole: (role: 'admin' | 'secretary' | 'agent') => Promise<void>;
+  updateRole: (role: UserProfile['role']) => Promise<void>;
   updateProfileData: (data: Partial<UserProfile>) => Promise<void>;
 }
 
@@ -162,17 +162,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await supabase.auth.signOut();
   };
 
-  const updateRole = async (role: 'admin' | 'secretary' | 'agent') => {
+  const updateRole = async (role: UserProfile['role']) => {
     if (!user) return;
-    if (role === 'admin' && profile?.role !== 'admin') {
-      toast.error('Unauthorized', { description: 'Admin privileges cannot be self-assigned.' });
+    if (profile?.role !== 'admin') {
+      toast.error('Unauthorized', { description: 'Role assignments must be performed by an administrator.' });
       return;
     }
     try {
-      const { error } = await supabase
-        .from('users')
-        .update({ role })
-        .eq('uid', user.id);
+      const { error } = await supabase.rpc('admin_set_user_role', {
+        p_target_uid: user.id,
+        p_new_role: role,
+      });
       if (error) throw error;
       setProfile(prev => prev ? { ...prev, role } : null);
       toast.success(`Role switched to ${role.toUpperCase()}`);

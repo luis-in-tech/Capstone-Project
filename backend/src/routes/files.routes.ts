@@ -17,9 +17,13 @@
 
 import { Router } from 'express';
 import { validatePath, validateRenamePaths } from '../middleware/validatePath';
+import { requireRole } from '../middleware/rbac.middleware';
 import * as filesCtrl from '../controllers/files.controller';
 
 const router = Router();
+
+// Require administrative privileges for all file operations
+router.use(requireRole(['admin', 'cmo']));
 
 // ─── Routes ───────────────────────────────────────────────────────────────────
 

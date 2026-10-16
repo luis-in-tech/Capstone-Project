@@ -81,7 +81,7 @@ export function DelegationPanel() {
   const startEdit = (user: UserProfile | 'new') => {
     const saved = user === 'new' ? undefined : delegationFor(user);
     // Restore the saved settings for review instead of the effective deactivated access.
-    setSelectedRole('');
+    setSelectedRole(user === 'new' ? '' : user.role);
     setEditor(user); setDraft(user === 'new' ? rolePermissions('agent') : resolvePermissions(user, saved ? { ...saved, active: true } : undefined));
     setName(''); setEmail(''); setPassword(''); setWarehouseSearch(''); setFormError(''); setDirty(false);
   };
@@ -89,7 +89,7 @@ export function DelegationPanel() {
 
   async function save(event: React.FormEvent) {
     event.preventDefault();
-    if (saving || !editor || !canManage || (editor !== 'new' && !canManageUser(profile, editor))) return;
+    if (saving || !editor || !canManage || (editor !== 'new' && !canManageUser(profile, editor) && !(inactive(editor) && editor.role === 'admin' && hasAdminRole(profile)))) return;
     const targetRole = selectedRole || (editor !== 'new' ? editor.role : 'staff');
     if (selectedRole === '' && editor === 'new') { setFormError('Please select a role / permission preset.'); return; }
     if (targetRole === 'admin' && !allowAdminCreation) { setFormError('Administrator access is required to assign an admin role.'); return; }
@@ -118,8 +118,12 @@ export function DelegationPanel() {
         let updatedDelegation: any = null;
         const { data, error } = await supabase.rpc('set_staff_role_access', { p_uid: editor.uid, p_role: targetRole, p_permissions: permissions });
         if (error) {
-          console.warn('set_staff_role_access RPC error, updating Supabase users and delegations directly:', error);
-          await supabase.from('users').update({ role: targetRole }).eq('uid', editor.uid);
+          console.warn('set_staff_role_access RPC unavailable, attempting privileged admin_set_user_role:', error);
+          const { error: adminRpcErr } = await supabase.rpc('admin_set_user_role', { p_target_uid: editor.uid, p_new_role: targetRole });
+          if (adminRpcErr) {
+            console.error('Failed to update staff role via admin RPC:', adminRpcErr);
+            throw new Error(`Role update rejected: ${adminRpcErr.message || 'Administrative privilege required.'}`);
+          }
           const existing = delegations.find(d => d.staffEmail.toLowerCase() === editor.email.toLowerCase());
           const payload = {
             id: existing?.id || crypto.randomUUID(),
@@ -131,10 +135,10 @@ export function DelegationPanel() {
             active: true,
             createdAt: existing?.createdAt || new Date().toISOString(),
           };
-          try {
-            await supabase.from('delegations').upsert([payload]);
-          } catch (delErr) {
-            console.warn('Delegations table write bypassed by RLS policy:', delErr);
+          const { error: delErr } = await supabase.from('delegations').upsert([payload]);
+          if (delErr) {
+            console.error('Delegations table write failed:', delErr);
+            throw new Error(`Delegation record failed to save: ${delErr.message}`);
           }
           updatedDelegation = payload;
         } else {
@@ -169,14 +173,18 @@ export function DelegationPanel() {
           permissions: resolvePermissions(deactivate, existing),
           createdAt: existing?.createdAt || new Date().toISOString(),
         };
-        await supabase.from('delegations').upsert([payload]);
+        const { error: delErr } = await supabase.from('delegations').upsert([payload]);
+        if (delErr) {
+          console.error('Revocation fallback write failed:', delErr);
+          throw new Error(`Failed to save deactivation: ${delErr.message}`);
+        }
         updatedDelegation = payload;
       } else {
         updatedDelegation = data;
       }
       setDelegations(current => [...current.filter(d => d.staffEmail.toLowerCase() !== deactivate.email.toLowerCase()), updatedDelegation as StaffDelegation]);
       toast.success('Access deactivated'); setDeactivate(null);
-    } catch { setActionError('Access could not be deactivated. Please retry.'); }
+    } catch (err: any) { setActionError(err?.message || 'Access could not be deactivated. Please retry.'); }
     finally { setSaving(false); }
   }
 
@@ -190,12 +198,12 @@ export function DelegationPanel() {
       <div className="flex flex-col gap-3 border-b p-4 sm:flex-row"><div className="relative flex-1"><SearchBar className="h-10 pl-9" aria-label="Search user accounts" placeholder="Search by name, email, or role…" value={search} onValueChange={setSearch} /></div><select className={`${selectClass} sm:w-44`} aria-label="Filter by role tag" value={roleFilter} onChange={event => setRoleFilter(event.target.value)}><option value="all">All role tags</option><option value="admin">Admin</option><option value="secretary">Secretary</option><option value="agent">Agent</option><option value="staff">Staff</option></select><select className={`${selectClass} sm:w-48`} aria-label="Filter account status" value={status} onChange={event => setStatus(event.target.value)}><option value="active">Active accounts</option><option value="all">All accounts</option><option value="inactive">Deactivated access</option></select></div>
       <Table><TableHeader className="bg-muted/40"><TableRow><TableHead className="pl-5">User</TableHead><TableHead>Status</TableHead><TableHead className="min-w-72">Permissions</TableHead><TableHead className="min-w-44">Warehouse access</TableHead><TableHead className="pr-5 text-right">Actions</TableHead></TableRow></TableHeader><TableBody>
         {ready && rows.map(user => {
-          const delegation = delegationFor(user); const permissions = resolvePermissions(user, delegation); const disabled = inactive(user); const protectedAccount = !disabled && user.role === 'admin'; const editable = canManageUser(profile, user);
+          const delegation = delegationFor(user); const permissions = resolvePermissions(user, delegation); const disabled = inactive(user); const protectedAccount = !disabled && user.role === 'admin'; const canRestoreAdmin = disabled && user.role === 'admin' && hasAdminRole(profile) && user.uid !== profile?.uid; const editable = canManageUser(profile, user) || canRestoreAdmin;
           return <TableRow key={user.uid}><TableCell className="py-5 pl-5 align-top"><div className="flex items-center gap-3"><div className="flex size-9 shrink-0 items-center justify-center rounded-full bg-muted text-sm font-semibold">{(user.displayName || user.email).slice(0, 1).toUpperCase()}</div><div><p className="font-semibold">{user.displayName || 'Unnamed user'}</p><p className="mt-0.5 text-xs text-muted-foreground">{user.email}</p><p className="mt-1 text-[11px] capitalize text-muted-foreground">{user.role}{user.uid === profile.uid ? ' · You' : ''}</p></div></div></TableCell>
             <TableCell className="align-top py-5"><Badge variant={disabled ? 'outline' : 'secondary'}>{disabled ? 'Deactivated' : 'Active'}</Badge></TableCell>
             <TableCell className="py-5 align-top">{protectedAccount ? <span className="inline-flex items-center gap-1.5 text-sm font-medium"><ShieldCheck className="size-4 text-primary" />Full administrator access</span> : disabled ? <p className="text-sm text-muted-foreground">Access deactivated</p> : <div className="space-y-2">{!delegation && <Badge variant="outline" className="border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">No Permissions Assigned</Badge>}<div className="grid gap-x-4 gap-y-1 whitespace-normal text-xs sm:grid-cols-2"><span><span className="text-muted-foreground">Inventory:</span> {permissions.inventory === 'adjust' ? 'Can adjust' : 'View only'}</span><span><span className="text-muted-foreground">Pricelist:</span> {permissions.pricelist === 'edit' ? 'Can edit' : 'View only'}</span><span><span className="text-muted-foreground">Orders:</span> {orderLabels[permissions.orders]}</span><span><span className="text-muted-foreground">Supply Chain:</span> {supplySummary(permissions.supplyChain)}</span><span><span className="text-muted-foreground">Movement view:</span> {movementLabel(permissions.movementView)}</span><span><span className="text-muted-foreground">Movement create:</span> {movementLabel(permissions.movementCreate)}</span></div>{!delegation && <p className="text-[11px] text-muted-foreground">Current role defaults shown. Assign permissions to customize access.</p>}</div>}</TableCell>
             <TableCell className="max-w-60 py-5 align-top text-xs">{disabled ? <span className="text-muted-foreground">No access</span> : permissions.warehouseAccess === 'all' ? <span className="inline-flex items-center gap-1.5"><WarehouseIcon className="size-3.5 text-muted-foreground" />All warehouses</span> : <div><p className="mb-1 font-medium">{permissions.warehouseIds.length} selected</p><p className="text-muted-foreground">{permissions.warehouseIds.map(id => warehouses.find(w => w.id === id)?.name || 'Unavailable warehouse').join(', ') || 'No warehouses'}</p></div>}</TableCell>
-            <TableCell className="py-5 pr-5 align-top"><div className="flex justify-end gap-1">{!editable ? <span className="text-xs text-muted-foreground">{protectedAccount ? 'Protected admin' : user.uid === profile.uid ? 'Your account' : 'Admin managed'}</span> : <><Button variant="outline" size="sm" onClick={() => startEdit(user)}><Pencil className="size-3.5" />{disabled ? 'Restore access' : 'Edit permissions'}</Button>{!disabled && <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" onClick={() => { setDeactivate(user); setActionError(''); }}>Deactivate</Button>}</>}</div></TableCell></TableRow>;
+            <TableCell className="py-5 pr-5 align-top"><div className="flex justify-end gap-1">{!editable ? <span className="text-xs text-muted-foreground">{protectedAccount ? 'Protected (Admin)' : user.uid === profile.uid ? 'Your account' : 'Admin managed'}</span> : <><Button variant="outline" size="sm" onClick={() => startEdit(user)}><Pencil className="size-3.5" />{disabled ? 'Restore access' : 'Edit permissions'}</Button>{!disabled && <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" onClick={() => { setDeactivate(user); setActionError(''); }}>Deactivate</Button>}</>}</div></TableCell></TableRow>;
         })}
         {(!ready || !rows.length) && <TableRow><TableCell colSpan={5} className="h-52 text-center"><div className="mx-auto flex max-w-sm flex-col items-center gap-2">{!ready && !Object.keys(errors).length ? <Loader2 className="size-6 animate-spin text-muted-foreground" /> : <Users className="size-8 text-muted-foreground" />}<p className="font-medium">{!ready ? Object.keys(errors).length ? 'Accounts unavailable' : 'Loading accounts…' : 'No accounts found'}</p><p className="text-xs text-muted-foreground">{!ready ? 'User accounts and permissions must both load before making changes.' : search || status !== 'active' || roleFilter !== 'all' ? 'Try another search or account status.' : 'Add a staff account to get started.'}</p></div></TableCell></TableRow>}
       </TableBody></Table><div className="border-t bg-muted/20 px-5 py-3 text-xs text-muted-foreground">{ready ? `Showing ${rows.length} of ${users.length} user accounts` : 'Loading user directory'} · Accounts appear here even without assigned permissions.</div>

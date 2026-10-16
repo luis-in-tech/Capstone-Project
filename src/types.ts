@@ -227,6 +227,7 @@ export interface Transfer {
   cancelledAt?: any;
   cancelledBy?: string;
   cancellationReason?: string;
+  manifestId?: string;
   createdAt: any;
   updatedAt?: any;
 }

@@ -1,5 +1,6 @@
+import { supabase } from './supabase';
 import { db } from './supabaseAdapter';
-import { collection, addDoc, updateDoc, doc, serverTimestamp } from './supabaseAdapter';
+import { collection, addDoc, setDoc, updateDoc, doc, serverTimestamp } from './supabaseAdapter';
 import type { Order, ITILIncident, DefectiveStockTicket, UserProfile, InventoryItem } from '../types';
 
 const ITIL_INCIDENTS_STORAGE_KEY = 'activepro_db_itil_incidents';
@@ -247,11 +248,27 @@ export async function logDefectiveStockException(params: {
     const newQuarantineQty = (targetItem.quarantineQuantity || 0) + params.quantity;
 
     try {
-      await updateDoc(doc(db, 'inventory', targetItem.id), {
-        quantity: newQty,
-        quarantineQuantity: newQuarantineQty,
-        lastUpdated: serverTimestamp(),
+      const { error: rpcErr } = await supabase.rpc('adjust_inventory_atomic', {
+        p_product_id: params.productId,
+        p_warehouse_id: params.warehouseId,
+        p_delta: -params.quantity,
+        p_recorded_by: params.loggedBy,
+        p_reason: `ITIL defective asset segregation to quarantine (${defTicketNumber})`
       });
+
+      if (!rpcErr) {
+        await updateDoc(doc(db, 'inventory', targetItem.id), {
+          quarantineQuantity: newQuarantineQty,
+          lastUpdated: serverTimestamp(),
+        });
+      } else {
+        console.warn('adjust_inventory_atomic fallback in ITIL quarantine:', rpcErr);
+        await updateDoc(doc(db, 'inventory', targetItem.id), {
+          quantity: newQty,
+          quarantineQuantity: newQuarantineQty,
+          lastUpdated: serverTimestamp(),
+        });
+      }
     } catch (e) {
       console.warn('Inventory quarantine update fallback to local:', e);
       // Update local storage representation of inventory
@@ -286,8 +303,8 @@ export async function logDefectiveStockException(params: {
 
   // 6. Push to remote database tables if available
   try {
-    await addDoc(collection(db, 'itil_incidents'), incident);
-    await addDoc(collection(db, 'defective_tickets'), defectiveTicket);
+    await setDoc(doc(db, 'itil_incidents', incident.id), incident);
+    await setDoc(doc(db, 'defective_tickets', defectiveTicket.id), defectiveTicket);
   } catch (e) {
     console.warn('Remote sync error for ITIL tickets:', e);
   }

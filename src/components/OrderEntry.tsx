@@ -542,34 +542,7 @@ export function OrderEntry({
               console.warn("Failed saving order item to database:", itemErr);
             }
           }
-
-          for (const line of lines) {
-            const inv = inventory.find(
-              (i) => i.productId === line.productId && i.warehouseId === line.warehouseId
-            );
-            if (inv) {
-              try {
-                await updateDoc(doc(db, "inventory", inv.id), {
-                  quantity: Math.max(0, inv.quantity - line.quantity),
-                  lastUpdated: now,
-                });
-              } catch (invErr) {
-                console.warn("Failed updating inventory stock:", invErr);
-              }
-            }
-            try {
-              await addDoc(collection(db, "stockAdjustments"), {
-                productId: line.productId,
-                warehouseId: line.warehouseId,
-                adjustmentAmount: -line.quantity,
-                reason: `Auto-deduction: Order ${orderNumber}`,
-                recordedBy: profile?.uid || "user",
-                timestamp: now,
-              });
-            } catch (adjErr) {
-              console.warn("Failed recording stock adjustment:", adjErr);
-            }
-          }
+          // Note: Physical stock deductions occur strictly at dispatch (out_for_delivery) per Data Invariant #4
         } catch (dbErr) {
           console.warn("Database fallback error (continuing with local state):", dbErr);
         }

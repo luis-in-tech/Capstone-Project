@@ -109,20 +109,6 @@ export function allocateBatchesByStrategy(
     }
   }
 
-  // If movements don't cover total requested quantity (e.g. legacy stock without logged batch receipts),
-  // create a virtual default primary batch allocation so picking ticket always shows traceability.
-  if (remainingNeeded > 0) {
-    allocations.push({
-      batchId: `primary-legacy-${productId}`,
-      batchCode: `LOT-ORIGINAL-P1`,
-      receivedDate: new Date(2025, 0, 1).toISOString(),
-      allocatedQty: remainingNeeded,
-      unitCost: 0,
-      warehouseName: 'Main Facility',
-    });
-    remainingNeeded = 0;
-  }
-
   return {
     allocations,
     fulfilledQty: requestedQty - remainingNeeded,

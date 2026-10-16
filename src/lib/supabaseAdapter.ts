@@ -419,12 +419,40 @@ export async function addDoc(col: any, data: any) {
 }
 
 export async function updateDoc(docRef: any, data: any) {
-  saveLocalDoc(docRef.path, { id: docRef.id, ...data });
+  const processedData: any = { ...data };
+  let needsRemoteFetch = false;
+
+  for (const key of Object.keys(data)) {
+    if (data[key] && typeof data[key] === 'object' && data[key].__fieldOp === 'arrayUnion') {
+      needsRemoteFetch = true;
+      break;
+    }
+  }
+
+  if (needsRemoteFetch) {
+    const currentDoc = await getDoc(docRef);
+    const existingData = currentDoc.exists() ? currentDoc.data() : {};
+    for (const key of Object.keys(data)) {
+      if (data[key] && typeof data[key] === 'object' && data[key].__fieldOp === 'arrayUnion') {
+        const existingArray = Array.isArray(existingData[key]) ? existingData[key] : [];
+        const newElements = data[key].elements;
+        const merged = [...existingArray];
+        for (const el of newElements) {
+          if (!merged.some(item => JSON.stringify(item) === JSON.stringify(el))) {
+            merged.push(el);
+          }
+        }
+        processedData[key] = merged;
+      }
+    }
+  }
+
+  saveLocalDoc(docRef.path, { id: docRef.id, ...processedData });
 
   try {
-    const { error } = await supabase.from(docRef.path).update(data).eq('id', docRef.id);
+    const { error } = await supabase.from(docRef.path).update(processedData).eq('id', docRef.id);
     if (error) {
-      const { error: err2 } = await supabase.from(docRef.path).update(data).eq('uid', docRef.id);
+      const { error: err2 } = await supabase.from(docRef.path).update(processedData).eq('uid', docRef.id);
       if (err2) console.warn(`Supabase updateDoc fallback for ${docRef.path}:`, err2);
     }
   } catch (err) {
@@ -518,19 +546,21 @@ export function writeBatch(db: any) {
     update: (ref: any, data: any) => operations.push({ type: 'update', ref, data }),
     delete: (ref: any) => operations.push({ type: 'delete', ref }),
     commit: async () => {
-      // Execute sequentially as a fallback for batch
+      // Execute with fail-fast validation to avoid silent unhandled failure
       for (const op of operations) {
-        if (op.type === 'set') await setDoc(op.ref, op.data);
-        if (op.type === 'update') await updateDoc(op.ref, op.data);
-        if (op.type === 'delete') await deleteDoc(op.ref);
+        try {
+          if (op.type === 'set') await setDoc(op.ref, op.data);
+          if (op.type === 'update') await updateDoc(op.ref, op.data);
+          if (op.type === 'delete') await deleteDoc(op.ref);
+        } catch (opErr) {
+          console.error(`Batch operation failed on ${op.ref?.path}/${op.ref?.id}:`, opErr);
+          throw new Error(`Batch commit aborted: ${opErr instanceof Error ? opErr.message : 'Unknown operation error'}`);
+        }
       }
     }
   };
 }
 
 export function arrayUnion(...elements: any[]) {
-  // In Supabase, appending to a JSONB array or Postgres array needs a different approach.
-  // For the sake of the adapter, we will return a special object that could be handled if needed,
-  // but usually it's just passed as data.
-  return elements;
+  return { __fieldOp: 'arrayUnion', elements };
 }
