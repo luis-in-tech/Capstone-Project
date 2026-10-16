@@ -223,7 +223,7 @@ function saveLocalCollection(path: string, items: any[]) {
   }
 }
 
-function saveLocalDoc(path: string, docData: any) {
+export function saveLocalDoc(path: string, docData: any) {
   const items = getLocalCollection(path);
   const id = docData.id || docData.uid;
   const idx = items.findIndex((i: any) => (i.id || i.uid) === id);
@@ -372,7 +372,11 @@ export function onSnapshot(q: any, callback: (snap: any) => void, errorCb?: (e: 
   if (typeof window !== 'undefined') {
     window.addEventListener('activepro_db_changed', handleLocalChange);
     window.addEventListener('storage', fetchAndNotify);
+    window.addEventListener('focus', fetchAndNotify);
   }
+
+  // Periodic polling heartbeat ensuring cross-user and multi-tab synchronization
+  const pollTimer = setInterval(fetchAndNotify, 4000);
 
   const channel = supabase.channel(`public:${q.path}_${Date.now()}`)
     .on('postgres_changes', { event: '*', schema: 'public', table: q.path }, () => {
@@ -382,9 +386,11 @@ export function onSnapshot(q: any, callback: (snap: any) => void, errorCb?: (e: 
 
   return () => {
     isUnmounted = true;
+    clearInterval(pollTimer);
     if (typeof window !== 'undefined') {
       window.removeEventListener('activepro_db_changed', handleLocalChange);
       window.removeEventListener('storage', fetchAndNotify);
+      window.removeEventListener('focus', fetchAndNotify);
     }
     supabase.removeChannel(channel);
   };

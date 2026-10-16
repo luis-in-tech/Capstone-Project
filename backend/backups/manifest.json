@@ -1,5 +1,17 @@
 [
   {
+    "snapshotId": "snap_1792154135936",
+    "timestamp": "2026-10-16T12:35:35.946Z",
+    "folder": "backup_2026-10-16T12-35-35-936Z",
+    "files": [
+      "cmdb_inventory.csv",
+      "orders_ledger.csv",
+      "financial_ledger.csv",
+      "audit_trail.csv"
+    ],
+    "totalBytes": 3953
+  },
+  {
     "snapshotId": "snap_1792136605173",
     "timestamp": "2026-10-16T07:43:25.181Z",
     "folder": "backup_2026-10-16T07-43-25-173Z",

@@ -4,7 +4,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { db } from '../lib/supabaseAdapter';
-import { collection, onSnapshot, query, where, addDoc, updateDoc, doc, serverTimestamp, deleteDoc, writeBatch } from '../lib/supabaseAdapter';
+import { collection, onSnapshot, query, where, addDoc, updateDoc, doc, serverTimestamp, deleteDoc, writeBatch, saveLocalDoc } from '../lib/supabaseAdapter';
 import { Product, InventoryItem, Warehouse } from '../types';
 import { handleSupabaseError, OperationType } from '../lib/supabaseErrorHandler';
 import { Button } from '@/components/ui/button';
@@ -636,7 +636,7 @@ export function Inventory() {
     if (selectedProduct && profile) {
       setIsAdjusting(true);
       try {
-        const { error: rpcErr } = await supabase.rpc('adjust_inventory_atomic', {
+        const { data: rpcData, error: rpcErr } = await supabase.rpc('adjust_inventory_atomic', {
           p_product_id: adjustmentProduct.id,
           p_warehouse_id: warehouseId,
           p_delta: quantity,
@@ -668,6 +668,18 @@ export function Inventory() {
             recordedBy: profile.uid,
             timestamp: serverTimestamp()
           });
+        } else {
+          const invId = (rpcData as any)?.inventoryId || item?.id;
+          const newQty = (rpcData as any)?.newQuantity ?? (item ? item.quantity + quantity : quantity);
+          if (invId) {
+            saveLocalDoc('inventory', {
+              id: invId,
+              productId: adjustmentProduct.id,
+              warehouseId,
+              quantity: newQty,
+              lastUpdated: serverTimestamp()
+            });
+          }
         }
 
         setIsStockUpdateOpen(false);
