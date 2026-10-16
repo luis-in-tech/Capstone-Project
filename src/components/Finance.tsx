@@ -2305,9 +2305,11 @@ export function Finance() {
                   )}
                   <Select value={selectedPeriod} onValueChange={(v: '2025' | '2026' | 'all') => setSelectedPeriod(v)}>
                     <SelectTrigger className="h-6.5 text-[9px] uppercase font-bold tracking-wider px-2 rounded-sm border-border">
-                      <SelectValue placeholder="Period" />
+                      <SelectValue placeholder="Period">
+                        {selectedPeriod === '2025' ? '2025' : selectedPeriod === '2026' ? '2026' : 'ALL'}
+                      </SelectValue>
                     </SelectTrigger>
-                    <SelectContent className="rounded-sm">
+                    <SelectContent className="rounded-sm w-auto min-w-[220px]">
                       <SelectItem value="2025">Monthly 2025 (Q1 Audited)</SelectItem>
                       <SelectItem value="2026">Quarterly 2026 (Live Ops)</SelectItem>
                       <SelectItem value="all">All Periods (Consolidated)</SelectItem>
