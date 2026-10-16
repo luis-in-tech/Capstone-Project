@@ -166,31 +166,31 @@ const CustomTrajectoryTooltip = ({ active, payload, label }: any) => {
   const fullDate = payload[0]?.payload?.fullDate || label;
 
   return (
-    <div className="bg-[#1A2332] text-white p-3 rounded-xl border border-zinc-700 shadow-xl space-y-1.5 min-w-[210px]">
-      <div className="flex items-center justify-between border-b border-zinc-700/60 pb-1.5">
-        <span className="text-[10px] font-black uppercase tracking-wider text-zinc-300 flex items-center gap-1.5">
+    <div className="bg-[#1A2332] text-white p-2.5 rounded-sm border border-neutral-700 shadow-md space-y-1.5 min-w-[210px]">
+      <div className="flex items-center justify-between border-b border-neutral-700/80 pb-1.5">
+        <span className="text-[10px] font-black uppercase tracking-wider text-neutral-300 flex items-center gap-1.5">
           <Calendar className="w-3 h-3 text-emerald-400" /> {fullDate}
         </span>
-        <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-300">
+        <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-xs bg-neutral-800 text-neutral-300">
           {margin}% Margin
         </span>
       </div>
-      <div className="space-y-1 pt-0.5 text-xs font-mono">
+      <div className="space-y-1 pt-0.5 text-xs font-mono tabular-nums">
         <div className="flex items-center justify-between">
           <span className="text-[10px] font-bold text-emerald-400 flex items-center gap-1">
-            <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block" /> Revenue:
+            <span className="w-1.5 h-1.5 rounded-xs bg-emerald-500 inline-block" /> Revenue:
           </span>
           <span className="font-bold text-emerald-300">₱{rev.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
         </div>
         <div className="flex items-center justify-between">
           <span className="text-[10px] font-bold text-red-400 flex items-center gap-1">
-            <span className="w-2 h-2 rounded-full bg-red-500 inline-block" /> Expenses:
+            <span className="w-1.5 h-1.5 rounded-xs bg-red-500 inline-block" /> Expenses:
           </span>
           <span className="font-bold text-red-300">₱{exp.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
         </div>
-        <div className="flex items-center justify-between border-t border-zinc-700/60 pt-1 mt-1 font-bold">
-          <span className="text-[10px] text-zinc-400 uppercase">Net Income:</span>
-          <span className={net >= 0 ? 'text-amber-300 font-black' : 'text-rose-400 font-black'}>
+        <div className="flex items-center justify-between border-t border-neutral-700/80 pt-1 mt-1 font-bold">
+          <span className="text-[10px] text-neutral-400 uppercase">Net Income:</span>
+          <span className={net >= 0 ? 'text-[#fdd001] font-black' : 'text-red-400 font-black'}>
             {net >= 0 ? `+₱${net.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : `-₱${Math.abs(net).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
           </span>
         </div>
@@ -494,14 +494,14 @@ function QuickBooksImportModal({ isOpen, onClose, categories }: QuickBooksImport
       if (!open) resetState();
       onClose();
     }}>
-      <DialogContent className="sm:max-w-[720px] max-h-[90vh] flex flex-col p-6 rounded-2xl">
+      <DialogContent className="sm:max-w-[720px] max-h-[90vh] flex flex-col p-5 rounded-sm border border-border shadow-md">
         <DialogHeader className="pb-3 border-b border-border">
           <div className="flex items-center gap-2">
-            <div className="p-2 rounded-xl bg-emerald-500/10 text-emerald-600">
-              <FileUp className="w-5 h-5" />
+            <div className="p-1.5 rounded-sm bg-emerald-500/10 text-emerald-600">
+              <FileUp className="w-4 h-4" />
             </div>
             <div>
-              <DialogTitle className="text-lg font-black uppercase tracking-tight">
+              <DialogTitle className="text-base font-black uppercase tracking-tight">
                 Import QuickBooks Financial Data
               </DialogTitle>
               <DialogDescription className="text-xs text-muted-foreground mt-0.5">
@@ -511,9 +511,9 @@ function QuickBooksImportModal({ isOpen, onClose, categories }: QuickBooksImport
           </div>
         </DialogHeader>
 
-        <div className="flex-1 overflow-y-auto py-4 space-y-5">
+        <div className="flex-1 overflow-y-auto py-3 space-y-4">
           {/* File Upload Zone */}
-          <div className="border-2 border-dashed border-border hover:border-emerald-500/60 rounded-xl p-5 text-center transition-colors bg-muted/20">
+          <div className="border border-dashed border-border hover:border-emerald-500/60 rounded-sm p-4 text-center transition-colors bg-muted/20">
             <input
               type="file"
               id="qb-file-input"
@@ -1651,21 +1651,23 @@ export function Finance() {
   });
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6">
+      {/* Enterprise Utility Toolbar */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <PageHeading title="Financials" subtitle="Track revenue, expenses, and audited profit & loss statements." />
 
-        {/* Period Selector Controls */}
+        {/* Period Selector & Action Controls */}
         <div className="flex flex-wrap items-center gap-2">
-          <div className="flex items-center gap-1 bg-muted/60 p-1 rounded-xl border border-border">
-            <Calendar className="w-3.5 h-3.5 text-muted-foreground ml-2 mr-1" />
+          <div className="flex items-center gap-0.5 bg-muted/80 p-0.5 rounded-sm border border-border">
+            <Calendar className="w-3.5 h-3.5 text-muted-foreground ml-1.5 mr-1" />
             <Button
               variant={selectedPeriod === '2025' ? 'default' : 'ghost'}
               size="sm"
-              className={`h-7 px-3 text-[10px] font-black uppercase tracking-wider rounded-lg transition-all ${selectedPeriod === '2025'
-                ? 'bg-[#1A2332] text-white shadow-sm'
-                : 'text-muted-foreground hover:text-foreground hover:bg-muted'
-                }`}
+              className={`h-6.5 px-2.5 text-[9px] font-black uppercase tracking-wider rounded-sm transition-all ${
+                selectedPeriod === '2025'
+                  ? 'bg-[#1A2332] text-white shadow-none'
+                  : 'text-muted-foreground hover:text-foreground hover:bg-muted'
+              }`}
               onClick={() => setSelectedPeriod('2025')}
             >
               FY 2025 (Q1 P&L)
@@ -1673,10 +1675,11 @@ export function Finance() {
             <Button
               variant={selectedPeriod === '2026' ? 'default' : 'ghost'}
               size="sm"
-              className={`h-7 px-3 text-[10px] font-black uppercase tracking-wider rounded-lg transition-all ${selectedPeriod === '2026'
-                ? 'bg-[#1A2332] text-white shadow-sm'
-                : 'text-muted-foreground hover:text-foreground hover:bg-muted'
-                }`}
+              className={`h-6.5 px-2.5 text-[9px] font-black uppercase tracking-wider rounded-sm transition-all ${
+                selectedPeriod === '2026'
+                  ? 'bg-[#1A2332] text-white shadow-none'
+                  : 'text-muted-foreground hover:text-foreground hover:bg-muted'
+              }`}
               onClick={() => setSelectedPeriod('2026')}
             >
               FY 2026 (Live Ops)
@@ -1684,10 +1687,11 @@ export function Finance() {
             <Button
               variant={selectedPeriod === 'all' ? 'default' : 'ghost'}
               size="sm"
-              className={`h-7 px-3 text-[10px] font-black uppercase tracking-wider rounded-lg transition-all ${selectedPeriod === 'all'
-                ? 'bg-[#1A2332] text-white shadow-sm'
-                : 'text-muted-foreground hover:text-foreground hover:bg-muted'
-                }`}
+              className={`h-6.5 px-2.5 text-[9px] font-black uppercase tracking-wider rounded-sm transition-all ${
+                selectedPeriod === 'all'
+                  ? 'bg-[#1A2332] text-white shadow-none'
+                  : 'text-muted-foreground hover:text-foreground hover:bg-muted'
+              }`}
               onClick={() => setSelectedPeriod('all')}
             >
               All Periods
@@ -1697,109 +1701,114 @@ export function Finance() {
           <Button
             variant="outline"
             size="sm"
-            className="h-9 gap-2 px-3 text-[10px] font-black uppercase tracking-wider border-emerald-500/40 text-emerald-600 bg-emerald-50/20 hover:bg-emerald-50/40 transition-all"
+            className="h-7 gap-1.5 px-2.5 text-[9px] font-black uppercase tracking-wider rounded-sm border border-emerald-500/40 text-emerald-700 dark:text-emerald-400 bg-emerald-50/50 dark:bg-emerald-950/30 hover:bg-emerald-100 dark:hover:bg-emerald-950/50 shadow-none transition-all"
             onClick={() => setIsQBImportOpen(true)}
           >
-            <FileUp className="w-3.5 h-3.5 text-emerald-600" /> Import QuickBooks (CSV)
+            <FileUp className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" /> Import QuickBooks (CSV)
           </Button>
 
           <Button
             variant="outline"
             size="sm"
-            className="h-9 gap-2 px-3 text-[10px] font-black uppercase tracking-wider border-border hover:bg-muted"
+            className="h-7 gap-1.5 px-2.5 text-[9px] font-black uppercase tracking-wider rounded-sm border-border hover:bg-muted shadow-none"
             onClick={exportPLStatementCSV}
           >
-            <Download className="w-3.5 h-3.5 text-emerald-600" /> Export P&L (CSV)
+            <Download className="w-3.5 h-3.5 text-foreground/70" /> Export P&L (CSV)
           </Button>
         </div>
       </div>
 
-      {/* Financial Health Summary (4 KPIs) */}
-      <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-4">
-        <Card className="border-emerald-500/30 bg-emerald-50/20 dark:bg-emerald-950/20 dark:border-emerald-500/20">
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-[10px] font-bold uppercase tracking-widest text-emerald-600">Total Revenue</CardTitle>
-            <TrendingUp className="h-4 w-4 text-emerald-500" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-black text-emerald-600 dark:text-emerald-400 tracking-tight">
+      {/* Financial Health Summary (4 KPIs) - Flat Enterprise Density */}
+      <div className="grid gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-4">
+        {/* Total Revenue - Green accounting indicator preserved */}
+        <div className="border border-emerald-300 dark:border-emerald-800/60 bg-emerald-50/40 dark:bg-emerald-950/20 rounded-sm p-3 shadow-none">
+          <div className="flex items-center justify-between pb-1.5 border-b border-emerald-200/60 dark:border-emerald-900/40">
+            <span className="text-[10px] font-black uppercase tracking-widest text-emerald-700 dark:text-emerald-400">Total Revenue</span>
+            <TrendingUp className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
+          </div>
+          <div className="pt-2">
+            <div className="text-xl font-mono font-black text-emerald-700 dark:text-emerald-300 tabular-nums">
               ₱{displayRevenue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
             </div>
-            <p className="text-[10px] text-emerald-600 font-bold mt-1">
+            <p className="text-[10px] text-emerald-600/90 dark:text-emerald-400/80 font-bold mt-0.5 uppercase tracking-tight">
               {selectedPeriod === '2025' ? 'Q1 Net Total Income' : 'Confirmed B2B Sales'}
             </p>
-          </CardContent>
-        </Card>
+          </div>
+        </div>
 
-        <Card className="border-red-500/30 bg-red-50/20 dark:bg-red-950/20 dark:border-red-500/20">
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-[10px] font-bold uppercase tracking-widest text-red-600">Total COGS & Expenses</CardTitle>
-            <TrendingDown className="h-4 w-4 text-red-500" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-black text-red-600 dark:text-red-400 tracking-tight">
+        {/* Total COGS & Expenses - Red accounting indicator preserved */}
+        <div className="border border-red-300 dark:border-red-800/60 bg-red-50/40 dark:bg-red-950/20 rounded-sm p-3 shadow-none">
+          <div className="flex items-center justify-between pb-1.5 border-b border-red-200/60 dark:border-red-900/40">
+            <span className="text-[10px] font-black uppercase tracking-widest text-red-700 dark:text-red-400">Total COGS & Expenses</span>
+            <TrendingDown className="h-3.5 w-3.5 text-red-600 dark:text-red-400" />
+          </div>
+          <div className="pt-2">
+            <div className="text-xl font-mono font-black text-red-700 dark:text-red-300 tabular-nums">
               ₱{displayExpenses.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
             </div>
-            <p className="text-[10px] text-red-600 font-bold mt-1">
+            <p className="text-[10px] text-red-600/90 dark:text-red-400/80 font-bold mt-0.5 uppercase tracking-tight">
               {selectedPeriod === '2025' ? 'COGS + SGA + Audit Expenses' : 'SGA & Operational Costs'}
             </p>
-          </CardContent>
-        </Card>
+          </div>
+        </div>
 
-        <Card className="border-amber-500/30 bg-amber-50/20 dark:bg-amber-950/20 dark:border-amber-500/20">
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-[10px] font-bold uppercase tracking-widest text-amber-600">Gross Profit</CardTitle>
-            <Wallet className="h-4 w-4 text-amber-500" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-black text-amber-600 dark:text-amber-400 tracking-tight">
+        {/* Gross Profit - Corporate Charcoal / Neutral */}
+        <div className="border border-neutral-200 dark:border-neutral-800 bg-card rounded-sm p-3 shadow-none">
+          <div className="flex items-center justify-between pb-1.5 border-b border-border">
+            <span className="text-[10px] font-black uppercase tracking-widest text-neutral-600 dark:text-neutral-400">Gross Profit</span>
+            <Wallet className="h-3.5 w-3.5 text-neutral-500" />
+          </div>
+          <div className="pt-2">
+            <div className="text-xl font-mono font-black text-foreground tabular-nums">
               ₱{displayGrossProfit.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
             </div>
-            <p className="text-[10px] text-amber-600 font-bold mt-1">
+            <p className="text-[10px] text-neutral-500 font-bold mt-0.5 uppercase tracking-tight">
               {grossMargin}% Gross Margin
             </p>
-          </CardContent>
-        </Card>
+          </div>
+        </div>
 
-        <Card className="border-border bg-card">
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Net Profit</CardTitle>
-            <TrendingUp className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className={`text-2xl font-black tracking-tight ${displayNetProfit >= 0 ? 'text-foreground' : 'text-red-500'}`}>
+        {/* Net Profit - ActivePro Signature Gold Highlight */}
+        <div className="border border-amber-300/80 dark:border-amber-700/60 bg-amber-50/30 dark:bg-amber-950/20 rounded-sm p-3 shadow-none">
+          <div className="flex items-center justify-between pb-1.5 border-b border-amber-200/60 dark:border-amber-900/40">
+            <span className="text-[10px] font-black uppercase tracking-widest text-amber-800 dark:text-amber-400">Net Profit</span>
+            <span className="text-[8px] font-black px-1.5 py-0.5 bg-[#fdd001] text-[#1A2332] rounded-xs uppercase tracking-wider">Audited</span>
+          </div>
+          <div className="pt-2">
+            <div className={`text-xl font-mono font-black tabular-nums ${displayNetProfit >= 0 ? 'text-amber-700 dark:text-amber-300' : 'text-red-600'}`}>
               ₱{displayNetProfit.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
             </div>
-            <p className="text-[10px] text-muted-foreground font-bold mt-1">
+            <p className="text-[10px] text-amber-700/80 dark:text-amber-400/80 font-bold mt-0.5 uppercase tracking-tight">
               {netMargin}% Net Margin
             </p>
-          </CardContent>
-        </Card>
+          </div>
+        </div>
       </div>
 
       {/* Performance Chart */}
-      <Card className="border-border bg-card overflow-hidden">
-        <CardHeader className="pb-2 border-b border-border flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+      <div className="border border-border bg-card rounded-sm overflow-hidden shadow-none">
+        <div className="px-3.5 py-2.5 border-b border-border bg-muted/20 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div>
-            <CardTitle className="text-xs font-black uppercase tracking-widest text-foreground flex items-center gap-2">
+            <div className="text-xs font-black uppercase tracking-widest text-foreground flex items-center gap-2">
               <BarChartIcon className="w-4 h-4" /> Financial Performance
-            </CardTitle>
-            <CardDescription className="text-[10px] font-medium text-muted-foreground mt-0.5">
+            </div>
+            <div className="text-[10px] font-medium text-muted-foreground mt-0.5">
               Historical Revenue vs Operational Expenditure ({chartGranularity})
-            </CardDescription>
+            </div>
           </div>
           <div className="flex flex-wrap items-center gap-3">
             {/* Granularity Selector */}
-            <div className="flex items-center gap-1 bg-muted/60 p-0.5 rounded-lg border border-border">
+            <div className="flex items-center gap-0.5 bg-muted/80 p-0.5 rounded-sm border border-border">
               {(['monthly', 'quarterly', 'annual'] as const).map(gran => (
                 <Button
                   key={gran}
                   variant={chartGranularity === gran ? 'default' : 'ghost'}
                   size="sm"
-                  className={`h-6 px-2.5 text-[9px] font-black uppercase tracking-wider rounded-md transition-all ${chartGranularity === gran
-                    ? 'bg-[#1A2332] text-white shadow-sm'
-                    : 'text-muted-foreground hover:text-foreground hover:bg-muted'
-                    }`}
+                  className={`h-6 px-2 text-[9px] font-black uppercase tracking-wider rounded-sm transition-all ${
+                    chartGranularity === gran
+                      ? 'bg-[#1A2332] text-white shadow-none'
+                      : 'text-muted-foreground hover:text-foreground hover:bg-muted'
+                  }`}
                   onClick={() => setChartGranularity(gran)}
                 >
                   {gran}
@@ -1808,17 +1817,17 @@ export function Finance() {
             </div>
             <div className="flex items-center gap-3 pl-1 border-l border-border/60">
               <div className="flex items-center gap-1.5">
-                <div className="w-2 h-2 rounded-full bg-emerald-500" />
+                <div className="w-2 h-2 rounded-xs bg-emerald-500" />
                 <span className="text-[10px] font-bold text-muted-foreground uppercase">Revenue</span>
               </div>
               <div className="flex items-center gap-1.5">
-                <div className="w-2 h-2 rounded-full bg-red-500" />
+                <div className="w-2 h-2 rounded-xs bg-red-500" />
                 <span className="text-[10px] font-bold text-muted-foreground uppercase">Expenses</span>
               </div>
             </div>
           </div>
-        </CardHeader>
-        <CardContent className="pt-6 h-[300px] overflow-hidden">
+        </div>
+        <div className="p-4 h-[300px] overflow-hidden">
           <ResponsiveContainer width="100%" height={260}>
             <BarChart
               data={chartData}
@@ -1843,7 +1852,7 @@ export function Finance() {
               <Tooltip
                 cursor={{ fill: 'rgba(253,208,1,0.06)' }}
                 contentStyle={{
-                  borderRadius: '8px',
+                  borderRadius: '2px',
                   border: '1px solid #302f2f',
                   backgroundColor: '#1A2332',
                   color: '#ffffff',
@@ -1864,41 +1873,42 @@ export function Finance() {
               />
             </BarChart>
           </ResponsiveContainer>
-        </CardContent>
-      </Card>
+        </div>
+      </div>
 
       {/* Trajectory Chart — Zero Cliff Drop & Granularity Hover */}
-      <Card className="border-border bg-card overflow-hidden">
-        <CardHeader className="pb-2 border-b border-border flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+      <div className="border border-border bg-card rounded-sm overflow-hidden shadow-none">
+        <div className="px-3.5 py-2.5 border-b border-border bg-muted/20 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div>
-            <CardTitle className="text-xs font-black uppercase tracking-widest text-foreground flex items-center gap-2">
+            <div className="text-xs font-black uppercase tracking-widest text-foreground flex items-center gap-2">
               <TrendingUp className="w-4 h-4" />
               {selectedPeriod === '2025'
                 ? 'Financial Trajectory (Q1 2025 Audited Baseline)'
                 : selectedPeriod === '2026'
                   ? 'Financial Trajectory (FY 2026 Live Operations)'
                   : 'Financial Trajectory (Historical & Live Trend)'}
-            </CardTitle>
-            <CardDescription className="text-[10px] font-medium text-muted-foreground mt-0.5">
+            </div>
+            <div className="text-[10px] font-medium text-muted-foreground mt-0.5">
               {selectedPeriod === '2025'
                 ? `Audited QuickBooks Baseline — Jan to Mar 2025 (${trajectoryGranularity.toUpperCase()} Timeline & Paced Scale)`
                 : selectedPeriod === '2026'
                   ? `Continuous Operational Revenue vs Expense Trend (${trajectoryGranularity.toUpperCase()} Granularity)`
                   : `Cross-Period Multi-Year Revenue vs Expense Trend (${trajectoryGranularity.toUpperCase()} Granularity)`}
-            </CardDescription>
+            </div>
           </div>
           <div className="flex flex-wrap items-center gap-3">
             {/* Trajectory Granularity Selector */}
-            <div className="flex items-center gap-1 bg-muted/60 p-0.5 rounded-lg border border-border">
+            <div className="flex items-center gap-0.5 bg-muted/80 p-0.5 rounded-sm border border-border">
               {(['daily', 'weekly', 'monthly'] as const).map(gran => (
                 <Button
                   key={gran}
                   variant={trajectoryGranularity === gran ? 'default' : 'ghost'}
                   size="sm"
-                  className={`h-6 px-2.5 text-[9px] font-black uppercase tracking-wider rounded-md transition-all ${trajectoryGranularity === gran
-                    ? 'bg-[#1A2332] text-white shadow-sm'
-                    : 'text-muted-foreground hover:text-foreground hover:bg-muted'
-                    }`}
+                  className={`h-6 px-2 text-[9px] font-black uppercase tracking-wider rounded-sm transition-all ${
+                    trajectoryGranularity === gran
+                      ? 'bg-[#1A2332] text-white shadow-none'
+                      : 'text-muted-foreground hover:text-foreground hover:bg-muted'
+                  }`}
                   onClick={() => setTrajectoryGranularity(gran)}
                 >
                   {gran}
@@ -1907,17 +1917,17 @@ export function Finance() {
             </div>
             <div className="flex items-center gap-3 pl-1 border-l border-border/60">
               <div className="flex items-center gap-1.5">
-                <div className="w-2.5 h-2.5 rounded-full bg-emerald-500" />
+                <div className="w-2 h-2 rounded-xs bg-emerald-500" />
                 <span className="text-[10px] font-bold text-muted-foreground uppercase">Revenue</span>
               </div>
               <div className="flex items-center gap-1.5">
-                <div className="w-2.5 h-2.5 rounded-full bg-red-500" />
+                <div className="w-2 h-2 rounded-xs bg-red-500" />
                 <span className="text-[10px] font-bold text-muted-foreground uppercase">Expenses</span>
               </div>
             </div>
           </div>
-        </CardHeader>
-        <CardContent className="pt-6 h-[300px] overflow-hidden">
+        </div>
+        <div className="p-4 h-[300px] overflow-hidden">
           <ResponsiveContainer width="100%" height={260}>
             <LineChart data={chartData12Months} margin={{ top: 5, right: 20, left: -20, bottom: 5 }}>
               <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--border)" />
@@ -1940,36 +1950,39 @@ export function Finance() {
                 type="monotone"
                 dataKey="Revenue"
                 stroke="#10b981"
-                strokeWidth={3}
-                dot={trajectoryGranularity === 'daily' ? false : { r: 4, fill: '#10b981', strokeWidth: 2, stroke: '#fff' }}
-                activeDot={{ r: 6, strokeWidth: 0 }}
+                strokeWidth={2.5}
+                dot={trajectoryGranularity === 'daily' ? false : { r: 3, fill: '#10b981', strokeWidth: 1.5, stroke: '#fff' }}
+                activeDot={{ r: 5, strokeWidth: 0 }}
               />
               <Line
                 type="monotone"
                 dataKey="Expenses"
                 stroke="#ef4444"
-                strokeWidth={3}
-                dot={trajectoryGranularity === 'daily' ? false : { r: 4, fill: '#ef4444', strokeWidth: 2, stroke: '#fff' }}
-                activeDot={{ r: 6, strokeWidth: 0 }}
+                strokeWidth={2.5}
+                dot={trajectoryGranularity === 'daily' ? false : { r: 3, fill: '#ef4444', strokeWidth: 1.5, stroke: '#fff' }}
+                activeDot={{ r: 5, strokeWidth: 0 }}
               />
             </LineChart>
           </ResponsiveContainer>
-        </CardContent>
-      </Card>
+        </div>
+      </div>
 
       <div className="flex flex-col lg:flex-row gap-6">
         {/* Profit & Loss Detailed Table */}
         <div className="flex-1 space-y-4">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-border pb-3">
-            <div className="flex items-center gap-2">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-border pb-2.5">
+            <div className="flex items-center gap-1.5 bg-muted/60 p-0.5 rounded-sm border border-border">
               <Button
-                variant={activeLedgerTab === 'statement' ? 'default' : 'outline'}
+                variant={activeLedgerTab === 'statement' ? 'default' : 'ghost'}
                 size="sm"
-                className={`h-8 gap-2 px-3 text-[10px] font-black uppercase tracking-wider transition-all ${activeLedgerTab === 'statement' ? 'bg-[#1A2332] text-white shadow-sm' : 'text-muted-foreground hover:text-foreground'
-                  }`}
+                className={`h-7 gap-1.5 px-3 text-[10px] font-black uppercase tracking-wider rounded-sm transition-all ${
+                  activeLedgerTab === 'statement'
+                    ? 'bg-[#1A2332] text-white shadow-none'
+                    : 'text-muted-foreground hover:text-foreground'
+                }`}
                 onClick={() => setActiveLedgerTab('statement')}
               >
-                <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-500" />
+                <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-400" />
                 {selectedPeriod === '2025'
                   ? 'Audited P&L Statement (Q1 2025)'
                   : selectedPeriod === '2026'
@@ -1977,10 +1990,13 @@ export function Finance() {
                     : 'Consolidated P&L Statement (All Periods)'}
               </Button>
               <Button
-                variant={activeLedgerTab === 'ledger' ? 'default' : 'outline'}
+                variant={activeLedgerTab === 'ledger' ? 'default' : 'ghost'}
                 size="sm"
-                className={`h-8 gap-2 px-3 text-[10px] font-black uppercase tracking-wider transition-all ${activeLedgerTab === 'ledger' ? 'bg-[#1A2332] text-white shadow-sm' : 'text-muted-foreground hover:text-foreground'
-                  }`}
+                className={`h-7 gap-1.5 px-3 text-[10px] font-black uppercase tracking-wider rounded-sm transition-all ${
+                  activeLedgerTab === 'ledger'
+                    ? 'bg-[#1A2332] text-white shadow-none'
+                    : 'text-muted-foreground hover:text-foreground'
+                }`}
                 onClick={() => setActiveLedgerTab('ledger')}
               >
                 <FileText className="w-3.5 h-3.5" /> Itemized Expense Ledger
@@ -1989,97 +2005,97 @@ export function Finance() {
             <div className="flex flex-wrap items-center gap-2">
               {activeLedgerTab === 'statement' ? (
                 <div className="flex items-center gap-2">
-                  <Badge
-                    variant="outline"
-                    className={`text-[9px] font-black uppercase tracking-widest px-2.5 py-1 ${selectedPeriod === '2025'
-                      ? 'border-emerald-500/40 text-emerald-600 bg-emerald-50/40'
-                      : selectedPeriod === '2026'
-                        ? 'border-blue-500/40 text-blue-600 bg-blue-50/40'
-                        : 'border-purple-500/40 text-purple-600 bg-purple-50/40'
-                      }`}
+                  <span
+                    className={`text-[9px] font-black uppercase tracking-wider px-2 py-0.5 rounded-sm border ${
+                      selectedPeriod === '2025'
+                        ? 'border-emerald-500/40 text-emerald-700 bg-emerald-50 dark:bg-emerald-950/40 dark:text-emerald-300'
+                        : selectedPeriod === '2026'
+                          ? 'border-blue-500/40 text-blue-700 bg-blue-50 dark:bg-blue-950/40 dark:text-blue-300'
+                          : 'border-purple-500/40 text-purple-700 bg-purple-50 dark:bg-purple-950/40 dark:text-purple-300'
+                    }`}
                   >
                     {selectedPeriod === '2025' ? 'Audited Closed Period' : selectedPeriod === '2026' ? 'Live Operations (Continuous)' : 'Consolidated Multi-Year'}
-                  </Badge>
+                  </span>
                   <Button
                     variant="outline"
                     size="sm"
-                    className="h-8 gap-1.5 px-3 text-[10px] font-black uppercase tracking-wider"
+                    className="h-7 gap-1.5 px-2.5 text-[9px] font-black uppercase tracking-wider rounded-sm border-border hover:bg-muted shadow-none"
                     onClick={exportPLStatementCSV}
                   >
-                    <Download className="w-3 h-3 text-emerald-600" /> Export CSV
+                    <Download className="w-3 h-3 text-foreground/70" /> Export CSV
                   </Button>
                 </div>
               ) : (
                 <>
                   <Dialog open={isManageCategoriesOpen} onOpenChange={setIsManageCategoriesOpen}>
                     <DialogTrigger render={
-                      <Button variant="outline" className="h-7 gap-2 px-3 text-[10px] font-bold uppercase tracking-tight">
+                      <Button variant="outline" className="h-7 gap-1.5 px-2.5 text-[9px] font-bold uppercase tracking-wider rounded-sm border-border hover:bg-muted shadow-none">
                         <Settings className="w-3 h-3" /> Manage Categories
                       </Button>
                     } />
-                    <DialogContent className="sm:max-w-[700px] max-h-[85vh] flex flex-col">
-                      <DialogHeader>
-                        <DialogTitle>Expense Category Management</DialogTitle>
-                        <DialogDescription>Add, edit, or archive operational expenditure classifications.</DialogDescription>
+                    <DialogContent className="sm:max-w-[700px] max-h-[85vh] flex flex-col rounded-sm border border-border shadow-lg p-5">
+                      <DialogHeader className="pb-2 border-b border-border">
+                        <DialogTitle className="text-sm font-black uppercase tracking-wider">Expense Category Management</DialogTitle>
+                        <DialogDescription className="text-xs text-muted-foreground">Add, edit, or archive operational expenditure classifications.</DialogDescription>
                       </DialogHeader>
 
-                      <div className="flex-1 overflow-y-auto py-4 space-y-6">
+                      <div className="flex-1 overflow-y-auto py-3 space-y-4">
                         <div className="flex items-center justify-between">
-                          <h4 className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Inventory of Categories</h4>
+                          <h4 className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Inventory of Categories</h4>
                           <Dialog open={isAddCategoryOpen} onOpenChange={setIsAddCategoryOpen}>
                             <DialogTrigger render={
-                              <Button size="sm" className="h-7 gap-2 px-3 text-[10px] font-bold uppercase">
+                              <Button size="sm" className="h-6.5 gap-1.5 px-2.5 text-[9px] font-bold uppercase rounded-sm bg-[#1A2332] text-white hover:bg-[#1A2332]/90 shadow-none">
                                 <Plus className="w-3 h-3" /> Create New
                               </Button>
                             } />
-                            <DialogContent>
-                              <DialogHeader>
-                                <DialogTitle>Add Expense Category</DialogTitle>
+                            <DialogContent className="rounded-sm border border-border shadow-lg p-5 max-w-sm">
+                              <DialogHeader className="pb-2 border-b border-border">
+                                <DialogTitle className="text-sm font-black uppercase tracking-wider">Add Expense Category</DialogTitle>
                               </DialogHeader>
-                              <form onSubmit={handleAddCategory} className="space-y-4 pt-2">
-                                <div className="space-y-2">
-                                  <Label htmlFor="name">Category Name</Label>
-                                  <Input id="name" name="name" required placeholder="e.g., Marketing, Logistics..." />
+                              <form onSubmit={handleAddCategory} className="space-y-3 pt-2 font-sans">
+                                <div className="space-y-1">
+                                  <Label htmlFor="name" className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Category Name</Label>
+                                  <Input id="name" name="name" required placeholder="e.g., Marketing, Logistics..." className="h-8 rounded-sm text-xs border-border" />
                                 </div>
-                                <div className="space-y-2">
-                                  <Label htmlFor="desc">Description (Optional)</Label>
-                                  <Input id="desc" name="description" placeholder="Brief purpose..." />
+                                <div className="space-y-1">
+                                  <Label htmlFor="desc" className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Description (Optional)</Label>
+                                  <Input id="desc" name="description" placeholder="Brief purpose..." className="h-8 rounded-sm text-xs border-border" />
                                 </div>
-                                <div className="space-y-2">
-                                  <Label htmlFor="status">Initial Status</Label>
+                                <div className="space-y-1">
+                                  <Label htmlFor="status" className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Initial Status</Label>
                                   <Select name="status" defaultValue="active">
-                                    <SelectTrigger id="status">
+                                    <SelectTrigger id="status" className="h-8 rounded-sm text-xs border-border">
                                       <SelectValue placeholder="Select status" />
                                     </SelectTrigger>
-                                    <SelectContent>
-                                      <SelectItem value="active">Active</SelectItem>
-                                      <SelectItem value="archived">Archived</SelectItem>
+                                    <SelectContent className="rounded-sm">
+                                      <SelectItem value="active" className="text-xs font-semibold">Active</SelectItem>
+                                      <SelectItem value="archived" className="text-xs font-semibold">Archived</SelectItem>
                                     </SelectContent>
                                   </Select>
                                 </div>
-                                <DialogFooter>
-                                  <Button type="submit" className="w-full">Save Category</Button>
+                                <DialogFooter className="pt-2">
+                                  <Button type="submit" className="w-full h-8 rounded-sm bg-[#1A2332] text-white hover:bg-[#1A2332]/90 font-bold uppercase tracking-wider text-xs">Save Category</Button>
                                 </DialogFooter>
                               </form>
                             </DialogContent>
                           </Dialog>
                         </div>
 
-                        <div className="border rounded-2xl overflow-hidden bg-card border-border">
+                        <div className="border rounded-sm overflow-hidden bg-card border-border shadow-none">
                           <Table>
-                            <TableHeader className="bg-muted/50 border-b border-border">
+                            <TableHeader className="bg-neutral-100 dark:bg-neutral-900 border-b border-neutral-300 dark:border-neutral-700">
                               <TableRow className="hover:bg-transparent">
-                                <TableHead className="text-[10px] font-black uppercase tracking-widest py-4 pl-6 text-muted-foreground">Classification Details</TableHead>
-                                <TableHead className="text-[10px] font-black uppercase tracking-widest py-4 text-center text-muted-foreground">Current Status</TableHead>
-                                <TableHead className="text-[10px] font-black uppercase tracking-widest py-4 pr-6 text-right text-muted-foreground">Management</TableHead>
+                                <TableHead className="text-[10px] font-black uppercase tracking-widest py-2 px-3 text-neutral-600 dark:text-neutral-400">Classification Details</TableHead>
+                                <TableHead className="text-[10px] font-black uppercase tracking-widest py-2 text-center text-neutral-600 dark:text-neutral-400">Current Status</TableHead>
+                                <TableHead className="text-[10px] font-black uppercase tracking-widest py-2 pr-3 text-right text-neutral-600 dark:text-neutral-400">Management</TableHead>
                               </TableRow>
                             </TableHeader>
                             <TableBody>
                               {categories.map((cat) => (
-                                <TableRow key={cat.id} className="group hover:bg-muted/30 border-b border-border last:border-0 transition-colors">
-                                  <TableCell className="pl-6 py-4">
+                                <TableRow key={cat.id} className="group hover:bg-muted/30 border-b border-border/50 last:border-0 transition-colors">
+                                  <TableCell className="px-3 py-2">
                                     <div className="flex flex-col">
-                                      <span className="text-sm font-black text-foreground uppercase tracking-tight">{cat.name}</span>
+                                      <span className="text-xs font-bold text-foreground uppercase tracking-tight">{cat.name}</span>
                                       {cat.description && (
                                         <span className="text-[10px] text-muted-foreground font-medium leading-tight mt-0.5 line-clamp-1 max-w-[280px]">
                                           {cat.description}
@@ -2087,22 +2103,22 @@ export function Finance() {
                                       )}
                                     </div>
                                   </TableCell>
-                                  <TableCell className="text-center py-4">
-                                    <Badge
-                                      className={`text-[9px] font-black uppercase tracking-widest rounded-md px-2 py-0.5 shadow-none border-none ${cat.isActive
-                                        ? "bg-emerald-100 text-emerald-700"
-                                        : "bg-zinc-100 text-zinc-400"
+                                  <TableCell className="text-center py-2">
+                                    <span
+                                      className={`text-[9px] font-black uppercase tracking-wider rounded-sm px-2 py-0.5 border ${cat.isActive
+                                        ? "bg-emerald-50 text-emerald-700 border-emerald-300 dark:bg-emerald-950/40 dark:text-emerald-300"
+                                        : "bg-neutral-100 text-neutral-500 border-neutral-300 dark:bg-neutral-800 dark:text-neutral-400"
                                         }`}
                                     >
                                       {cat.isActive ? 'Active' : 'Archived'}
-                                    </Badge>
+                                    </span>
                                   </TableCell>
-                                  <TableCell className="pr-6 py-4">
+                                  <TableCell className="pr-3 py-2">
                                     <div className="flex justify-end items-center gap-1.5 font-sans">
                                       <Button
                                         variant="ghost"
                                         size="sm"
-                                        className="h-8 px-2 text-[10px] font-black uppercase tracking-widest text-muted-foreground hover:text-foreground shadow-none"
+                                        className="h-6.5 px-2 text-[9px] font-black uppercase tracking-wider text-muted-foreground hover:text-foreground rounded-sm"
                                         onClick={() => {
                                           setEditingCategory(cat);
                                           setIsEditCategoryOpen(true);
@@ -2114,9 +2130,9 @@ export function Finance() {
                                       <Button
                                         variant="ghost"
                                         size="sm"
-                                        className={`h-8 px-2 text-[10px] font-black uppercase tracking-widest shadow-none ${cat.isActive
-                                          ? "text-red-400 hover:text-red-600 hover:bg-red-50"
-                                          : "text-emerald-500 hover:text-emerald-700 hover:bg-emerald-50"
+                                        className={`h-6.5 px-2 text-[9px] font-black uppercase tracking-wider rounded-sm ${cat.isActive
+                                          ? "text-red-500 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/40"
+                                          : "text-emerald-600 hover:text-emerald-800 hover:bg-emerald-50 dark:hover:bg-emerald-950/40"
                                           }`}
                                         onClick={() => toggleCategoryStatus(cat)}
                                       >
@@ -2128,7 +2144,7 @@ export function Finance() {
                               ))}
                               {categories.length === 0 && (
                                 <TableRow>
-                                  <TableCell colSpan={3} className="text-center py-8 text-xs italic text-zinc-400">
+                                  <TableCell colSpan={3} className="text-center py-6 text-xs italic text-muted-foreground">
                                     No categories defined.
                                   </TableCell>
                                 </TableRow>
@@ -2141,22 +2157,22 @@ export function Finance() {
                           setIsEditCategoryOpen(open);
                           if (!open) setEditingCategory(null);
                         }}>
-                          <DialogContent>
-                            <DialogHeader>
-                              <DialogTitle>Edit Category</DialogTitle>
+                          <DialogContent className="rounded-sm border border-border shadow-lg p-5 max-w-sm">
+                            <DialogHeader className="pb-2 border-b border-border">
+                              <DialogTitle className="text-sm font-black uppercase tracking-wider">Edit Category</DialogTitle>
                             </DialogHeader>
                             {editingCategory && (
-                              <form onSubmit={handleEditCategory} className="space-y-4 pt-2">
-                                <div className="space-y-2">
-                                  <Label htmlFor="edit-name">Category Name</Label>
-                                  <Input id="edit-name" name="name" defaultValue={editingCategory.name} required />
+                              <form onSubmit={handleEditCategory} className="space-y-3 pt-2 font-sans">
+                                <div className="space-y-1">
+                                  <Label htmlFor="edit-name" className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Category Name</Label>
+                                  <Input id="edit-name" name="name" defaultValue={editingCategory.name} required className="h-8 rounded-sm text-xs border-border" />
                                 </div>
-                                <div className="space-y-2">
-                                  <Label htmlFor="edit-desc">Description (Optional)</Label>
-                                  <Input id="edit-desc" name="description" defaultValue={editingCategory.description} />
+                                <div className="space-y-1">
+                                  <Label htmlFor="edit-desc" className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Description (Optional)</Label>
+                                  <Input id="edit-desc" name="description" defaultValue={editingCategory.description} className="h-8 rounded-sm text-xs border-border" />
                                 </div>
-                                <DialogFooter>
-                                  <Button type="submit" className="w-full">Update Classification</Button>
+                                <DialogFooter className="pt-2">
+                                  <Button type="submit" className="w-full h-8 rounded-sm bg-[#1A2332] text-white hover:bg-[#1A2332]/90 font-bold uppercase tracking-wider text-xs">Update Classification</Button>
                                 </DialogFooter>
                               </form>
                             )}
@@ -2166,128 +2182,87 @@ export function Finance() {
                     </DialogContent>
                   </Dialog>
 
-                  <Dialog open={isAddCategoryOpen} onOpenChange={setIsAddCategoryOpen}>
-                    <DialogTrigger render={
-                      <Button variant="outline" className="h-7 gap-2 px-3 border-2 border-zinc-200 text-[10px] font-black uppercase tracking-widest hover:bg-zinc-900 hover:text-white transition-all">
-                        <Plus className="w-3 h-3" /> New Category
-                      </Button>
-                    } />
-                    <DialogContent className="rounded-[2rem]">
-                      <DialogHeader>
-                        <DialogTitle className="text-xl font-black uppercase tracking-tighter">Add Expense Category</DialogTitle>
-                        <DialogDescription className="text-zinc-500 font-medium">Define a new classification for operational expenditure.</DialogDescription>
-                      </DialogHeader>
-                      <form onSubmit={handleAddCategory} className="space-y-6 pt-4 font-sans">
-                        <div className="space-y-2">
-                          <Label htmlFor="cat-name" className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Category Name</Label>
-                          <Input id="cat-name" name="name" required placeholder="e.g., Marketing, Logistics..." className="rounded-xl border-2 border-zinc-100 focus:border-zinc-900 transition-all h-12" />
-                        </div>
-                        <div className="space-y-2">
-                          <Label htmlFor="cat-desc" className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Description (Optional)</Label>
-                          <Input id="cat-desc" name="description" placeholder="Briefly describe the purpose of this category..." className="rounded-xl border-2 border-zinc-100 focus:border-zinc-900 transition-all h-12" />
-                        </div>
-                        <div className="space-y-2">
-                          <Label htmlFor="cat-status" className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Initial Status</Label>
-                          <Select name="status" defaultValue="active">
-                            <SelectTrigger id="cat-status" className="rounded-xl border-2 border-zinc-100 h-12">
-                              <SelectValue placeholder="Select initial state" />
-                            </SelectTrigger>
-                            <SelectContent className="rounded-xl">
-                              <SelectItem value="active" className="text-xs font-bold uppercase tracking-widest">Active/Live</SelectItem>
-                              <SelectItem value="archived" className="text-xs font-bold uppercase tracking-widest">Archived/Draft</SelectItem>
-                            </SelectContent>
-                          </Select>
-                        </div>
-                        <DialogFooter className="pt-4">
-                          <Button type="submit" className="w-full h-14 bg-[#1A2332] text-white font-black uppercase tracking-widest text-xs rounded-2xl">
-                            Register Category <Plus className="w-4 h-4 ml-2" />
-                          </Button>
-                        </DialogFooter>
-                      </form>
-                    </DialogContent>
-                  </Dialog>
-
                   <Button
                     variant="outline"
                     size="sm"
-                    className="h-7 gap-1.5 px-3 border border-emerald-500/40 text-emerald-600 bg-emerald-50/20 text-[10px] font-black uppercase tracking-wider hover:bg-emerald-50/40 transition-all"
+                    className="h-7 gap-1.5 px-2.5 border border-emerald-500/40 text-emerald-700 dark:text-emerald-400 bg-emerald-50/40 dark:bg-emerald-950/30 text-[9px] font-black uppercase tracking-wider hover:bg-emerald-50/60 transition-all rounded-sm shadow-none"
                     onClick={() => setIsQBImportOpen(true)}
                   >
-                    <FileUp className="w-3 h-3 text-emerald-600" /> Import QuickBooks
+                    <FileUp className="w-3 h-3 text-emerald-600 dark:text-emerald-400" /> Import QuickBooks
                   </Button>
 
                   <Dialog open={isAddExpenseOpen} onOpenChange={setIsAddExpenseOpen}>
                     <DialogTrigger render={
-                      <Button className="h-7 gap-2 px-3 bg-[#1A2332] text-white rounded-lg inline-flex items-center justify-center text-xs font-black uppercase tracking-widest transition-all hover:bg-[#1A2332]/90">
+                      <Button className="h-7 gap-1.5 px-2.5 bg-[#1A2332] text-white rounded-sm inline-flex items-center justify-center text-[9px] font-black uppercase tracking-wider transition-all hover:bg-[#1A2332]/90 shadow-none">
                         <Plus className="w-3 h-3" /> Record Entry
                       </Button>
                     } />
-                    <DialogContent className="rounded-[2rem] max-w-md">
-                      <DialogHeader>
-                        <DialogTitle className="text-xl font-black uppercase tracking-tighter">Record Operational Expense</DialogTitle>
-                        <DialogDescription className="text-zinc-500 font-medium">Map local shop expenses to the centralized financial reporting system.</DialogDescription>
+                    <DialogContent className="rounded-sm max-w-md border border-border shadow-lg p-5">
+                      <DialogHeader className="pb-2 border-b border-border">
+                        <DialogTitle className="text-sm font-black uppercase tracking-wider">Record Operational Expense</DialogTitle>
+                        <DialogDescription className="text-xs text-muted-foreground">Map local expenses to the centralized financial ledger.</DialogDescription>
                       </DialogHeader>
-                      <form onSubmit={handleAddExpense} className="space-y-5 pt-4 font-sans">
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                          <div className="space-y-2">
-                            <Label htmlFor="expense-category" className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Category</Label>
+                      <form onSubmit={handleAddExpense} className="space-y-3.5 pt-3 font-sans">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                          <div className="space-y-1">
+                            <Label htmlFor="expense-category" className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Category</Label>
                             <Select name="category" required>
-                              <SelectTrigger id="expense-category" className="rounded-xl border-2 border-border h-11">
+                              <SelectTrigger id="expense-category" className="rounded-sm border-border h-8 text-xs">
                                 <SelectValue placeholder="Classification" />
                               </SelectTrigger>
-                              <SelectContent className="rounded-xl">
+                              <SelectContent className="rounded-sm">
                                 {activeCategories.map(cat => (
-                                  <SelectItem key={cat.id} value={cat.name} className="text-xs font-bold uppercase tracking-widest">{cat.name}</SelectItem>
+                                  <SelectItem key={cat.id} value={cat.name} className="text-xs font-semibold uppercase tracking-wider">{cat.name}</SelectItem>
                                 ))}
                                 {activeCategories.length === 0 && (
-                                  <div className="p-3 text-[10px] text-zinc-400 italic font-medium uppercase tracking-tighter">No active categories.</div>
+                                  <div className="p-2 text-[10px] text-muted-foreground italic font-medium uppercase tracking-tight">No active categories.</div>
                                 )}
                               </SelectContent>
                             </Select>
                           </div>
-                          <div className="space-y-2">
-                            <Label htmlFor="expense-date" className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Expense Date</Label>
-                            <Input id="expense-date" name="date" type="date" defaultValue={new Date().toISOString().split('T')[0]} required className="rounded-xl border-2 border-border h-11" />
+                          <div className="space-y-1">
+                            <Label htmlFor="expense-date" className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Expense Date</Label>
+                            <Input id="expense-date" name="date" type="date" defaultValue={new Date().toISOString().split('T')[0]} required className="rounded-sm border-border h-8 text-xs font-mono" />
                           </div>
                         </div>
 
-                        <div className="space-y-2">
-                          <Label htmlFor="expense-amount" className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Amount (₱)</Label>
+                        <div className="space-y-1">
+                          <Label htmlFor="expense-amount" className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Amount (₱)</Label>
                           <div className="relative">
-                            <span className="absolute left-4 top-1/2 -translate-y-1/2 text-zinc-400 font-black text-sm">₱</span>
-                            <Input id="expense-amount" name="amount" type="number" step="0.01" required placeholder="0.00" className="rounded-xl border-2 border-border h-12 pl-8 focus:border-zinc-900 transition-all font-black" />
+                            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground font-mono font-bold text-xs">₱</span>
+                            <Input id="expense-amount" name="amount" type="number" step="0.01" required placeholder="0.00" className="rounded-sm border-border h-8 pl-6 font-mono font-bold tabular-nums text-xs" />
                           </div>
                         </div>
 
-                        <div className="space-y-2">
-                          <Label htmlFor="expense-description" className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Description</Label>
-                          <Input id="expense-description" name="description" placeholder="Operational details..." className="rounded-xl border-2 border-border h-12 focus:border-zinc-900 transition-all" />
+                        <div className="space-y-1">
+                          <Label htmlFor="expense-description" className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Description</Label>
+                          <Input id="expense-description" name="description" placeholder="Operational details..." className="rounded-sm border-border h-8 text-xs" />
                         </div>
 
-                        <div className="space-y-2">
-                          <Label htmlFor="expense-order" className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Linked Order (Optional)</Label>
+                        <div className="space-y-1">
+                          <Label htmlFor="expense-order" className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Linked Order (Optional)</Label>
                           <Select name="orderId">
-                            <SelectTrigger id="expense-order" className="w-full rounded-xl border-2 border-border h-11">
+                            <SelectTrigger id="expense-order" className="w-full rounded-sm border-border h-8 text-xs">
                               <SelectValue placeholder="No order linked" />
                             </SelectTrigger>
-                            <SelectContent className="rounded-xl">
-                              <SelectItem value="none" className="text-xs font-bold uppercase tracking-widest">None / General</SelectItem>
+                            <SelectContent className="rounded-sm">
+                              <SelectItem value="none" className="text-xs font-semibold">None / General</SelectItem>
                               {orders
                                 .sort((a, b) => b.orderNumber.localeCompare(a.orderNumber))
                                 .map(order => (
-                                  <SelectItem key={order.id} value={order.id} className="text-xs font-bold uppercase tracking-widest">
+                                  <SelectItem key={order.id} value={order.id} className="text-xs font-semibold">
                                     {order.orderNumber} - {order.clientName}
                                   </SelectItem>
                                 ))
                               }
                             </SelectContent>
                           </Select>
-                          <p className="text-[9px] text-zinc-400 font-medium italic">Link this expense to a specific B2B order for job-costing.</p>
+                          <p className="text-[9px] text-muted-foreground font-medium italic">Link this expense to a specific B2B order for job-costing.</p>
                         </div>
 
                         <DialogFooter className="pt-2">
-                          <Button type="submit" className="w-full h-14 bg-[#1A2332] text-white font-black uppercase tracking-widest text-xs rounded-2xl" disabled={activeCategories.length === 0}>
-                            Post to Ledger <ArrowUpRight className="w-4 h-4 ml-2" />
+                          <Button type="submit" className="w-full h-8 bg-[#1A2332] text-white font-bold uppercase tracking-wider text-xs rounded-sm hover:bg-[#1A2332]/90 shadow-none" disabled={activeCategories.length === 0}>
+                            Post to Ledger <ArrowUpRight className="w-3.5 h-3.5 ml-1.5" />
                           </Button>
                         </DialogFooter>
                       </form>
@@ -2299,23 +2274,24 @@ export function Finance() {
           </div>
 
           {activeLedgerTab === 'statement' ? (
-            <div className="bg-background border border-border rounded-2xl overflow-hidden shadow-sm">
-              <div className="p-4 bg-muted/40 border-b border-border flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="bg-card border border-border rounded-sm overflow-hidden shadow-none">
+              <div className="px-3.5 py-2 bg-neutral-100 dark:bg-neutral-900 border-b border-border flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
                 <div>
                   <div className="flex items-center gap-2">
                     <h4 className="text-xs font-black uppercase tracking-widest text-foreground">
                       {activePLData.title}
                     </h4>
-                    <Badge
-                      className={`text-[9px] font-black uppercase px-2 py-0.5 border-none ${selectedPeriod === '2025'
-                        ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300'
-                        : selectedPeriod === '2026'
-                          ? 'bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300'
-                          : 'bg-purple-100 text-purple-800 dark:bg-purple-950 dark:text-purple-300'
-                        }`}
+                    <span
+                      className={`text-[9px] font-black uppercase tracking-wider px-2 py-0.5 rounded-sm border ${
+                        selectedPeriod === '2025'
+                          ? 'bg-emerald-50 text-emerald-800 border-emerald-300 dark:bg-emerald-950/50 dark:text-emerald-300 dark:border-emerald-800'
+                          : selectedPeriod === '2026'
+                            ? 'bg-blue-50 text-blue-800 border-blue-300 dark:bg-blue-950/50 dark:text-blue-300 dark:border-blue-800'
+                            : 'bg-purple-50 text-purple-800 border-purple-300 dark:bg-purple-950/50 dark:text-purple-300 dark:border-purple-800'
+                      }`}
                     >
                       {activePLData.badgeText}
-                    </Badge>
+                    </span>
                   </div>
                   <p className="text-[10px] text-muted-foreground font-medium mt-0.5">
                     {activePLData.subtitle}
@@ -2323,15 +2299,15 @@ export function Finance() {
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
                   {uncollectedReceivables > 0 && (
-                    <Badge className="bg-rose-100 text-rose-800 text-[10px] font-bold border-none">
-                      Uncollected Receivables: {formatCurrency(uncollectedReceivables)}
-                    </Badge>
+                    <span className="bg-red-50 text-red-800 border border-red-300 dark:bg-red-950/50 dark:text-red-300 dark:border-red-800 text-[9px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-sm">
+                      Uncollected: {formatCurrency(uncollectedReceivables)}
+                    </span>
                   )}
                   <Select value={selectedPeriod} onValueChange={(v: '2025' | '2026' | 'all') => setSelectedPeriod(v)}>
-                    <SelectTrigger className="h-7 text-[10px] uppercase font-bold tracking-wider px-2 border-dashed">
+                    <SelectTrigger className="h-6.5 text-[9px] uppercase font-bold tracking-wider px-2 rounded-sm border-border">
                       <SelectValue placeholder="Period" />
                     </SelectTrigger>
-                    <SelectContent>
+                    <SelectContent className="rounded-sm">
                       <SelectItem value="2025">Monthly 2025 (Q1 Audited)</SelectItem>
                       <SelectItem value="2026">Quarterly 2026 (Live Ops)</SelectItem>
                       <SelectItem value="all">All Periods (Consolidated)</SelectItem>
@@ -2340,15 +2316,15 @@ export function Finance() {
                   <Button
                     variant="outline"
                     size="sm"
-                    className="h-7 gap-1.5 px-2.5 text-[10px] font-black uppercase tracking-wider"
+                    className="h-6.5 gap-1 px-2 text-[9px] font-black uppercase tracking-wider rounded-sm border-border"
                     onClick={exportPLStatementCSV}
                   >
-                    <Download className="w-3 h-3 text-emerald-600" /> CSV
+                    <Download className="w-3 h-3 text-foreground/70" /> CSV
                   </Button>
                   <Button
                     variant="outline"
                     size="sm"
-                    className="h-7 gap-1.5 px-2.5 text-[10px] font-black uppercase tracking-wider"
+                    className="h-6.5 gap-1 px-2 text-[9px] font-black uppercase tracking-wider rounded-sm border-border"
                     onClick={() => {
                       const printContents = document.getElementById('pl-statement-print-area')?.outerHTML;
                       if (printContents) {
@@ -2381,27 +2357,28 @@ export function Finance() {
                       }
                     }}
                   >
-                    <Printer className="w-3 h-3 text-emerald-600" /> Print
+                    <Printer className="w-3 h-3 text-foreground/70" /> Print
                   </Button>
                 </div>
               </div>
 
               <div className="overflow-x-auto w-full">
                 <Table id="pl-statement-print-area">
-                  <TableHeader className="bg-muted/70">
+                  <TableHeader className="bg-neutral-100 dark:bg-neutral-900 border-b border-neutral-300 dark:border-neutral-700">
                     <TableRow className="hover:bg-transparent">
-                      <TableHead className="text-[10px] font-black uppercase tracking-widest text-muted-foreground py-3 pl-6 min-w-[260px]">
+                      <TableHead className="text-[10px] font-black uppercase tracking-widest text-neutral-600 dark:text-neutral-400 py-2 pl-4 min-w-[260px]">
                         Account / Line Item
                       </TableHead>
                       {activePLData.colHeaders.map((ch, cIdx) => (
                         <TableHead
                           key={cIdx}
-                          className={`text-[10px] font-black uppercase tracking-widest text-right py-3 ${cIdx === activePLData.colHeaders.length - 2
-                            ? 'text-foreground font-bold bg-muted/90 min-w-[140px]'
-                            : cIdx === activePLData.colHeaders.length - 1
-                              ? 'text-muted-foreground pr-6 min-w-[100px]'
-                              : 'text-muted-foreground min-w-[120px]'
-                            }`}
+                          className={`text-[10px] font-black uppercase tracking-widest text-right py-2 ${
+                            cIdx === activePLData.colHeaders.length - 2
+                              ? 'text-foreground font-bold bg-neutral-200/50 dark:bg-neutral-800/50 min-w-[130px] px-3'
+                              : cIdx === activePLData.colHeaders.length - 1
+                                ? 'text-neutral-600 dark:text-neutral-400 pr-4 min-w-[90px]'
+                                : 'text-neutral-600 dark:text-neutral-400 min-w-[110px] px-3'
+                          }`}
                         >
                           {ch}
                         </TableHead>
@@ -2412,8 +2389,8 @@ export function Finance() {
                     {activePLData.rows.map((row, idx) => {
                       if (row.isHeader) {
                         return (
-                          <TableRow key={idx} className="bg-muted/40 border-y border-border hover:bg-muted/50">
-                            <TableCell colSpan={activePLData.colHeaders.length + 1} className="py-2.5 pl-6 font-black text-xs uppercase tracking-widest text-foreground">
+                          <TableRow key={idx} className="bg-neutral-200/60 dark:bg-neutral-800/60 border-y border-neutral-300 dark:border-neutral-700 hover:bg-neutral-200/70">
+                            <TableCell colSpan={activePLData.colHeaders.length + 1} className="py-1.5 pl-4 font-black text-xs uppercase tracking-widest text-foreground">
                               {row.section}
                             </TableCell>
                           </TableRow>
@@ -2422,7 +2399,7 @@ export function Finance() {
                       if (row.isSubheader) {
                         return (
                           <TableRow key={idx} className="hover:bg-transparent border-none">
-                            <TableCell colSpan={activePLData.colHeaders.length + 1} className="py-2 pl-8 font-bold text-xs uppercase tracking-wider text-muted-foreground">
+                            <TableCell colSpan={activePLData.colHeaders.length + 1} className="py-1.5 pl-6 font-bold text-xs uppercase tracking-wider text-muted-foreground">
                               {row.section}
                             </TableCell>
                           </TableRow>
@@ -2436,34 +2413,36 @@ export function Finance() {
                       return (
                         <TableRow
                           key={idx}
-                          className={`border-b border-border/60 transition-colors ${row.isFinalNetIncome
-                            ? 'bg-amber-500/10 hover:bg-amber-500/15 font-black border-t-2 border-b-2 border-amber-500/50'
-                            : row.isGrandTotal
-                              ? 'bg-muted/50 font-black'
-                              : row.isTotal
-                                ? 'bg-muted/30 font-bold'
-                                : 'hover:bg-muted/20'
-                            }`}
+                          className={`border-b border-border/50 transition-colors ${
+                            row.isFinalNetIncome
+                              ? 'bg-amber-500/10 hover:bg-amber-500/15 font-black border-t-2 border-b-2 border-amber-500/60'
+                              : row.isGrandTotal
+                                ? 'bg-muted/40 font-black border-t border-border'
+                                : row.isTotal
+                                  ? 'bg-muted/20 font-bold border-t border-border/60'
+                                  : 'hover:bg-muted/30'
+                          }`}
                         >
-                          <TableCell className={`py-2.5 ${row.indent ? 'pl-12 text-xs font-medium text-foreground' : 'pl-8 font-bold text-xs text-foreground'}`}>
+                          <TableCell className={`py-1.5 ${row.indent ? 'pl-10 text-xs font-medium text-foreground' : 'pl-6 font-bold text-xs text-foreground'}`}>
                             {row.name}
                           </TableCell>
                           {row.cols.map((colVal, colIdx) => (
-                            <TableCell key={colIdx} className={`py-2.5 text-right text-xs ${row.isFinalNetIncome || row.isTotal || row.isGrandTotal ? 'font-bold' : 'text-muted-foreground font-mono'}`}>
+                            <TableCell key={colIdx} className={`py-1.5 px-3 text-right text-xs font-mono tabular-nums ${row.isFinalNetIncome || row.isTotal || row.isGrandTotal ? 'font-bold' : 'text-muted-foreground'}`}>
                               {formatCurrency(colVal)}
                             </TableCell>
                           ))}
-                          <TableCell className={`py-2.5 text-right text-xs font-black bg-muted/20 ${isHighlightEmerald
-                            ? 'text-emerald-600 dark:text-emerald-400'
-                            : isHighlightRose
-                              ? 'text-red-600 dark:text-red-400'
-                              : isHighlightGold
-                                ? 'text-amber-600 dark:text-amber-400 text-sm'
-                                : 'text-foreground'
-                            }`}>
+                          <TableCell className={`py-1.5 px-3 text-right text-xs font-mono tabular-nums font-black bg-muted/20 ${
+                            isHighlightEmerald
+                              ? 'text-emerald-700 dark:text-emerald-400'
+                              : isHighlightRose
+                                ? 'text-red-700 dark:text-red-400'
+                                : isHighlightGold
+                                  ? 'text-amber-700 dark:text-amber-300 font-black'
+                                  : 'text-foreground'
+                          }`}>
                             {formatCurrency(row.total)}
                           </TableCell>
-                          <TableCell className="py-2.5 pr-6 text-right text-xs font-semibold text-muted-foreground">
+                          <TableCell className="py-1.5 pr-4 text-right text-xs font-mono tabular-nums font-semibold text-muted-foreground">
                             {row.pct}
                           </TableCell>
                         </TableRow>
@@ -2519,102 +2498,102 @@ export function Finance() {
               </div>
 
               {/* Desktop Table View */}
-              <div className="hidden lg:block bg-background border border-border rounded-xl overflow-hidden mb-8">
+              <div className="hidden lg:block bg-card border border-border rounded-sm overflow-hidden mb-6 shadow-none">
                 <div className="overflow-x-auto w-full">
                   <Table>
-                    <TableHeader className="bg-muted/50">
+                    <TableHeader className="bg-neutral-100 dark:bg-neutral-900 border-b border-neutral-300 dark:border-neutral-700">
                       <TableRow>
                         <TableHead
-                          className="text-[10px] font-bold uppercase tracking-widest cursor-pointer hover:bg-muted transition-colors min-w-[100px]"
+                          className="text-[10px] font-black uppercase tracking-widest text-neutral-600 dark:text-neutral-400 py-2 px-3 cursor-pointer hover:bg-neutral-200/50 dark:hover:bg-neutral-800 transition-colors min-w-[90px]"
                           onClick={() => toggleSort('date')}
                         >
                           <div className="flex items-center gap-1">
-                            Date {sortKey === 'date' ? (sortDirection === 'asc' ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />) : <ArrowUpDown className="w-2.5 h-2.5 opacity-30" />}
+                            Date {sortKey === 'date' ? (sortDirection === 'asc' ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />) : <ArrowUpDown className="w-2.5 h-2.5 opacity-40" />}
                           </div>
                         </TableHead>
                         <TableHead
-                          className="text-[10px] font-bold uppercase tracking-widest cursor-pointer hover:bg-muted transition-colors min-w-[120px]"
+                          className="text-[10px] font-black uppercase tracking-widest text-neutral-600 dark:text-neutral-400 py-2 px-3 cursor-pointer hover:bg-neutral-200/50 dark:hover:bg-neutral-800 transition-colors min-w-[120px]"
                           onClick={() => toggleSort('category')}
                         >
                           <div className="flex items-center gap-1">
-                            Category {sortKey === 'category' ? (sortDirection === 'asc' ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />) : <ArrowUpDown className="w-2.5 h-2.5 opacity-30" />}
+                            Category {sortKey === 'category' ? (sortDirection === 'asc' ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />) : <ArrowUpDown className="w-2.5 h-2.5 opacity-40" />}
                           </div>
                         </TableHead>
                         <TableHead
-                          className="text-[10px] font-bold uppercase tracking-widest cursor-pointer hover:bg-muted transition-colors min-w-[200px]"
+                          className="text-[10px] font-black uppercase tracking-widest text-neutral-600 dark:text-neutral-400 py-2 px-3 cursor-pointer hover:bg-neutral-200/50 dark:hover:bg-neutral-800 transition-colors min-w-[200px]"
                           onClick={() => toggleSort('orderId')}
                         >
                           <div className="flex items-center gap-1">
-                            Order / Desc {sortKey === 'orderId' ? (sortDirection === 'asc' ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />) : <ArrowUpDown className="w-2.5 h-2.5 opacity-30" />}
+                            Order / Description {sortKey === 'orderId' ? (sortDirection === 'asc' ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />) : <ArrowUpDown className="w-2.5 h-2.5 opacity-40" />}
                           </div>
                         </TableHead>
                         <TableHead
-                          className="text-[10px] font-bold uppercase tracking-widest text-right cursor-pointer hover:bg-muted transition-colors min-w-[100px]"
+                          className="text-[10px] font-black uppercase tracking-widest text-neutral-600 dark:text-neutral-400 py-2 px-3 text-right cursor-pointer hover:bg-neutral-200/50 dark:hover:bg-neutral-800 transition-colors min-w-[100px]"
                           onClick={() => toggleSort('amount')}
                         >
                           <div className="flex items-center justify-end gap-1">
-                            Amount {sortKey === 'amount' ? (sortDirection === 'asc' ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />) : <ArrowUpDown className="w-2.5 h-2.5 opacity-30" />}
+                            Amount {sortKey === 'amount' ? (sortDirection === 'asc' ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />) : <ArrowUpDown className="w-2.5 h-2.5 opacity-40" />}
                           </div>
                         </TableHead>
-                        <TableHead className="text-[10px] font-bold uppercase tracking-widest text-right min-w-[100px]">Actions</TableHead>
+                        <TableHead className="text-[10px] font-black uppercase tracking-widest text-neutral-600 dark:text-neutral-400 py-2 px-3 text-right min-w-[80px]">Actions</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
                       {sortedExpenses.map((e) => {
                         const linkedOrder = e.orderId ? orders.find(o => o.id === e.orderId) : null;
                         return (
-                          <TableRow key={e.id} className="group">
-                            <TableCell className="text-xs text-muted-foreground font-medium">
+                          <TableRow key={e.id} className="group hover:bg-muted/30 border-b border-border/50">
+                            <TableCell className="text-xs text-muted-foreground font-mono py-1.5 px-3">
                               {parseDate(e.date)?.toLocaleDateString() ?? 'N/A'}
                             </TableCell>
-                            <TableCell>
-                              <Badge variant="outline" className="text-[9px] font-black uppercase bg-muted border-border text-muted-foreground">
+                            <TableCell className="py-1.5 px-3">
+                              <span className="text-[9px] font-black uppercase tracking-wider px-2 py-0.5 rounded-sm bg-neutral-100 text-neutral-700 border border-neutral-300 dark:bg-neutral-800 dark:text-neutral-300 dark:border-neutral-700">
                                 {e.category}
-                              </Badge>
+                              </span>
                             </TableCell>
-                            <TableCell className="text-xs font-semibold text-foreground max-w-[250px]">
+                            <TableCell className="text-xs font-semibold text-foreground max-w-[250px] py-1.5 px-3">
                               <div className="flex flex-col">
                                 {linkedOrder && (
-                                  <span className="text-[9px] font-bold text-emerald-600 uppercase tracking-tighter mb-0.5">
+                                  <span className="text-[9px] font-bold text-emerald-600 dark:text-emerald-400 uppercase tracking-tighter">
                                     Linked Order: {linkedOrder.orderNumber}
                                   </span>
                                 )}
                                 <span className="truncate">{e.description}</span>
                               </div>
                             </TableCell>
-                            <TableCell className="text-right font-black text-xs text-red-600">
-                              -₱{e.amount.toLocaleString()}
+                            <TableCell className="text-right font-black font-mono tabular-nums text-xs text-red-600 dark:text-red-400 py-1.5 px-3">
+                              -₱{e.amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                             </TableCell>
-                            <TableCell className="text-right">
+                            <TableCell className="text-right py-1.5 px-3">
                               <div className="flex justify-end gap-1">
                                 <Button
                                   variant="ghost"
                                   size="icon"
-                                  className="h-7 w-7 text-muted-foreground hover:text-foreground hover:bg-muted"
+                                  className="h-6 w-6 rounded-sm text-muted-foreground hover:text-foreground hover:bg-muted"
                                   onClick={() => {
                                     setEditingExpense(e);
                                     setIsEditExpenseOpen(true);
                                   }}
                                 >
-                                  <Edit2 className="w-3.5 h-3.5" />
+                                  <Edit2 className="w-3 h-3" />
                                 </Button>
                                 <Button
                                   variant="ghost"
                                   size="icon"
-                                  className="h-7 w-7 text-muted-foreground hover:text-red-500 hover:bg-red-500/10"
+                                  className="h-6 w-6 rounded-sm text-muted-foreground hover:text-red-500 hover:bg-red-500/10"
                                   onClick={() => handleDeleteExpense(e.id)}
                                 >
-                                  <Trash2 className="w-3.5 h-3.5" />
+                                  <Trash2 className="w-3 h-3" />
                                 </Button>
                               </div>
                             </TableCell>
                           </TableRow>
                         );
                       })}
-                      {expenses.length === 0 && (
+                      {sortedExpenses.length === 0 && (
                         <TableRow>
-                          <TableCell colSpan={5} className="text-center h-24 text-zinc-400 text-xs italic">
-                            No expense records found.
+                          <TableCell colSpan={5} className="text-center py-6 text-xs italic text-muted-foreground">
+                            No operational expense records found.
                           </TableCell>
                         </TableRow>
                       )}
@@ -2626,25 +2605,26 @@ export function Finance() {
           )}
 
           <Dialog open={isEditExpenseOpen} onOpenChange={setIsEditExpenseOpen}>
-            <DialogContent>
-              <DialogHeader>
-                <DialogTitle>Edit Expense Record</DialogTitle>
-                <DialogDescription>Modify existing financial expenditure data.</DialogDescription>
+            <DialogContent className="rounded-sm max-w-md border border-border shadow-lg p-5">
+              <DialogHeader className="pb-2 border-b border-border">
+                <DialogTitle className="text-sm font-black uppercase tracking-wider">Edit Expense Record</DialogTitle>
+                <DialogDescription className="text-xs text-muted-foreground">Modify existing financial expenditure data.</DialogDescription>
               </DialogHeader>
               {editingExpense && (
-                <form onSubmit={handleUpdateExpense} className="space-y-4 pt-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="edit-expense-category">Category</Label>
+                <form onSubmit={handleUpdateExpense} className="space-y-3.5 pt-3 font-sans">
+                  <div className="space-y-1">
+                    <Label htmlFor="edit-expense-category" className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Category</Label>
                     <Select name="category" defaultValue={editingExpense.category}>
-                      <SelectTrigger id="edit-expense-category">
+                      <SelectTrigger id="edit-expense-category" className="rounded-sm border-border h-8 text-xs">
                         <SelectValue placeholder="Select classification" />
                       </SelectTrigger>
-                      <SelectContent>
+                      <SelectContent className="rounded-sm">
                         {categories.map(cat => (
                           <SelectItem
                             key={cat.id}
                             value={cat.name}
                             disabled={!cat.isActive && editingExpense.category !== cat.name}
+                            className="text-xs font-semibold"
                           >
                             {cat.name} {!cat.isActive && '(Archived)'}
                           </SelectItem>
@@ -2652,8 +2632,8 @@ export function Finance() {
                       </SelectContent>
                     </Select>
                   </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="edit-expense-date">Expense Date</Label>
+                  <div className="space-y-1">
+                    <Label htmlFor="edit-expense-date" className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Expense Date</Label>
                     <Input
                       id="edit-expense-date"
                       name="date"
@@ -2667,28 +2647,29 @@ export function Finance() {
                           : new Date().toISOString().split('T')[0]
                       }
                       required
+                      className="rounded-sm border-border h-8 text-xs font-mono"
                     />
                   </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="edit-expense-amount">Amount (₱)</Label>
-                    <Input id="edit-expense-amount" name="amount" type="number" step="0.01" defaultValue={editingExpense.amount} required />
+                  <div className="space-y-1">
+                    <Label htmlFor="edit-expense-amount" className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Amount (₱)</Label>
+                    <Input id="edit-expense-amount" name="amount" type="number" step="0.01" defaultValue={editingExpense.amount} required className="rounded-sm border-border h-8 text-xs font-mono font-bold tabular-nums" />
                   </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="edit-expense-description">Description</Label>
-                    <Input id="edit-expense-description" name="description" defaultValue={editingExpense.description} placeholder="Details about the expense..." />
+                  <div className="space-y-1">
+                    <Label htmlFor="edit-expense-description" className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Description</Label>
+                    <Input id="edit-expense-description" name="description" defaultValue={editingExpense.description} placeholder="Details about the expense..." className="rounded-sm border-border h-8 text-xs" />
                   </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="edit-expense-orderId">Linked Order (Optional)</Label>
+                  <div className="space-y-1">
+                    <Label htmlFor="edit-expense-orderId" className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Linked Order (Optional)</Label>
                     <Select name="orderId" defaultValue={editingExpense.orderId || 'none'}>
-                      <SelectTrigger id="edit-expense-orderId" className="w-full">
+                      <SelectTrigger id="edit-expense-orderId" className="w-full rounded-sm border-border h-8 text-xs">
                         <SelectValue placeholder="No order linked" />
                       </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="none">None / General Expense</SelectItem>
+                      <SelectContent className="rounded-sm">
+                        <SelectItem value="none" className="text-xs font-semibold">None / General Expense</SelectItem>
                         {orders
                           .sort((a, b) => b.orderNumber.localeCompare(a.orderNumber))
                           .map(order => (
-                            <SelectItem key={order.id} value={order.id}>
+                            <SelectItem key={order.id} value={order.id} className="text-xs font-semibold">
                               {order.orderNumber} - {order.clientName}
                             </SelectItem>
                           ))
@@ -2696,8 +2677,8 @@ export function Finance() {
                       </SelectContent>
                     </Select>
                   </div>
-                  <DialogFooter>
-                    <Button type="submit" className="w-full">Save Changes</Button>
+                  <DialogFooter className="pt-2">
+                    <Button type="submit" className="w-full h-8 bg-[#1A2332] text-white font-bold uppercase tracking-wider text-xs rounded-sm hover:bg-[#1A2332]/90 shadow-none">Save Changes</Button>
                   </DialogFooter>
                 </form>
               )}
@@ -2708,19 +2689,19 @@ export function Finance() {
 
         {/* Financial Policy & Compliance Sidebar */}
         <div className="w-full lg:w-80 space-y-4">
-          <Card className="border-border bg-card">
-            <CardHeader className="pb-3 border-b border-border">
+          <div className="border border-border bg-card rounded-sm shadow-none overflow-hidden">
+            <div className="p-3 border-b border-border bg-muted/20">
               <div className="flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2">
                   <PieChartIcon className="h-4 w-4 text-[#fdd001]" />
-                  <CardTitle className="text-xs font-black uppercase tracking-widest text-foreground">Expense Allocation</CardTitle>
+                  <div className="text-xs font-black uppercase tracking-widest text-foreground">Expense Allocation</div>
                 </div>
-                <div className="flex items-center bg-muted/60 p-0.5 rounded-lg border border-border/50 text-[10px]">
+                <div className="flex items-center bg-muted/80 p-0.5 rounded-sm border border-border text-[9px]">
                   <button
                     type="button"
                     onClick={() => setExpenseScope('opex')}
-                    className={`px-2 py-0.5 rounded font-bold transition-all ${expenseScope === 'opex'
-                      ? 'bg-primary text-primary-foreground shadow-xs'
+                    className={`px-2 py-0.5 rounded-xs font-bold transition-all ${expenseScope === 'opex'
+                      ? 'bg-[#1A2332] text-white shadow-none'
                       : 'text-muted-foreground hover:text-foreground'
                       }`}
                     title="Operating Expenses (Excludes COGS to reveal operational spend)"
@@ -2730,8 +2711,8 @@ export function Finance() {
                   <button
                     type="button"
                     onClick={() => setExpenseScope('all')}
-                    className={`px-2 py-0.5 rounded font-bold transition-all ${expenseScope === 'all'
-                      ? 'bg-primary text-primary-foreground shadow-xs'
+                    className={`px-2 py-0.5 rounded-xs font-bold transition-all ${expenseScope === 'all'
+                      ? 'bg-[#1A2332] text-white shadow-none'
                       : 'text-muted-foreground hover:text-foreground'
                       }`}
                     title="All Spend (Macro view including Cost of Goods Sold)"
@@ -2740,11 +2721,11 @@ export function Finance() {
                   </button>
                 </div>
               </div>
-              <CardDescription className="text-[10px] font-medium text-muted-foreground mt-0.5">
+              <div className="text-[10px] font-medium text-muted-foreground mt-1">
                 {expenseScope === 'opex' ? 'Operational Spend Breakdown' : 'Total Spend Breakdown'} &bull; {selectedPeriod === '2025' ? 'FY 2025 (Audited)' : selectedPeriod === '2026' ? 'FY 2026 (Live Ops)' : 'All Periods'}
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="pt-4">
+              </div>
+            </div>
+            <div className="p-3">
               <div className="h-[190px] w-full">
                 {pieData.length > 0 ? (
                   <ResponsiveContainer width="100%" height="100%">
@@ -2769,13 +2750,12 @@ export function Finance() {
                       </Pie>
                       <Tooltip
                         contentStyle={{
-                          borderRadius: '8px',
-                          border: '1px solid hsl(var(--border))',
-                          backgroundColor: 'hsl(var(--popover))',
-                          color: 'hsl(var(--popover-foreground))',
+                          borderRadius: '2px',
+                          border: '1px solid #302f2f',
+                          backgroundColor: '#1A2332',
+                          color: '#ffffff',
                           fontSize: '11px',
                           fontWeight: 'bold',
-                          boxShadow: '0 4px 12px rgba(0,0,0,0.15)'
                         }}
                         formatter={(value: number, name: string) => {
                           const total = pieData.reduce((acc, curr) => acc + curr.value, 0);
@@ -2800,7 +2780,7 @@ export function Finance() {
               </div>
 
               {pieData.length > 0 && (
-                <div className="mt-3 space-y-1.5">
+                <div className="mt-3 space-y-1.5 border-t border-border pt-2.5">
                   {(showAllCategories ? pieData : pieData.slice(0, 4)).map((item, index) => {
                     const total = pieData.reduce((acc, curr) => acc + curr.value, 0);
                     const pct = total > 0 ? ((item.value / total) * 100).toFixed(1) : '0.0';
@@ -2808,7 +2788,7 @@ export function Finance() {
                       <div key={item.name} className="flex items-center justify-between text-[10px] py-0.5">
                         <div className="flex items-center gap-2 min-w-0">
                           <div
-                            className="w-2.5 h-2.5 rounded-full shrink-0"
+                            className="w-2 h-2 rounded-xs shrink-0"
                             style={{ backgroundColor: PIE_COLORS[index % PIE_COLORS.length] }}
                           />
                           <span className="font-bold text-muted-foreground truncate" title={item.name}>
@@ -2816,10 +2796,10 @@ export function Finance() {
                           </span>
                         </div>
                         <div className="flex items-center gap-1.5 shrink-0 ml-2">
-                          <span className="text-[9px] font-semibold text-muted-foreground bg-muted px-1.5 py-0.5 rounded">
+                          <span className="text-[9px] font-bold text-muted-foreground bg-muted px-1.5 py-0.2 rounded-xs border border-border">
                             {pct}%
                           </span>
-                          <span className="font-mono font-black text-foreground">
+                          <span className="font-mono tabular-nums font-black text-foreground">
                             ₱{item.value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                           </span>
                         </div>
@@ -2841,21 +2821,21 @@ export function Finance() {
                   )}
                 </div>
               )}
-            </CardContent>
-          </Card>
+            </div>
+          </div>
 
-          <Card className="border-[#1A2332] bg-[#1A2332] text-white overflow-hidden shadow-sm">
-            <div className="p-4 space-y-2">
-              <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-white/60">System Report Generator</h4>
-              <p className="text-xs text-zinc-300 leading-normal">
-                Export the audited Q1 2025 Profit & Loss statement for external CPA, executive, and regulatory audit.
+          <div className="border border-[#243044] bg-[#1A2332] text-white rounded-sm overflow-hidden shadow-none">
+            <div className="p-3.5 space-y-1.5">
+              <h4 className="text-[9px] font-black uppercase tracking-[0.2em] text-[#fdd001]">Official Report Generator</h4>
+              <p className="text-xs text-slate-300 leading-normal">
+                Export audited and live Profit & Loss statements for external CPA, executive, and regulatory audit review.
               </p>
             </div>
-            <Button className="w-full rounded-none h-12 bg-white text-black hover:bg-zinc-200 font-bold tracking-tight gap-2" onClick={exportPLStatementCSV}>
-              <Download className="w-4 h-4 text-emerald-700" />
+            <Button className="w-full rounded-none h-9 bg-white text-[#1A2332] hover:bg-slate-100 font-bold uppercase tracking-wider text-[10px] gap-2 border-t border-[#243044]" onClick={exportPLStatementCSV}>
+              <Download className="w-3.5 h-3.5 text-emerald-600" />
               Generate Monthly P&L (CSV)
             </Button>
-          </Card>
+          </div>
           {/* QuickBooks CSV Importer Dialog */}
           <QuickBooksImportModal
             isOpen={isQBImportOpen}
