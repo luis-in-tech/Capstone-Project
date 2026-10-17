@@ -1,6 +1,6 @@
 import { hasAdminRole } from '../lib/staffPermissions';
 import { useStaffAccess } from '../hooks/useStaffAccess';
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { db } from '../lib/supabaseAdapter';
 import { collection, onSnapshot, query, where, addDoc, updateDoc, doc, serverTimestamp, deleteDoc } from '../lib/supabaseAdapter';
@@ -12,7 +12,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Card, CardContent } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter, DialogDescription } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
-import { MagnifyingGlassIcon as Search, PlusIcon as Plus, QrCodeIcon as QrCode, PackageIcon as Package, WarehouseIcon, WarningIcon as AlertTriangle, EyeIcon as Eye, CurrencyCircleDollarIcon as CircleDollarSign, SlidersHorizontalIcon as SlidersHorizontal, TagIcon as Tag, PencilIcon as Pencil, TrashIcon as Trash2, ImageSquareIcon as ImagePlus, XIcon as X, DownloadIcon as Download, UploadSimpleIcon as Upload, FileXlsIcon as FileSpreadsheet, FileTextIcon as FileText, ChartBarIcon as BarChart3, InfoIcon as Info, PrinterIcon as Printer } from '@phosphor-icons/react';
+import { MagnifyingGlassIcon as Search, PlusIcon as Plus, QrCodeIcon as QrCode, PackageIcon as Package, WarehouseIcon, WarningIcon as AlertTriangle, EyeIcon as Eye, CurrencyCircleDollarIcon as CircleDollarSign, SlidersHorizontalIcon as SlidersHorizontal, TagIcon as Tag, PencilIcon as Pencil, TrashIcon as Trash2, ImageSquareIcon as ImagePlus, XIcon as X, DownloadIcon as Download, UploadSimpleIcon as Upload, FileXlsIcon as FileSpreadsheet, FileTextIcon as FileText, ChartBarIcon as BarChart3, InfoIcon as Info, PrinterIcon as Printer, CaretLeftIcon as ChevronLeft, CaretRightIcon as ChevronRight } from '@phosphor-icons/react';
 import { QRCodeSVG } from 'qrcode.react';
 import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -160,10 +160,28 @@ export function Inventory() {
     return (a.name || '').localeCompare(b.name || '', undefined, { numeric: true, sensitivity: 'base' });
   };
 
-  const parentProducts = products
-    .filter(p => !p.parentProductId)
-    .sort(compareProducts);
-  const childrenOf = (id: string) => products.filter(p => p.parentProductId === id).sort(compareProducts);
+  const childrenMap = useMemo(() => {
+    const map = new Map<string, Product[]>();
+    for (const p of products) {
+      if (p.parentProductId) {
+        const list = map.get(p.parentProductId) || [];
+        list.push(p);
+        map.set(p.parentProductId, list);
+      }
+    }
+    for (const [key, list] of map.entries()) {
+      map.set(key, list.sort(compareProducts));
+    }
+    return map;
+  }, [products]);
+
+  const childrenOf = (id: string) => childrenMap.get(id) || [];
+
+  const parentProducts = useMemo(() => {
+    return products
+      .filter(p => !p.parentProductId)
+      .sort(compareProducts);
+  }, [products]);
   const hasStock = (ids: string[]) => inventory.some(i => ids.includes(i.productId) && i.quantity !== 0);
   const variantModeLocked = !!editingProduct && hasStock([editingProduct.id, ...childrenOf(editingProduct.id).map(p => p.id)]);
   const adjustmentProduct = selectedProduct?.hasVariations ? childrenOf(selectedProduct.id).find(p => p.id === selectedVariantId) : selectedProduct;
@@ -345,7 +363,7 @@ export function Inventory() {
       toast.error('SKU Code is required.');
       return;
     }
-    if (products.some(p => p.sku.trim().toLowerCase() === sku.toLowerCase())) {
+    if (products.some(p => (p.sku || '').trim().toLowerCase() === sku.toLowerCase())) {
       toast.error(`SKU Code must be unique. A product with SKU "${sku}" already exists.`);
       return;
     }
@@ -353,7 +371,7 @@ export function Inventory() {
       toast.error('Item Name is required.');
       return;
     }
-    if (products.some(p => p.name.trim().toLowerCase() === name.toLowerCase())) {
+    if (products.some(p => (p.name || '').trim().toLowerCase() === name.toLowerCase())) {
       toast.error(`Item Name must be unique. A product named "${name}" already exists.`);
       return;
     }
@@ -437,9 +455,9 @@ export function Inventory() {
       const sheet = workbook.Sheets[workbook.SheetNames[0]];
       if (!sheet) throw new Error('The workbook does not contain a worksheet.');
       const rows = XLSX.utils.sheet_to_json<ImportRow>(sheet, { defval: '' });
-      const existingSkus = new Set(products.map((product) => product.sku.trim().toLowerCase()));
+      const existingSkus = new Set(products.map((product) => (product.sku || '').trim().toLowerCase()).filter(Boolean));
       const fileSkus = new Set<string>();
-      const existingNames = new Set(products.map((product) => product.name.trim().toLowerCase()));
+      const existingNames = new Set(products.map((product) => (product.name || '').trim().toLowerCase()).filter(Boolean));
       const fileNames = new Set<string>();
       const preview = rows.map((row, index) => {
         const sku = String(row['SKU Code'] ?? '').trim();
@@ -522,7 +540,7 @@ export function Inventory() {
       toast.error('SKU Code is required.');
       return;
     }
-    if (products.some((product) => product.id !== editingProduct.id && product.sku.trim().toLowerCase() === sku.toLowerCase())) {
+    if (products.some((product) => product.id !== editingProduct.id && (product.sku || '').trim().toLowerCase() === sku.toLowerCase())) {
       toast.error(`SKU Code must be unique. A product with SKU "${sku}" already exists.`);
       return;
     }
@@ -530,7 +548,7 @@ export function Inventory() {
       toast.error('Item Name is required.');
       return;
     }
-    if (products.some((product) => product.id !== editingProduct.id && product.name.trim().toLowerCase() === name.toLowerCase())) {
+    if (products.some((product) => product.id !== editingProduct.id && (product.name || '').trim().toLowerCase() === name.toLowerCase())) {
       toast.error(`Item Name must be unique. A product named "${name}" already exists.`);
       return;
     }
@@ -658,15 +676,40 @@ export function Inventory() {
     }
   };
 
+  // Memoized stock lookup map: key `${productId}:${warehouseId}` and `${productId}:all`
+  const stockMap = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const item of inventory) {
+      const qty = Number(item.quantity) || 0;
+      const whKey = `${item.productId}:${item.warehouseId}`;
+      map.set(whKey, (map.get(whKey) || 0) + qty);
+
+      const allKey = `${item.productId}:all`;
+      map.set(allKey, (map.get(allKey) || 0) + Math.max(0, qty));
+    }
+    return map;
+  }, [inventory]);
+
   const getStockCount = (productId: string, warehouseId?: string) => {
-    return stockForProduct(products, inventory, productId, warehouseId);
+    const targetWh = !warehouseId || warehouseId === 'all' ? 'all' : warehouseId;
+    const children = childrenMap.get(productId);
+    if (children && children.length > 0) {
+      let sum = 0;
+      for (const child of children) {
+        if (child.variantEnabled !== false) {
+          sum += stockMap.get(`${child.id}:${targetWh}`) || 0;
+        }
+      }
+      return sum;
+    }
+    return stockMap.get(`${productId}:${targetWh}`) || 0;
   };
 
   // Check if any individual warehouse has stock at or below zero for a product
   const hasAnyWarehouseDeficit = (productId: string) => {
     return warehouses.some(wh => {
-      const item = inventory.find(i => i.productId === productId && i.warehouseId === wh.id);
-      return item !== undefined && item.quantity <= 0;
+      const qty = stockMap.get(`${productId}:${wh.id}`);
+      return qty !== undefined && qty <= 0;
     });
   };
 
@@ -674,8 +717,7 @@ export function Inventory() {
   const hasAnyWarehouseLowStock = (productId: string, product: Product) => {
     const threshold = product.reorderPoint || product.minStockLevel || 0;
     return warehouses.some(wh => {
-      const item = inventory.find(i => i.productId === productId && i.warehouseId === wh.id);
-      const qty = item?.quantity || 0;
+      const qty = stockMap.get(`${productId}:${wh.id}`) || 0;
       return qty > 0 && qty <= threshold;
     });
   };
@@ -692,21 +734,22 @@ export function Inventory() {
   const supplierOptions = Array.from(new Set(['N/A', ...suppliers])).filter(Boolean).sort();
 
   const isAddSkuDuplicate = Boolean(
-    addSku.trim() && products.some(p => p.sku.trim().toLowerCase() === addSku.trim().toLowerCase())
+    addSku.trim() && products.some(p => (p.sku || '').trim().toLowerCase() === addSku.trim().toLowerCase())
   );
   const isAddNameDuplicate = Boolean(
-    cleanItemName(addName).trim() && products.some(p => p.name.trim().toLowerCase() === cleanItemName(addName).trim().toLowerCase())
+    cleanItemName(addName).trim() && products.some(p => (p.name || '').trim().toLowerCase() === cleanItemName(addName).trim().toLowerCase())
   );
 
   const isEditSkuDuplicate = Boolean(
     editingProduct && editSku.trim() &&
-    products.some(p => p.id !== editingProduct.id && p.sku.trim().toLowerCase() === editSku.trim().toLowerCase())
+    products.some(p => p.id !== editingProduct.id && (p.sku || '').trim().toLowerCase() === editSku.trim().toLowerCase())
   );
   const isEditNameDuplicate = Boolean(
     editingProduct && cleanItemName(editName).trim() &&
-    products.some(p => p.id !== editingProduct.id && p.name.trim().toLowerCase() === cleanItemName(editName).trim().toLowerCase())
+    products.some(p => p.id !== editingProduct.id && (p.name || '').trim().toLowerCase() === cleanItemName(editName).trim().toLowerCase())
   );
-  const getProductStatus = (product: Product, stock: number, _checkWarehouseId?: string) => {
+
+  const getProductStatus = (product: Product, stock: number, _checkWarehouseId?: string): 'in' | 'low' | 'out' => {
     if (product.hasVariations) {
       const variants = childrenOf(product.id).filter(p => p.variantEnabled !== false);
       const statuses = variants.map(p => getProductStatus(p, getStockCount(p.id, _checkWarehouseId), _checkWarehouseId));
@@ -718,34 +761,68 @@ export function Inventory() {
     if (stock <= threshold) return 'low';
     return 'in';
   };
-  const filteredProducts = parentProducts.filter(product => {
+
+  const filteredProducts = useMemo(() => {
     const term = searchTerm.trim().toLowerCase();
-    const stock = getStockCount(product.id, warehouseFilter);
-    const matchesSearch = [product.name, product.sku, product.category, product.supplier, ...childrenOf(product.id).flatMap(p => [p.sku, variantLabel(p)])]
-      .some(value => (value || '').toLowerCase().includes(term));
-    return matchesSearch
-      && (categoryFilter === 'all' || (product.category || 'Uncategorized') === categoryFilter)
-      && (supplierFilter === 'all' || product.supplier === supplierFilter)
-      && (stockFilter === 'all' || getProductStatus(product, stock, warehouseFilter) === stockFilter)
-      && (!hideZeroStock || stock > 0);
-  }).sort(compareProducts);
+    return parentProducts.filter(product => {
+      const stock = getStockCount(product.id, warehouseFilter);
+      const matchesSearch = !term || [
+        product.name,
+        product.sku,
+        product.category,
+        product.supplier,
+        ...(childrenMap.get(product.id) || []).flatMap(p => [p.sku, variantLabel(p)])
+      ].some(value => (value || '').toLowerCase().includes(term));
+
+      return matchesSearch
+        && (categoryFilter === 'all' || (product.category || 'Uncategorized') === categoryFilter)
+        && (supplierFilter === 'all' || product.supplier === supplierFilter)
+        && (stockFilter === 'all' || getProductStatus(product, stock, warehouseFilter) === stockFilter)
+        && (!hideZeroStock || stock > 0);
+    });
+  }, [parentProducts, searchTerm, warehouseFilter, categoryFilter, supplierFilter, stockFilter, hideZeroStock, stockMap, childrenMap]);
 
   const totalProducts = parentProducts.length;
-  const lowStockProducts = parentProducts.filter(product => {
-    const stock = getStockCount(product.id, warehouseFilter);
-    return getProductStatus(product, stock, warehouseFilter) === 'low';
-  }).length;
 
-  const outOfStockProducts = parentProducts.filter(product => {
-    const stock = getStockCount(product.id, warehouseFilter);
-    return getProductStatus(product, stock, warehouseFilter) === 'out';
-  }).length;
+  const { lowStockProducts, outOfStockProducts, inventoryValue } = useMemo(() => {
+    let low = 0;
+    let out = 0;
+    for (const product of parentProducts) {
+      const stock = getStockCount(product.id, warehouseFilter);
+      const status = getProductStatus(product, stock, warehouseFilter);
+      if (status === 'low') low++;
+      else if (status === 'out') out++;
+    }
 
-  const inventoryValue = products.reduce((total, product) => {
-    if (product.hasVariations) return total;
-    const unitVal = (product.costPrice && product.costPrice > 0) ? product.costPrice : (product.basePrice || 0);
-    return total + unitVal * Math.max(0, getStockCount(product.id, warehouseFilter));
-  }, 0);
+    let totalVal = 0;
+    for (const product of products) {
+      if (product.hasVariations) continue;
+      const unitVal = (product.costPrice && product.costPrice > 0) ? product.costPrice : (product.basePrice || 0);
+      totalVal += unitVal * Math.max(0, getStockCount(product.id, warehouseFilter));
+    }
+
+    return {
+      lowStockProducts: low,
+      outOfStockProducts: out,
+      inventoryValue: totalVal
+    };
+  }, [parentProducts, products, warehouseFilter, stockMap, childrenMap]);
+
+  // Pagination state for rapid DOM rendering (50 rows/page)
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState<number>(50);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchTerm, warehouseFilter, categoryFilter, supplierFilter, stockFilter, hideZeroStock, pageSize]);
+
+  const totalPages = Math.max(1, Math.ceil(filteredProducts.length / pageSize));
+  const safeCurrentPage = Math.min(currentPage, totalPages);
+
+  const paginatedProducts = useMemo(() => {
+    const start = (safeCurrentPage - 1) * pageSize;
+    return filteredProducts.slice(start, start + pageSize);
+  }, [filteredProducts, safeCurrentPage, pageSize]);
 
   const variantRange = (product: Product, key: typeof variantFields[number][0]) => {
     const values = childrenOf(product.id).filter(p => p.variantEnabled !== false && (key !== 'promoPrice' || p.promoPrice != null)).map(p => Number(p[key] || 0));
@@ -1058,40 +1135,202 @@ export function Inventory() {
       <div className="overflow-hidden rounded-2xl border border-border/70 bg-card shadow-sm">
         <div className="overflow-x-auto">
           <Table>
-            <TableHeader className="bg-muted/40"><TableRow><TableHead className="w-12 text-center text-[10px] font-bold uppercase">#</TableHead><TableHead className="min-w-28 text-[10px] font-bold uppercase">SKU</TableHead><TableHead className="min-w-64 text-[10px] font-bold uppercase">Product</TableHead><TableHead className="min-w-36 text-[10px] font-bold uppercase">Pricing (₱)</TableHead><TableHead className="min-w-24 text-[10px] font-bold uppercase">Cost (₱)</TableHead><TableHead className="min-w-28 text-center text-[10px] font-bold uppercase">Stock</TableHead><TableHead className="min-w-32 text-[10px] font-bold uppercase">Stock Levels</TableHead><TableHead className="min-w-40 text-[10px] font-bold uppercase">Supplier</TableHead><TableHead className="min-w-32 text-center text-[10px] font-bold uppercase">Status</TableHead><TableHead className="min-w-28 text-right text-[10px] font-bold uppercase">Actions</TableHead></TableRow></TableHeader>
+            <TableHeader className="bg-muted/40">
+              <TableRow>
+                <TableHead className="w-10 text-center text-[10px] font-bold uppercase px-2">#</TableHead>
+                <TableHead className="w-28 text-[10px] font-bold uppercase px-2">SKU</TableHead>
+                <TableHead className="min-w-[190px] max-w-[260px] text-[10px] font-bold uppercase px-2">Product</TableHead>
+                <TableHead className="w-32 text-[10px] font-bold uppercase px-2">Pricing (₱)</TableHead>
+                <TableHead className="w-20 text-[10px] font-bold uppercase px-2">Cost (₱)</TableHead>
+                <TableHead className="w-24 text-center text-[10px] font-bold uppercase px-2">Stock</TableHead>
+                <TableHead className="w-24 text-[10px] font-bold uppercase px-2">Stock Levels</TableHead>
+                <TableHead className="w-28 text-[10px] font-bold uppercase px-2">Supplier</TableHead>
+                <TableHead className="w-24 text-center text-[10px] font-bold uppercase px-2">Status</TableHead>
+                <TableHead className="sticky right-0 z-20 bg-muted/95 backdrop-blur w-[180px] min-w-[180px] text-right text-[10px] font-bold uppercase px-3 shadow-[-4px_0_8px_-2px_rgba(0,0,0,0.06)]">Actions</TableHead>
+              </TableRow>
+            </TableHeader>
             <TableBody>
-              {filteredProducts.map((product, index) => {
+              {paginatedProducts.map((product, index) => {
                 const stock = getStockCount(product.id, warehouseFilter);
                 const status = getProductStatus(product, stock, warehouseFilter);
                 const statusClass = status === 'out' ? 'border-red-200 bg-red-50 text-red-600' : status === 'low' ? 'border-amber-200 bg-amber-50 text-amber-600' : 'border-emerald-200 bg-emerald-50 text-emerald-600';
                 return (
-                  <TableRow key={product.id} className="cursor-pointer hover:bg-muted/30" onClick={() => { setSelectedProduct(product); setIsDetailOpen(true); }}>
-                    <TableCell className="text-center font-mono text-xs text-muted-foreground">{index + 1}</TableCell>
-                    <TableCell className="font-mono text-xs text-muted-foreground">{product.sku}</TableCell>
-                    <TableCell><div className="flex items-center gap-3"><div className="flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-border bg-muted">{product.photoUrl ? <img src={product.photoUrl} alt={cleanItemName(product.name)} className="h-full w-full object-cover" /> : <Package className="h-5 w-5 text-muted-foreground" />}</div><div className="min-w-0"><p className="truncate text-sm font-bold">{cleanItemName(product.name)}</p>{product.hasVariations && <Badge variant="secondary" className="my-1 text-[10px]">{childrenOf(product.id).filter(v => v.variantEnabled !== false).length} Variants</Badge>}<p className="truncate text-xs text-muted-foreground">{product.category || 'Uncategorized'}</p></div></div></TableCell>
-                    <TableCell>{product.hasVariations ? <div className="space-y-1 text-xs">{variantFields.slice(0, 3).map(([key, label]) => <p key={key}><span className="text-muted-foreground">{label}: </span><strong>{variantRange(product, key)}</strong></p>)}</div> : <div className="grid grid-cols-[2.75rem_auto] text-xs"><span className="text-muted-foreground">Retail:</span><strong>₱{(product.basePrice || 0).toLocaleString()}</strong><span className="text-muted-foreground">MM:</span><strong>₱{(product.mmPrice ?? product.wholesalePrice ?? 0).toLocaleString()}</strong><span className="text-muted-foreground">Prov.:</span><strong>₱{(product.provincialPrice ?? product.dealerPrice ?? 0).toLocaleString()}</strong></div>}</TableCell>
-                    <TableCell className="text-sm font-semibold">{product.hasVariations ? variantRange(product, 'costPrice') : `₱${(product.costPrice || 0).toLocaleString()}`}</TableCell>
-                    <TableCell className="text-center"><Badge variant="outline" className={'rounded-full px-3 ' + statusClass}>{stock.toLocaleString()} units</Badge></TableCell>
-                    <TableCell>{product.hasVariations ? <span className="text-xs text-muted-foreground">Per variant</span> : <div className="text-xs"><p><span className="text-muted-foreground">Minimum:</span> <strong>{product.minStockLevel || 0}</strong></p><p><span className="text-muted-foreground">Reorder:</span> <strong>{product.reorderPoint || 0}</strong></p></div>}</TableCell>
-                    <TableCell><p className="text-sm font-bold">{product.supplier || 'Supplier'}</p><p className="text-xs text-muted-foreground">Main Supplier</p></TableCell>
-                    <TableCell className="text-center"><Badge variant="outline" className={'rounded-full ' + statusClass}>{status === 'out' ? '● Out of Stock' : status === 'low' ? '● Low Stock' : '● In Stock'}</Badge></TableCell>
-                    <TableCell className="text-right" onClick={(event) => event.stopPropagation()}>
+                  <TableRow key={product.id} className="group cursor-pointer hover:bg-muted/40 transition-colors" onClick={() => { setSelectedProduct(product); setIsDetailOpen(true); }}>
+                    <TableCell className="w-10 text-center font-mono text-xs text-muted-foreground px-2 py-2">
+                      {(safeCurrentPage - 1) * pageSize + index + 1}
+                    </TableCell>
+                    <TableCell className="w-28 font-mono text-xs text-muted-foreground px-2 py-2 truncate" title={product.sku}>
+                      {product.sku}
+                    </TableCell>
+                    <TableCell className="min-w-[190px] max-w-[260px] px-2 py-2">
+                      <div className="flex items-center gap-2.5">
+                        <div className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-border bg-muted">
+                          {product.photoUrl ? (
+                            <img src={product.photoUrl} alt={cleanItemName(product.name)} className="h-full w-full object-cover" />
+                          ) : (
+                            <Package className="h-4 w-4 text-muted-foreground" />
+                          )}
+                        </div>
+                        <div className="min-w-0">
+                          <p className="truncate text-xs font-bold" title={cleanItemName(product.name)}>{cleanItemName(product.name)}</p>
+                          {product.hasVariations && (
+                            <Badge variant="secondary" className="my-0.5 text-[9px] px-1.5 py-0 h-4">
+                              {childrenOf(product.id).filter(v => v.variantEnabled !== false).length} Variants
+                            </Badge>
+                          )}
+                          <p className="truncate text-[11px] text-muted-foreground">{product.category || 'Uncategorized'}</p>
+                        </div>
+                      </div>
+                    </TableCell>
+                    <TableCell className="w-32 px-2 py-2">
+                      {product.hasVariations ? (
+                        <div className="space-y-0.5 text-[11px]">
+                          {variantFields.slice(0, 3).map(([key, label]) => (
+                            <p key={key} className="truncate">
+                              <span className="text-muted-foreground">{label}: </span>
+                              <strong>{variantRange(product, key)}</strong>
+                            </p>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="grid grid-cols-[2.4rem_auto] text-[11px] leading-tight">
+                          <span className="text-muted-foreground">Retail:</span><strong>₱{(product.basePrice || 0).toLocaleString()}</strong>
+                          <span className="text-muted-foreground">MM:</span><strong>₱{(product.mmPrice ?? product.wholesalePrice ?? 0).toLocaleString()}</strong>
+                          <span className="text-muted-foreground">Prov.:</span><strong>₱{(product.provincialPrice ?? product.dealerPrice ?? 0).toLocaleString()}</strong>
+                        </div>
+                      )}
+                    </TableCell>
+                    <TableCell className="w-20 px-2 py-2 text-xs font-semibold">
+                      {product.hasVariations ? variantRange(product, 'costPrice') : `₱${(product.costPrice || 0).toLocaleString()}`}
+                    </TableCell>
+                    <TableCell className="w-24 px-2 py-2 text-center">
+                      <Badge variant="outline" className={'rounded-full px-2.5 py-0.5 text-[11px] ' + statusClass}>
+                        {stock.toLocaleString()} units
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="w-24 px-2 py-2">
+                      {product.hasVariations ? (
+                        <span className="text-[11px] text-muted-foreground">Per variant</span>
+                      ) : (
+                        <div className="text-[11px] space-y-0.5">
+                          <p><span className="text-muted-foreground">Min:</span> <strong>{product.minStockLevel || 0}</strong></p>
+                          <p><span className="text-muted-foreground">Reorder:</span> <strong>{product.reorderPoint || 0}</strong></p>
+                        </div>
+                      )}
+                    </TableCell>
+                    <TableCell className="w-28 px-2 py-2">
+                      <p className="truncate text-xs font-bold" title={product.supplier || 'Supplier'}>{product.supplier || 'Supplier'}</p>
+                      <p className="truncate text-[10px] text-muted-foreground">Main Supplier</p>
+                    </TableCell>
+                    <TableCell className="w-24 px-2 py-2 text-center">
+                      <Badge variant="outline" className={'rounded-full text-[10px] py-0.5 px-2 ' + statusClass}>
+                        {status === 'out' ? '● Out of Stock' : status === 'low' ? '● Low Stock' : '● In Stock'}
+                      </Badge>
+                    </TableCell>
+                    <TableCell
+                      className="sticky right-0 z-10 bg-card/95 backdrop-blur group-hover:bg-muted/80 w-[180px] min-w-[180px] text-right px-3 py-2 shadow-[-4px_0_8px_-2px_rgba(0,0,0,0.06)]"
+                      onClick={(event) => event.stopPropagation()}
+                    >
                       <div className="flex justify-end gap-1">
-                        <Button variant="outline" size="icon" className="h-9 w-9" title="View product" onClick={() => { setSelectedProduct(product); setIsDetailOpen(true); }}><Eye className="h-4 w-4" /></Button>
-                        {isAdmin && <Button variant="outline" size="icon" className="h-9 w-9" title="Edit product" onClick={() => setEditingProduct(product)}><Pencil className="h-4 w-4" /></Button>}
-                        {isAdmin && <Button variant="outline" size="icon" className="h-9 w-9 text-red-500 hover:text-red-600 hover:bg-red-50 hover:border-red-200" title="Delete product" onClick={() => setProductToDelete(product)}><Trash2 className="h-4 w-4" /></Button>}
-                        <>{product.hasVariations ? <Button variant="outline" size="icon" title="Variant QR labels" onClick={() => { setSelectedProduct(product); setIsDetailOpen(true); setDetailTab('variants'); }}><QrCode className="h-4 w-4" /></Button> : <Dialog><DialogTrigger className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-border hover:bg-muted"><QrCode className="h-4 w-4" /></DialogTrigger><DialogContent className="text-center sm:max-w-xs"><DialogHeader><DialogTitle className="text-center">Asset QR Label</DialogTitle></DialogHeader><div className="flex flex-col items-center gap-4 py-8"><div id={`qr-svg-table-${product.id}`} className="rounded-2xl border-2 border-primary p-4"><QRCodeSVG value={product.id} size={180} /></div><div><p className="font-black">{product.name}</p><p className="font-mono text-xs text-muted-foreground">{product.sku}</p></div></div><Button variant="outline" onClick={() => printThermalLabel(product, `qr-svg-table-${product.id}`)}><Printer className="mr-2 h-4 w-4" />Print Label</Button></DialogContent></Dialog>}</>
-                        {canAdjustStock && <Button variant="outline" size="icon" className="h-9 w-9" title="Adjust stock" onClick={() => { setSelectedProduct(product); setIsStockUpdateOpen(true); }}><SlidersHorizontal className="h-4 w-4" /></Button>}
+                        <Button variant="outline" size="icon" className="h-8 w-8" title="View product" onClick={() => { setSelectedProduct(product); setIsDetailOpen(true); }}>
+                          <Eye className="h-3.5 w-3.5" />
+                        </Button>
+                        {isAdmin && (
+                          <Button variant="outline" size="icon" className="h-8 w-8" title="Edit product" onClick={() => setEditingProduct(product)}>
+                            <Pencil className="h-3.5 w-3.5" />
+                          </Button>
+                        )}
+                        {isAdmin && (
+                          <Button variant="outline" size="icon" className="h-8 w-8 text-red-500 hover:text-red-600 hover:bg-red-50 hover:border-red-200" title="Delete product" onClick={() => setProductToDelete(product)}>
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </Button>
+                        )}
+                        <Button
+                          variant="outline"
+                          size="icon"
+                          className="h-8 w-8"
+                          title={product.hasVariations ? "Variant QR labels" : "QR Label"}
+                          onClick={() => {
+                            if (product.hasVariations) {
+                              setSelectedProduct(product);
+                              setIsDetailOpen(true);
+                              setDetailTab('variants');
+                            } else {
+                              setQrProduct(product);
+                            }
+                          }}
+                        >
+                          <QrCode className="h-3.5 w-3.5" />
+                        </Button>
+                        {canAdjustStock && (
+                          <Button variant="outline" size="icon" className="h-8 w-8" title="Adjust stock" onClick={() => { setSelectedProduct(product); setIsStockUpdateOpen(true); }}>
+                            <SlidersHorizontal className="h-3.5 w-3.5" />
+                          </Button>
+                        )}
                       </div>
                     </TableCell>
                   </TableRow>
                 );
               })}
-              {filteredProducts.length === 0 && <TableRow><TableCell colSpan={10} className="h-40 text-center text-sm text-muted-foreground">No products match the current filters.</TableCell></TableRow>}
+              {filteredProducts.length === 0 && (
+                <TableRow>
+                  <TableCell colSpan={10} className="h-36 text-center text-sm text-muted-foreground">
+                    No products match the current filters.
+                  </TableCell>
+                </TableRow>
+              )}
             </TableBody>
           </Table>
         </div>
-        <div className="flex items-center justify-between border-t border-border bg-muted/20 px-4 py-3 text-xs text-muted-foreground"><span>Showing {filteredProducts.length.toLocaleString()} of {parentProducts.length.toLocaleString()} products</span><span>{warehouses.length.toLocaleString()} warehouse{warehouses.length === 1 ? '' : 's'} connected</span></div>
+        <div className="flex flex-col sm:flex-row items-center justify-between border-t border-border bg-muted/20 px-4 py-3 gap-3 text-xs text-muted-foreground">
+          <div className="flex items-center gap-3">
+            <span>
+              Showing {filteredProducts.length === 0 ? 0 : (safeCurrentPage - 1) * pageSize + 1}–{Math.min(safeCurrentPage * pageSize, filteredProducts.length)} of {filteredProducts.length.toLocaleString()} products
+              {filteredProducts.length !== parentProducts.length && ` (filtered from ${parentProducts.length.toLocaleString()} total)`}
+            </span>
+            <div className="hidden sm:flex items-center gap-1.5 ml-2 border-l border-border pl-3">
+              <span className="text-[11px]">Rows:</span>
+              <select
+                value={pageSize}
+                onChange={(e) => setPageSize(Number(e.target.value))}
+                className="h-7 rounded border border-border bg-background px-1.5 text-xs font-semibold text-foreground focus:outline-none focus:ring-1 focus:ring-primary cursor-pointer"
+              >
+                <option value={25}>25</option>
+                <option value={50}>50</option>
+                <option value={100}>100</option>
+                <option value={250}>250</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <span className="text-xs font-medium text-foreground">
+              Page {safeCurrentPage} of {totalPages}
+            </span>
+            <div className="flex items-center gap-1">
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={safeCurrentPage <= 1}
+                onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                className="h-8 px-2.5 text-xs font-semibold gap-1"
+              >
+                <ChevronLeft className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline">Prev</span>
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={safeCurrentPage >= totalPages}
+                onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                className="h-8 px-2.5 text-xs font-semibold gap-1"
+              >
+                <span className="hidden sm:inline">Next</span>
+                <ChevronRight className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+          </div>
+        </div>
       </div>
 
       <Dialog open={isAddProductOpen} onOpenChange={(open) => { setIsAddProductOpen(open); if (!open) setProductImage(null); }}>
@@ -1612,7 +1851,30 @@ export function Inventory() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={!!qrProduct} onOpenChange={open => !open && setQrProduct(null)}><DialogContent className="sm:max-w-sm"><DialogHeader><DialogTitle>Variant QR Label</DialogTitle><DialogDescription>{qrProduct?.name}</DialogDescription></DialogHeader>{qrProduct && <div className="flex flex-col items-center gap-3 py-4"><div id={`qr-variant-${qrProduct.id}`} className="rounded-xl bg-white p-4"><QRCodeSVG value={qrProduct.id} size={180} /></div><p className="font-mono font-bold">{qrProduct.sku}</p><p className="text-xs text-muted-foreground">Parent: {products.find(p => p.id === qrProduct.parentProductId)?.name}</p><Button variant="outline" onClick={() => printThermalLabel(qrProduct, `qr-variant-${qrProduct.id}`)}><Printer className="mr-2 h-4 w-4" />Print Label</Button></div>}</DialogContent></Dialog>
+      <Dialog open={!!qrProduct} onOpenChange={open => !open && setQrProduct(null)}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>{qrProduct?.parentProductId ? 'Variant QR Label' : 'Asset QR Label'}</DialogTitle>
+            <DialogDescription>{qrProduct?.name}</DialogDescription>
+          </DialogHeader>
+          {qrProduct && (
+            <div className="flex flex-col items-center gap-3 py-4">
+              <div id={`qr-product-${qrProduct.id}`} className="rounded-xl bg-white p-4">
+                <QRCodeSVG value={qrProduct.id} size={180} />
+              </div>
+              <p className="font-mono font-bold">{qrProduct.sku}</p>
+              {qrProduct.parentProductId && (
+                <p className="text-xs text-muted-foreground">
+                  Parent: {products.find(p => p.id === qrProduct.parentProductId)?.name}
+                </p>
+              )}
+              <Button variant="outline" onClick={() => printThermalLabel(qrProduct, `qr-product-${qrProduct.id}`)}>
+                <Printer className="mr-2 h-4 w-4" />Print Label
+              </Button>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
       {/* Previous product detail layout retained temporarily for reference */}
       {false && (
         <Dialog open={isDetailOpen} onOpenChange={setIsDetailOpen}>

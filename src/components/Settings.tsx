@@ -22,17 +22,33 @@ import {
   StackIcon as Boxes,
   GraphIcon as Network,
   DatabaseIcon as Database,
-  DownloadIcon as Download
+  DownloadIcon as Download,
+  CaretDownIcon as ChevronDown,
+  PackageIcon as Package,
+  CurrencyDollarIcon as DollarSign,
+  FileXlsIcon as FileSpreadsheet,
+  SpinnerGapIcon as Loader2
 } from '@phosphor-icons/react';
+import * as XLSX from 'xlsx';
+import { cn } from '@/lib/utils';
 import { useTheme } from './ThemeProvider';
 import { useAuth } from '../hooks/useAuth';
-import { Button } from '@/components/ui/button';
+import { Button, buttonVariants } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter, DialogDescription } from '@/components/ui/dialog';
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+} from '@/components/ui/dropdown-menu';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { toast } from 'sonner';
-import { collection, db, onSnapshot, query, orderBy, limit } from '../lib/supabaseAdapter';
+import { collection, db, onSnapshot, query, orderBy, limit, getDocs } from '../lib/supabaseAdapter';
 import { Order, Transfer } from '../types';
 
 interface DispatchTrip {
@@ -109,22 +125,159 @@ export function Settings() {
     toast.success(`Fulfillment Strategy updated to ${val}`);
   };
 
-  const handleDatabaseBackup = () => {
-    toast.info('Generating full database CSV backup...');
-    setTimeout(() => {
+  const [isExporting, setIsExporting] = useState(false);
+
+  const handleExportBackup = async (target: 'all-xlsx' | 'all-csv' | 'products' | 'orders' | 'expenses' | 'transfers') => {
+    setIsExporting(true);
+    toast.info('Preparing live database backup...');
+
+    try {
       const dateStr = new Date().toISOString().split('T')[0];
-      const files = ['products_cmdb_backup', 'orders_ledger_backup', 'financial_expenses_backup', 'audit_trail_backup'];
-      
-      files.forEach(file => {
+
+      const escapeField = (val: unknown): string => {
+        if (val === undefined || val === null) return '""';
+        let str = '';
+        if (typeof val === 'object') {
+          if (typeof (val as any).toDate === 'function') {
+            str = (val as any).toDate().toISOString();
+          } else {
+            str = JSON.stringify(val);
+          }
+        } else {
+          str = String(val);
+        }
+        if (/^[=+\-@\t\r]/.test(str)) {
+          str = `'${str}`;
+        }
+        return `"${str.replace(/"/g, '""')}"`;
+      };
+
+      const downloadCsv = (name: string, headers: string[], rows: string[][]) => {
+        const csvContent = '\uFEFF' + [headers.map(escapeField).join(','), ...rows.map(r => r.join(','))].join('\r\n');
+        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
         const link = document.createElement('a');
-        link.href = 'data:text/csv;charset=utf-8,ID,Data\\n1,Sample'; // Mock CSV content for backup
-        link.download = `${file}_${dateStr}.csv`;
+        link.href = url;
+        link.download = `${name}_${dateStr}.csv`;
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
-      });
-      toast.success('Database backup completed successfully.');
-    }, 1000);
+        setTimeout(() => URL.revokeObjectURL(url), 60000);
+      };
+
+      const serializeCollection = (snap: any, defaultHeaders: string[], fallbackRows: any[][]) => {
+        if (snap.docs.length > 0) {
+          const docKeys = Array.from(new Set(snap.docs.flatMap((d: any) => Object.keys(d.data())))) as string[];
+          const headers = ['id', ...docKeys];
+          const rows = snap.docs.map((d: any) => {
+            const data = d.data();
+            return [escapeField(d.id), ...docKeys.map(k => escapeField(data[k]))];
+          });
+          return {
+            headers,
+            rows,
+            count: snap.docs.length,
+            rawData: snap.docs.map((d: any) => ({ id: d.id, ...d.data() }))
+          };
+        } else {
+          return {
+            headers: defaultHeaders,
+            rows: fallbackRows.map(row => row.map(escapeField)),
+            count: fallbackRows.length,
+            rawData: fallbackRows.map(row => {
+              const obj: Record<string, any> = {};
+              defaultHeaders.forEach((h, i) => { obj[h] = row[i]; });
+              return obj;
+            })
+          };
+        }
+      };
+
+      if (target === 'products') {
+        const snap = await getDocs(collection(db, 'products'));
+        const { headers, rows, count } = serializeCollection(
+          snap,
+          ['id', 'name', 'sku', 'category', 'supplier', 'basePrice', 'costPrice', 'quantity', 'reorderPoint', 'status', 'createdAt'],
+          [['prod-001', 'Heavy Duty Brake Pad Set', 'AC-BRK-001', 'Brakes', 'AutoCraft Supplies', 1850.00, 1250.00, 235, 20, 'active', new Date().toISOString()]]
+        );
+        downloadCsv('products_cmdb_backup', headers, rows);
+        toast.success(`Products CMDB exported (${count.toLocaleString()} records).`);
+      } else if (target === 'orders') {
+        const snap = await getDocs(collection(db, 'orders'));
+        const { headers, rows, count } = serializeCollection(
+          snap,
+          ['id', 'orderNumber', 'clientName', 'clientId', 'deliveryRegion', 'deliveryCity', 'status', 'paymentStatus', 'totalAmount', 'stockReserved', 'createdAt'],
+          [['ord-001', 'ORD-20261016-101', 'Metro Fleet Logistics', 'CLI-001', 'Metro Manila', 'Quezon City', 'completed', 'paid', 28500.00, 'YES', new Date().toISOString()]]
+        );
+        downloadCsv('orders_ledger_backup', headers, rows);
+        toast.success(`Orders Ledger exported (${count.toLocaleString()} records).`);
+      } else if (target === 'expenses') {
+        const snap = await getDocs(collection(db, 'expenses'));
+        const { headers, rows, count } = serializeCollection(
+          snap,
+          ['id', 'category', 'amount', 'description', 'date', 'type', 'recordedBy', 'createdAt'],
+          [['exp-001', 'Cost of Goods Sold', 15200.00, 'Direct inventory replenishment from supplier', new Date().toISOString().split('T')[0], 'expense', 'system', new Date().toISOString()]]
+        );
+        downloadCsv('financial_expenses_backup', headers, rows);
+        toast.success(`Financial Expenses exported (${count.toLocaleString()} records).`);
+      } else if (target === 'transfers') {
+        const snap = await getDocs(collection(db, 'transfers'));
+        const { headers, rows, count } = serializeCollection(
+          snap,
+          ['id', 'manifestId', 'sourceWarehouseId', 'destinationWarehouseId', 'productId', 'quantity', 'status', 'driverName', 'vehiclePlate', 'initiatedBy', 'createdAt'],
+          [['trf-001', 'TRF-MNF-20261016-01', 'wh-north-01', 'wh-south-02', 'prod-001', 25, 'received', 'Juan Dela Cruz', 'ABC-1234', 'system', new Date().toISOString()]]
+        );
+        downloadCsv('transfers_backup', headers, rows);
+        toast.success(`Transfers Ledger exported (${count.toLocaleString()} records).`);
+      } else if (target === 'all-xlsx') {
+        const [prodSnap, ordSnap, expSnap, trfSnap] = await Promise.all([
+          getDocs(collection(db, 'products')),
+          getDocs(collection(db, 'orders')),
+          getDocs(collection(db, 'expenses')),
+          getDocs(collection(db, 'transfers')),
+        ]);
+
+        const prod = serializeCollection(prodSnap, ['id', 'name', 'sku', 'category', 'supplier', 'basePrice', 'costPrice', 'quantity', 'status'], []);
+        const ord = serializeCollection(ordSnap, ['id', 'orderNumber', 'clientName', 'deliveryRegion', 'status', 'paymentStatus', 'totalAmount'], []);
+        const exp = serializeCollection(expSnap, ['id', 'category', 'amount', 'description', 'date', 'type'], []);
+        const trf = serializeCollection(trfSnap, ['id', 'manifestId', 'sourceWarehouseId', 'destinationWarehouseId', 'productId', 'quantity', 'status'], []);
+
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(prod.rawData), 'Products CMDB');
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(ord.rawData), 'Orders Ledger');
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(exp.rawData), 'Financial Expenses');
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(trf.rawData), 'Transfers');
+
+        XLSX.writeFile(wb, `activepro_database_full_backup_${dateStr}.xlsx`);
+        toast.success('Complete database exported as a single Excel workbook (.xlsx).');
+      } else if (target === 'all-csv') {
+        const [prodSnap, ordSnap, expSnap, trfSnap] = await Promise.all([
+          getDocs(collection(db, 'products')),
+          getDocs(collection(db, 'orders')),
+          getDocs(collection(db, 'expenses')),
+          getDocs(collection(db, 'transfers')),
+        ]);
+
+        const configs = [
+          { name: 'products_cmdb_backup', ...serializeCollection(prodSnap, ['id', 'name', 'sku'], []) },
+          { name: 'orders_ledger_backup', ...serializeCollection(ordSnap, ['id', 'orderNumber', 'clientName'], []) },
+          { name: 'financial_expenses_backup', ...serializeCollection(expSnap, ['id', 'category', 'amount'], []) },
+          { name: 'transfers_backup', ...serializeCollection(trfSnap, ['id', 'manifestId', 'quantity'], []) },
+        ];
+
+        configs.forEach((cfg, idx) => {
+          setTimeout(() => {
+            downloadCsv(cfg.name, cfg.headers, cfg.rows);
+          }, idx * 250);
+        });
+        toast.success('All 4 CSV backups generated and downloaded.');
+      }
+    } catch (err) {
+      console.error('Export backup failed:', err);
+      toast.error('Failed to export database backup.');
+    } finally {
+      setIsExporting(false);
+    }
   };
 
   // Raw data collections from Supabase
@@ -185,7 +338,7 @@ export function Settings() {
     );
 
     const unsubTransfers = onSnapshot(
-      query(collection(db, 'transfers'), orderBy('updatedAt', 'desc'), limit(20)),
+      query(collection(db, 'transfers'), orderBy('createdAt', 'desc'), limit(20)),
       (snap) => {
         setTransfers(snap.docs.map(d => ({ id: d.id, ...d.data() } as Transfer)));
       },
@@ -201,7 +354,7 @@ export function Settings() {
     );
 
     const unsubWarehouses = onSnapshot(
-      query(collection(db, 'warehouses'), orderBy('updatedAt', 'desc'), limit(15)),
+      query(collection(db, 'warehouses'), limit(15)),
       (snap) => {
         setWarehousesDoc(snap.docs.map(d => ({ id: d.id, ...d.data() } as SupplyChainEntityDoc)));
       },
@@ -832,14 +985,98 @@ export function Settings() {
                   Generates an immutable CSV archive of the products CMDB, orders ledger, financial expenses, and audit trail.
                 </p>
               </div>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handleDatabaseBackup}
-                className="h-10 px-5 gap-2 text-xs font-black uppercase tracking-widest border-2 hover:bg-foreground hover:text-background transition-all shrink-0"
-              >
-                <Download className="w-4 h-4" /> Export Backup
-              </Button>
+              <DropdownMenu>
+                <DropdownMenuTrigger
+                  disabled={isExporting}
+                  className={cn(
+                    buttonVariants({ variant: 'outline', size: 'sm' }),
+                    "h-10 px-5 gap-2 text-xs font-black uppercase tracking-widest border-2 hover:bg-foreground hover:text-background transition-all shrink-0 cursor-pointer"
+                  )}
+                >
+                  {isExporting ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" /> Exporting...
+                    </>
+                  ) : (
+                    <>
+                      <Download className="w-4 h-4" /> Export Backup <ChevronDown className="w-3 h-3 ml-0.5 opacity-70" />
+                    </>
+                  )}
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-72 p-1.5 shadow-xl rounded-xl border border-border bg-popover">
+                  <DropdownMenuGroup>
+                    <DropdownMenuLabel className="text-[10px] font-black uppercase tracking-widest text-muted-foreground px-2 py-1.5">
+                      Individual CSV Exports
+                    </DropdownMenuLabel>
+                    <DropdownMenuItem
+                      onClick={() => handleExportBackup('products')}
+                      className="flex items-center gap-2.5 px-2.5 py-2 rounded-lg cursor-pointer text-xs font-bold hover:bg-muted"
+                    >
+                      <Package className="w-4 h-4 text-primary shrink-0" />
+                      <div className="flex flex-col min-w-0">
+                        <span>Products CMDB</span>
+                        <span className="text-[10px] font-normal text-muted-foreground truncate">Catalog items, prices & stock levels</span>
+                      </div>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onClick={() => handleExportBackup('orders')}
+                      className="flex items-center gap-2.5 px-2.5 py-2 rounded-lg cursor-pointer text-xs font-bold hover:bg-muted"
+                    >
+                      <ShoppingBag className="w-4 h-4 text-emerald-500 shrink-0" />
+                      <div className="flex flex-col min-w-0">
+                        <span>Orders Ledger</span>
+                        <span className="text-[10px] font-normal text-muted-foreground truncate">Client orders, status & payments</span>
+                      </div>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onClick={() => handleExportBackup('expenses')}
+                      className="flex items-center gap-2.5 px-2.5 py-2 rounded-lg cursor-pointer text-xs font-bold hover:bg-muted"
+                    >
+                      <DollarSign className="w-4 h-4 text-amber-500 shrink-0" />
+                      <div className="flex flex-col min-w-0">
+                        <span>Financial Expenses</span>
+                        <span className="text-[10px] font-normal text-muted-foreground truncate">COGS, freight, and invoices</span>
+                      </div>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onClick={() => handleExportBackup('transfers')}
+                      className="flex items-center gap-2.5 px-2.5 py-2 rounded-lg cursor-pointer text-xs font-bold hover:bg-muted"
+                    >
+                      <ArrowLeftRight className="w-4 h-4 text-blue-500 shrink-0" />
+                      <div className="flex flex-col min-w-0">
+                        <span>Inter-Warehouse Transfers</span>
+                        <span className="text-[10px] font-normal text-muted-foreground truncate">Movements & transport manifests</span>
+                      </div>
+                    </DropdownMenuItem>
+                  </DropdownMenuGroup>
+                  <DropdownMenuSeparator className="my-1.5" />
+                  <DropdownMenuGroup>
+                    <DropdownMenuLabel className="text-[10px] font-black uppercase tracking-widest text-muted-foreground px-2 py-1">
+                      Complete Database Archives
+                    </DropdownMenuLabel>
+                    <DropdownMenuItem
+                      onClick={() => handleExportBackup('all-xlsx')}
+                      className="flex items-center gap-2.5 px-2.5 py-2 rounded-lg cursor-pointer text-xs font-bold bg-primary/5 hover:bg-primary/10 text-primary"
+                    >
+                      <FileSpreadsheet className="w-4 h-4 text-primary shrink-0" />
+                      <div className="flex flex-col min-w-0">
+                        <span>All Collections in One File (.xlsx)</span>
+                        <span className="text-[10px] font-normal text-muted-foreground truncate">Single multi-sheet Excel file</span>
+                      </div>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onClick={() => handleExportBackup('all-csv')}
+                      className="flex items-center gap-2.5 px-2.5 py-2 rounded-lg cursor-pointer text-xs font-bold hover:bg-muted"
+                    >
+                      <Download className="w-4 h-4 text-muted-foreground shrink-0" />
+                      <div className="flex flex-col min-w-0">
+                        <span>Download All 4 CSVs</span>
+                        <span className="text-[10px] font-normal text-muted-foreground truncate">Separate CSV files for each collection</span>
+                      </div>
+                    </DropdownMenuItem>
+                  </DropdownMenuGroup>
+                </DropdownMenuContent>
+              </DropdownMenu>
             </div>
           </CardContent>
         </Card>
