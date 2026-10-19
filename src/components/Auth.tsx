@@ -1,17 +1,15 @@
 import React, { useState } from 'react';
 import { useAuth } from '../hooks/useAuth';
-import { Link } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from '@/components/ui/card';
-import { Warehouse, LogIn, ArrowLeft, Mail, Lock, Eye, EyeOff, UserPlus, HelpCircle } from 'lucide-react';
+import { WarehouseIcon as Warehouse, SignInIcon as LogIn, ArrowLeftIcon as ArrowLeft, EnvelopeIcon as Mail, LockIcon as Lock, EyeIcon as Eye, EyeSlashIcon as EyeOff, UserPlusIcon as UserPlus, QuestionIcon as HelpCircle } from '@phosphor-icons/react';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Separator } from '@/components/ui/separator';
 import { toast } from 'sonner';
 
 export function Auth() {
-  const { signIn, signInWithEmail, signUpWithEmail, resetPassword } = useAuth();
-  const [isSignUp, setIsSignUp] = useState(false);
+  const { signInWithEmail, resetPassword } = useAuth();
   const [isResetMode, setIsResetMode] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [email, setEmail] = useState('');
@@ -38,8 +36,6 @@ export function Auth() {
       if (isResetMode) {
         await resetPassword(email);
         setIsResetMode(false);
-      } else if (isSignUp) {
-        await signUpWithEmail(email, password);
       } else {
         await signInWithEmail(email, password);
       }
@@ -50,16 +46,8 @@ export function Auth() {
     }
   };
 
-  const toggleMode = () => {
-    setIsSignUp(!isSignUp);
-    setIsResetMode(false);
-    setPassword('');
-    setError('');
-  };
-
   const toggleReset = () => {
     setIsResetMode(!isResetMode);
-    setIsSignUp(false);
     setError('');
   };
 
@@ -83,7 +71,7 @@ export function Auth() {
             <img src="/logo.png" alt="Logo" className="h-16 w-auto object-contain drop-shadow-md" />
           </div>
           <CardTitle className="text-2xl font-black uppercase tracking-tighter">
-            {isResetMode ? 'Recover Identity' : isSignUp ? 'Account Sign Up' : 'System Access'}
+            {isResetMode ? 'Recover Identity' : 'System Access'}
           </CardTitle>
           {isResetMode && (
             <CardDescription className="text-muted-foreground font-medium text-xs">
@@ -114,7 +102,6 @@ export function Auth() {
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
                   <Label htmlFor="password" className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Password</Label>
-                  {!isSignUp && (
                     <button 
                       type="button"
                       onClick={toggleReset}
@@ -122,7 +109,6 @@ export function Auth() {
                     >
                       Forgot?
                     </button>
-                  )}
                 </div>
                 <div className="relative">
                   <Lock className="absolute left-3 top-3 w-4 h-4 text-muted-foreground" />
@@ -161,14 +147,12 @@ export function Auth() {
                 <div className="w-4 h-4 border-2 border-navy border-t-transparent rounded-full animate-spin" />
               ) : (
                 <>
-                  {isResetMode ? 'Send Reset Link' : isSignUp ? 'Sign Up' : 'Login'}
+                  {isResetMode ? 'Send Reset Link' : 'Login'}
                   <LogIn className="w-4 h-4 ml-2 group-hover:translate-x-1 transition-transform" />
                 </>
               )}
             </Button>
           </form>
-
-
 
           {isResetMode && (
             <Button 

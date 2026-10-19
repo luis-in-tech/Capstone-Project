@@ -1,14 +1,25 @@
 name: Keep Supabase Alive
 on:
   schedule:
-    - cron: '0 0 */3 * *' # Runs every 3 days at midnight UTC
-  workflow_dispatch: # Allows manual triggering
+    - cron: '0 4 * * *' # Runs daily at 04:00 UTC to ensure Supabase never hits the 7-day inactivity limit
+  workflow_dispatch: # Allows manual triggering from GitHub Actions tab
+
 jobs:
   ping:
     runs-on: ubuntu-latest
     steps:
-      - name: Send API Request
+      - name: Ping Supabase Database
         run: |
-          curl -X GET "${{ secrets.SUPABASE_URL }}/rest/v1/" \
-          -H "apikey: ${{ secrets.SUPABASE_KEY }}" \
-          -H "Authorization: Bearer ${{ secrets.SUPABASE_KEY }}"
+          echo "Sending keepalive query to Supabase PostgreSQL database..."
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X GET "${{ secrets.SUPABASE_URL }}/rest/v1/warehouses?select=id&limit=1" \
+            -H "apikey: ${{ secrets.SUPABASE_KEY }}" \
+            -H "Authorization: Bearer ${{ secrets.SUPABASE_KEY }}")
+          
+          echo "Supabase Response Status: $HTTP_STATUS"
+          if [ "$HTTP_STATUS" -eq 200 ]; then
+            echo "✅ Supabase database is active and keep-alive ping succeeded!"
+          else
+            echo "❌ Keep-alive ping returned status $HTTP_STATUS. Please verify your SUPABASE_URL and SUPABASE_KEY in GitHub Secrets."
+            exit 1
+          fi
+

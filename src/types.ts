@@ -18,10 +18,30 @@ export interface StaffDelegation {
   canAdjustInventory: boolean;
   canAdjustPricelist: boolean;
   createdAt: any;
+  active?: boolean;
+  permissions?: StaffPermissions;
+}
+
+export type MovementAccess = 'both' | 'external' | 'internal' | 'none';
+export type SupplyChainView = 'customers' | 'suppliers' | 'warehouses';
+export interface StaffPermissions {
+  inventory: 'view' | 'adjust';
+  pricelist: 'view' | 'edit';
+  orders: 'none' | 'view' | 'create';
+  movementView: MovementAccess;
+  movementCreate: MovementAccess;
+  supplyChain: SupplyChainView[] | 'all' | SupplyChainView | 'none';
+  warehouseAccess: 'all' | 'selected';
+  warehouseIds: string[];
 }
 
 export interface Product {
   id: string;
+  hasVariations?: boolean;
+  variationAttributes?: VariationAttribute[];
+  parentProductId?: string | null;
+  variantValues?: Record<string, string>;
+  variantEnabled?: boolean;
   sku: string;
   name: string;
   category: string;
@@ -32,20 +52,29 @@ export interface Product {
   mmPrice?: number;
   provincialPrice?: number;
   costPrice?: number;
+  promoPrice?: number;
   supplier?: string;
   photoUrl?: string;
   minStockLevel: number;
   reorderPoint: number;
   supplierMoq?: number;
   supplierId?: string;
+  locationAisle?: string;
+  locationBin?: string;
   createdAt: any;
   updatedAt: any;
+}
+
+export interface VariationAttribute {
+  name: string;
+  values: string[];
 }
 
 export interface Warehouse {
   id: string;
   name: string;
   location: string;
+  active?: boolean;
 }
 
 export interface InventoryItem {
@@ -53,10 +82,11 @@ export interface InventoryItem {
   productId: string;
   warehouseId: string;
   quantity: number;
+  quarantineQuantity?: number;
   lastUpdated: any;
 }
 
-export type OrderStatus = 'pending' | 'preparing' | 'out_for_delivery' | 'delivered' | 'completed' | 'escalated';
+export type OrderStatus = 'pending' | 'preparing' | 'out_for_delivery' | 'delivered' | 'completed' | 'escalated' | 'cancelled';
 export type PaymentStatus = 'unpaid' | 'partially_paid' | 'paid' | 'defaulted';
 
 export interface StatusHistoryEntry {
@@ -75,24 +105,89 @@ export interface Order {
   status: OrderStatus;
   skus?: string[];
   totalAmount: number;
+  amountPaid?: number;
   paymentStatus: PaymentStatus;
   deliveryRegion: string;
+  deliveryCity?: string;
   deliveryDeadline: any;
   photoValidationUrl?: string;
   statusHistory?: StatusHistoryEntry[];
+  allocationStrategy?: 'FIFO' | 'LIFO';
+  allocatedBatches?: Array<{
+    productId: string;
+    batchCode: string;
+    quantity: number;
+    receivedDate?: string;
+  }>;
   createdAt: any;
   updatedAt: any;
+}
+
+export type IncidentType = 'SLA_BREACH' | 'DEFECTIVE_ASSET' | 'DISPATCH_DELAY' | 'STOCK_DISCREPANCY';
+export type IncidentSeverity = 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW';
+export type IncidentStatus = 'OPEN' | 'INVESTIGATING' | 'ESCALATED' | 'RESOLVED' | 'CLOSED';
+
+export interface ITILIncident {
+  id: string;
+  ticketNumber: string;
+  incidentType: IncidentType;
+  severity: IncidentSeverity;
+  status: IncidentStatus;
+  orderId?: string;
+  orderNumber?: string;
+  clientId?: string;
+  clientName?: string;
+  deliveryLocation?: string;
+  delayedCIs?: Array<{
+    productId: string;
+    sku: string;
+    name: string;
+    quantity: number;
+  }>;
+  daysOverdue?: number;
+  assignedAgentId?: string;
+  assignedAgentName?: string;
+  description: string;
+  rootCause?: string;
+  resolutionNotes?: string;
+  createdAt: any;
+  updatedAt?: any;
+  resolvedAt?: any;
+}
+
+export interface DefectiveStockTicket {
+  id: string;
+  ticketNumber: string;
+  incidentId?: string;
+  productId: string;
+  sku: string;
+  productName: string;
+  brand?: string;
+  warehouseId: string;
+  warehouseName: string;
+  quantity: number;
+  defectReason: 'Damaged in Transit' | 'Manufacturer Defect' | 'Handling Damage' | 'Missing Parts' | 'Expired / Degraded';
+  loggedBy: string;
+  loggedByName: string;
+  photoUrl?: string;
+  supplierName?: string;
+  status: 'QUARANTINED' | 'RETURN_IN_PROGRESS' | 'REPLACED' | 'WRITTEN_OFF';
+  createdAt: any;
+  resolutionNotes?: string;
 }
 
 export interface OrderItem {
   id: string;
   orderId: string;
   productId: string;
+  warehouseId?: string;
   sku: string;
   name: string;
   quantity: number;
   unitPrice: number;
   subtotal: number;
+  locationAisle?: string;
+  locationBin?: string;
 }
 
 export interface Expense {
@@ -113,15 +208,27 @@ export interface ExpenseCategory {
   createdAt: any;
 }
 
+export type TransferStatus = 'pending' | 'in_transit' | 'received' | 'cancelled';
+
 export interface Transfer {
   id: string;
   sourceWarehouseId: string;
   destinationWarehouseId: string;
   productId: string;
   quantity: number;
-  status: 'pending' | 'in_transit' | 'received';
+  status: TransferStatus;
   initiatedBy: string;
+  driverName?: string;
+  vehiclePlate?: string;
+  dispatchedAt?: any;
+  dispatchedBy?: string;
+  receivedAt?: any;
+  receivedBy?: string;
+  cancelledAt?: any;
+  cancelledBy?: string;
+  cancellationReason?: string;
   createdAt: any;
+  updatedAt?: any;
 }
 
 export interface StockAdjustment {

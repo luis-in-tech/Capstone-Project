@@ -1,0 +1,38 @@
+[
+  {
+    "snapshotId": "snap_1791984757023",
+    "timestamp": "2026-10-14T13:32:37.029Z",
+    "folder": "backup_2026-10-14T13-32-37-023Z",
+    "files": [
+      "cmdb_inventory.csv",
+      "orders_ledger.csv",
+      "financial_ledger.csv",
+      "audit_trail.csv"
+    ],
+    "totalBytes": 3953
+  },
+  {
+    "snapshotId": "snap_1791984649873",
+    "timestamp": "2026-10-14T13:30:49.877Z",
+    "folder": "backup_2026-10-14T13-30-49-873Z",
+    "files": [
+      "cmdb_inventory.csv",
+      "orders_ledger.csv",
+      "financial_ledger.csv",
+      "audit_trail.csv"
+    ],
+    "totalBytes": 3953
+  },
+  {
+    "snapshotId": "snap_1791984634033",
+    "timestamp": "2026-10-14T13:30:34.038Z",
+    "folder": "backup_2026-10-14T13-30-34-033Z",
+    "files": [
+      "cmdb_inventory.csv",
+      "orders_ledger.csv",
+      "financial_ledger.csv",
+      "audit_trail.csv"
+    ],
+    "totalBytes": 3953
+  }
+]

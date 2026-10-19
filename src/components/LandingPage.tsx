@@ -1,21 +1,21 @@
 import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { motion } from 'motion/react';
-import { 
-  Package, 
-  ShieldCheck, 
-  TrendingUp, 
-  Users, 
-  ArrowRight, 
-  CheckCircle2,
-  Warehouse,
-  BarChart3,
-  Truck,
-  Globe,
-  Database,
-  Layers,
-  Cpu
-} from 'lucide-react';
+import {
+  PackageIcon as Package,
+  ShieldCheckIcon as ShieldCheck,
+  TrendUpIcon as TrendingUp,
+  UsersIcon as Users,
+  ArrowRightIcon as ArrowRight,
+  CheckCircleIcon as CheckCircle2,
+  WarehouseIcon as Warehouse,
+  ChartBarIcon as BarChart3,
+  TruckIcon as Truck,
+  GlobeIcon as Globe,
+  DatabaseIcon as Database,
+  StackIcon as Layers,
+  CpuIcon as Cpu
+} from '@phosphor-icons/react';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,

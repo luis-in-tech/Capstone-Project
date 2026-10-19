@@ -38,6 +38,12 @@ import express, { Request, Response } from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 
+// Enable BigInt serialization for Prisma entities
+(BigInt.prototype as any).toJSON = function () {
+  const intVal = Number(this);
+  return Number.isSafeInteger(intVal) ? intVal : this.toString();
+};
+
 // ── Config & Utilities ────────────────────────────────────────────────────────
 import { env }           from './config/env';
 import { ensureTrashDir, FRONTEND_ROOT, BACKEND_ROOT } from './config/paths';
@@ -46,14 +52,23 @@ import prisma            from './db/prisma.client';
 // ── Middleware ────────────────────────────────────────────────────────────────
 import { requestLogger } from './middleware/requestLogger';
 import { errorHandler }  from './middleware/errorHandler';
+import { extractUserRole, financeGuard } from './middleware/rbac.middleware';
 
 // ── Routes ────────────────────────────────────────────────────────────────────
-import filesRoutes   from './routes/files.routes';
-import agentRoutes   from './routes/agent.routes';
-import restoreRoutes from './routes/restore.routes';
+import filesRoutes     from './routes/files.routes';
+import agentRoutes     from './routes/agent.routes';
+import restoreRoutes   from './routes/restore.routes';
+import transfersRoutes from './routes/transfers.routes';
+import logisticsRoutes from './routes/logistics.routes';
+import ordersRoutes    from './routes/orders.routes';
+import pnlRoutes       from './routes/pnl.routes';
+import returnsRoutes   from './routes/returns.routes';
+import backupRoutes    from './routes/backup.routes';
+import itilRoutes      from './routes/itil.routes';
 
 // ── WebSocket / FS Watcher ────────────────────────────────────────────────────
 import { createFsWatcher } from './ws/fsWatcher';
+import { attachPnLBroadcaster } from './ws/pnlBroadcaster';
 
 // ═════════════════════════════════════════════════════════════════════════════
 //  App Bootstrap
@@ -81,7 +96,7 @@ async function bootstrap(): Promise<void> {
   app.use(cors({
     origin:      env.CORS_ORIGINS,
     methods:     ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'x-user-role'],
     credentials: true,
   }));
 
@@ -93,6 +108,9 @@ async function bootstrap(): Promise<void> {
 
   /** Request logger — coloured output in dev, Apache combined format in prod. */
   app.use(requestLogger);
+
+  /** RBAC context extractor (FR-07, NFR-04). */
+  app.use(extractUserRole);
 
   // ── Health Check ────────────────────────────────────────────────────────────
 
@@ -110,9 +128,17 @@ async function bootstrap(): Promise<void> {
 
   // ── API Routes ──────────────────────────────────────────────────────────────
 
-  app.use('/api/v1/files',   filesRoutes);
-  app.use('/api/v1/agent',   agentRoutes);
-  app.use('/api/v1/restore', restoreRoutes);
+  app.use('/api/v1/files',     filesRoutes);
+  app.use('/api/v1/agent',     agentRoutes);
+  app.use('/api/v1/restore',   restoreRoutes);
+  app.use('/api/v1/transfers', transfersRoutes);
+  app.use('/api/v1/logistics', logisticsRoutes);
+  app.use('/api/v1/orders',    ordersRoutes);
+  app.use('/api/v1/pnl',       financeGuard, pnlRoutes);
+  app.use('/api/v1/returns',   returnsRoutes);
+  app.use('/api/v1/backups',   backupRoutes);
+  app.use('/api/v1/itil',      itilRoutes);
+
 
   // ── 404 Handler — for any unmatched route ───────────────────────────────────
 
@@ -141,7 +167,8 @@ async function bootstrap(): Promise<void> {
 
   // ── WebSocket + FS Watcher ──────────────────────────────────────────────────
 
-  const { startWatcher } = createFsWatcher(httpServer);
+  const { wss, startWatcher } = createFsWatcher(httpServer);
+  attachPnLBroadcaster(wss);
 
   // ── Database Connection Check ───────────────────────────────────────────────
 

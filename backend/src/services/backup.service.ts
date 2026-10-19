@@ -17,7 +17,7 @@
 
 import fs from 'fs';
 import path from 'path';
-import { TRASH_DIR, FRONTEND_ROOT } from '../config/paths';
+import { TRASH_DIR, FRONTEND_ROOT, resolveAndValidate } from '../config/paths';
 import prisma from '../db/prisma.client';
 import { BackupEntry } from '@prisma/client';
 
@@ -155,8 +155,8 @@ export async function restoreBackup(backupId: string): Promise<BackupEntry> {
     );
   }
 
-  // Resolve the restoration destination
-  const restoreDest = path.resolve(FRONTEND_ROOT, entry.originalPath);
+  // Resolve the restoration destination with security validation
+  const restoreDest = resolveAndValidate(entry.originalPath);
 
   // Ensure parent directory exists at destination
   fs.mkdirSync(path.dirname(restoreDest), { recursive: true });

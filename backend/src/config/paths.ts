@@ -58,9 +58,13 @@ export function ensureTrashDir(): void {
  */
 export function isPathSafe(absolutePath: string): boolean {
   const normalised = path.normalize(absolutePath);
-  const isInsideFrontend = normalised.startsWith(FRONTEND_ROOT + path.sep) || normalised === FRONTEND_ROOT;
-  const isInsideBackend = normalised.startsWith(BACKEND_ROOT + path.sep) || normalised === BACKEND_ROOT;
-  return isInsideFrontend && isInsideBackend;
+  const normTarget = process.platform === 'win32' ? normalised.toLowerCase() : normalised;
+  const normFrontend = process.platform === 'win32' ? FRONTEND_ROOT.toLowerCase() : FRONTEND_ROOT;
+  const normBackend = process.platform === 'win32' ? BACKEND_ROOT.toLowerCase() : BACKEND_ROOT;
+
+  const isInsideFrontend = normTarget.startsWith(normFrontend + path.sep) || normTarget === normFrontend;
+  const isInsideBackend = normTarget.startsWith(normBackend + path.sep) || normTarget === normBackend;
+  return isInsideFrontend && !isInsideBackend;
 }
 
 /**
@@ -78,4 +82,5 @@ export function resolveAndValidate(relativePath: string): string {
       `Path traversal detected: "${relativePath}" resolves outside the allowed directory.`
     );
   }
-
+  return absolute;
+}

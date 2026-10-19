@@ -11,7 +11,6 @@ interface AuthContextType {
   loading: boolean;
   signIn: () => Promise<void>;
   signInWithEmail: (email: string, password: string) => Promise<void>;
-  signUpWithEmail: (email: string, password: string) => Promise<void>;
   resetPassword: (email: string) => Promise<void>;
   logout: () => Promise<void>;
   updateRole: (role: 'admin' | 'secretary' | 'agent') => Promise<void>;
@@ -26,7 +25,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true);
   const inactivityTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const INACTIVITY_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+  const INACTIVITY_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes
 
   const clearInactivityTimer = () => {
     if (inactivityTimer.current) {
@@ -41,7 +40,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     inactivityTimer.current = setTimeout(async () => {
       await supabase.auth.signOut();
       toast.warning('Session expired', {
-        description: 'You were logged out due to 5 minutes of inactivity.',
+        description: 'You were logged out due to 15 minutes of inactivity.',
         duration: 6000,
       });
     }, INACTIVITY_TIMEOUT_MS);
@@ -73,7 +72,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           setProfile(docSnap as UserProfile);
         } else {
           // If not found, create one
-          const isAdmin = currentUser.email === 'lancejsy16@gmail.com';
           const [firstName = '', ...lastNameParts] = (currentUser.user_metadata?.full_name || '').split(' ');
           const lastName = lastNameParts.join(' ');
           
@@ -84,7 +82,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             firstName,
             lastName,
             photoUrl: currentUser.user_metadata?.avatar_url || '',
-            role: isAdmin ? 'admin' : 'agent'
+            role: 'agent'
           };
           
           const { error: insertError } = await supabase.from('users').insert([newProfile]);
@@ -108,8 +106,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   useEffect(() => {
+    let lastActivity = Date.now();
     const ACTIVITY_EVENTS = ['mousemove', 'mousedown', 'keydown', 'touchstart', 'scroll'];
-    const handleActivity = () => resetInactivityTimer(user);
+    const handleActivity = () => {
+      const now = Date.now();
+      if (now - lastActivity > 10000) {
+        lastActivity = now;
+        resetInactivityTimer(user);
+      }
+    };
 
     if (user) {
       ACTIVITY_EVENTS.forEach(evt => window.addEventListener(evt, handleActivity, { passive: true }));
@@ -142,17 +147,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  const signUpWithEmail = async (email: string, password: string) => {
-    try {
-      const { error } = await supabase.auth.signUp({ email, password });
-      if (error) throw error;
-      toast.success('Account created successfully');
-    } catch (error: any) {
-      console.error("Email sign-up error:", error);
-      toast.error('Registration failed', { description: error.message });
-    }
-  };
-
   const resetPassword = async (email: string) => {
     try {
       const { error } = await supabase.auth.resetPasswordForEmail(email);
@@ -170,6 +164,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const updateRole = async (role: 'admin' | 'secretary' | 'agent') => {
     if (!user) return;
+    if (role === 'admin' && profile?.role !== 'admin') {
+      toast.error('Unauthorized', { description: 'Admin privileges cannot be self-assigned.' });
+      return;
+    }
     try {
       const { error } = await supabase
         .from('users')
@@ -208,7 +206,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <AuthContext.Provider value={{ 
-      user, profile, loading, signIn, signInWithEmail, signUpWithEmail, resetPassword, logout, updateRole, updateProfileData 
+      user, profile, loading, signIn, signInWithEmail, resetPassword, logout, updateRole, updateProfileData
     }}>
       {children}
     </AuthContext.Provider>

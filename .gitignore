@@ -6,3 +6,83 @@ coverage/
 *.log
 .env*
 !.env.example
+__pycache__/
+*.pyc
+.pytest_cache/
+reports/
+AP Front-End Bugs.md
+tests/conftest.py
+tests/requirements-test.txt
+tests/test_advanced_qa_dimensions.py
+tests/test_auth.py
+tests/test_business_logic.py
+tests/test_inventory_interactions.py
+tests/test_navigation.py
+tests/test_roles.py
+tests/test_smoke.py
+tests/pages/__init__.py
+tests/pages/base_page.py
+tests/pages/inventory_page.py
+tests/pages/login_page.py
+tests/pages/sidebar_page.py
+pytest.ini
+run_tests.py
+.agents/rules/qa-mindset.md
+.agents/skills/qa-reporter/SKILL.md
+docs/SELENIUM_TESTING_GUIDE.md
+Capstone 2 Tracker - QA.csv
+tests/test_orders_stock_logic.py
+tests/test_transfers_stock_logic.py
+Active Pro Vercel comments by Echo/01.png
+Active Pro Vercel comments by Echo/02.png
+Active Pro Vercel comments by Echo/03.png
+Active Pro Vercel comments by Echo/04.png
+Active Pro Vercel comments by Echo/05.png
+Active Pro Vercel comments by Echo/06.png
+Active Pro Vercel comments by Echo/07.png
+Active Pro Vercel comments by Echo/08.png
+Active Pro Vercel comments by Echo/09.png
+Active Pro Vercel comments by Echo/10.png
+Active Pro Vercel comments by Echo/11.png
+Active Pro Vercel comments by Echo/12.png
+Active Pro Vercel comments by Echo/13.png
+Active Pro Vercel comments by Echo/14.png
+Active Pro Vercel comments by Echo/15.png
+Active Pro Vercel comments by Echo/16.png
+Active Pro Vercel comments by Echo/17.png
+Active Pro Vercel comments by Echo/18.png
+Active Pro Vercel comments by Echo/19.png
+Active Pro Vercel comments by Echo/20.png
+Active Pro Vercel comments by Echo/21.png
+Active Pro Vercel comments by Echo/22.png
+Active Pro Vercel comments by Echo/23.png
+Active Pro Vercel comments by Echo/24.png
+Active Pro Vercel comments by Echo/25.png
+Active Pro QA Reports Tracker - QA Incident Tracker.csv
+capstone2group1_873442358550600/photos/3249682225234584.png
+capstone2group1_873442358550600/photos/2557119821473101.png
+capstone2group1_873442358550600/photos/2319192368913801.png
+capstone2group1_873442358550600/photos/2243379673178072.png
+capstone2group1_873442358550600/photos/2093168434668487.png
+capstone2group1_873442358550600/photos/1803317734001919.png
+capstone2group1_873442358550600/photos/1737208930686499.png
+capstone2group1_873442358550600/photos/1654476426107394.png
+capstone2group1_873442358550600/photos/1509680291192000.png
+capstone2group1_873442358550600/photos/1487535706545427.png
+capstone2group1_873442358550600/photos/1468583508659644.png
+capstone2group1_873442358550600/photos/1392015632587767.png
+capstone2group1_873442358550600/photos/1278126997740366.png
+capstone2group1_873442358550600/photos/1234751482187860.png
+capstone2group1_873442358550600/photos/1123492547284836.png
+capstone2group1_873442358550600/photos/1095460566293499.jpg
+capstone2group1_873442358550600/photos/1074801935156213.png
+capstone2group1_873442358550600/photos/915720908038113.jpg
+capstone2group1_873442358550600/files/1171650675537751.txt
+capstone2group1_873442358550600/message_1.json
+.agents/rules/no-emojis-professional-ui.md
+Meeting started 2026_09_28 15_41 PST - Notes by Gemini.md
+Capstone 2 3ISC-Group 1 Documents.md
+.agents/rules/team-communication-style.md
+QA_Incident_Explanation.html
+.agents/rules/enterprise-corporate-style.md
+Document.txt
