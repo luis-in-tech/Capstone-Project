@@ -924,7 +924,7 @@ export function Orders() {
                 <TableHead className="text-[10px] font-bold uppercase tracking-widest min-w-[120px]">Status</TableHead>
                 <TableHead className="text-[10px] font-bold uppercase tracking-widest text-center min-w-[120px]">Deadline</TableHead>
                 <TableHead className="text-[10px] font-bold uppercase tracking-widest text-right min-w-[100px]">Amount</TableHead>
-                <TableHead className="text-[10px] font-bold uppercase tracking-widest text-right min-w-[120px]">Actions</TableHead>
+                <TableHead className="text-[10px] font-bold uppercase tracking-widest text-center min-w-[140px]">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -964,72 +964,74 @@ export function Orders() {
                     <TableCell className="text-right font-black text-xs">
                       ₱{order.totalAmount.toLocaleString()}
                     </TableCell>
-                    <TableCell className="text-right space-x-1">
-                      <Button
-                        size="icon"
-                        variant="ghost"
-                        className="h-7 w-7 text-muted-foreground hover:text-foreground"
-                        onClick={() => handleViewDetails(order)}
-                        title="View Details"
-                      >
-                        <Eye className="w-4 h-4" />
-                      </Button>
-                      {revertButton(order)}
-                      {canManageOrders && (
-                        <>
-                          {order.status === 'pending' && (
-                            <Button size="icon" variant="ghost" className="h-7 w-7 text-zinc-400 hover:text-zinc-900" onClick={() => updateOrderStatus(order, 'preparing')} title="Move to Preparing">
-                              <ChevronRight className="w-4 h-4" />
-                            </Button>
-                          )}
-                          {order.status === 'preparing' && (
-                            <Button size="icon" variant="ghost" className="h-7 w-7 text-blue-500 hover:bg-blue-50" onClick={() => updateOrderStatus(order, 'out_for_delivery')} title="Dispatch Order">
-                              <Camera className="w-4 h-4" />
-                            </Button>
-                          )}
-                          {order.status === 'out_for_delivery' && (
-                            <Button size="icon" variant="ghost" className="h-7 w-7 text-emerald-500 hover:bg-emerald-50" onClick={() => updateOrderStatus(order, 'delivered')} title="Confirm Delivery">
-                              <CheckCircle2 className="w-4 h-4" />
-                            </Button>
-                          )}
-                          {order.status === 'delivered' && <Button size="sm" variant="outline" onClick={() => updateOrderStatus(order, 'completed')}>Complete</Button>}
-                          {order.status !== 'delivered' && order.status !== 'completed' && order.status !== 'cancelled' && order.status !== 'escalated' && (
-                            <>
-                              <Button
-                                size="icon"
-                                variant="ghost"
-                                className="h-7 w-7 text-amber-500 hover:bg-amber-50"
-                                onClick={() => {
-                                  if (window.confirm(`Escalate order ${order.orderNumber}? Reserved stock will be replenished to inventory.`)) {
-                                    updateOrderStatus(order, 'escalated');
-                                  }
-                                }}
-                                title="Escalate Order (Restores Stock)"
-                              >
-                                <AlertTriangle className="w-4 h-4" />
-                              </Button>
-                              <Button
-                                size="icon"
-                                variant="ghost"
-                                className="h-7 w-7 text-red-500 hover:bg-red-50"
-                                onClick={() => {
-                                  if (window.confirm(`Cancel order ${order.orderNumber}? Deducted stock will be restored to inventory.`)) {
-                                    updateOrderStatus(order, 'cancelled');
-                                  }
-                                }}
-                                title="Cancel Order (Restores Stock)"
-                              >
-                                <XCircle className="w-4 h-4" />
-                              </Button>
-                            </>
-                          )}
-                        </>
-                      )}
-                      {order.photoValidationUrl && (
-                        <Button size="icon" variant="ghost" className="h-7 w-7 text-zinc-400 hover:text-zinc-900" onClick={() => window.open(order.photoValidationUrl)}>
-                          <FileText className="w-4 h-4" />
+                    <TableCell className="text-center">
+                      <div className="flex items-center justify-center gap-1">
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                          onClick={() => handleViewDetails(order)}
+                          title="View Details"
+                        >
+                          <Eye className="w-4 h-4" />
                         </Button>
-                      )}
+                        {revertButton(order)}
+                        {canManageOrders && (
+                          <>
+                            {order.status === 'pending' && (
+                              <Button size="icon" variant="ghost" className="h-7 w-7 text-zinc-400 hover:text-zinc-900" onClick={() => updateOrderStatus(order, 'preparing')} title="Move to Preparing">
+                                <ChevronRight className="w-4 h-4" />
+                              </Button>
+                            )}
+                            {order.status === 'preparing' && (
+                              <Button size="icon" variant="ghost" className="h-7 w-7 text-blue-500 hover:bg-blue-50" onClick={() => updateOrderStatus(order, 'out_for_delivery')} title="Dispatch Order">
+                                <Camera className="w-4 h-4" />
+                              </Button>
+                            )}
+                            {order.status === 'out_for_delivery' && (
+                              <Button size="icon" variant="ghost" className="h-7 w-7 text-emerald-500 hover:bg-emerald-50" onClick={() => updateOrderStatus(order, 'delivered')} title="Confirm Delivery">
+                                <CheckCircle2 className="w-4 h-4" />
+                              </Button>
+                            )}
+                            {order.status === 'delivered' && <Button size="sm" variant="outline" onClick={() => updateOrderStatus(order, 'completed')}>Complete</Button>}
+                            {order.status !== 'delivered' && order.status !== 'completed' && order.status !== 'cancelled' && order.status !== 'escalated' && (
+                              <>
+                                <Button
+                                  size="icon"
+                                  variant="ghost"
+                                  className="h-7 w-7 text-amber-500 hover:bg-amber-50"
+                                  onClick={() => {
+                                    if (window.confirm(`Escalate order ${order.orderNumber}? Reserved stock will be replenished to inventory.`)) {
+                                      updateOrderStatus(order, 'escalated');
+                                    }
+                                  }}
+                                  title="Escalate Order (Restores Stock)"
+                                >
+                                  <AlertTriangle className="w-4 h-4" />
+                                </Button>
+                                <Button
+                                  size="icon"
+                                  variant="ghost"
+                                  className="h-7 w-7 text-red-500 hover:bg-red-50"
+                                  onClick={() => {
+                                    if (window.confirm(`Cancel order ${order.orderNumber}? Deducted stock will be restored to inventory.`)) {
+                                      updateOrderStatus(order, 'cancelled');
+                                    }
+                                  }}
+                                  title="Cancel Order (Restores Stock)"
+                                >
+                                  <XCircle className="w-4 h-4" />
+                                </Button>
+                              </>
+                            )}
+                          </>
+                        )}
+                        {order.photoValidationUrl && (
+                          <Button size="icon" variant="ghost" className="h-7 w-7 text-zinc-400 hover:text-zinc-900" onClick={() => window.open(order.photoValidationUrl)}>
+                            <FileText className="w-4 h-4" />
+                          </Button>
+                        )}
+                      </div>
                     </TableCell>
                   </TableRow>
                 );

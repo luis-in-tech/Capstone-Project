@@ -708,7 +708,7 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
                 <TableHead className="text-[10px] font-bold uppercase tracking-widest min-w-[200px]">Traffic Flow</TableHead>
                 <TableHead className="text-[10px] font-bold uppercase tracking-widest min-w-[150px]">Dispatch Proof</TableHead>
                 <TableHead className="text-[10px] font-bold uppercase tracking-widest min-w-[140px]">Operational Status</TableHead>
-                <TableHead className="text-[10px] font-bold uppercase tracking-widest text-right min-w-[180px]">Actions</TableHead>
+                <TableHead className="text-[10px] font-bold uppercase tracking-widest text-center min-w-[180px]">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -761,9 +761,9 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
                         {t.status.replace('_', ' ')}
                       </Badge>
                     </TableCell>
-                    <TableCell className="text-right">
+                    <TableCell className="text-center">
                       {canManageTransfer && (
-                        <div className="flex items-center justify-end gap-1">
+                        <div className="flex items-center justify-center gap-1">
                           {t.status === 'pending' && (
                             <>
                               <Button
@@ -817,10 +817,10 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
                             </>
                           )}
                           {t.status === 'received' && (
-                            <span className="text-[11px] font-semibold text-emerald-600/80 pr-2">Arrived</span>
+                            <span className="text-[11px] font-semibold text-emerald-600/80">Arrived</span>
                           )}
                           {t.status === 'cancelled' && (
-                            <span className="text-[11px] font-semibold text-red-500/80 pr-2">Cancelled</span>
+                            <span className="text-[11px] font-semibold text-red-500/80">Cancelled</span>
                           )}
                         </div>
                       )}

@@ -1948,6 +1948,9 @@ export function Finance() {
                 dataKey="Revenue"
                 stroke="#10b981"
                 strokeWidth={2.5}
+                isAnimationActive={true}
+                animationDuration={800}
+                animationEasing="ease-in-out"
                 dot={trajectoryGranularity === 'daily' ? false : { r: 3, fill: '#10b981', strokeWidth: 1.5, stroke: '#fff' }}
                 activeDot={{ r: 5, strokeWidth: 0 }}
               />
@@ -1956,6 +1959,9 @@ export function Finance() {
                 dataKey="Expenses"
                 stroke="#ef4444"
                 strokeWidth={2.5}
+                isAnimationActive={true}
+                animationDuration={800}
+                animationEasing="ease-in-out"
                 dot={trajectoryGranularity === 'daily' ? false : { r: 3, fill: '#ef4444', strokeWidth: 1.5, stroke: '#fff' }}
                 activeDot={{ r: 5, strokeWidth: 0 }}
               />
@@ -1966,9 +1972,9 @@ export function Finance() {
 
       <div className="flex flex-col lg:flex-row gap-6">
         {/* Profit & Loss Detailed Table */}
-        <div className="flex-1 space-y-4">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-border pb-2.5">
-            <div className="flex items-center gap-1.5 bg-muted/60 p-0.5 rounded-sm border border-border">
+        <div className="flex-1 min-w-0 space-y-4">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 border-b border-border pb-2.5">
+            <div className="flex flex-wrap items-center gap-1.5 bg-muted/60 p-0.5 rounded-sm border border-border">
               <Button
                 variant={activeLedgerTab === 'statement' ? 'default' : 'ghost'}
                 size="sm"
@@ -2001,7 +2007,7 @@ export function Finance() {
               {activeLedgerTab === 'statement' ? (
                 <div className="flex items-center gap-2">
                   <span
-                    className={`text-[9px] font-black uppercase tracking-wider px-2 py-0.5 rounded-sm border ${selectedPeriod === '2025'
+                    className={`inline-flex items-center justify-center h-7 px-2.5 text-[9px] font-black uppercase tracking-wider rounded-sm border select-none leading-none ${selectedPeriod === '2025'
                         ? 'border-emerald-500/40 text-emerald-700 bg-emerald-50 dark:bg-emerald-950/40 dark:text-emerald-300'
                         : selectedPeriod === '2026'
                           ? 'border-blue-500/40 text-blue-700 bg-blue-50 dark:bg-blue-950/40 dark:text-blue-300'
@@ -2013,7 +2019,7 @@ export function Finance() {
                   <Button
                     variant="outline"
                     size="sm"
-                    className="h-7 gap-1.5 px-2.5 text-[9px] font-black uppercase tracking-wider rounded-sm border-border hover:bg-muted shadow-none"
+                    className="h-7 gap-1.5 px-2.5 text-[9px] font-black uppercase tracking-wider rounded-sm border-border hover:bg-muted shadow-none shrink-0"
                     onClick={exportPLStatementCSV}
                   >
                     <Download className="w-3 h-3 text-foreground/70" /> Export CSV
@@ -2269,14 +2275,14 @@ export function Finance() {
 
           {activeLedgerTab === 'statement' ? (
             <div className="bg-card border border-border rounded-sm overflow-hidden shadow-none">
-              <div className="px-3.5 py-2 bg-neutral-100 dark:bg-neutral-900 border-b border-border flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
-                <div>
-                  <div className="flex items-center gap-2">
+              <div className="px-3.5 py-2.5 bg-neutral-100 dark:bg-neutral-900 border-b border-border flex flex-col 2xl:flex-row 2xl:items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
                     <h4 className="text-xs font-black uppercase tracking-widest text-foreground">
                       {activePLData.title}
                     </h4>
                     <span
-                      className={`text-[9px] font-black uppercase tracking-wider px-2 py-0.5 rounded-sm border ${selectedPeriod === '2025'
+                      className={`inline-flex items-center h-5 px-2 text-[9px] font-black uppercase tracking-wider rounded-sm border shrink-0 ${selectedPeriod === '2025'
                           ? 'bg-emerald-50 text-emerald-800 border-emerald-300 dark:bg-emerald-950/50 dark:text-emerald-300 dark:border-emerald-800'
                           : selectedPeriod === '2026'
                             ? 'bg-blue-50 text-blue-800 border-blue-300 dark:bg-blue-950/50 dark:text-blue-300 dark:border-blue-800'
@@ -2290,37 +2296,38 @@ export function Finance() {
                     {activePLData.subtitle}
                   </p>
                 </div>
-                <div className="flex flex-wrap items-center gap-2">
+                <div className="flex flex-wrap items-center justify-between sm:justify-end gap-2 shrink-0">
                   {uncollectedReceivables > 0 && (
-                    <span className="bg-red-50 text-red-800 border border-red-300 dark:bg-red-950/50 dark:text-red-300 dark:border-red-800 text-[9px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-sm">
+                    <span className="inline-flex items-center h-7 px-2.5 bg-red-50 text-red-800 border border-red-300 dark:bg-red-950/50 dark:text-red-300 dark:border-red-800 text-[9px] font-bold uppercase tracking-wider rounded-sm shrink-0">
                       Uncollected: {formatCurrency(uncollectedReceivables)}
                     </span>
                   )}
-                  <Select value={selectedPeriod} onValueChange={(v: '2025' | '2026' | 'all') => setSelectedPeriod(v)}>
-                    <SelectTrigger className="h-6.5 text-[9px] uppercase font-bold tracking-wider px-2 rounded-sm border-border">
-                      <SelectValue placeholder="Period">
-                        {selectedPeriod === '2025' ? '2025' : selectedPeriod === '2026' ? '2026' : 'ALL'}
-                      </SelectValue>
-                    </SelectTrigger>
-                    <SelectContent className="rounded-sm w-auto min-w-[220px]">
-                      <SelectItem value="2025">Monthly 2025 (Q1 Audited)</SelectItem>
-                      <SelectItem value="2026">Quarterly 2026 (Live Ops)</SelectItem>
-                      <SelectItem value="all">All Periods (Consolidated)</SelectItem>
-                    </SelectContent>
-                  </Select>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="h-6.5 gap-1 px-2 text-[9px] font-black uppercase tracking-wider rounded-sm border-border"
-                    onClick={exportPLStatementCSV}
-                  >
-                    <Download className="w-3 h-3 text-foreground/70" /> CSV
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="h-6.5 gap-1 px-2 text-[9px] font-black uppercase tracking-wider rounded-sm border-border"
-                    onClick={() => {
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <Select value={selectedPeriod} onValueChange={(v: '2025' | '2026' | 'all') => setSelectedPeriod(v)}>
+                      <SelectTrigger className="h-7 text-[9px] uppercase font-bold tracking-wider px-2.5 rounded-sm border-border">
+                        <SelectValue placeholder="Period">
+                          {selectedPeriod === '2025' ? '2025' : selectedPeriod === '2026' ? '2026' : 'ALL'}
+                        </SelectValue>
+                      </SelectTrigger>
+                      <SelectContent className="rounded-sm w-auto min-w-[220px]">
+                        <SelectItem value="2025">Monthly 2025 (Q1 Audited)</SelectItem>
+                        <SelectItem value="2026">Quarterly 2026 (Live Ops)</SelectItem>
+                        <SelectItem value="all">All Periods (Consolidated)</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-7 gap-1 px-2.5 text-[9px] font-black uppercase tracking-wider rounded-sm border-border shadow-none"
+                      onClick={exportPLStatementCSV}
+                    >
+                      <Download className="w-3 h-3 text-foreground/70" /> CSV
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-7 gap-1 px-2.5 text-[9px] font-black uppercase tracking-wider rounded-sm border-border shadow-none"
+                      onClick={() => {
                       const printContents = document.getElementById('pl-statement-print-area')?.outerHTML;
                       if (printContents) {
                         const frame = document.createElement('iframe');
@@ -2356,6 +2363,7 @@ export function Finance() {
                   </Button>
                 </div>
               </div>
+            </div>
 
               <div className="overflow-x-auto w-full">
                 <Table id="pl-statement-print-area">
@@ -2730,6 +2738,9 @@ export function Finance() {
                         outerRadius={76}
                         paddingAngle={3}
                         dataKey="value"
+                        isAnimationActive={true}
+                        animationDuration={800}
+                        animationEasing="ease-in-out"
                       >
                         {pieData.map((entry, index) => (
                           <Cell
