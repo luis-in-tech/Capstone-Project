@@ -359,7 +359,15 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
 
     // Warehouse filter
     if (warehouseFilter !== 'all') {
-      if (t.sourceWarehouseId !== warehouseFilter && t.destinationWarehouseId !== warehouseFilter) {
+      const selectedWh = warehouses.find(w => w.id === warehouseFilter || w.name === warehouseFilter);
+      const matchId = t.sourceWarehouseId === warehouseFilter || t.destinationWarehouseId === warehouseFilter;
+      const matchName = selectedWh && (
+        (t as any).sourceWarehouseName === selectedWh.name ||
+        (t as any).destinationWarehouseName === selectedWh.name ||
+        t.sourceWarehouseId === selectedWh.name ||
+        t.destinationWarehouseId === selectedWh.name
+      );
+      if (!matchId && !matchName) {
         return false;
       }
     }
@@ -513,7 +521,11 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
               {/* Facility Filter */}
               <Select value={warehouseFilter} onValueChange={setWarehouseFilter}>
                 <SelectTrigger className="h-9 w-full sm:w-[180px] text-xs">
-                  <SelectValue placeholder="All Facilities" />
+                  <SelectValue placeholder="All Facilities">
+                    {warehouseFilter === 'all'
+                      ? 'All Facilities'
+                      : (warehouses.find(wh => wh.id === warehouseFilter)?.name || warehouseFilter)}
+                  </SelectValue>
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">All Facilities</SelectItem>
@@ -526,7 +538,19 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
               {/* Status Filter */}
               <Select value={statusFilter} onValueChange={setStatusFilter}>
                 <SelectTrigger className="h-9 w-full sm:w-[150px] text-xs">
-                  <SelectValue placeholder="All Statuses" />
+                  <SelectValue placeholder="All Statuses">
+                    {statusFilter === 'all'
+                      ? 'All Statuses'
+                      : statusFilter === 'pending'
+                        ? 'Pending'
+                        : statusFilter === 'in_transit'
+                          ? 'In Transit'
+                          : statusFilter === 'received'
+                            ? 'Received'
+                            : statusFilter === 'cancelled'
+                              ? 'Cancelled'
+                              : statusFilter}
+                  </SelectValue>
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">All Statuses</SelectItem>

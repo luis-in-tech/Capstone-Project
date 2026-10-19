@@ -1146,7 +1146,7 @@ export function Inventory() {
                 <TableHead className="w-24 text-[10px] font-bold uppercase px-2">Stock Levels</TableHead>
                 <TableHead className="w-28 text-[10px] font-bold uppercase px-2">Supplier</TableHead>
                 <TableHead className="w-24 text-center text-[10px] font-bold uppercase px-2">Status</TableHead>
-                <TableHead className="sticky right-0 z-20 bg-muted/95 backdrop-blur w-[180px] min-w-[180px] text-right text-[10px] font-bold uppercase px-3 shadow-[-4px_0_8px_-2px_rgba(0,0,0,0.06)]">Actions</TableHead>
+                <TableHead className="w-[180px] text-center text-[10px] font-bold uppercase px-3">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -1228,10 +1228,10 @@ export function Inventory() {
                       </Badge>
                     </TableCell>
                     <TableCell
-                      className="sticky right-0 z-10 bg-card/95 backdrop-blur group-hover:bg-muted/80 w-[180px] min-w-[180px] text-right px-3 py-2 shadow-[-4px_0_8px_-2px_rgba(0,0,0,0.06)]"
+                      className="w-[180px] text-center px-3 py-2"
                       onClick={(event) => event.stopPropagation()}
                     >
-                      <div className="flex justify-end gap-1">
+                      <div className="flex justify-center gap-1">
                         <Button variant="outline" size="icon" className="h-8 w-8" title="View product" onClick={() => { setSelectedProduct(product); setIsDetailOpen(true); }}>
                           <Eye className="h-3.5 w-3.5" />
                         </Button>

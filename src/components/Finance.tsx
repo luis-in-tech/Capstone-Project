@@ -114,7 +114,7 @@ export const formatCurrency = (val: number | undefined) => {
   return isNegative ? `-₱${absVal}` : `₱${absVal}`;
 };
 
-// Helper: Generates realistic paced daily progression for audited QuickBooks quarters
+// Helper: Generates realistic paced daily progression for audited financial baseline quarters
 function generatePacedDays(year: number, monthIdx: number, totalRev: number, totalExp: number) {
   const daysInMonth = new Date(year, monthIdx + 1, 0).getDate();
   const monthShort = new Date(year, monthIdx, 1).toLocaleString('default', { month: 'short' });
@@ -175,6 +175,8 @@ const CustomTrajectoryTooltip = ({ active, payload, label }: any) => {
           {margin}% Margin
         </span>
       </div>
+
+
       <div className="space-y-1 pt-0.5 text-xs font-mono tabular-nums">
         <div className="flex items-center justify-between">
           <span className="text-[10px] font-bold text-emerald-400 flex items-center gap-1">
@@ -199,7 +201,7 @@ const CustomTrajectoryTooltip = ({ active, payload, label }: any) => {
   );
 };
 
-// ── QuickBooks CSV Import Parser & Modal ───────────────────────────────────────
+// ── Financial CSV Import Parser & Modal ───────────────────────────────────────
 function parseCSV(text: string): { headers: string[]; rows: Record<string, string>[] } {
   const lines: string[] = [];
   let currentLine = '';
@@ -295,7 +297,7 @@ function downloadSampleCSV(type: 'expenses' | 'sales') {
   let content = '';
   let filename = '';
   if (type === 'expenses') {
-    filename = 'quickbooks_sample_expenses.csv';
+    filename = 'sample_expenses.csv';
     content = `Date,Transaction Type,Num,Name,Memo/Description,Account,Amount
 2025-01-15,Bill,BILL-1001,Kenda Distributors,Bicycle inner tubes batch 10,Cost of Goods Sold,154200.00
 2025-01-20,Expense,EXP-2001,Shell Valenzuela,Fleet delivery fuel replenishment,Travel Expense,4500.00
@@ -303,7 +305,7 @@ function downloadSampleCSV(type: 'expenses' | 'sales') {
 2025-02-14,Bill,BILL-1002,Neo Cycling Corp,Shimano derailleur units,Cost of Goods Sold,245000.00
 2025-02-28,Expense,EXP-2003,Sycip CPA Auditing,Q1 External Accounting Reconciliation,Ask My Accountant,18862.15`;
   } else {
-    filename = 'quickbooks_sample_sales.csv';
+    filename = 'sample_sales.csv';
     content = `Date,Transaction Type,Num,Customer,Amount,Status
 2025-01-12,Invoice,INV-2025-001,Cebu Bike Center,1250000.00,Paid
 2025-01-28,Invoice,INV-2025-002,Davao Cycle Hub,980000.00,Paid
@@ -322,13 +324,13 @@ function downloadSampleCSV(type: 'expenses' | 'sales') {
   document.body.removeChild(link);
 }
 
-interface QuickBooksImportModalProps {
+interface FinancialImportModalProps {
   isOpen: boolean;
   onClose: () => void;
   categories: ExpenseCategory[];
 }
 
-function QuickBooksImportModal({ isOpen, onClose, categories }: QuickBooksImportModalProps) {
+function FinancialImportModal({ isOpen, onClose, categories }: FinancialImportModalProps) {
   const [file, setFile] = useState<File | null>(null);
   const [importType, setImportType] = useState<'auto' | 'expenses' | 'orders'>('auto');
   const [parsedRows, setParsedRows] = useState<any[]>([]);
@@ -391,10 +393,10 @@ function QuickBooksImportModal({ isOpen, onClose, categories }: QuickBooksImport
 
       if (effective === 'expenses') {
         const category = findKey(r, /category|account|classification|item/i) || 'Cost of Goods Sold';
-        const description = findKey(r, /memo|description|desc|notes|payee|name|vendor/i) || 'QuickBooks Imported Expense';
-        const docNum = findKey(r, /num|ref|doc|check/i) || `QB-EXP-${idx + 1}`;
+        const description = findKey(r, /memo|description|desc|notes|payee|name|vendor/i) || 'Imported Expense';
+        const docNum = findKey(r, /num|ref|doc|check/i) || `EXP-IMP-${idx + 1}`;
         return {
-          id: `qb_exp_${Date.now()}_${idx}`,
+          id: `imp_exp_${Date.now()}_${idx}`,
           date,
           category,
           amount,
@@ -403,9 +405,9 @@ function QuickBooksImportModal({ isOpen, onClose, categories }: QuickBooksImport
         };
       } else {
         const clientName = findKey(r, /customer|client|name|payee/i) || 'B2B Client';
-        const orderNumber = findKey(r, /num|invoice|order|doc|ref/i) || `ORD-QB-${Date.now().toString().slice(-4)}-${idx + 1}`;
+        const orderNumber = findKey(r, /num|invoice|order|doc|ref/i) || `ORD-IMP-${Date.now().toString().slice(-4)}-${idx + 1}`;
         return {
-          id: `qb_ord_${Date.now()}_${idx}`,
+          id: `imp_ord_${Date.now()}_${idx}`,
           date,
           orderNumber,
           clientName,
@@ -441,7 +443,7 @@ function QuickBooksImportModal({ isOpen, onClose, categories }: QuickBooksImport
             try {
               await addDoc(collection(db, 'expenseCategories'), {
                 name: row.category,
-                description: 'Auto-provisioned from QuickBooks CSV import',
+                description: 'Auto-provisioned from financial CSV import',
                 isActive: true,
                 createdAt: serverTimestamp(),
               });
@@ -456,14 +458,14 @@ function QuickBooksImportModal({ isOpen, onClose, categories }: QuickBooksImport
             amount: row.amount,
             description: row.description,
             date: row.date,
-            recordedBy: 'quickbooks_import',
+            recordedBy: 'csv_import',
           });
         } else {
           // Orders / Sales
           await addDoc(collection(db, 'orders'), {
             orderNumber: row.orderNumber,
             clientName: row.clientName,
-            clientId: `cli_qb_${Date.now()}_${importedCount}`,
+            clientId: `cli_imp_${Date.now()}_${importedCount}`,
             agentId: 'system',
             status: 'completed',
             paymentStatus: 'paid',
@@ -476,11 +478,11 @@ function QuickBooksImportModal({ isOpen, onClose, categories }: QuickBooksImport
         importedCount++;
       }
 
-      toast.success(`Successfully imported ${importedCount} QuickBooks ${effective} into Supabase!`);
+      toast.success(`Successfully imported ${importedCount} ${effective} into Supabase!`);
       resetState();
       onClose();
     } catch (err: any) {
-      console.error('QuickBooks import error:', err);
+      console.error('CSV import error:', err);
       setError(err.message || 'Failed to write records to Supabase');
     } finally {
       setIsProcessing(false);
@@ -502,10 +504,10 @@ function QuickBooksImportModal({ isOpen, onClose, categories }: QuickBooksImport
             </div>
             <div>
               <DialogTitle className="text-base font-black uppercase tracking-tight">
-                Import QuickBooks Financial Data
+                Import Financial Data (CSV)
               </DialogTitle>
               <DialogDescription className="text-xs text-muted-foreground mt-0.5">
-                Ingest QuickBooks-exported CSV reports directly into live Supabase collections.
+                Ingest CSV accounting reports directly into live Supabase collections.
               </DialogDescription>
             </div>
           </div>
@@ -516,23 +518,23 @@ function QuickBooksImportModal({ isOpen, onClose, categories }: QuickBooksImport
           <div className="border border-dashed border-border hover:border-emerald-500/60 rounded-sm p-4 text-center transition-colors bg-muted/20">
             <input
               type="file"
-              id="qb-file-input"
+              id="csv-file-input"
               accept=".csv"
               className="hidden"
               onChange={handleFileChange}
               disabled={isProcessing}
             />
             <label
-              htmlFor="qb-file-input"
+              htmlFor="csv-file-input"
               className="cursor-pointer flex flex-col items-center justify-center gap-2"
             >
               <Upload className="w-8 h-8 text-emerald-600 animate-pulse" />
               <div>
-                <span className="text-xs font-bold text-foreground">Click to select QuickBooks CSV</span>
+                <span className="text-xs font-bold text-foreground">Click to select CSV</span>
                 <span className="text-xs text-muted-foreground"> or drag and drop</span>
               </div>
               <p className="text-[10px] text-muted-foreground">
-                Supports QuickBooks Transaction Detail, P&L Line Items, Expenses, and Invoices (.csv)
+                Supports transaction detail reports, P&L line items, expenses, and invoices (.csv)
               </p>
             </label>
             {file && (
@@ -648,7 +650,7 @@ function QuickBooksImportModal({ isOpen, onClose, categories }: QuickBooksImport
 
           {/* Template Download Utilities */}
           <div className="pt-2 border-t border-border flex flex-wrap items-center justify-between gap-2 text-xs">
-            <span className="text-[10px] text-muted-foreground font-medium">Need sample QuickBooks format?</span>
+            <span className="text-[10px] text-muted-foreground font-medium">Need sample CSV format?</span>
             <div className="flex items-center gap-2">
               <Button
                 type="button"
@@ -725,7 +727,7 @@ export function Finance() {
   const [editingCategory, setEditingCategory] = useState<ExpenseCategory | null>(null);
   const [editingExpense, setEditingExpense] = useState<Expense | null>(null);
   const [isEditExpenseOpen, setIsEditExpenseOpen] = useState(false);
-  const [isQBImportOpen, setIsQBImportOpen] = useState(false);
+  const [isCSVImportOpen, setIsCSVImportOpen] = useState(false);
 
   type SortKey = 'date' | 'category' | 'amount' | 'orderId';
   type SortDirection = 'asc' | 'desc';
@@ -1663,11 +1665,10 @@ export function Finance() {
             <Button
               variant={selectedPeriod === '2025' ? 'default' : 'ghost'}
               size="sm"
-              className={`h-6.5 px-2.5 text-[9px] font-black uppercase tracking-wider rounded-sm transition-all ${
-                selectedPeriod === '2025'
+              className={`h-6.5 px-2.5 text-[9px] font-black uppercase tracking-wider rounded-sm transition-all ${selectedPeriod === '2025'
                   ? 'bg-[#1A2332] text-white shadow-none'
                   : 'text-muted-foreground hover:text-foreground hover:bg-muted'
-              }`}
+                }`}
               onClick={() => setSelectedPeriod('2025')}
             >
               FY 2025 (Q1 P&L)
@@ -1675,11 +1676,10 @@ export function Finance() {
             <Button
               variant={selectedPeriod === '2026' ? 'default' : 'ghost'}
               size="sm"
-              className={`h-6.5 px-2.5 text-[9px] font-black uppercase tracking-wider rounded-sm transition-all ${
-                selectedPeriod === '2026'
+              className={`h-6.5 px-2.5 text-[9px] font-black uppercase tracking-wider rounded-sm transition-all ${selectedPeriod === '2026'
                   ? 'bg-[#1A2332] text-white shadow-none'
                   : 'text-muted-foreground hover:text-foreground hover:bg-muted'
-              }`}
+                }`}
               onClick={() => setSelectedPeriod('2026')}
             >
               FY 2026 (Live Ops)
@@ -1687,11 +1687,10 @@ export function Finance() {
             <Button
               variant={selectedPeriod === 'all' ? 'default' : 'ghost'}
               size="sm"
-              className={`h-6.5 px-2.5 text-[9px] font-black uppercase tracking-wider rounded-sm transition-all ${
-                selectedPeriod === 'all'
+              className={`h-6.5 px-2.5 text-[9px] font-black uppercase tracking-wider rounded-sm transition-all ${selectedPeriod === 'all'
                   ? 'bg-[#1A2332] text-white shadow-none'
                   : 'text-muted-foreground hover:text-foreground hover:bg-muted'
-              }`}
+                }`}
               onClick={() => setSelectedPeriod('all')}
             >
               All Periods
@@ -1702,9 +1701,9 @@ export function Finance() {
             variant="outline"
             size="sm"
             className="h-7 gap-1.5 px-2.5 text-[9px] font-black uppercase tracking-wider rounded-sm border border-emerald-500/40 text-emerald-700 dark:text-emerald-400 bg-emerald-50/50 dark:bg-emerald-950/30 hover:bg-emerald-100 dark:hover:bg-emerald-950/50 shadow-none transition-all"
-            onClick={() => setIsQBImportOpen(true)}
+            onClick={() => setIsCSVImportOpen(true)}
           >
-            <FileUp className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" /> Import QuickBooks (CSV)
+            <FileUp className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" /> Import Financials (CSV)
           </Button>
 
           <Button
@@ -1804,11 +1803,10 @@ export function Finance() {
                   key={gran}
                   variant={chartGranularity === gran ? 'default' : 'ghost'}
                   size="sm"
-                  className={`h-6 px-2 text-[9px] font-black uppercase tracking-wider rounded-sm transition-all ${
-                    chartGranularity === gran
+                  className={`h-6 px-2 text-[9px] font-black uppercase tracking-wider rounded-sm transition-all ${chartGranularity === gran
                       ? 'bg-[#1A2332] text-white shadow-none'
                       : 'text-muted-foreground hover:text-foreground hover:bg-muted'
-                  }`}
+                    }`}
                   onClick={() => setChartGranularity(gran)}
                 >
                   {gran}
@@ -1890,7 +1888,7 @@ export function Finance() {
             </div>
             <div className="text-[10px] font-medium text-muted-foreground mt-0.5">
               {selectedPeriod === '2025'
-                ? `Audited QuickBooks Baseline — Jan to Mar 2025 (${trajectoryGranularity.toUpperCase()} Timeline & Paced Scale)`
+                ? `Audited Baseline — Jan to Mar 2025 (${trajectoryGranularity.toUpperCase()} Timeline & Paced Scale)`
                 : selectedPeriod === '2026'
                   ? `Continuous Operational Revenue vs Expense Trend (${trajectoryGranularity.toUpperCase()} Granularity)`
                   : `Cross-Period Multi-Year Revenue vs Expense Trend (${trajectoryGranularity.toUpperCase()} Granularity)`}
@@ -1904,11 +1902,10 @@ export function Finance() {
                   key={gran}
                   variant={trajectoryGranularity === gran ? 'default' : 'ghost'}
                   size="sm"
-                  className={`h-6 px-2 text-[9px] font-black uppercase tracking-wider rounded-sm transition-all ${
-                    trajectoryGranularity === gran
+                  className={`h-6 px-2 text-[9px] font-black uppercase tracking-wider rounded-sm transition-all ${trajectoryGranularity === gran
                       ? 'bg-[#1A2332] text-white shadow-none'
                       : 'text-muted-foreground hover:text-foreground hover:bg-muted'
-                  }`}
+                    }`}
                   onClick={() => setTrajectoryGranularity(gran)}
                 >
                   {gran}
@@ -1975,11 +1972,10 @@ export function Finance() {
               <Button
                 variant={activeLedgerTab === 'statement' ? 'default' : 'ghost'}
                 size="sm"
-                className={`h-7 gap-1.5 px-3 text-[10px] font-black uppercase tracking-wider rounded-sm transition-all ${
-                  activeLedgerTab === 'statement'
+                className={`h-7 gap-1.5 px-3 text-[10px] font-black uppercase tracking-wider rounded-sm transition-all ${activeLedgerTab === 'statement'
                     ? 'bg-[#1A2332] text-white shadow-none'
                     : 'text-muted-foreground hover:text-foreground'
-                }`}
+                  }`}
                 onClick={() => setActiveLedgerTab('statement')}
               >
                 <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-400" />
@@ -1992,11 +1988,10 @@ export function Finance() {
               <Button
                 variant={activeLedgerTab === 'ledger' ? 'default' : 'ghost'}
                 size="sm"
-                className={`h-7 gap-1.5 px-3 text-[10px] font-black uppercase tracking-wider rounded-sm transition-all ${
-                  activeLedgerTab === 'ledger'
+                className={`h-7 gap-1.5 px-3 text-[10px] font-black uppercase tracking-wider rounded-sm transition-all ${activeLedgerTab === 'ledger'
                     ? 'bg-[#1A2332] text-white shadow-none'
                     : 'text-muted-foreground hover:text-foreground'
-                }`}
+                  }`}
                 onClick={() => setActiveLedgerTab('ledger')}
               >
                 <FileText className="w-3.5 h-3.5" /> Itemized Expense Ledger
@@ -2006,13 +2001,12 @@ export function Finance() {
               {activeLedgerTab === 'statement' ? (
                 <div className="flex items-center gap-2">
                   <span
-                    className={`text-[9px] font-black uppercase tracking-wider px-2 py-0.5 rounded-sm border ${
-                      selectedPeriod === '2025'
+                    className={`text-[9px] font-black uppercase tracking-wider px-2 py-0.5 rounded-sm border ${selectedPeriod === '2025'
                         ? 'border-emerald-500/40 text-emerald-700 bg-emerald-50 dark:bg-emerald-950/40 dark:text-emerald-300'
                         : selectedPeriod === '2026'
                           ? 'border-blue-500/40 text-blue-700 bg-blue-50 dark:bg-blue-950/40 dark:text-blue-300'
                           : 'border-purple-500/40 text-purple-700 bg-purple-50 dark:bg-purple-950/40 dark:text-purple-300'
-                    }`}
+                      }`}
                   >
                     {selectedPeriod === '2025' ? 'Audited Closed Period' : selectedPeriod === '2026' ? 'Live Operations (Continuous)' : 'Consolidated Multi-Year'}
                   </span>
@@ -2186,9 +2180,9 @@ export function Finance() {
                     variant="outline"
                     size="sm"
                     className="h-7 gap-1.5 px-2.5 border border-emerald-500/40 text-emerald-700 dark:text-emerald-400 bg-emerald-50/40 dark:bg-emerald-950/30 text-[9px] font-black uppercase tracking-wider hover:bg-emerald-50/60 transition-all rounded-sm shadow-none"
-                    onClick={() => setIsQBImportOpen(true)}
+                    onClick={() => setIsCSVImportOpen(true)}
                   >
-                    <FileUp className="w-3 h-3 text-emerald-600 dark:text-emerald-400" /> Import QuickBooks
+                    <FileUp className="w-3 h-3 text-emerald-600 dark:text-emerald-400" /> Import Financial CSV
                   </Button>
 
                   <Dialog open={isAddExpenseOpen} onOpenChange={setIsAddExpenseOpen}>
@@ -2282,13 +2276,12 @@ export function Finance() {
                       {activePLData.title}
                     </h4>
                     <span
-                      className={`text-[9px] font-black uppercase tracking-wider px-2 py-0.5 rounded-sm border ${
-                        selectedPeriod === '2025'
+                      className={`text-[9px] font-black uppercase tracking-wider px-2 py-0.5 rounded-sm border ${selectedPeriod === '2025'
                           ? 'bg-emerald-50 text-emerald-800 border-emerald-300 dark:bg-emerald-950/50 dark:text-emerald-300 dark:border-emerald-800'
                           : selectedPeriod === '2026'
                             ? 'bg-blue-50 text-blue-800 border-blue-300 dark:bg-blue-950/50 dark:text-blue-300 dark:border-blue-800'
                             : 'bg-purple-50 text-purple-800 border-purple-300 dark:bg-purple-950/50 dark:text-purple-300 dark:border-purple-800'
-                      }`}
+                        }`}
                     >
                       {activePLData.badgeText}
                     </span>
@@ -2374,13 +2367,12 @@ export function Finance() {
                       {activePLData.colHeaders.map((ch, cIdx) => (
                         <TableHead
                           key={cIdx}
-                          className={`text-[10px] font-black uppercase tracking-widest text-right py-2 ${
-                            cIdx === activePLData.colHeaders.length - 2
+                          className={`text-[10px] font-black uppercase tracking-widest text-right py-2 ${cIdx === activePLData.colHeaders.length - 2
                               ? 'text-foreground font-bold bg-neutral-200/50 dark:bg-neutral-800/50 min-w-[130px] px-3'
                               : cIdx === activePLData.colHeaders.length - 1
                                 ? 'text-neutral-600 dark:text-neutral-400 pr-4 min-w-[90px]'
                                 : 'text-neutral-600 dark:text-neutral-400 min-w-[110px] px-3'
-                          }`}
+                            }`}
                         >
                           {ch}
                         </TableHead>
@@ -2415,15 +2407,14 @@ export function Finance() {
                       return (
                         <TableRow
                           key={idx}
-                          className={`border-b border-border/50 transition-colors ${
-                            row.isFinalNetIncome
+                          className={`border-b border-border/50 transition-colors ${row.isFinalNetIncome
                               ? 'bg-amber-500/10 hover:bg-amber-500/15 font-black border-t-2 border-b-2 border-amber-500/60'
                               : row.isGrandTotal
                                 ? 'bg-muted/40 font-black border-t border-border'
                                 : row.isTotal
                                   ? 'bg-muted/20 font-bold border-t border-border/60'
                                   : 'hover:bg-muted/30'
-                          }`}
+                            }`}
                         >
                           <TableCell className={`py-1.5 ${row.indent ? 'pl-10 text-xs font-medium text-foreground' : 'pl-6 font-bold text-xs text-foreground'}`}>
                             {row.name}
@@ -2433,15 +2424,14 @@ export function Finance() {
                               {formatCurrency(colVal)}
                             </TableCell>
                           ))}
-                          <TableCell className={`py-1.5 px-3 text-right text-xs font-mono tabular-nums font-black bg-muted/20 ${
-                            isHighlightEmerald
+                          <TableCell className={`py-1.5 px-3 text-right text-xs font-mono tabular-nums font-black bg-muted/20 ${isHighlightEmerald
                               ? 'text-emerald-700 dark:text-emerald-400'
                               : isHighlightRose
                                 ? 'text-red-700 dark:text-red-400'
                                 : isHighlightGold
                                   ? 'text-amber-700 dark:text-amber-300 font-black'
                                   : 'text-foreground'
-                          }`}>
+                            }`}>
                             {formatCurrency(row.total)}
                           </TableCell>
                           <TableCell className="py-1.5 pr-4 text-right text-xs font-mono tabular-nums font-semibold text-muted-foreground">
@@ -2838,10 +2828,10 @@ export function Finance() {
               Generate Monthly P&L (CSV)
             </Button>
           </div>
-          {/* QuickBooks CSV Importer Dialog */}
-          <QuickBooksImportModal
-            isOpen={isQBImportOpen}
-            onClose={() => setIsQBImportOpen(false)}
+          {/* Financial CSV Importer Dialog */}
+          <FinancialImportModal
+            isOpen={isCSVImportOpen}
+            onClose={() => setIsCSVImportOpen(false)}
             categories={categories}
           />
         </div>

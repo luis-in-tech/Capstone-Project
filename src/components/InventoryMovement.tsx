@@ -1,7 +1,7 @@
 import { hasAdminRole } from '../lib/staffPermissions';
 import { useStaffAccess } from '../hooks/useStaffAccess';
 import { permitsMovement } from '../lib/staffPermissions';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { ReceiptBatchLabels } from './ReceiptBatchLabels';
 import { receiptDateToday } from '../lib/receiptBatches';
@@ -29,12 +29,29 @@ type Option = { id: string; name: string };
 function Choice({ id, label, value, onChange, options, placeholder = 'Select an option' }: {
   id: string; label: string; value: string; onChange: (value: string) => void; options: Option[]; placeholder?: string;
 }) {
-  return <div className="space-y-2"><Label htmlFor={id} className="text-xs font-semibold">{label}</Label>
-    <Select value={value} onValueChange={value => onChange(value ?? '')}>
-      <SelectTrigger id={id} className="w-full h-10! rounded-lg bg-background"><SelectValue placeholder={placeholder} /></SelectTrigger>
-      <SelectContent>{options.map(option => <SelectItem key={option.id} value={option.id}>{option.name}</SelectItem>)}</SelectContent>
-    </Select>
-  </div>;
+  const isUuid = (val?: string | null) => Boolean(val && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val));
+  const selectedOption = options.find(option => option.id === value || option.name === value);
+  const displayText = selectedOption?.name ?? (isUuid(value) ? undefined : (value && value !== 'all' ? value : undefined));
+
+  return (
+    <div className="space-y-2">
+      <Label htmlFor={id} className="text-xs font-semibold">{label}</Label>
+      <Select value={value} onValueChange={v => onChange(v ?? '')}>
+        <SelectTrigger id={id} className="w-full h-10! rounded-lg bg-background">
+          <SelectValue placeholder={placeholder}>
+            {displayText}
+          </SelectValue>
+        </SelectTrigger>
+        <SelectContent>
+          {options.map(option => (
+            <SelectItem key={option.id} value={option.id}>
+              {option.name}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
+  );
 }
 
 function TypeBadge({ external }: { external: boolean }) {
@@ -60,16 +77,29 @@ function normalizeMovementRecord(
   warehousesList: Warehouse[],
   suppliersList: Option[]
 ): InventoryMovementRecord {
+  const isUuid = (val?: string | null) => Boolean(val && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val));
+
   const destinationWhId = raw?.destinationWarehouseId || raw?.destination_warehouse_id || '';
   const sourceWhId = raw?.sourceWarehouseId || raw?.source_warehouse_id || null;
   const suppId = raw?.supplierId || raw?.supplier_id || null;
 
-  const destinationWhName = raw?.destinationWarehouseName || raw?.destination_warehouse_name
-    || warehousesList.find(w => w.id === destinationWhId)?.name || 'Destination Warehouse';
-  const sourceWhName = raw?.sourceWarehouseName || raw?.source_warehouse_name
-    || (sourceWhId ? warehousesList.find(w => w.id === sourceWhId)?.name : null) || null;
-  const suppName = raw?.supplierName || raw?.supplier_name
-    || (suppId ? suppliersList.find(s => s.id === suppId)?.name : null) || null;
+  let destinationWhName = raw?.destinationWarehouseName || raw?.destination_warehouse_name;
+  if (!destinationWhName || isUuid(destinationWhName)) {
+    destinationWhName = warehousesList.find(w => w.id === destinationWhId)?.name
+      || (destinationWhId && !isUuid(destinationWhId) ? destinationWhId : 'Destination Warehouse');
+  }
+
+  let sourceWhName = raw?.sourceWarehouseName || raw?.source_warehouse_name;
+  if (!sourceWhName || isUuid(sourceWhName)) {
+    sourceWhName = (sourceWhId ? warehousesList.find(w => w.id === sourceWhId)?.name : null)
+      || (sourceWhId && !isUuid(sourceWhId) ? sourceWhId : null);
+  }
+
+  let suppName = raw?.supplierName || raw?.supplier_name;
+  if (!suppName || isUuid(suppName)) {
+    suppName = (suppId ? suppliersList.find(s => s.id === suppId)?.name : null)
+      || (suppId && !isUuid(suppId) ? suppId : null);
+  }
 
   let rawItems = raw?.items || raw?.movement_items || [];
   if (typeof rawItems === 'string') {
@@ -188,7 +218,19 @@ export function InventoryMovement() {
 
   useEffect(() => {
     const watch = <T,>(table: string, update: (value: T[]) => void) => onSnapshot(collection(db, table), snap => {
-      update(snap.docs.map((d: { id: string; data: () => Record<string, unknown> }) => ({ ...d.data(), id: d.id } as T)));
+      update(snap.docs.map((d: { id: string; data: () => Record<string, unknown> }) => {
+        const data = d.data();
+        const fallbackName = table === 'suppliers'
+          ? (data.supplier_name || data.supplierName || data.company_name || data.name || d.id)
+          : table === 'warehouses'
+          ? (data.warehouse_name || data.warehouseName || data.name || d.id)
+          : data.name;
+        return {
+          id: d.id,
+          name: String(fallbackName || ''),
+          ...data,
+        } as T;
+      }));
       setLoadedReferences(prev => [...new Set([...prev, table])]);
       setReferenceErrors(prev => { const next = { ...prev }; delete next[table]; return next; });
     }, () => setReferenceErrors(prev => ({ ...prev, [table]: `Unable to load ${table}.` })));
@@ -212,14 +254,95 @@ export function InventoryMovement() {
   const zoneOptions = (warehouseId: string) => [{ id: 'unassigned', name: 'Unassigned' }, ...zones.filter(z => z.warehouseId === warehouseId).sort((a, b) => a.sortOrder - b.sortOrder).map(z => ({ id: z.id, name: z.name }))];
   const total = purchaseTotal(draft.items);
   const units = draft.items.reduce((sum, item) => sum + item.quantity, 0);
-  const warehouseName = (id: string) => warehouses.find(warehouse => warehouse.id === id)?.name || 'Unknown warehouse';
-  const supplierName = suppliers.find(supplier => supplier.id === draft.supplierId)?.name || 'Select a supplier';
+
+  const supplierOptions = useMemo<Option[]>(() => {
+    const map = new Map<string, string>();
+
+    // 1. Database suppliers
+    suppliers.forEach((s: any) => {
+      const id = String(s.id || '').trim();
+      const name = String(s.name || s.supplier_name || s.supplierName || s.company_name || id).trim();
+      if (id && name) {
+        map.set(id, name);
+      }
+    });
+
+    // 2. Product suppliers
+    products.forEach((p: Product) => {
+      const name = (p.supplier || '').trim();
+      const id = (p.supplierId || '').trim();
+      if (id && name && !map.has(id)) {
+        map.set(id, name);
+      } else if (name && !Array.from(map.values()).some(n => n.toLowerCase() === name.toLowerCase())) {
+        map.set(name, name);
+      }
+    });
+
+    // 3. Movement suppliers
+    movements.forEach((m: InventoryMovementRecord) => {
+      const name = (m.supplierName || '').trim();
+      const id = (m.supplierId || '').trim();
+      if (id && name && !map.has(id)) {
+        map.set(id, name);
+      } else if (name && !Array.from(map.values()).some(n => n.toLowerCase() === name.toLowerCase())) {
+        map.set(name, name);
+      }
+    });
+
+    return Array.from(map.entries())
+      .map(([id, name]) => ({ id, name }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [suppliers, products, movements]);
+
+  const warehouseOptions = useMemo<Option[]>(() => {
+    const map = new Map<string, string>();
+
+    warehouses.forEach((w: any) => {
+      const id = String(w.id || '').trim();
+      const name = String(w.name || w.warehouse_name || w.warehouseName || id).trim();
+      if (id && name) {
+        map.set(id, name);
+      }
+    });
+
+    movements.forEach((m: InventoryMovementRecord) => {
+      if (m.destinationWarehouseId && m.destinationWarehouseName && !map.has(m.destinationWarehouseId)) {
+        map.set(m.destinationWarehouseId, m.destinationWarehouseName);
+      }
+      if (m.sourceWarehouseId && m.sourceWarehouseName && !map.has(m.sourceWarehouseId)) {
+        map.set(m.sourceWarehouseId, m.sourceWarehouseName);
+      }
+    });
+
+    return Array.from(map.entries())
+      .map(([id, name]) => ({ id, name }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [warehouses, movements]);
+
+  const warehouseName = (id: string) => warehouseOptions.find(w => w.id === id)?.name || warehouses.find(warehouse => warehouse.id === id)?.name || 'Unknown warehouse';
+  const supplierName = supplierOptions.find(supplier => supplier.id === draft.supplierId)?.name || suppliers.find(supplier => supplier.id === draft.supplierId)?.name || 'Select a supplier';
   const activeWarehouses = warehouses.filter(warehouse => warehouse.active !== false);
+
   const filtered = movements.filter(movement => {
     const haystack = [movement.movementNumber, movement.supplierName, movement.sourceWarehouseName, movement.destinationWarehouseName, movement.invoiceNumber, movement.driverName, movement.vehiclePlate, movement.recordedByName, ...(movement.items || []).flatMap(item => [item.name, item.sku, item.batchCode])].join(' ').toLowerCase();
-    return haystack.includes(search.toLowerCase().trim()) && (typeFilter === 'all' || movement.type === typeFilter)
-      && (warehouseFilter === 'all' || movement.sourceWarehouseId === warehouseFilter || movement.destinationWarehouseId === warehouseFilter)
-      && (supplierFilter === 'all' || movement.supplierId === supplierFilter)
+
+    const selectedWarehouseObj = warehouseOptions.find(w => w.id === warehouseFilter || w.name === warehouseFilter);
+    const selectedSupplierObj = supplierOptions.find(s => s.id === supplierFilter || s.name === supplierFilter);
+
+    const matchesWarehouse = warehouseFilter === 'all'
+      || movement.sourceWarehouseId === warehouseFilter
+      || movement.destinationWarehouseId === warehouseFilter
+      || (selectedWarehouseObj && (movement.sourceWarehouseName === selectedWarehouseObj.name || movement.destinationWarehouseName === selectedWarehouseObj.name));
+
+    const matchesSupplier = supplierFilter === 'all'
+      || movement.supplierId === supplierFilter
+      || (selectedSupplierObj && movement.supplierName === selectedSupplierObj.name)
+      || movement.supplierName === supplierFilter;
+
+    return haystack.includes(search.toLowerCase().trim())
+      && (typeFilter === 'all' || movement.type === typeFilter)
+      && matchesWarehouse
+      && matchesSupplier
       && (statusFilter === 'all' || movement.status === statusFilter);
   }).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   const matchingProducts = products.filter(product => `${product.name} ${product.sku}`.toLowerCase().includes(productSearch.trim().toLowerCase()));
@@ -539,8 +662,8 @@ export function InventoryMovement() {
         <div className="space-y-4 border-b p-4"><div className="relative"><Search className="absolute left-3 top-3 size-4 text-muted-foreground" /><Input aria-label="Search movements" className="h-10 pl-9" placeholder="Search movement ID, product, SKU, supplier, or invoice…" value={search} onChange={event => setSearch(event.target.value)} /></div>
           <div className="grid items-end gap-3 sm:grid-cols-2 lg:grid-cols-[1fr_1fr_1fr_1fr_auto]">
             <Choice id="filter-type" label="Movement type" value={typeFilter} onChange={setTypeFilter} options={[{ id: 'all', name: 'All types' }, { id: 'external', name: 'External receipt' }, { id: 'internal', name: 'Internal transfer' }]} />
-            <Choice id="filter-warehouse" label="Warehouse" value={warehouseFilter} onChange={setWarehouseFilter} options={[{ id: 'all', name: 'All warehouses' }, ...warehouses]} />
-            <Choice id="filter-supplier" label="Supplier" value={supplierFilter} onChange={setSupplierFilter} options={[{ id: 'all', name: 'All suppliers' }, ...suppliers]} />
+            <Choice id="filter-warehouse" label="Warehouse" value={warehouseFilter} onChange={setWarehouseFilter} options={[{ id: 'all', name: 'All warehouses' }, ...warehouseOptions]} />
+            <Choice id="filter-supplier" label="Supplier" value={supplierFilter} onChange={setSupplierFilter} options={[{ id: 'all', name: 'All suppliers' }, ...supplierOptions]} />
             <Choice id="filter-status" label="Status" value={statusFilter} onChange={setStatusFilter} options={[{ id: 'all', name: 'All statuses' }, { id: 'confirmed', name: 'Confirmed' }]} />
             <Button variant="ghost" className="h-10" onClick={() => { setSearch(''); setTypeFilter('all'); setWarehouseFilter('all'); setSupplierFilter('all'); setStatusFilter('all'); }}>Reset filters</Button>
           </div>
@@ -567,12 +690,12 @@ export function InventoryMovement() {
             <div className="grid gap-6 lg:grid-cols-[1fr_280px]">
               <div className="space-y-6">
                 <section className="space-y-4"><h3 className="text-sm font-semibold">01 / {external ? 'Receipt details' : 'Transfer route'}</h3><div className="grid gap-4 sm:grid-cols-2">
-                  {external ? <Choice id="movement-supplier" label="Supplier *" value={draft.supplierId} onChange={supplierId => updateDraft({ supplierId })} options={suppliers} placeholder="Select supplier" /> : <Choice id="movement-source" label="Source warehouse *" value={draft.sourceWarehouseId} onChange={sourceWarehouseId => updateDraft({ sourceWarehouseId })} options={activeWarehouses} placeholder="Select source" />}
+                  {external ? <Choice id="movement-supplier" label="Supplier *" value={draft.supplierId} onChange={supplierId => updateDraft({ supplierId })} options={supplierOptions} placeholder="Select supplier" /> : <Choice id="movement-source" label="Source warehouse *" value={draft.sourceWarehouseId} onChange={sourceWarehouseId => updateDraft({ sourceWarehouseId })} options={activeWarehouses} placeholder="Select source" />}
                   <Choice id="movement-destination" label={external ? 'Receiving warehouse *' : 'Destination warehouse *'} value={draft.destinationWarehouseId} onChange={destinationWarehouseId => updateDraft({ destinationWarehouseId })} options={activeWarehouses.filter(warehouse => external || warehouse.id !== draft.sourceWarehouseId)} placeholder={external ? 'Select receiving warehouse' : 'Select destination'} />
                   {zonesReady && <>{!external && <Choice id="movement-source-zone" label="Source zone (optional)" value={draft.sourceZoneId || 'unassigned'} onChange={sourceZoneId => updateDraft({ sourceZoneId: sourceZoneId === 'unassigned' ? '' : sourceZoneId })} options={zoneOptions(draft.sourceWarehouseId)} />}<Choice id="movement-destination-zone" label="Destination zone (optional)" value={draft.destinationZoneId || 'unassigned'} onChange={destinationZoneId => updateDraft({ destinationZoneId: destinationZoneId === 'unassigned' ? '' : destinationZoneId })} options={zoneOptions(draft.destinationWarehouseId)} /></>}
                   {external && <div className="space-y-2 sm:col-span-2"><Label htmlFor="receipt-date">Received date *</Label><Input id="receipt-date" type="date" required max={receiptDateToday()} value={draft.receivedDate || ''} onChange={event => updateDraft({ receivedDate: event.target.value })} /><p className="text-xs text-muted-foreground">Batch sequence resets per product on this date.</p></div>}
                   {external ? <div className="space-y-2 sm:col-span-2"><Label htmlFor="movement-invoice" className="text-xs font-semibold">Invoice number *</Label><Input id="movement-invoice" placeholder="e.g. INV-2026-001" value={draft.invoiceNumber} onChange={event => updateDraft({ invoiceNumber: event.target.value })} /></div> : <><div className="space-y-2"><Label htmlFor="movement-driver" className="text-xs font-semibold">Driver name <span className="font-normal text-muted-foreground">(optional)</span></Label><Input id="movement-driver" placeholder="Driver's full name" value={draft.driverName} onChange={event => updateDraft({ driverName: event.target.value })} /></div><div className="space-y-2"><Label htmlFor="movement-plate" className="text-xs font-semibold">Vehicle plate <span className="font-normal text-muted-foreground">(optional)</span></Label><Input id="movement-plate" placeholder="e.g. ABC 1234" value={draft.vehiclePlate} onChange={event => updateDraft({ vehiclePlate: event.target.value.toUpperCase() })} /></div></>}
-                </div>{external && !suppliers.length && <p className="text-xs text-amber-700">Add a supplier in Inventory before recording a receipt.</p>}</section>
+                </div>{external && !supplierOptions.length && <p className="text-xs text-amber-700">Add a supplier in Inventory before recording a receipt.</p>}</section>
                 <section className="space-y-3"><div className="flex items-center justify-between"><h3 className="text-sm font-semibold">02 / Products & quantities</h3><span className="text-xs text-muted-foreground">{draft.items.length} selected</span></div>
                   <div className="overflow-hidden rounded-xl border"><div className="relative border-b"><Search className="absolute left-3 top-3 size-4 text-muted-foreground" /><Input aria-label="Find products to add" className="h-10 rounded-none border-0 pl-9 shadow-none" placeholder="Search product name or SKU…" value={productSearch} onChange={event => setProductSearch(event.target.value)} /></div><div className="max-h-44 overflow-y-auto divide-y">
                     {matchingProducts.slice(0, 40).map(product => { const stock = sourceStock(product.id); const added = draft.items.find(item => item.productId === product.id)?.quantity || 0; const disabled = !external && (!draft.sourceWarehouseId || stock <= added); return <div key={product.id} className="flex items-center gap-3 px-3 py-2.5"><div className="flex size-9 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-muted">{product.photoUrl ? <img src={product.photoUrl} alt="" className="size-full object-cover" /> : <Package className="size-4 text-muted-foreground" />}</div><div className="min-w-0 flex-1"><p className="truncate text-xs font-medium">{product.name}</p><p className="text-[11px] text-muted-foreground">{product.sku}{!external && draft.sourceWarehouseId && <span className={stock === 0 ? 'text-destructive' : ''}> · {stock} available</span>}</p></div><Button variant="outline" size="sm" disabled={disabled} aria-label={`Add ${product.name}`} onClick={() => addProduct(product)}><Plus className="size-3" />Add</Button></div>; })}
