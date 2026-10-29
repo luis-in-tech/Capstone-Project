@@ -1,0 +1,6 @@
+"SKU","Product Name","Category","Warehouse A Stock","Warehouse B Stock","Quarantined Stock","Aisle","Bin","Unit Cost (PHP)","Status","Last Synchronized"
+"AC-BRK-001","Heavy Duty Brake Pad Set","Brakes","140","95","0","Aisle 3","Bin B-12","1250","active","2026-10-29T04:49:28.643Z"
+"AC-ENG-002","Synthetic Engine Oil 5W-40","Engine","320","210","0","Aisle 1","Bin A-04","450","active","2026-10-29T04:49:28.643Z"
+"AC-FLT-003","High-Flow Air Filter Element","Filters","85","60","2","Aisle 2","Bin C-01","320","active","2026-10-29T04:49:28.643Z"
+"AC-TRN-004","Automatic Transmission Fluid","Transmission","110","80","0","Aisle 1","Bin A-08","580","active","2026-10-29T04:49:28.643Z"
+"AC-SUS-005","Front Suspension Strut Assembly","Suspension","45","30","1","Aisle 4","Bin D-05","3400","active","2026-10-29T04:49:28.643Z"

@@ -169,7 +169,7 @@ export function DeliveryReceipt({
                       <tr key={item.id}>
                         <td>{entry.number}</td>
                         <td>{item.quantity}</td>
-                        <td>{item.entryDetails?.unit || "pc"}</td>
+                        <td>{item.entryDetails?.unit || (item as any).entry_details?.unit || item.unit || (item as any).units || "pc"}</td>
                         <td>
                           {item.name}
                           {item.entryDetails?.variation

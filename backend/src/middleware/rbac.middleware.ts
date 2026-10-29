@@ -10,6 +10,7 @@
 
 import { Request, Response, NextFunction } from 'express';
 import { AppError } from './errorHandler';
+import { env } from '../config/env';
 
 export type UserRole = 'cmo' | 'admin' | 'secretary' | 'field_agent';
 
@@ -30,19 +31,33 @@ declare global {
 
 /**
  * Extracts and sets the user role from request headers or auth payload.
+ * When API_SECRET is configured in environment, privilege elevation to 'admin' or 'cmo'
+ * requires a matching 'x-api-key' or 'x-api-secret' header.
  */
 export function extractUserRole(req: Request, _res: Response, next: NextFunction): void {
+  const apiSecret = env.API_SECRET;
+  const providedSecret = (req.headers['x-api-key'] || req.headers['x-api-secret'] || req.headers['authorization']?.replace(/^Bearer\s+/i, '')) as string | undefined;
+
   const headerRole = req.headers['x-user-role'] as string | undefined;
   if (headerRole) {
     const normalized = headerRole.toLowerCase().trim() as UserRole;
     if (['cmo', 'admin', 'secretary', 'field_agent'].includes(normalized)) {
+      if (apiSecret && (normalized === 'admin' || normalized === 'cmo')) {
+        if (providedSecret === apiSecret) {
+          req.userRole = normalized;
+          return next();
+        }
+        // Elevation secret rejected; keep as least-privileged field_agent
+        req.userRole = 'field_agent';
+        return next();
+      }
       req.userRole = normalized;
       return next();
     }
   }
 
-  // Fallback to cmo in non-production local development if header not passed
-  req.userRole = 'cmo';
+  // Fallback to least-privileged role when no valid role header is provided (NFR-04 security hardening)
+  req.userRole = 'field_agent';
   next();
 }
 
@@ -51,7 +66,7 @@ export function extractUserRole(req: Request, _res: Response, next: NextFunction
  */
 export function requireRole(allowedRoles: UserRole[]) {
   return (req: Request, _res: Response, next: NextFunction): void => {
-    const currentRole = req.userRole || 'cmo';
+    const currentRole = req.userRole || 'field_agent';
 
     if (!allowedRoles.includes(currentRole)) {
       throw new AppError(
@@ -71,7 +86,7 @@ export function requireRole(allowedRoles: UserRole[]) {
  * - Secretaries cannot execute destructive methods (PUT, PATCH, DELETE).
  */
 export function financeGuard(req: Request, _res: Response, next: NextFunction): void {
-  const currentRole = req.userRole || 'cmo';
+  const currentRole = req.userRole || 'field_agent';
 
   if (currentRole === 'field_agent') {
     throw new AppError(

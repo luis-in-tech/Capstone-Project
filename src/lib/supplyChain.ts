@@ -38,6 +38,9 @@ export function dateValue(value: unknown): string {
 export function orderBalance(order: Order & { remainingBalance?: number }): number | null {
   if (order.status === 'cancelled' || order.paymentStatus === 'paid') return 0;
   if (order.remainingBalance != null && Number.isFinite(Number(order.remainingBalance))) return Math.max(0, Number(order.remainingBalance));
+  if (order.amountPaid != null && Number.isFinite(Number(order.amountPaid)) && Number(order.amountPaid) > 0) {
+    return Math.max(0, (Number(order.totalAmount) || 0) - Number(order.amountPaid));
+  }
   if (order.paymentStatus === 'partially_paid') return null;
   return Number(order.totalAmount) || 0;
 }

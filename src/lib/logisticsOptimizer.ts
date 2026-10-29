@@ -238,11 +238,15 @@ export interface OptimizationResult {
  * Extracts box/item unit demand for an order.
  */
 export function extractOrderDemand(order: Order): number {
+  if ((order as any).items && Array.isArray((order as any).items) && (order as any).items.length > 0) {
+    const totalItemQty = (order as any).items.reduce((sum: number, it: any) => sum + Number(it.quantity || 0), 0);
+    if (totalItemQty > 0) return totalItemQty;
+  }
   if (order.skus && Array.isArray(order.skus) && order.skus.length > 0) {
     return order.skus.length * 6; // Standard 6 units per SKU bundle
   }
   if (order.totalAmount && order.totalAmount > 0) {
-    return Math.max(4, Math.min(30, Math.round(order.totalAmount / 3500)));
+    return Math.max(1, Math.round(order.totalAmount / 3500));
   }
   return 8;
 }
@@ -306,7 +310,8 @@ export function optimizeStopSequence2Opt(depot: LocationCoord, stops: DeliverySt
  * Selects the most cost-effective vehicle from the fleet that satisfies the capacity constraint.
  */
 export function selectBestFeasibleVehicle(unitsRequired: number, fleet: VehicleSpec[] = STANDARD_FLEET): VehicleSpec {
-  const sortedFleet = [...fleet].sort((a, b) => a.capacity - b.capacity);
+  const activeFleet = fleet && fleet.length > 0 ? fleet : STANDARD_FLEET;
+  const sortedFleet = [...activeFleet].sort((a, b) => a.capacity - b.capacity);
   for (const vehicle of sortedFleet) {
     if (vehicle.capacity >= unitsRequired) {
       return vehicle;

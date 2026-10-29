@@ -5,10 +5,11 @@ import { hasAdminRole } from '../lib/staffPermissions';
 import { useStaffAccess } from '../hooks/useStaffAccess';
 import React, { useState, useEffect, useRef } from 'react';
 import { db, storage } from '../lib/supabaseAdapter';
-import { collection, onSnapshot, query, orderBy, where, getDocs } from '../lib/supabaseAdapter';
+import { collection, onSnapshot, query, orderBy, where, getDocs, getDoc, updateDoc, deleteDoc, doc, serverTimestamp, addDoc } from '../lib/supabaseAdapter';
 import { Order, OrderStatus, Product, InventoryItem, OrderItem } from '../types';
 import { handleSupabaseError, OperationType } from '../lib/supabaseErrorHandler';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
@@ -35,6 +36,8 @@ import {
   DownloadIcon as Download,
   FunnelSimpleIcon as ListFilter,
   ChecksIcon as CheckCheck,
+  PencilSimpleIcon as Pencil,
+  TrashIcon as Trash2,
 } from '@phosphor-icons/react';
 import { Badge } from '@/components/ui/badge';
 import { useAuth } from '../hooks/useAuth';
@@ -43,7 +46,7 @@ import { format } from 'date-fns';
 import { OrderEntry } from './OrderEntry';
 import { DeliveryReceipt } from './DeliveryReceipt';
 import { supabase } from '../lib/supabase';
-import { type ReceiptOrder, type ReceiptItem, money } from '../lib/orderEntry';
+import { type ReceiptOrder, type ReceiptItem, money, roundMoney } from '../lib/orderEntry';
 import {
   evaluateAndSyncSLAIncidents,
   getLocalIncidents,
@@ -93,6 +96,11 @@ export function Orders() {
 
   const [activeTab, setActiveTab] = useState<'items' | 'history'>('items');
 
+  // Pending Order Editing State (Client Feedback Page 19)
+  const [editingPendingOrder, setEditingPendingOrder] = useState<ReceiptOrder | null>(null);
+  const [editOrderItems, setEditOrderItems] = useState<ReceiptItem[]>([]);
+  const [isSavingEditOrder, setIsSavingEditOrder] = useState(false);
+
   const filteredOrders = orders.filter(order => {
     const queryStr = searchQuery.toLowerCase();
     const matchesSku = order.skus?.some(sku => sku.toLowerCase().includes(queryStr));
@@ -103,11 +111,36 @@ export function Orders() {
     return matchesSku || matchesOrderNumber || matchesClient || matchesCity || matchesRegion;
   });
 
-  // FR-09: Algorithmic FIFO queue ordering vs standard descending creation view
+  // Chronological Status Priority Sorting (Client Feedback Page 18)
+  const statusGroupRank = (st: OrderStatus): number => {
+    switch (st) {
+      case 'pending': return 0;
+      case 'preparing': return 1;
+      case 'out_for_delivery': return 2;
+      case 'delivered': return 3;
+      case 'completed': return 4;
+      case 'cancelled': return 5;
+      case 'escalated': return 6;
+      default: return 7;
+    }
+  };
+
+  const statusChronologicalOrders = React.useMemo(() => {
+    return [...filteredOrders].sort((a, b) => {
+      const rankA = statusGroupRank(a.status);
+      const rankB = statusGroupRank(b.status);
+      if (rankA !== rankB) return rankA - rankB;
+      const timeA = new Date(a.createdAt || 0).getTime();
+      const timeB = new Date(b.createdAt || 0).getTime();
+      return timeB - timeA;
+    });
+  }, [filteredOrders]);
+
+  // FR-09: Algorithmic FIFO queue ordering vs standard chronological status view
   const fulfillmentStrategy = (localStorage.getItem('activepro.fulfillment_strategy') as 'FIFO'|'LIFO') || 'FIFO';
   const displayOrders = orderViewMode === 'fifo_queue'
     ? prioritizeOrderQueue(filteredOrders, fulfillmentStrategy)
-    : filteredOrders;
+    : statusChronologicalOrders;
 
   const activeIncidents = incidents.filter(i => i.status !== 'RESOLVED' && i.status !== 'CLOSED');
 
@@ -187,6 +220,26 @@ export function Orders() {
       return;
     }
     statusLock.current = true;
+
+    // Optimistic concurrency check: ensure order wasn't modified concurrently by another staff member
+    try {
+      const { data: latestOrder, error: checkError } = await supabase
+        .from('orders')
+        .select('status')
+        .eq('id', order.id)
+        .maybeSingle();
+
+      if (!checkError && latestOrder && latestOrder.status !== order.status) {
+        toast.error(`Order status was modified by another staff member to "${latestOrder.status.replaceAll('_', ' ')}". Refreshing order.`);
+        setOrders(current => current.map(item => item.id === order.id ? { ...item, status: latestOrder.status } : item));
+        setSelectedOrder(current => current?.id === order.id ? { ...current, status: latestOrder.status } : current);
+        statusLock.current = false;
+        return;
+      }
+    } catch (checkErr) {
+      console.warn('Could not verify concurrent order status:', checkErr);
+    }
+
     const statusHistory = [...(order.statusHistory || [])];
     if (statusHistory.at(-1)?.status !== order.status) {
       statusHistory.push({ status: order.status, changedBy: profile?.uid || '', timestamp: new Date().toISOString() });
@@ -199,8 +252,30 @@ export function Orders() {
       if (error) {
         console.warn('Supabase transition_order_entry RPC error, falling back to client adapter:', error);
         const { updateDoc, doc } = await import('../lib/supabaseAdapter');
-        await updateDoc(doc(db, 'orders', order.id), { status: newStatus, statusHistory });
-        updatedData = { ...order, status: newStatus, statusHistory };
+        await updateDoc(doc(db, 'orders', order.id), { status: newStatus, statusHistory, stockReserved: ['cancelled', 'escalated'].includes(newStatus) ? false : (order as any).stockReserved });
+        
+        if (['cancelled', 'escalated'].includes(newStatus) && (order as any).stockReserved !== false) {
+          try {
+            const { getDocs, query, collection, where } = await import('../lib/supabaseAdapter');
+            const itemsSnap = await getDocs(query(collection(db, 'order_items'), where('orderId', '==', order.id)));
+            const invSnap = await getDocs(collection(db, 'inventory'));
+            const invList = invSnap.docs.map((d: any) => ({ id: d.id, ...d.data() }));
+            for (const itemDoc of itemsSnap.docs) {
+              const it = itemDoc.data();
+              const match = invList.find((inv: any) => inv.productId === it.productId && (!it.warehouseId || inv.warehouseId === it.warehouseId));
+              if (match) {
+                await updateDoc(doc(db, 'inventory', match.id), {
+                  quantity: Number(match.quantity || 0) + Number(it.quantity || 0),
+                  lastUpdated: new Date().toISOString()
+                });
+              }
+            }
+          } catch (restockErr) {
+            console.warn('Fallback restocking error:', restockErr);
+          }
+        }
+
+        updatedData = { ...order, status: newStatus, statusHistory, stockReserved: ['cancelled', 'escalated'].includes(newStatus) ? false : (order as any).stockReserved };
       } else {
         updatedData = data || { ...order, status: newStatus, statusHistory };
       }
@@ -312,10 +387,192 @@ export function Orders() {
     }
   };
 
+  const handleStartEditPendingOrder = async (order: Order) => {
+    setEditingPendingOrder(order as ReceiptOrder);
+    setEditOrderItems([]);
+    setIsLoadingItems(true);
+    try {
+      const itemsSnap = await getDocs(collection(db, 'orders', order.id, 'items'));
+      const items = itemsSnap.docs
+        .map(d => ({ id: d.id, ...d.data() } as ReceiptItem))
+        .sort((a, b) => (a.entryDetails?.position ?? 0) - (b.entryDetails?.position ?? 0));
+      setEditOrderItems(items);
+    } catch (err) {
+      handleSupabaseError(err, OperationType.GET, `orders/${order.id}/items`);
+    } finally {
+      setIsLoadingItems(false);
+    }
+  };
+
+  const handleSavePendingOrderEdit = async () => {
+    if (!editingPendingOrder) return;
+    if (editOrderItems.length === 0) {
+      toast.error('An order must have at least one item. Cancel the order instead if all items are unavailable.');
+      return;
+    }
+    for (const item of editOrderItems) {
+      if (!Number.isInteger(Number(item.quantity)) || Number(item.quantity) <= 0) {
+        toast.error(`Invalid quantity for ${item.name}. Must be at least 1.`);
+        return;
+      }
+    }
+
+    setIsSavingEditOrder(true);
+    try {
+      const origSnap = await getDocs(collection(db, 'orders', editingPendingOrder.id, 'items'));
+      const origItems = origSnap.docs.map(d => ({ id: d.id, ...d.data() } as ReceiptItem));
+
+      // Validate stock availability for items with increased quantities
+      for (const item of editOrderItems) {
+        const orig = origItems.find(o => o.id === item.id);
+        const oldQty = orig ? Number(orig.quantity) : 0;
+        const delta = Number(item.quantity) - oldQty;
+        if (delta > 0) {
+          const inv = inventory.find(i => i.productId === item.productId && (!item.warehouseId || i.warehouseId === item.warehouseId));
+          const available = inv ? Number(inv.quantity) : 0;
+          if (available < delta) {
+            toast.error(`Insufficient stock for ${item.name}. Available: ${available}, needed addition: ${delta}`);
+            setIsSavingEditOrder(false);
+            return;
+          }
+        }
+      }
+
+      // 1. Process removed items: reinstate stock & delete line item
+      for (const orig of origItems) {
+        const stillPresent = editOrderItems.find(item => item.id === orig.id);
+        if (!stillPresent) {
+          let inv = inventory.find(i => i.productId === orig.productId && (!orig.warehouseId || i.warehouseId === orig.warehouseId));
+          if (inv?.id) {
+            try {
+              const freshSnap = await getDoc(doc(db, 'inventory', inv.id));
+              if (freshSnap?.exists()) {
+                inv = { ...inv, ...(freshSnap.data() as InventoryItem) };
+              }
+            } catch {}
+          }
+          if (inv) {
+            await updateDoc(doc(db, 'inventory', inv.id), {
+              quantity: Number(inv.quantity) + Number(orig.quantity),
+              lastUpdated: serverTimestamp()
+            });
+            try {
+              await addDoc(collection(db, 'stockAdjustments'), {
+                productId: orig.productId,
+                warehouseId: orig.warehouseId || inv.warehouseId,
+                adjustmentAmount: Number(orig.quantity),
+                reason: `Order ${editingPendingOrder.orderNumber} edited: removed ${orig.name}`,
+                recordedBy: profile?.uid || 'staff',
+                timestamp: serverTimestamp()
+              });
+            } catch {}
+          }
+          await deleteDoc(doc(db, 'order_items', orig.id));
+        }
+      }
+
+      // 2. Process modified items: adjust inventory delta & update line item
+      for (const item of editOrderItems) {
+        const orig = origItems.find(o => o.id === item.id);
+        const oldQty = orig ? Number(orig.quantity) : 0;
+        const delta = Number(item.quantity) - oldQty;
+        if (delta !== 0) {
+          let inv = inventory.find(i => i.productId === item.productId && (!item.warehouseId || i.warehouseId === item.warehouseId));
+          if (inv?.id) {
+            try {
+              const freshSnap = await getDoc(doc(db, 'inventory', inv.id));
+              if (freshSnap?.exists()) {
+                inv = { ...inv, ...(freshSnap.data() as InventoryItem) };
+              }
+            } catch {}
+          }
+          if (inv) {
+            await updateDoc(doc(db, 'inventory', inv.id), {
+              quantity: Math.max(0, Number(inv.quantity) - delta),
+              lastUpdated: serverTimestamp()
+            });
+            try {
+              await addDoc(collection(db, 'stockAdjustments'), {
+                productId: item.productId,
+                warehouseId: item.warehouseId || inv.warehouseId,
+                adjustmentAmount: -delta,
+                reason: `Order ${editingPendingOrder.orderNumber} edited: ${item.name} qty changed from ${oldQty} to ${item.quantity}`,
+                recordedBy: profile?.uid || 'staff',
+                timestamp: serverTimestamp()
+              });
+            } catch {}
+          }
+        }
+        const newSubtotal = roundMoney(Number(item.quantity) * Number(item.unitPrice || 0));
+        await updateDoc(doc(db, 'order_items', item.id), {
+          quantity: Number(item.quantity),
+          subtotal: newSubtotal,
+          updatedAt: serverTimestamp()
+        });
+      }
+
+      // 3. Recalculate order totals
+      const newSubtotal = roundMoney(editOrderItems.reduce((sum, it) => sum + roundMoney(Number(it.quantity) * Number(it.unitPrice || 0)), 0));
+      const discount = Number(editingPendingOrder.receiptDetails?.discount || 0);
+      const newTotal = Math.max(0, roundMoney(newSubtotal - discount));
+      const newSkus = Array.from(new Set(editOrderItems.map(it => it.sku).filter(Boolean)));
+
+      const updatedOrder: Partial<Order> = {
+        totalAmount: newTotal,
+        skus: newSkus,
+        receiptDetails: {
+          ...(editingPendingOrder.receiptDetails || { address: '', paymentTerms: '', preparedBy: '' }),
+          subtotal: newSubtotal,
+          discount
+        },
+        updatedAt: serverTimestamp()
+      };
+
+      await updateDoc(doc(db, 'orders', editingPendingOrder.id), updatedOrder);
+
+      // Update local states
+      setOrders(prev => prev.map(o => o.id === editingPendingOrder.id ? { ...o, ...updatedOrder } : o));
+      if (selectedOrder?.id === editingPendingOrder.id) {
+        setSelectedOrder(prev => prev ? { ...prev, ...updatedOrder } : null);
+        setOrderItems(editOrderItems.map(it => ({ ...it, quantity: Number(it.quantity), subtotal: roundMoney(Number(it.quantity) * Number(it.unitPrice || 0)) })));
+      }
+
+      toast.success(`Order ${editingPendingOrder.orderNumber} updated successfully.`);
+      setEditingPendingOrder(null);
+    } catch (err) {
+      handleSupabaseError(err, OperationType.UPDATE, `orders/${editingPendingOrder.id}`);
+    } finally {
+      setIsSavingEditOrder(false);
+    }
+  };
+
   const handleDispatch = async () => {
     if (!dispatchOrder || !photoFile || statusLock.current) return;
     statusLock.current = true;
     setIsUploading(true);
+
+    // Optimistic concurrency check before dispatching
+    try {
+      const { data: latestOrder, error: checkError } = await supabase
+        .from('orders')
+        .select('status')
+        .eq('id', dispatchOrder.id)
+        .maybeSingle();
+
+      if (!checkError && latestOrder && ['cancelled', 'escalated', 'delivered', 'completed'].includes(latestOrder.status)) {
+        toast.error(`Order was already modified to "${latestOrder.status.replaceAll('_', ' ')}" by another staff member.`);
+        setOrders(current => current.map(item => item.id === dispatchOrder.id ? { ...item, status: latestOrder.status } : item));
+        setSelectedOrder(current => current?.id === dispatchOrder.id ? { ...current, status: latestOrder.status } : current);
+        setIsDispatchDialogOpen(false);
+        setDispatchOrder(null);
+        statusLock.current = false;
+        setIsUploading(false);
+        return;
+      }
+    } catch (checkErr) {
+      console.warn('Could not verify concurrent dispatch order status:', checkErr);
+    }
+
     try {
       let downloadUrl = photoPreview || '';
       try {
@@ -456,7 +713,35 @@ export function Orders() {
               </DialogDescription>
             </DialogHeader>
 
-            <Button variant="outline" className="self-start" disabled={isLoadingItems || !orderItems.length} onClick={() => { setIsOrderDetailsOpen(false); setReceiptItems(orderItems); setReceiptOrder(selectedOrder); }}><FileText className="size-4" />View Delivery Receipt</Button>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button variant="outline" className="self-start" disabled={isLoadingItems || !orderItems.length} onClick={() => {
+                const enrichedItems = orderItems.map(item => {
+                  const prod = products.find(p => p.id === item.productId);
+                  const unit = item.entryDetails?.unit || (item as any).entry_details?.unit || item.unit || (item as any).units || (prod?.units != null ? String(prod.units) : prod?.unit) || 'pc';
+                  return {
+                    ...item,
+                    unit,
+                    entryDetails: {
+                      ...(item.entryDetails || {}),
+                      unit,
+                    }
+                  };
+                });
+                setIsOrderDetailsOpen(false);
+                setReceiptItems(enrichedItems);
+                setReceiptOrder(selectedOrder);
+              }}><FileText className="size-4" />View Delivery Receipt</Button>
+              {selectedOrder?.status === 'pending' && canManageOrders && (
+                <Button variant="outline" className="self-start" onClick={() => {
+                  if (selectedOrder) {
+                    setIsOrderDetailsOpen(false);
+                    handleStartEditPendingOrder(selectedOrder);
+                  }
+                }}>
+                  <Pencil className="size-4" />Edit Pending Order
+                </Button>
+              )}
+            </div>
             <div className="flex items-center gap-4 border-b border-border px-6 -mx-6">
               <button
                 className={`pb-3 text-xs font-black uppercase tracking-widest transition-all relative ${activeTab === 'items' ? 'text-primary border-b-2 border-primary' : 'text-zinc-500 hover:text-foreground'
@@ -763,6 +1048,144 @@ export function Orders() {
           </DialogContent>
         </Dialog>
 
+        {/* Edit Pending Order Dialog (Client Feedback Page 19) */}
+        <Dialog open={!!editingPendingOrder} onOpenChange={(open) => {
+          if (!open && !isSavingEditOrder) setEditingPendingOrder(null);
+        }}>
+          <DialogContent className="sm:max-w-3xl w-[95vw] max-h-[90vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <Pencil className="w-4 h-4 text-primary" />
+                Edit Pending Order: {editingPendingOrder?.orderNumber}
+              </DialogTitle>
+              <DialogDescription>
+                Modify quantities or remove unavailable/damaged items before order preparation. Stock reservations are automatically reconciled.
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="space-y-4 py-2">
+              <div className="rounded-xl border bg-muted/20 p-4">
+                <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                  <div>
+                    <span className="text-muted-foreground">Customer: </span>
+                    <span className="font-bold">{editingPendingOrder?.clientName}</span>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground">Delivery City: </span>
+                    <span className="font-medium">{editingPendingOrder?.deliveryCity || editingPendingOrder?.deliveryRegion || 'Metro Manila'}</span>
+                  </div>
+                </div>
+              </div>
+
+              {isLoadingItems ? (
+                <div className="py-8 text-center text-xs text-muted-foreground">
+                  Loading order items...
+                </div>
+              ) : (
+                <div className="rounded-xl border overflow-hidden">
+                  <Table>
+                    <TableHeader className="bg-muted">
+                      <TableRow>
+                        <TableHead className="text-xs font-bold">Item Description</TableHead>
+                        <TableHead className="text-xs font-bold text-center w-28">Quantity</TableHead>
+                        <TableHead className="text-xs font-bold text-right w-28">Unit Price</TableHead>
+                        <TableHead className="text-xs font-bold text-right w-28">Subtotal</TableHead>
+                        <TableHead className="w-12 text-center" />
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {editOrderItems.map((item, idx) => (
+                        <TableRow key={item.id || idx}>
+                          <TableCell>
+                            <p className="font-semibold text-xs">{item.name}</p>
+                            <p className="text-[10px] font-mono text-muted-foreground">{item.sku}</p>
+                          </TableCell>
+                          <TableCell className="text-center">
+                            <Input
+                              type="number"
+                              min="1"
+                              step="1"
+                              className="h-8 w-20 mx-auto text-center font-bold text-xs"
+                              value={item.quantity}
+                              onChange={(e) => {
+                                const val = Math.max(1, parseInt(e.target.value, 10) || 1);
+                                setEditOrderItems(prev => prev.map((it, i) => i === idx ? { ...it, quantity: val, subtotal: roundMoney(val * Number(it.unitPrice || 0)) } : it));
+                              }}
+                            />
+                          </TableCell>
+                          <TableCell className="text-right text-xs font-medium">
+                            {money(Number(item.unitPrice || 0))}
+                          </TableCell>
+                          <TableCell className="text-right text-xs font-bold">
+                            {money(roundMoney(Number(item.quantity) * Number(item.unitPrice || 0)))}
+                          </TableCell>
+                          <TableCell className="text-center">
+                            <Button
+                              type="button"
+                              size="icon"
+                              variant="ghost"
+                              className="h-7 w-7 text-destructive hover:bg-destructive/10"
+                              disabled={editOrderItems.length <= 1}
+                              onClick={() => {
+                                setEditOrderItems(prev => prev.filter((_, i) => i !== idx));
+                              }}
+                              title={editOrderItems.length <= 1 ? "Order must have at least one item" : "Remove item"}
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </Button>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              )}
+
+              <div className="flex flex-col items-end gap-1 pt-2 border-t">
+                <div className="text-xs text-muted-foreground flex gap-4">
+                  <span>Subtotal:</span>
+                  <span className="font-semibold text-foreground">
+                    {money(roundMoney(editOrderItems.reduce((sum, it) => sum + roundMoney(Number(it.quantity) * Number(it.unitPrice || 0)), 0)))}
+                  </span>
+                </div>
+                {Number(editingPendingOrder?.receiptDetails?.discount || 0) > 0 && (
+                  <div className="text-xs text-muted-foreground flex gap-4">
+                    <span>Discount:</span>
+                    <span className="font-semibold text-emerald-600">
+                      -{money(Number(editingPendingOrder?.receiptDetails?.discount || 0))}
+                    </span>
+                  </div>
+                )}
+                <div className="text-sm font-bold flex gap-4 pt-1">
+                  <span>New Total:</span>
+                  <span className="text-base text-primary font-black">
+                    {money(Math.max(0, roundMoney(
+                      editOrderItems.reduce((sum, it) => sum + roundMoney(Number(it.quantity) * Number(it.unitPrice || 0)), 0) -
+                      Number(editingPendingOrder?.receiptDetails?.discount || 0)
+                    )))}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <DialogFooter>
+              <Button
+                variant="outline"
+                disabled={isSavingEditOrder}
+                onClick={() => setEditingPendingOrder(null)}
+              >
+                Cancel
+              </Button>
+              <Button
+                disabled={isSavingEditOrder || isLoadingItems || editOrderItems.length === 0}
+                onClick={handleSavePendingOrderEdit}
+              >
+                {isSavingEditOrder ? 'Saving...' : 'Save Order Changes'}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
       </div >
 
       <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
@@ -845,9 +1268,14 @@ export function Orders() {
                 {canManageOrders && (
                   <>
                     {order.status === 'pending' && (
-                      <Button size="icon" variant="ghost" className="h-7 w-7 text-zinc-400 hover:text-zinc-900" onClick={() => updateOrderStatus(order, 'preparing')} title="Move to Preparing">
-                        <ChevronRight className="w-4 h-4" />
-                      </Button>
+                      <>
+                        <Button size="icon" variant="ghost" className="h-7 w-7 text-amber-600 hover:bg-amber-50" onClick={() => handleStartEditPendingOrder(order)} title="Edit Pending Order">
+                          <Pencil className="w-4 h-4" />
+                        </Button>
+                        <Button size="icon" variant="ghost" className="h-7 w-7 text-zinc-400 hover:text-zinc-900" onClick={() => updateOrderStatus(order, 'preparing')} title="Move to Preparing">
+                          <ChevronRight className="w-4 h-4" />
+                        </Button>
+                      </>
                     )}
                     {order.status === 'preparing' && (
                       <Button size="icon" variant="ghost" className="h-7 w-7 text-blue-500 hover:bg-blue-50" onClick={() => updateOrderStatus(order, 'out_for_delivery')} title="Dispatch Order">
@@ -979,9 +1407,14 @@ export function Orders() {
                         {canManageOrders && (
                           <>
                             {order.status === 'pending' && (
-                              <Button size="icon" variant="ghost" className="h-7 w-7 text-zinc-400 hover:text-zinc-900" onClick={() => updateOrderStatus(order, 'preparing')} title="Move to Preparing">
-                                <ChevronRight className="w-4 h-4" />
-                              </Button>
+                              <>
+                                <Button size="icon" variant="ghost" className="h-7 w-7 text-amber-600 hover:bg-amber-50" onClick={() => handleStartEditPendingOrder(order)} title="Edit Pending Order">
+                                  <Pencil className="w-4 h-4" />
+                                </Button>
+                                <Button size="icon" variant="ghost" className="h-7 w-7 text-zinc-400 hover:text-zinc-900" onClick={() => updateOrderStatus(order, 'preparing')} title="Move to Preparing">
+                                  <ChevronRight className="w-4 h-4" />
+                                </Button>
+                              </>
                             )}
                             {order.status === 'preparing' && (
                               <Button size="icon" variant="ghost" className="h-7 w-7 text-blue-500 hover:bg-blue-50" onClick={() => updateOrderStatus(order, 'out_for_delivery')} title="Dispatch Order">

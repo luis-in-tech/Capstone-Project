@@ -142,7 +142,7 @@ function AppContent() {
       } />
       
       <Route path="/finance" element={
-        <ProtectedRoute allowedRoles={['admin']}>
+        <ProtectedRoute allowedRoles={['admin', 'secretary', 'agent', 'staff']}>
           <Finance />
         </ProtectedRoute>
       } />

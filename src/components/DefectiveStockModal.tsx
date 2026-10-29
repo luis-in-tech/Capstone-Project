@@ -285,8 +285,8 @@ export function DefectiveStockModal({
       toast.success(`Segregated ${qty} unit(s) into Quarantine. Return slip generated.`);
       setGeneratedTicket(ticket);
       onSuccess(ticket);
-    } catch {
-      toast.error('Failed to log defective stock exception.');
+    } catch (err: any) {
+      toast.error(err?.message || 'Failed to log defective stock exception.');
     } finally {
       setIsSubmitting(false);
     }

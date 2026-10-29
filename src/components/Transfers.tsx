@@ -4,7 +4,7 @@ import React, { useState, useEffect } from 'react';
 import { useStaffAccess } from '../hooks/useStaffAccess';
 import { permitsMovement } from '../lib/staffPermissions';
 import { db } from '../lib/supabaseAdapter';
-import { collection, onSnapshot, addDoc, updateDoc, doc, query, orderBy, serverTimestamp } from '../lib/supabaseAdapter';
+import { collection, onSnapshot, addDoc, updateDoc, doc, getDoc, query, orderBy, serverTimestamp } from '../lib/supabaseAdapter';
 import { Transfer, Product, Warehouse, InventoryItem, TransferStatus } from '../types';
 import { handleSupabaseError, OperationType } from '../lib/supabaseErrorHandler';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
@@ -99,6 +99,7 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
     }
 
     // Check availability in source facility and enforce strictly positive integer quantity
+    const aggregatedReq = new Map<string, { productName: string; totalQty: number }>();
     for (const item of validItems) {
       const qty = Number(item.quantity);
       if (!Number.isInteger(qty) || qty <= 0) {
@@ -106,9 +107,15 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
         return;
       }
       const prodId = products.find(p => p.name === item.productName)?.id || item.productName;
+      const current = aggregatedReq.get(prodId) || { productName: item.productName, totalQty: 0 };
+      current.totalQty += qty;
+      aggregatedReq.set(prodId, current);
+    }
+
+    for (const [prodId, data] of aggregatedReq.entries()) {
       const sourceInv = inventory.find(i => i.productId === prodId && i.warehouseId === sourceWh);
-      if (!sourceInv || sourceInv.quantity < qty) {
-        toast.error(`Insufficient stock for ${item.productName} in source warehouse (Available: ${sourceInv?.quantity ?? 0}, Requested: ${qty})`);
+      if (!sourceInv || sourceInv.quantity < data.totalQty) {
+        toast.error(`Insufficient stock for ${data.productName} in source warehouse (Available: ${sourceInv?.quantity ?? 0}, Requested: ${data.totalQty})`);
         return;
       }
     }
@@ -143,9 +150,21 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
     setIsProcessing(true);
 
     try {
-      const sourceInv = inventory.find(
+      let sourceInv = inventory.find(
         i => i.productId === dispatchingTransfer.productId && i.warehouseId === dispatchingTransfer.sourceWarehouseId
       );
+
+      // Fetch fresh live inventory item from database to prevent race conditions & lost updates
+      if (sourceInv?.id) {
+        try {
+          const freshSnap = await getDoc(doc(db, 'inventory', sourceInv.id));
+          if (freshSnap && freshSnap.exists()) {
+            sourceInv = { ...sourceInv, ...(freshSnap.data() as InventoryItem) };
+          }
+        } catch (fetchErr) {
+          console.warn('Could not refetch latest source inventory; using snapshot state:', fetchErr);
+        }
+      }
 
       if (!sourceInv || sourceInv.quantity < dispatchingTransfer.quantity) {
         toast.error(`Insufficient stock at source warehouse to dispatch transport. Available: ${sourceInv?.quantity ?? 0}`);
@@ -155,7 +174,7 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
 
       // 1. Immediately deduct from source warehouse (Eliminates Ghost Inventory!)
       await updateDoc(doc(db, 'inventory', sourceInv.id), {
-        quantity: sourceInv.quantity - dispatchingTransfer.quantity,
+        quantity: Math.max(0, sourceInv.quantity - dispatchingTransfer.quantity),
         lastUpdated: serverTimestamp()
       });
 
@@ -215,9 +234,21 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
   const handleConfirmArrival = async (transfer: Transfer) => {
     setIsProcessing(true);
     try {
-      const destInv = inventory.find(
+      let destInv = inventory.find(
         i => i.productId === transfer.productId && i.warehouseId === transfer.destinationWarehouseId
       );
+
+      // Fetch fresh live inventory item from database to prevent race conditions & lost updates
+      if (destInv?.id) {
+        try {
+          const freshSnap = await getDoc(doc(db, 'inventory', destInv.id));
+          if (freshSnap && freshSnap.exists()) {
+            destInv = { ...destInv, ...(freshSnap.data() as InventoryItem) };
+          }
+        } catch (fetchErr) {
+          console.warn('Could not refetch latest destination inventory; using snapshot state:', fetchErr);
+        }
+      }
 
       if (destInv) {
         await updateDoc(doc(db, 'inventory', destInv.id), {
@@ -280,9 +311,20 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
     try {
       // If transfer was in_transit, stock was already deducted upon dispatch! We MUST restore it to source warehouse.
       if (cancellingTransfer.status === 'in_transit') {
-        const sourceInv = inventory.find(
+        let sourceInv = inventory.find(
           i => i.productId === cancellingTransfer.productId && i.warehouseId === cancellingTransfer.sourceWarehouseId
         );
+
+        if (sourceInv?.id) {
+          try {
+            const freshSnap = await getDoc(doc(db, 'inventory', sourceInv.id));
+            if (freshSnap && freshSnap.exists()) {
+              sourceInv = { ...sourceInv, ...(freshSnap.data() as InventoryItem) };
+            }
+          } catch (fetchErr) {
+            console.warn('Could not refetch latest source inventory for cancellation rollback:', fetchErr);
+          }
+        }
 
         if (sourceInv) {
           await updateDoc(doc(db, 'inventory', sourceInv.id), {

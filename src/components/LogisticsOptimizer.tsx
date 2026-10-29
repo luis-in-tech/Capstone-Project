@@ -272,122 +272,7 @@ export function LogisticsOptimizer() {
   // MODULE 1: MATHEMATICAL ORDER ROUTE OPTIMIZATION (CLARKE-WRIGHT + 2-OPT)
   // ══════════════════════════════════════════════════════════════════════════
   const effectivePendingOrders: Order[] = useMemo(() => {
-    const realPending = dbOrders.filter(o => o.status === 'pending');
-    if (realPending.length > 0) return realPending;
-    return [
-      {
-        id: 'demo-ord-1',
-        orderNumber: 'ORD-882194',
-        agentId: 'ag-1',
-        clientId: 'CLI-A1',
-        clientName: 'Apex Cycle Traders',
-        status: 'pending',
-        skus: ['SHI-M8100', 'MAX-IKON'],
-        totalAmount: 48500,
-        paymentStatus: 'paid',
-        deliveryRegion: 'Metro Manila',
-        deliveryCity: 'Quezon City (QC)',
-        deliveryDeadline: new Date(Date.now() + 86400000 * 3),
-        createdAt: new Date(),
-        updatedAt: new Date()
-      },
-      {
-        id: 'demo-ord-2',
-        orderNumber: 'ORD-882195',
-        agentId: 'ag-2',
-        clientId: 'CLI-A2',
-        clientName: 'Metro Velocity Bikes',
-        status: 'pending',
-        skus: ['SRAM-GX', 'KMC-X12'],
-        totalAmount: 34200,
-        paymentStatus: 'paid',
-        deliveryRegion: 'Metro Manila',
-        deliveryCity: 'Caloocan',
-        deliveryDeadline: new Date(Date.now() + 86400000 * 4),
-        createdAt: new Date(),
-        updatedAt: new Date()
-      },
-      {
-        id: 'demo-ord-3',
-        orderNumber: 'ORD-882196',
-        agentId: 'ag-1',
-        clientId: 'CLI-A3',
-        clientName: 'Bicutan Pro Gears',
-        status: 'pending',
-        skus: ['SHI-R8000'],
-        totalAmount: 62000,
-        paymentStatus: 'paid',
-        deliveryRegion: 'Metro Manila',
-        deliveryCity: 'Manila',
-        deliveryDeadline: new Date(Date.now() + 86400000 * 2),
-        createdAt: new Date(),
-        updatedAt: new Date()
-      },
-      {
-        id: 'demo-ord-4',
-        orderNumber: 'ORD-882197',
-        agentId: 'ag-3',
-        clientId: 'CLI-A4',
-        clientName: 'Pasig Speed Workshop',
-        status: 'pending',
-        skus: ['CONTINENTAL-GP5000'],
-        totalAmount: 21900,
-        paymentStatus: 'paid',
-        deliveryRegion: 'Metro Manila',
-        deliveryCity: 'Pasig',
-        deliveryDeadline: new Date(Date.now() + 86400000 * 5),
-        createdAt: new Date(),
-        updatedAt: new Date()
-      },
-      {
-        id: 'demo-ord-5',
-        orderNumber: 'ORD-882198',
-        agentId: 'ag-2',
-        clientId: 'CLI-A5',
-        clientName: 'Taguig Tri Logistics',
-        status: 'pending',
-        skus: ['SHI-M8100', 'SHI-R8000'],
-        totalAmount: 51000,
-        paymentStatus: 'paid',
-        deliveryRegion: 'Metro Manila',
-        deliveryCity: 'Taguig',
-        deliveryDeadline: new Date(Date.now() + 86400000 * 3),
-        createdAt: new Date(),
-        updatedAt: new Date()
-      },
-      {
-        id: 'demo-ord-6',
-        orderNumber: 'ORD-882201',
-        agentId: 'ag-4',
-        clientId: 'CLI-L1',
-        clientName: 'Cavite Velocity Hub',
-        status: 'pending',
-        skus: ['SHI-M8100'],
-        totalAmount: 28000,
-        paymentStatus: 'paid',
-        deliveryRegion: 'Luzon',
-        deliveryCity: 'Cavite (Imus)',
-        deliveryDeadline: new Date(Date.now() + 86400000 * 6),
-        createdAt: new Date(),
-        updatedAt: new Date()
-      },
-      {
-        id: 'demo-ord-7',
-        orderNumber: 'ORD-882202',
-        agentId: 'ag-4',
-        clientId: 'CLI-L2',
-        clientName: 'Laguna Downhill Supply',
-        status: 'pending',
-        skus: ['MAX-IKON'],
-        totalAmount: 39500,
-        paymentStatus: 'paid',
-        deliveryRegion: 'Luzon',
-        deliveryCity: 'Laguna (Calamba)',
-        deliveryDeadline: new Date(Date.now() + 86400000 * 7),
-        createdAt: new Date(),
-        updatedAt: new Date()
-      }
-    ];
+    return dbOrders.filter(o => o.status === 'pending');
   }, [dbOrders]);
 
   // Execute FR-24 Core Mathematical Optimization Routine (Clarke-Wright Savings & 2-Opt)
@@ -425,10 +310,14 @@ export function LogisticsOptimizer() {
       if (route?.stops?.length) {
         for (let i = 0; i < route.stops.length; i++) {
           const stop = route.stops[i];
-          const isRealOrder = stop.order.id && !stop.order.id.startsWith('demo-');
+          // Strip synthetic split suffix (e.g. "ord_123-part1" -> "ord_123") to prevent 404/FK errors
+          const rawOrderId = stop.order.id || '';
+          const rootOrderId = rawOrderId.replace(/-part\d+$/, '');
+          const isRealOrder = Boolean(rootOrderId && !rootOrderId.startsWith('demo-'));
+
           await addDoc(collection(db, 'trip_orders'), {
             trip_id: tripRef.id,
-            order_id: isRealOrder ? stop.order.id : null,
+            order_id: isRealOrder ? rootOrderId : null,
             order_number: stop.order.orderNumber,
             client_name: stop.order.clientName,
             delivery_city: stop.city,
@@ -439,8 +328,24 @@ export function LogisticsOptimizer() {
 
           if (isRealOrder) {
             try {
-              await updateDoc(doc(db, 'orders', stop.order.id), {
+              const currentHistory = Array.isArray(stop.order.statusHistory) ? [...stop.order.statusHistory] : [];
+              if (currentHistory.at(-1)?.status !== stop.order.status && stop.order.status) {
+                currentHistory.push({
+                  status: stop.order.status,
+                  changedBy: profile?.displayName || profile?.email || profile?.uid || 'System',
+                  timestamp: new Date().toISOString(),
+                });
+              }
+              currentHistory.push({
                 status: 'out_for_delivery',
+                changedBy: profile?.displayName || profile?.email || profile?.uid || 'Optimizer Dispatcher',
+                timestamp: new Date().toISOString(),
+                note: `Dispatched on Route ${routeId} via vehicle ${truckName} (${plate})`
+              });
+
+              await updateDoc(doc(db, 'orders', rootOrderId), {
+                status: 'out_for_delivery',
+                statusHistory: currentHistory,
                 updatedAt: serverTimestamp(),
               });
             } catch (ordErr) {
@@ -825,29 +730,35 @@ export function LogisticsOptimizer() {
                 <p className="mt-1 text-sm text-muted-foreground">Review a route before dispatching.</p>
               </div>
               <div className="space-y-3">
-                {optimizationResult.routes.map(route => {
-                  const selected = route.routeId === (optimizationResult.routes.find(r => r.routeId === selectedRouteId) ?? optimizationResult.routes[0])?.routeId;
-                  return (
-                    <button
-                      key={route.routeId}
-                      type="button"
-                      aria-pressed={selected}
-                      onClick={() => setSelectedRouteId(route.routeId)}
-                      className={cn("flex w-full items-center gap-3 rounded-xl border p-4 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring", selected ? "border-amber-400 bg-amber-50/70 dark:bg-amber-950/20" : "border-border bg-card hover:bg-muted/40")}
-                    >
-                      <MapPin className="h-6 w-6 shrink-0" />
-                      <div className="min-w-0 flex-1">
-                        <div className="flex flex-wrap items-center justify-between gap-2">
-                          <span className="font-semibold">{route.region}</span>
-                          <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-medium text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300">{dispatchedTrucks[route.routeId] ? 'Dispatched' : 'Ready'}</span>
+                {optimizationResult.routes.length === 0 ? (
+                  <div className="rounded-xl border border-dashed border-border p-6 text-center text-xs text-muted-foreground">
+                    No pending orders to route. All current deliveries are dispatched or completed.
+                  </div>
+                ) : (
+                  optimizationResult.routes.map(route => {
+                    const selected = route.routeId === (optimizationResult.routes.find(r => r.routeId === selectedRouteId) ?? optimizationResult.routes[0])?.routeId;
+                    return (
+                      <button
+                        key={route.routeId}
+                        type="button"
+                        aria-pressed={selected}
+                        onClick={() => setSelectedRouteId(route.routeId)}
+                        className={cn("flex w-full items-center gap-3 rounded-xl border p-4 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring", selected ? "border-amber-400 bg-amber-50/70 dark:bg-amber-950/20" : "border-border bg-card hover:bg-muted/40")}
+                      >
+                        <MapPin className="h-6 w-6 shrink-0" />
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <span className="font-semibold">{route.region}</span>
+                            <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-medium text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300">{dispatchedTrucks[route.routeId] ? 'Dispatched' : 'Ready'}</span>
+                          </div>
+                          <p className="mt-1 text-xs text-muted-foreground">{route.stops.length} deliveries · {route.vehicle.name}</p>
+                          <p className="mt-2 text-sm font-semibold text-emerald-700 dark:text-emerald-400">Save ₱{route.savingsPhp.toLocaleString()}</p>
                         </div>
-                        <p className="mt-1 text-xs text-muted-foreground">{route.stops.length} deliveries · {route.vehicle.name}</p>
-                        <p className="mt-2 text-sm font-semibold text-emerald-700 dark:text-emerald-400">Save ₱{route.savingsPhp.toLocaleString()}</p>
-                      </div>
-                      <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
-                    </button>
-                  );
-                })}
+                        <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
+                      </button>
+                    );
+                  })
+                )}
               </div>
               <details className="group text-sm text-muted-foreground">
                 <summary className="flex cursor-pointer list-none items-center gap-2 rounded-md py-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">

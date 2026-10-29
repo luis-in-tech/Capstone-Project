@@ -9,7 +9,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { ArrowDownRightIcon as ArrowDownRight, ArrowUpRightIcon as ArrowUpRight, ChartBarIcon as BarChart3, DownloadIcon as Download, FunnelIcon as Filter, CoinsIcon as PhilippinePeso, ShoppingCartIcon as ShoppingCart, TargetIcon as Target } from '@phosphor-icons/react';
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 
-type RangeDays = 7 | 30 | 90;
+type RangeOption = '7' | '30' | 'custom';
 
 const toDate = (value: any) => {
   if (!value) return null;
@@ -21,7 +21,13 @@ const escapeCsv = (value: unknown) => `"${String(value ?? '').replace(/"/g, '""'
 
 export function Dashboard() {
   const [orders, setOrders] = useState<Order[]>([]);
-  const [rangeDays, setRangeDays] = useState<RangeDays>(30);
+  const [rangeType, setRangeType] = useState<RangeOption>('30');
+  const [customStart, setCustomStart] = useState(() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 30);
+    return d.toISOString().slice(0, 10);
+  });
+  const [customEnd, setCustomEnd] = useState(() => new Date().toISOString().slice(0, 10));
   const [region, setRegion] = useState('all');
   const [status, setStatus] = useState('all');
   const [loading, setLoading] = useState(true);
@@ -40,18 +46,56 @@ export function Dashboard() {
     loadOrders();
   }, []);
 
-  const regions = useMemo(() => Array.from(new Set(orders.map(order => order.deliveryRegion).filter(Boolean))).sort(), [orders]);
+  const regions = useMemo(() => {
+    const defaultRegions = ['Metro Manila', 'Luzon', 'Visayas', 'Mindanao'];
+    const orderRegions = orders.map(order => order.deliveryRegion).filter(Boolean) as string[];
+    const set = new Set<string>([...defaultRegions, ...orderRegions]);
+    return Array.from(set).sort((a, b) => {
+      const aIdx = defaultRegions.indexOf(a);
+      const bIdx = defaultRegions.indexOf(b);
+      if (aIdx !== -1 && bIdx !== -1) return aIdx - bIdx;
+      if (aIdx !== -1) return -1;
+      if (bIdx !== -1) return 1;
+      return a.localeCompare(b);
+    });
+  }, [orders]);
 
   const analytics = useMemo(() => {
-    const end = new Date();
-    end.setHours(23, 59, 59, 999);
-    const start = new Date(end);
-    start.setDate(end.getDate() - rangeDays + 1);
-    start.setHours(0, 0, 0, 0);
-    const previousStart = new Date(start);
-    previousStart.setDate(start.getDate() - rangeDays);
+    const now = new Date();
+    const currentYear = now.getFullYear();
+    const currentMonth = now.getMonth();
 
-    const matchesDimensions = (order: Order) => (region === 'all' || order.deliveryRegion === region) && (status === 'all' || order.status === status);
+    let start = new Date();
+    let end = new Date();
+    end.setHours(23, 59, 59, 999);
+
+    switch (rangeType) {
+      case '7':
+        start = new Date(end);
+        start.setDate(end.getDate() - 6);
+        start.setHours(0, 0, 0, 0);
+        break;
+      case '30':
+        start = new Date(end);
+        start.setDate(end.getDate() - 29);
+        start.setHours(0, 0, 0, 0);
+        break;
+      case 'custom':
+        start = customStart ? new Date(`${customStart}T00:00:00`) : new Date(currentYear, currentMonth, 1, 0, 0, 0, 0);
+        end = customEnd ? new Date(`${customEnd}T23:59:59.999`) : new Date();
+        break;
+    }
+
+    const durationMs = Math.max(1, end.getTime() - start.getTime());
+    const previousStart = new Date(start.getTime() - durationMs);
+
+    const matchesDimensions = (order: Order) => {
+      const matchesRegion = region === 'all'
+        || order.deliveryRegion === region
+        || (region === 'Luzon' && order.deliveryRegion === 'Provincial Luzon');
+      const matchesStatus = status === 'all' || order.status === status;
+      return matchesRegion && matchesStatus;
+    };
     const current = orders.filter(order => {
       const date = toDate(order.createdAt);
       return date && date >= start && date <= end && matchesDimensions(order);
@@ -67,16 +111,20 @@ export function Dashboard() {
     const previousCompletionRate = previous.length ? (previous.filter(order => ['completed', 'delivered'].includes(order.status)).length / previous.length) * 100 : 0;
     const change = (value: number, oldValue: number) => oldValue === 0 ? (value > 0 ? 100 : 0) : ((value - oldValue) / oldValue) * 100;
 
-    const bucketCount = rangeDays === 7 ? 7 : rangeDays === 30 ? 10 : 12;
-    const bucketSize = Math.ceil(rangeDays / bucketCount);
+    const diffDays = Math.max(1, Math.ceil(durationMs / (1000 * 60 * 60 * 24)));
+    let bucketCount = 10;
+    if (diffDays <= 7) bucketCount = diffDays;
+    else if (diffDays <= 14) bucketCount = diffDays;
+    else if (diffDays <= 31) bucketCount = 10;
+    else bucketCount = 12;
+
+    const bucketMs = durationMs / bucketCount;
     const trend = Array.from({ length: bucketCount }, (_, index) => {
-      const bucketStart = new Date(start);
-      bucketStart.setDate(start.getDate() + index * bucketSize);
-      const bucketEnd = new Date(bucketStart);
-      bucketEnd.setDate(bucketStart.getDate() + bucketSize);
+      const bucketStart = new Date(start.getTime() + index * bucketMs);
+      const bucketEnd = new Date(start.getTime() + (index + 1) * bucketMs);
       const bucketOrders = current.filter(order => {
         const date = toDate(order.createdAt);
-        return date && date >= bucketStart && date < bucketEnd;
+        return date && date >= bucketStart && (index === bucketCount - 1 ? date <= bucketEnd : date < bucketEnd);
       });
       return {
         name: bucketStart.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }),
@@ -106,7 +154,7 @@ export function Dashboard() {
       completionChange: completionRate - previousCompletionRate,
       averageOrder: current.length ? current.reduce((sum, order) => sum + Number(order.totalAmount || 0), 0) / current.length : 0,
     };
-  }, [orders, rangeDays, region, status]);
+  }, [orders, rangeType, customStart, customEnd, region, status]);
 
   const downloadReport = () => {
     const headers = ['Order Number', 'Created At', 'Client', 'Region', 'Status', 'Payment Status', 'Amount'];
@@ -115,7 +163,7 @@ export function Dashboard() {
     const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
     const anchor = document.createElement('a');
     anchor.href = url;
-    anchor.download = `active-pro-analytics-${rangeDays}-days.csv`;
+    anchor.download = `active-pro-analytics-${rangeType}.csv`;
     anchor.click();
     URL.revokeObjectURL(url);
   };
@@ -127,10 +175,68 @@ export function Dashboard() {
       <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
         <PageHeading title="Analytics" subtitle="Historical order and revenue analysis for Active Pro operations." />
         <div className="flex flex-wrap items-center gap-2">
-          <div className="flex items-center gap-2 rounded-lg border border-border bg-card px-3"><Filter className="h-3.5 w-3.5 text-muted-foreground" /><select aria-label="Date range" value={rangeDays} onChange={event => setRangeDays(Number(event.target.value) as RangeDays)} className="h-9 bg-transparent text-xs font-bold outline-none"><option value={7}>Last 7 days</option><option value={30}>Last 30 days</option><option value={90}>Last 90 days</option></select></div>
-          <select aria-label="Delivery region" value={region} onChange={event => setRegion(event.target.value)} className="h-9 rounded-lg border border-border bg-card px-3 text-xs font-bold outline-none"><option value="all">All regions</option>{regions.map(item => <option key={item} value={item}>{item}</option>)}</select>
-          <select aria-label="Order status" value={status} onChange={event => setStatus(event.target.value)} className="h-9 rounded-lg border border-border bg-card px-3 text-xs font-bold capitalize outline-none"><option value="all">All statuses</option>{['pending', 'preparing', 'out_for_delivery', 'delivered', 'completed', 'escalated'].map(item => <option key={item} value={item}>{item.replaceAll('_', ' ')}</option>)}</select>
-          <button type="button" onClick={downloadReport} disabled={analytics.current.length === 0} className="inline-flex h-9 items-center gap-2 rounded-lg bg-primary px-3 text-xs font-black text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50"><Download className="h-3.5 w-3.5" /> Download CSV</button>
+          <div className="flex items-center gap-2 rounded-lg border border-border bg-card px-3">
+            <Filter className="h-3.5 w-3.5 text-muted-foreground" />
+            <select
+              aria-label="Date range"
+              value={rangeType}
+              onChange={event => setRangeType(event.target.value as RangeOption)}
+              className="h-9 bg-transparent text-xs font-bold outline-none cursor-pointer"
+            >
+              <option value="7">Last 7 days</option>
+              <option value="30">Last 30 days</option>
+              <option value="custom">Custom date range</option>
+            </select>
+          </div>
+          {rangeType === 'custom' && (
+            <div className="flex items-center gap-1.5 rounded-lg border border-border bg-card px-2.5">
+              <input
+                type="date"
+                aria-label="Start date"
+                value={customStart}
+                onChange={e => setCustomStart(e.target.value)}
+                className="h-9 bg-transparent text-xs font-medium outline-none"
+              />
+              <span className="text-xs text-muted-foreground">–</span>
+              <input
+                type="date"
+                aria-label="End date"
+                value={customEnd}
+                onChange={e => setCustomEnd(e.target.value)}
+                className="h-9 bg-transparent text-xs font-medium outline-none"
+              />
+            </div>
+          )}
+          <select
+            aria-label="Delivery region"
+            value={region}
+            onChange={event => setRegion(event.target.value)}
+            className="h-9 rounded-lg border border-border bg-card px-3 text-xs font-bold outline-none cursor-pointer"
+          >
+            <option value="all">All regions</option>
+            {regions.map(item => (
+              <option key={item} value={item}>{item}</option>
+            ))}
+          </select>
+          <select
+            aria-label="Order status"
+            value={status}
+            onChange={event => setStatus(event.target.value)}
+            className="h-9 rounded-lg border border-border bg-card px-3 text-xs font-bold capitalize outline-none cursor-pointer"
+          >
+            <option value="all">All statuses</option>
+            {['pending', 'preparing', 'out_for_delivery', 'delivered', 'completed', 'escalated'].map(item => (
+              <option key={item} value={item}>{item.replaceAll('_', ' ')}</option>
+            ))}
+          </select>
+          <button
+            type="button"
+            onClick={downloadReport}
+            disabled={analytics.current.length === 0}
+            className="inline-flex h-9 items-center gap-2 rounded-lg bg-primary px-3 text-xs font-black text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
+          >
+            <Download className="h-3.5 w-3.5" /> Download CSV
+          </button>
         </div>
       </div>
 

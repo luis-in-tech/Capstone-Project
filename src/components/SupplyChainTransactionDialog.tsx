@@ -1,7 +1,7 @@
 import { ProductSelectionModes } from './ProductSelectionModes';
 import { ProductPicker, ProductPickerRow } from './ProductPicker';
 import { useState } from 'react';
-import { ArrowDownLeftIcon as ArrowDownLeft, ArrowUpRightIcon as ArrowUpRight, CheckIcon as Check, CaretLeftIcon as ChevronLeft, CreditCardIcon as CreditCard, PackageIcon as Package, MoneyIcon as Banknote, FileTextIcon as FileCheck, InfoIcon as Info } from '@phosphor-icons/react';
+import { ArrowDownLeftIcon as ArrowDownLeft, ArrowUpRightIcon as ArrowUpRight, CheckIcon as Check, CaretLeftIcon as ChevronLeft, CreditCardIcon as CreditCard, PackageIcon as Package, MoneyIcon as Banknote, FileTextIcon as FileCheck, InfoIcon as Info, DeviceMobileIcon as DeviceMobile } from '@phosphor-icons/react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -57,7 +57,7 @@ export function SupplyChainTransactionDialog({ view, action, transaction, produc
   const value = Number(amount);
   const resulting = projectBalance(transaction.remaining, value);
   const cashRefund = !payment && transaction.remaining !== null ? Math.max(0, value - transaction.remaining) : 0;
-  const methodLabel = method === 'Item' && !customer ? 'Item / XDeal' : method;
+  const methodLabel = method === 'Item' && !customer ? 'Item / XDeal' : method === 'Online Banking' ? 'Online Banking (Bank Transfer / GCash)' : method;
   const title = payment ? customer ? 'Receive payment' : 'Pay supplier' : customer ? 'Customer refund' : 'Purchase refund';
 
   const validate = () => {
@@ -65,6 +65,7 @@ export function SupplyChainTransactionDialog({ view, action, transaction, produc
     if (payment && transaction.remaining !== null && value > transaction.remaining) return 'Payment cannot exceed the remaining balance.';
     if (!payment && value > (transaction.amount ?? 0)) return 'Refund cannot exceed the original transaction amount.';
     if (payment && method === 'Cheque' && (!bank.trim() || !chequeDate || !reference.trim())) return 'Complete the bank, cheque date, and reference number.';
+    if (payment && method === 'Online Banking' && !reference.trim()) return 'Enter the reference or transaction number for Online Banking.';
     if (physical && !warehouses.some(w => w.id === warehouseId && w.active !== false)) return 'Choose an active warehouse.';
     if (physical && !lines.length) return 'Select at least one item and enter a quantity.';
     for (const line of lines) {
@@ -91,7 +92,7 @@ export function SupplyChainTransactionDialog({ view, action, transaction, produc
       type: payment ? customer ? 'Payment' : 'Bill Payment' : customer ? 'Refund' : 'Purchase Refund',
       date: new Date().toISOString(), reference: transaction.reference, amount: value, remaining: resulting,
       status: 'Preview', items: lines, direction: physical ? direction : undefined, draft: true,
-      notes: `${payment ? methodLabel : withItems ? 'With Item' : 'Without Item'}${method === 'Cheque' && payment ? ` · ${bank} · ${chequeDate} · ${reference}` : ''}. ${physical ? `Inventory would ${increasing ? 'increase' : 'decrease'} at ${warehouses.find(w => w.id === warehouseId)?.name}.` : 'No inventory movement.'}${cashRefund > 0 ? ` ${chainMoney(cashRefund)} cash refund ${customer ? 'to customer' : 'from supplier'}.` : ''}`,
+      notes: `${payment ? methodLabel : withItems ? 'With Item' : 'Without Item'}${method === 'Cheque' && payment ? ` · ${bank} · ${chequeDate} · ${reference}` : ''}${method === 'Online Banking' && payment ? ` · ${bank || 'Online Banking / GCash'} · Ref: ${reference}` : ''}. ${physical ? `Inventory would ${increasing ? 'increase' : 'decrease'} at ${warehouses.find(w => w.id === warehouseId)?.name}.` : 'No inventory movement.'}${cashRefund > 0 ? ` ${chainMoney(cashRefund)} cash refund ${customer ? 'to customer' : 'from supplier'}.` : ''}`,
     });
   }
 
@@ -104,14 +105,15 @@ export function SupplyChainTransactionDialog({ view, action, transaction, produc
       <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-100"><Info className="mr-1 inline size-4" />Preview only. This workflow is not connected to a payment/refund ledger. No money or inventory will be posted. Previews clear when you leave Supply Chain.</div>
       {!review ? <div className="space-y-5">
         <div className="grid grid-cols-2 gap-3 rounded-xl bg-muted/40 p-4"><div><p className="text-xs text-muted-foreground">Original amount</p><p className="font-semibold">{chainMoney(transaction.amount)}</p></div><div><p className="text-xs text-muted-foreground">Remaining balance</p><p className="font-semibold">{chainMoney(transaction.remaining)}</p></div></div>
-        <fieldset className="space-y-2"><legend className="mb-2 text-sm font-semibold">{payment ? 'Payment method' : 'Return type'}</legend><div className={`grid gap-2 ${payment ? 'grid-cols-3' : 'grid-cols-2'}`}>
-          {(payment ? ['Cash', 'Cheque', 'Item'] : ['With Item', 'Without Item']).map((option, i) => {
+        <fieldset className="space-y-2"><legend className="mb-2 text-sm font-semibold">{payment ? 'Payment method' : 'Return type'}</legend><div className={`grid gap-2 ${payment ? 'grid-cols-2 sm:grid-cols-4' : 'grid-cols-2'}`}>
+          {(payment ? ['Cash', 'Online Banking', 'Cheque', 'Item'] : ['With Item', 'Without Item']).map((option, i) => {
             const active = payment ? method === option : withItems === (i === 0);
-            const Icon = payment ? [Banknote, FileCheck, Package][i] : Package;
+            const Icon = payment ? [Banknote, DeviceMobile, FileCheck, Package][i] : Package;
             return <button key={option} type="button" aria-pressed={active} onClick={() => { if (payment) setMethod(option); else setWithItems(i === 0); setError(''); }} className={`flex items-center justify-center gap-2 rounded-xl border px-2 py-3 text-sm font-medium transition-colors ${active ? 'border-primary bg-primary/10 text-foreground ring-1 ring-primary' : 'hover:bg-muted'}`}><Icon className="size-4" />{option === 'Item' && !customer ? 'Item / XDeal' : option}</button>;
           })}
         </div></fieldset>
         {payment && method === 'Cheque' && <div className="grid gap-3 rounded-xl border p-4 sm:grid-cols-2"><Field label="Bank" id="chain-bank"><Input id="chain-bank" value={bank} onChange={e => setBank(e.target.value)} placeholder="Bank name" /></Field><Field label="Cheque date" id="chain-cheque-date"><Input id="chain-cheque-date" type="date" value={chequeDate} onChange={e => setChequeDate(e.target.value)} /></Field><div className="sm:col-span-2"><Field label="Cheque / reference number" id="chain-cheque-ref"><Input id="chain-cheque-ref" value={reference} onChange={e => setReference(e.target.value)} placeholder="Enter reference number" /></Field></div></div>}
+        {payment && method === 'Online Banking' && <div className="grid gap-3 rounded-xl border p-4 sm:grid-cols-2"><Field label="Channel / Bank / Wallet" id="chain-online-bank"><Input id="chain-online-bank" value={bank} onChange={e => setBank(e.target.value)} placeholder="e.g. BDO, BPI, GCash, Maya" /></Field><Field label="Reference / Transaction #" id="chain-online-ref"><Input id="chain-online-ref" value={reference} onChange={e => setReference(e.target.value)} placeholder="e.g. Reference # / Trace ID" /></Field></div>}
         {physical && <div className="space-y-3">
           <div className={`rounded-xl border p-3 text-sm ${increasing ? 'border-emerald-300 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' : 'border-orange-300 bg-orange-500/10 text-orange-700 dark:text-orange-300'}`}>{increasing ? <ArrowDownLeft className="mr-1 inline size-4" /> : <ArrowUpRight className="mr-1 inline size-4" />}Inventory will {increasing ? 'increase' : 'decrease'} · {payment ? customer ? 'Items received from customer' : 'Items issued to supplier' : customer ? 'Customer returns to warehouse' : 'Warehouse returns to supplier'}</div>
           <Field label={increasing ? 'Receiving warehouse' : 'Issuing warehouse'} id="chain-action-warehouse"><select id="chain-action-warehouse" value={warehouseId} onChange={e => setWarehouseId(e.target.value)} className={selectClass}><option value="">Select warehouse</option>{warehouses.filter(w => w.active !== false).map(w => <option key={w.id} value={w.id}>{w.name}</option>)}</select></Field>

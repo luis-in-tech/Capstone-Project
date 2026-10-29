@@ -8,6 +8,8 @@ import { PricelistItem, PricelistSection, PriceType, SavedPricelist, reorder, se
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
+import { useAuth } from '../hooks/useAuth';
+import { useStaffAccess } from '../hooks/useStaffAccess';
 
 const labels: Record<PriceType, string> = { base: 'Regular', metroManila: 'Metro Manila', provincial: 'Provincial', promo: 'Promo' };
 const productPrice = (p: Product, type: PriceType) => Number(type === 'metroManila' ? p.mmPrice ?? p.wholesalePrice ?? 0 : type === 'provincial' ? p.provincialPrice ?? p.dealerPrice ?? 0 : type === 'promo' ? p.promoPrice ?? 0 : p.basePrice || 0);
@@ -36,10 +38,11 @@ function MixedPricing({ sections, baseline, scope }: { sections: PricelistSectio
   </Tooltip.Root></Tooltip.Provider>;
 }
 
-function PriceSelect({ value, onChange, inherit, promo }: { value?: PriceType; onChange: (value?: PriceType) => void; inherit?: string; promo: boolean }) {
+function PriceSelect({ value, onChange, inherit, promo, mainOnly }: { value?: PriceType; onChange: (value?: PriceType) => void; inherit?: string; promo: boolean; mainOnly?: boolean }) {
+  const allowedLabels = mainOnly ? { base: 'Regular' } : labels;
   return <select aria-label={inherit ? `Price scheme (${inherit})` : 'Master price scheme'} className={selectClass} value={value || ''} onChange={e => onChange((e.target.value || undefined) as PriceType | undefined)}>
     {inherit && <option value="">{inherit}</option>}
-    {Object.entries(labels).filter(([key]) => key !== 'promo' || promo || value === 'promo').map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+    {Object.entries(allowedLabels).filter(([key]) => key !== 'promo' || promo || value === 'promo').map(([key, label]) => <option key={key} value={key}>{label}</option>)}
   </select>;
 }
 
@@ -47,6 +50,9 @@ export function PricelistBuilder({ initial, products, stockMap, close, save, pre
   initial?: SavedPricelist; products: Product[]; stockMap: Record<string, number>; close: () => void;
   save: (list: SavedPricelist, draft: boolean) => Promise<void>; preview: (list: SavedPricelist) => void;
 }) {
+  const { profile } = useAuth();
+  const { permissions } = useStaffAccess();
+  const mainOnly = profile?.role !== 'admin' && permissions.priceAccess === 'main_only';
   const [name, setName] = useState(initial?.name || '');
   const [master, setMaster] = useState<PriceType>(initial?.defaultScheme || 'base');
   const [sections, setSections] = useState<PricelistSection[]>(() => initial ? sectionsFor(initial) : []);
@@ -57,6 +63,7 @@ export function PricelistBuilder({ initial, products, stockMap, close, save, pre
   const [category, setCategory] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [includeOutOfStock, setIncludeOutOfStock] = useState(false);
   const categories = [...new Set(products.map(p => p.category || 'Uncategorized'))].sort();
   const active = sections.find(s => s.id === activeId);
   const patch = (id: string, update: Partial<PricelistSection>) => setSections(old => old.map(s => s.id === id ? { ...s, ...update } : s));
@@ -69,11 +76,11 @@ export function PricelistBuilder({ initial, products, stockMap, close, save, pre
   };
   const addSection = (all = false) => {
     if (!heading.trim()) return;
-    const section = { id: crypto.randomUUID(), name: heading.trim(), items: all ? products.filter(p => (p.category || 'Uncategorized') === sourceCategory).map(toItem) : [] };
+    const section = { id: crypto.randomUUID(), name: heading.trim(), items: all ? products.filter(p => (p.category || 'Uncategorized') === sourceCategory && (includeOutOfStock || (stockMap[p.id] ?? 0) > 0)).map(toItem) : [] };
     setSections(old => [...old, section]); setHeading(''); setSourceCategory('');
     if (!all) openPicker(section.id, sourceCategory);
   };
-  const choices = products.filter(p => (!category || (p.category || 'Uncategorized') === category) && [p.name, p.sku, p.category, p.supplier].some(v => String(v || '').toLowerCase().includes(search.toLowerCase())));
+  const choices = products.filter(p => (includeOutOfStock || (stockMap[p.id] ?? 0) > 0) && (!category || (p.category || 'Uncategorized') === category) && [p.name, p.sku, p.category, p.supplier].some(v => String(v || '').toLowerCase().includes(search.toLowerCase())));
   const resolved = sections.map(section => ({ ...section, name: section.name.trim(), items: section.items.map(item => {
     const product = products.find(p => p.id === item.productId);
     const scheme = item.priceOverride ?? section.priceType ?? master;
@@ -94,15 +101,15 @@ export function PricelistBuilder({ initial, products, stockMap, close, save, pre
   return <Dialog open onOpenChange={open => { if (!open && !busy) close(); }}><DialogContent className="max-h-[94vh] w-[96vw] overflow-y-auto sm:!max-w-[96vw] lg:!max-w-[96vw]">
     <DialogHeader><DialogTitle>{initial ? 'Edit Pricelist' : 'Pricelist Builder'}</DialogTitle><DialogDescription>Create headings, add database products, and arrange your pricelist.</DialogDescription></DialogHeader>
     <fieldset disabled={busy} className="min-w-0 space-y-5">
-      <div className="grid gap-4 sm:grid-cols-2"><label className="space-y-2">Pricelist name<Input value={name} onChange={e => setName(e.target.value)} placeholder="Enter pricelist name" /></label><div className="space-y-2"><p>Master price scheme</p><div className="flex flex-wrap items-center gap-2"><PriceSelect value={master} onChange={v => setMaster(v || 'base')} promo={!!items.length && items.every(i => products.find(p => p.id === i.productId)?.promoPrice != null)} /><MixedPricing sections={resolved} baseline={master} scope="master" /></div><p className="text-xs text-muted-foreground">Sections and items follow this unless overridden.</p><Button variant="outline" onClick={() => setSections(old => old.map(s => ({ ...s, priceType: undefined, items: s.items.map(i => ({ ...i, priceOverride: undefined })) })))}>Apply master to all</Button></div></div>
+      <div className="grid gap-4 sm:grid-cols-2"><label className="space-y-2">Pricelist name<Input value={name} onChange={e => setName(e.target.value)} placeholder="Enter pricelist name" /></label><div className="space-y-2"><p>Master price scheme</p><div className="flex flex-wrap items-center gap-2"><PriceSelect value={master} onChange={v => setMaster(v || 'base')} promo={!!items.length && items.every(i => products.find(p => p.id === i.productId)?.promoPrice != null)} mainOnly={mainOnly} /><MixedPricing sections={resolved} baseline={master} scope="master" /></div><p className="text-xs text-muted-foreground">Sections and items follow this unless overridden.</p><Button variant="outline" onClick={() => setSections(old => old.map(s => ({ ...s, priceType: undefined, items: s.items.map(i => ({ ...i, priceOverride: undefined })) })))}>Apply master to all</Button></div></div>
       {sections.map((section, index) => <section key={section.id} className="space-y-3 rounded-xl border p-4">
         <div className="flex flex-wrap items-center gap-2"><Input className="min-w-40 flex-1 font-bold" aria-label={`Section ${index + 1} heading`} value={section.name} onChange={e => patch(section.id, { name: e.target.value })} />
           <Button variant="outline" disabled={index === 0} onClick={() => setSections(old => reorder(old, index, -1))} aria-label={`Move ${section.name} up`}>↑</Button><Button variant="outline" disabled={index === sections.length - 1} onClick={() => setSections(old => reorder(old, index, 1))} aria-label={`Move ${section.name} down`}>↓</Button>
           <Button variant="outline" onClick={() => { if (!section.items.length || window.confirm(`Remove section "${section.name}" and its items from this pricelist?`)) { setSections(old => old.filter(s => s.id !== section.id)); if (activeId === section.id) setActiveId(''); } }}>Remove section</Button>
         </div>
-        <div className="flex flex-wrap items-center gap-3"><PriceSelect value={section.priceType} inherit="Follow pricelist" promo={!!section.items.length && section.items.every(i => products.find(p => p.id === i.productId)?.promoPrice != null)} onChange={priceType => patch(section.id, { priceType })} /><MixedPricing sections={[resolved[index]]} baseline={section.priceType ?? master} scope="section" /><Button onClick={() => openPicker(section.id)}>+ Add products</Button><span className="text-sm text-muted-foreground">{section.items.length} items</span></div>
+        <div className="flex flex-wrap items-center gap-3"><PriceSelect value={section.priceType} inherit="Follow pricelist" promo={!!section.items.length && section.items.every(i => products.find(p => p.id === i.productId)?.promoPrice != null)} onChange={priceType => patch(section.id, { priceType })} mainOnly={mainOnly} /><MixedPricing sections={[resolved[index]]} baseline={section.priceType ?? master} scope="section" /><Button onClick={() => openPicker(section.id)}>+ Add products</Button><span className="text-sm text-muted-foreground">{section.items.length} items</span></div>
         <div className="overflow-x-auto"><table className="w-full text-left text-sm"><thead><tr className="border-b"><th className="p-2">Product</th><th>Warehouse stock</th><th>Price scheme</th><th>Price</th><th>Arrange</th></tr></thead><tbody>
-          {section.items.map((item, itemIndex) => <tr key={`${item.productId}-${itemIndex}`} className="border-b"><td className="p-2"><p>{resolved[index].items[itemIndex].name}</p><p className="text-xs text-muted-foreground">{item.sku}{!products.some(p => p.id === item.productId) && ' · Unavailable in catalog; saved price retained'}</p></td><td>{stockMap[item.productId] ?? 0}</td><td><PriceSelect value={item.priceOverride} inherit="Follow section" promo={products.find(p => p.id === item.productId)?.promoPrice != null} onChange={priceOverride => patch(section.id, { items: section.items.map((i, n) => n === itemIndex ? { ...i, priceOverride } : i) })} /></td><td className="whitespace-nowrap">₱{resolved[index].items[itemIndex].price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td><td><div className="flex items-center gap-1 p-2">
+          {section.items.map((item, itemIndex) => <tr key={`${item.productId}-${itemIndex}`} className="border-b"><td className="p-2"><p>{resolved[index].items[itemIndex].name}</p><p className="text-xs text-muted-foreground">{item.sku}{!products.some(p => p.id === item.productId) && ' · Unavailable in catalog; saved price retained'}</p></td><td>{stockMap[item.productId] ?? 0}</td><td><PriceSelect value={item.priceOverride} inherit="Follow section" promo={products.find(p => p.id === item.productId)?.promoPrice != null} onChange={priceOverride => patch(section.id, { items: section.items.map((i, n) => n === itemIndex ? { ...i, priceOverride } : i) })} mainOnly={mainOnly} /></td><td className="whitespace-nowrap">₱{resolved[index].items[itemIndex].price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td><td><div className="flex items-center gap-1 p-2">
             <Button variant="ghost" disabled={itemIndex === 0} aria-label={`Move ${item.name} up`} onClick={() => patch(section.id, { items: reorder(section.items, itemIndex, -1) })}>↑</Button><Button variant="ghost" disabled={itemIndex === section.items.length - 1} aria-label={`Move ${item.name} down`} onClick={() => patch(section.id, { items: reorder(section.items, itemIndex, 1) })}>↓</Button>
             <select className={selectClass} aria-label={`Move ${item.name} to section`} value="" onChange={e => { const destination = e.target.value; if (destination) setSections(old => old.map(s => s.id === section.id ? { ...s, items: s.items.filter((_, n) => n !== itemIndex) } : s.id === destination ? { ...s, items: [...s.items, item] } : s)); }}><option value="">Move to…</option>{sections.filter(s => s.id !== section.id && !s.items.some(i => i.productId === item.productId)).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}</select>
             <Button variant="ghost" aria-label={`Remove ${item.name}`} onClick={() => patch(section.id, { items: section.items.filter((_, n) => n !== itemIndex) })}>Remove</Button>
@@ -115,9 +122,15 @@ export function PricelistBuilder({ initial, products, stockMap, close, save, pre
       <DialogFooter><Button variant="outline" onClick={close}>Cancel</Button><Button variant="outline" disabled={!ready} onClick={() => persist(true)}>Save Draft</Button><Button disabled={!ready} onClick={() => persist(false)}>{busy ? 'Saving…' : 'Save Pricelist'}</Button><Button variant="outline" disabled={!ready} onClick={() => preview(build())}>Preview PDF</Button></DialogFooter>
     </fieldset>
     <Dialog open={!!active} onOpenChange={open => { if (!open) setActiveId(''); }}><DialogContent className="sm:max-w-3xl"><DialogHeader><DialogTitle>Add products to {active?.name}</DialogTitle><DialogDescription>Search the catalog and choose products for this section.</DialogDescription></DialogHeader>
-      <ProductSelectionModes key={activeId} products={products} active={!!active} onAdd={addToSection} hint="Add a product once to this section. Products already added remain marked Added.">
-      <ProductPicker search={search} onSearch={setSearch} placeholder="Search name, SKU, or supplier" label="Search products by name, SKU, or supplier" empty={!choices.length} toolbar={<> <select aria-label="Filter products by category" className={selectClass} value={category} onChange={e => setCategory(e.target.value)}><option value="">All categories</option>{categories.map(c => <option key={c} value={c}>{c}</option>)}</select>
-      <Button type="button" variant="outline" onClick={() => { if (active) setSections(old => old.map(section => section.id === active.id ? { ...section, items: [...section.items, ...choices.filter(p => !section.items.some(item => item.productId === p.id)).map(toItem)] } : section)); }}>Add all filtered products</Button> </>}>
+      <ProductSelectionModes key={activeId} products={includeOutOfStock ? products : products.filter(p => (stockMap[p.id] ?? 0) > 0)} active={!!active} onAdd={addToSection} hint="Add a product once to this section. Products already added remain marked Added.">
+      <ProductPicker search={search} onSearch={setSearch} placeholder="Search name, SKU, or supplier" label="Search products by name, SKU, or supplier" empty={!choices.length} toolbar={<div className="flex flex-wrap items-center gap-2">
+        <select aria-label="Filter products by category" className={selectClass} value={category} onChange={e => setCategory(e.target.value)}><option value="">All categories</option>{categories.map(c => <option key={c} value={c}>{c}</option>)}</select>
+        <Button type="button" variant="outline" onClick={() => { if (active) setSections(old => old.map(section => section.id === active.id ? { ...section, items: [...section.items, ...choices.filter(p => !section.items.some(item => item.productId === p.id)).map(toItem)] } : section)); }}>Add all filtered products</Button>
+        <label className="flex h-9 cursor-pointer items-center gap-2 rounded-md border border-input bg-background px-3 text-xs font-medium hover:bg-muted/50 transition-colors">
+          <input type="checkbox" checked={includeOutOfStock} onChange={e => setIncludeOutOfStock(e.target.checked)} className="size-4 rounded accent-primary cursor-pointer" />
+          <span>Include out of stock</span>
+        </label>
+      </div>}>
         {choices.map(p => {
           const added = active?.items.some(i => i.productId === p.id);
 

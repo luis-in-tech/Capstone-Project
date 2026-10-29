@@ -49,10 +49,23 @@ export function ensureTrashDir(): void {
 // ─── Guard Utility ────────────────────────────────────────────────────────────
 
 /**
- * Returns true if the given absolute path is safely within FRONTEND_ROOT
- * AND does NOT enter BACKEND_ROOT.
+ * Sensitive file patterns that must NEVER be served through the files API,
+ * even when they reside inside FRONTEND_ROOT.
+ * Prevents exposure of credentials, secrets, and VCS metadata.
+ */
+const SENSITIVE_FILE_PATTERNS: RegExp[] = [
+  /^\.env(\..+)?$/i,          // .env, .env.local, .env.production, etc.
+  /^\.git(\/|\\|$)/i,         // .git directory and contents
+  /\.pem$/i,                  // TLS/SSH private keys
+  /\.key$/i,                  // Private key files
+  /^config\.toml$/i,          // Supabase config
+];
+
+/**
+ * Returns true if the given absolute path is safely within FRONTEND_ROOT,
+ * does NOT enter BACKEND_ROOT, and does NOT target a sensitive file.
  *
- * This is the core path-traversal safety check.
+ * This is the core path-traversal and secrets-exposure safety check.
  *
  * @param absolutePath - The resolved absolute path to validate.
  */
@@ -64,7 +77,19 @@ export function isPathSafe(absolutePath: string): boolean {
 
   const isInsideFrontend = normTarget.startsWith(normFrontend + path.sep) || normTarget === normFrontend;
   const isInsideBackend = normTarget.startsWith(normBackend + path.sep) || normTarget === normBackend;
-  return isInsideFrontend && !isInsideBackend;
+
+  if (!isInsideFrontend || isInsideBackend) {
+    return false;
+  }
+
+  // Block sensitive files by checking basename and relative path segments
+  const basename = path.basename(absolutePath);
+  const relativeFromRoot = path.relative(FRONTEND_ROOT, absolutePath);
+  const isSensitive = SENSITIVE_FILE_PATTERNS.some(
+    pattern => pattern.test(basename) || pattern.test(relativeFromRoot)
+  );
+
+  return !isSensitive;
 }
 
 /**

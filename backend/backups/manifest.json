@@ -1,5 +1,149 @@
 [
   {
+    "snapshotId": "snap_1793274782303",
+    "timestamp": "2026-10-29T11:53:02.322Z",
+    "folder": "backup_2026-10-29T11-53-02-303Z",
+    "files": [
+      "cmdb_inventory.csv",
+      "orders_ledger.csv",
+      "financial_ledger.csv",
+      "audit_trail.csv"
+    ],
+    "totalBytes": 3953
+  },
+  {
+    "snapshotId": "snap_1793272903244",
+    "timestamp": "2026-10-29T11:21:43.270Z",
+    "folder": "backup_2026-10-29T11-21-43-244Z",
+    "files": [
+      "cmdb_inventory.csv",
+      "orders_ledger.csv",
+      "financial_ledger.csv",
+      "audit_trail.csv"
+    ],
+    "totalBytes": 3953
+  },
+  {
+    "snapshotId": "snap_1793266034991",
+    "timestamp": "2026-10-29T09:27:15.010Z",
+    "folder": "backup_2026-10-29T09-27-14-991Z",
+    "files": [
+      "cmdb_inventory.csv",
+      "orders_ledger.csv",
+      "financial_ledger.csv",
+      "audit_trail.csv"
+    ],
+    "totalBytes": 3953
+  },
+  {
+    "snapshotId": "snap_1793249615259",
+    "timestamp": "2026-10-29T04:53:35.267Z",
+    "folder": "backup_2026-10-29T04-53-35-259Z",
+    "files": [
+      "cmdb_inventory.csv",
+      "orders_ledger.csv",
+      "financial_ledger.csv",
+      "audit_trail.csv"
+    ],
+    "totalBytes": 3953
+  },
+  {
+    "snapshotId": "snap_1793249368643",
+    "timestamp": "2026-10-29T04:49:28.648Z",
+    "folder": "backup_2026-10-29T04-49-28-643Z",
+    "files": [
+      "cmdb_inventory.csv",
+      "orders_ledger.csv",
+      "financial_ledger.csv",
+      "audit_trail.csv"
+    ],
+    "totalBytes": 3953
+  },
+  {
+    "snapshotId": "snap_1793245810746",
+    "timestamp": "2026-10-29T03:50:10.775Z",
+    "folder": "backup_2026-10-29T03-50-10-746Z",
+    "files": [
+      "cmdb_inventory.csv",
+      "orders_ledger.csv",
+      "financial_ledger.csv",
+      "audit_trail.csv"
+    ],
+    "totalBytes": 3953
+  },
+  {
+    "snapshotId": "snap_1793241714650",
+    "timestamp": "2026-10-29T02:41:54.668Z",
+    "folder": "backup_2026-10-29T02-41-54-650Z",
+    "files": [
+      "cmdb_inventory.csv",
+      "orders_ledger.csv",
+      "financial_ledger.csv",
+      "audit_trail.csv"
+    ],
+    "totalBytes": 3953
+  },
+  {
+    "snapshotId": "snap_1793239876773",
+    "timestamp": "2026-10-29T02:11:16.809Z",
+    "folder": "backup_2026-10-29T02-11-16-773Z",
+    "files": [
+      "cmdb_inventory.csv",
+      "orders_ledger.csv",
+      "financial_ledger.csv",
+      "audit_trail.csv"
+    ],
+    "totalBytes": 3953
+  },
+  {
+    "snapshotId": "snap_1793237722847",
+    "timestamp": "2026-10-29T01:35:22.860Z",
+    "folder": "backup_2026-10-29T01-35-22-847Z",
+    "files": [
+      "cmdb_inventory.csv",
+      "orders_ledger.csv",
+      "financial_ledger.csv",
+      "audit_trail.csv"
+    ],
+    "totalBytes": 3953
+  },
+  {
+    "snapshotId": "snap_1793191411756",
+    "timestamp": "2026-10-28T12:43:31.768Z",
+    "folder": "backup_2026-10-28T12-43-31-756Z",
+    "files": [
+      "cmdb_inventory.csv",
+      "orders_ledger.csv",
+      "financial_ledger.csv",
+      "audit_trail.csv"
+    ],
+    "totalBytes": 3953
+  },
+  {
+    "snapshotId": "snap_1793181957030",
+    "timestamp": "2026-10-28T10:05:57.040Z",
+    "folder": "backup_2026-10-28T10-05-57-030Z",
+    "files": [
+      "cmdb_inventory.csv",
+      "orders_ledger.csv",
+      "financial_ledger.csv",
+      "audit_trail.csv"
+    ],
+    "totalBytes": 3953
+  },
+  {
+    "snapshotId": "snap_1793180586562",
+    "timestamp": "2026-10-28T09:43:06.577Z",
+    "folder": "backup_2026-10-28T09-43-06-562Z",
+    "files": [
+      "cmdb_inventory.csv",
+      "orders_ledger.csv",
+      "financial_ledger.csv",
+      "audit_trail.csv"
+    ],
+    "totalBytes": 3953
+  },
+  {
     "snapshotId": "snap_1791984757023",
     "timestamp": "2026-10-14T13:32:37.029Z",
     "folder": "backup_2026-10-14T13-32-37-023Z",

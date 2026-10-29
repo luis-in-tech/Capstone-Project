@@ -8,7 +8,7 @@ export async function saveProductVariations(parent: Record<string, unknown> & { 
     id: v.id, parentProductId: parent.id, hasVariations: false, variationAttributes: [],
     variantValues: v.values, variantEnabled: draft.enabled && v.enabled,
     sku: v.sku.trim(), name: `${parent.name} — ${Object.values(v.values).join(' / ')}`,
-    category: parent.category, supplier: parent.supplier,
+    category: parent.category, supplier: parent.supplier, unit: (parent.unit as string) || String(parent.units ?? 'pc'), units: parent.units ?? 1,
     photoUrl: v.imageFile ? await uploadImage(v.imageFile) : v.photoUrl ?? parent.photoUrl,
     ...Object.fromEntries(variantFields.map(([key]) => [key, key === 'promoPrice' && v[key] === '' ? null : Number(v[key])])),
     wholesalePrice: Number(v.mmPrice), dealerPrice: Number(v.provincialPrice),

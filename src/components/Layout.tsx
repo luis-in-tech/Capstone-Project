@@ -39,7 +39,7 @@ const navigation = [
   { name: 'Supply Chain', href: '/supply-chain', icon: Building2, roles: ['admin', 'secretary', 'agent', 'staff'], section: 'OPERATIONS & SUPPLY' },
   { name: 'Order Entry', href: '/orders', icon: ShoppingCart, roles: ['admin', 'secretary', 'agent', 'staff'], section: 'TRANSACTIONS' },
   { name: 'Item Entry', href: '/transfers', icon: Truck, roles: ['admin', 'secretary', 'agent', 'staff'], section: 'TRANSACTIONS' },
-  { name: 'Financials', href: '/finance', icon: DollarSign, roles: ['admin'], section: 'FINANCIAL AUDIT' },
+  { name: 'Financials', href: '/finance', icon: DollarSign, roles: ['admin', 'secretary', 'agent', 'staff'], section: 'FINANCIAL AUDIT' },
   { name: 'Logistics Optimizer', href: '/logistics', icon: Activity, roles: ['admin', 'secretary'], section: 'OPERATIONS & SUPPLY' },
   { name: 'Pricelist', href: '/pricelist', icon: Tag, roles: ['admin', 'secretary', 'agent', 'staff'], section: 'OPERATIONS & SUPPLY' },
   { name: 'Staff Delegation', href: '/delegation', icon: UserCog, roles: ['admin'], section: 'ADMINISTRATION' },

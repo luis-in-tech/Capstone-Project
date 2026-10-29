@@ -3,13 +3,13 @@ import { SearchBar } from '@/components/ui/search-bar';
 import { getSupplyChainViews, hasAdminRole } from '../lib/staffPermissions';
 import { useStaffAccess } from '../hooks/useStaffAccess';
 import { useEffect, useState } from 'react';
-import { UsersIcon as Users, TruckIcon as Truck, WarehouseIcon, PlusIcon as Plus, PencilIcon as Pencil, TrashIcon as Trash2, MapPinIcon as MapPin, PhoneIcon as Phone, UserIcon as UserRound, CalendarDotsIcon as CalendarDays, ArrowDownLeftIcon as ArrowDownLeft, ArrowUpRightIcon as ArrowUpRight, CreditCardIcon as CreditCard, ArrowCounterClockwiseIcon as RotateCcw, EyeIcon as Eye, PackageIcon as Package, SpinnerGapIcon as Loader2, WarningCircleIcon as AlertCircle, XIcon as X } from '@phosphor-icons/react';
+import { UsersIcon as Users, TruckIcon as Truck, WarehouseIcon, PlusIcon as Plus, PencilIcon as Pencil, TrashIcon as Trash2, MapPinIcon as MapPin, PhoneIcon as Phone, UserIcon as UserRound, CalendarDotsIcon as CalendarDays, ArrowDownLeftIcon as ArrowDownLeft, ArrowUpRightIcon as ArrowUpRight, CreditCardIcon as CreditCard, ArrowCounterClockwiseIcon as RotateCcw, EyeIcon as Eye, PackageIcon as Package, SpinnerGapIcon as Loader2, WarningCircleIcon as AlertCircle, XIcon as X, EnvelopeSimpleIcon as Envelope, ChatCircleDotsIcon as ChatCircle, BankIcon as Bank, NotePencilIcon as Note, DeviceMobileIcon as DeviceMobile } from '@phosphor-icons/react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { db, collection, onSnapshot, addDoc, updateDoc, doc, serverTimestamp } from '../lib/supabaseAdapter';
+import { db, collection, onSnapshot, addDoc, updateDoc, setDoc, doc, serverTimestamp } from '../lib/supabaseAdapter';
 import type { InventoryItem, Order, OrderItem, Product, Transfer, Warehouse } from '../types';
 import type { InventoryMovementRecord } from '../lib/inventoryMovement';
 import { dateValue, isOverdue, orderBalance, supportsAction, type ChainTransaction, type SupplyView } from '../lib/supplyChain';
@@ -17,7 +17,24 @@ import { SupplyChainTransactionDialog, chainMoney, Field } from './SupplyChainTr
 import { useAuth } from '../hooks/useAuth';
 import { toast } from 'sonner';
 
-interface Entity { id: string; name: string; address?: string; contact?: string; phone?: string; terms?: string; active?: boolean; draft?: boolean; }
+interface Entity {
+  id: string;
+  name: string;
+  address?: string;
+  contact?: string;
+  phone?: string;
+  terms?: string;
+  active?: boolean;
+  draft?: boolean;
+  viber?: string;
+  messenger?: string;
+  email?: string;
+  bankName?: string;
+  bankAccountNumber?: string;
+  bankAccountName?: string;
+  bankBranchAddress?: string;
+  paymentNotes?: string;
+}
 interface Props {
   sourceLoading: boolean;
   sourceError: boolean;
@@ -58,6 +75,22 @@ export function SupplyChainWorkspace({ sourceLoading, sourceError, onRetrySource
   const [details, setDetails] = useState<ChainTransaction | null>(null);
   const [action, setAction] = useState<'payment' | 'refund' | null>(null);
   const [previews, setPreviews] = useState<ChainTransaction[]>([]);
+  const [committedTransactions, setCommittedTransactions] = useState<ChainTransaction[]>(() => {
+    try {
+      const stored = localStorage.getItem('activepro_supply_chain_committed_transactions');
+      return stored ? JSON.parse(stored) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [orderBalanceOverrides, setOrderBalanceOverrides] = useState<Record<string, number>>(() => {
+    try {
+      const stored = localStorage.getItem('activepro_order_balances');
+      return stored ? JSON.parse(stored) : {};
+    } catch {
+      return {};
+    }
+  });
   const [customerDrafts, setCustomerDrafts] = useState<Entity[]>(() => {
     try {
       const stored = localStorage.getItem('activepro_supply_chain_customers');
@@ -96,6 +129,10 @@ export function SupplyChainWorkspace({ sourceLoading, sourceError, onRetrySource
         if (meta) setMetadata(JSON.parse(meta));
         const hidden = localStorage.getItem('activepro_supply_chain_hidden_customers');
         if (hidden) setHiddenCustomers(JSON.parse(hidden));
+        const txs = localStorage.getItem('activepro_supply_chain_committed_transactions');
+        if (txs) setCommittedTransactions(JSON.parse(txs));
+        const balOverrides = localStorage.getItem('activepro_order_balances');
+        if (balOverrides) setOrderBalanceOverrides(JSON.parse(balOverrides));
       } catch {}
     };
     window.addEventListener('activepro_customers_changed', syncDirectory);
@@ -113,7 +150,25 @@ export function SupplyChainWorkspace({ sourceLoading, sourceError, onRetrySource
       setLoaded(current => ({ ...current, [table]: true }));
       setErrors(current => ({ ...current, [table]: false }));
     }, () => { setErrors(current => ({ ...current, [table]: true })); setLoaded(current => ({ ...current, [table]: true })); });
-    const stops = [watch('orders', setOrders), watch('order_items', setOrderItems), watch('inventory_movements', setMovements), watch('transfers', setTransfers)];
+    const stops = [
+      watch('orders', setOrders),
+      watch('order_items', setOrderItems),
+      watch('inventory_movements', setMovements),
+      watch('transfers', setTransfers),
+      watch('customers', (dbCustomers: Entity[]) => {
+        if (Array.isArray(dbCustomers) && dbCustomers.length > 0) {
+          setCustomerDrafts(prev => {
+            const merged = [...prev];
+            for (const c of dbCustomers) {
+              const idx = merged.findIndex(m => m.id === c.id || m.name.toLowerCase() === c.name.toLowerCase());
+              if (idx >= 0) merged[idx] = { ...merged[idx], ...c };
+              else merged.push(c);
+            }
+            return merged;
+          });
+        }
+      })
+    ];
     return () => stops.forEach(stop => stop());
   }, [reload]);
 
@@ -153,18 +208,42 @@ export function SupplyChainWorkspace({ sourceLoading, sourceError, onRetrySource
   const loading = sourceLoading || requiredTables.some(table => !loaded[table]);
   const loadError = sourceError || requiredTables.some(table => errors[table]);
 
-  const orderRows: ChainTransaction[] = orders.map(order => ({
-    id: order.id, entityId: customerKey(order.clientName || ''), type: 'Order', date: dateValue(order.createdAt), reference: order.orderNumber,
-    amount: Number(order.totalAmount), remaining: orderBalance(order), dueDate: dateValue(order.dueDate), status: order.status,
-    items: orderItems.filter(item => item.orderId === order.id).map(item => ({ ...item, unitPrice: Number(item.unitPrice), quantity: Number(item.quantity) })),
-    direction: order.status === 'cancelled' ? undefined : 'out',
-  }));
-  const purchaseRows: ChainTransaction[] = movements.filter(m => m.type === 'external').map(movement => ({
-    id: movement.id, entityId: movement.supplierId || '', type: 'Purchase', date: dateValue(movement.createdAt), reference: movement.invoiceNumber || movement.movementNumber,
-    amount: movement.totalValue == null ? null : Number(movement.totalValue), remaining: null, status: movement.status,
-    items: movement.items.map((line, i) => ({ ...line, id: `${movement.id}:${i}`, warehouseId: movement.destinationWarehouseId, unitPrice: Number(line.unitCost) })), direction: 'in',
-    notes: `Receipt ${movement.movementNumber}. Supplier payment status is not recorded in inventory receipts.`,
-  }));
+  const orderRows: ChainTransaction[] = orders.map(order => {
+    const override = orderBalanceOverrides[order.id];
+    const remaining = override !== undefined ? override : orderBalance(order);
+    return {
+      id: order.id, entityId: customerKey(order.clientName || ''), type: 'Order', date: dateValue(order.createdAt), reference: order.orderNumber,
+      amount: Number(order.totalAmount), remaining, dueDate: dateValue(order.dueDate), status: order.status,
+      items: orderItems.filter(item => item.orderId === order.id).map(item => ({ ...item, unitPrice: Number(item.unitPrice), quantity: Number(item.quantity) })),
+      direction: order.status === 'cancelled' ? undefined : 'out',
+    };
+  });
+  const customerOrders: ChainTransaction[] = orderRows.filter(row => row.status === 'completed');
+
+  const purchaseRows: ChainTransaction[] = movements.filter(m => m.type === 'external').map(movement => {
+    const matchedSupplier = suppliers.find(s => s.id === movement.supplierId || s.name === movement.supplierName || s.name === movement.supplierId);
+    const resolvedEntityId = matchedSupplier?.id || movement.supplierId || '';
+
+    const originalAmount = movement.totalValue != null
+      ? Number(movement.totalValue)
+      : movement.items.reduce((sum, line) => sum + line.quantity * (line.unitCost || 0), 0);
+
+    const paymentsForPurchase = committedTransactions.filter(t => t.parentId === movement.id && (t.type === 'Bill Payment' || t.type === 'Payment'));
+    const paidAmount = (movement as any).amountPaid != null && Number((movement as any).amountPaid) > 0
+      ? Number((movement as any).amountPaid)
+      : paymentsForPurchase.reduce((sum, p) => sum + (p.amount || 0), 0);
+    const remaining = (movement as any).remainingBalance != null && Number.isFinite(Number((movement as any).remainingBalance))
+      ? Number((movement as any).remainingBalance)
+      : Math.max(0, originalAmount - paidAmount);
+
+    return {
+      id: movement.id, entityId: resolvedEntityId, type: 'Purchase', date: dateValue(movement.createdAt), reference: movement.invoiceNumber || movement.movementNumber,
+      amount: originalAmount, remaining, dueDate: dateValue(movement.receivedDate || movement.createdAt),
+      status: remaining <= 0 ? 'paid' : paidAmount > 0 ? 'partially_paid' : movement.status || 'confirmed',
+      items: movement.items.map((line, i) => ({ ...line, id: `${movement.id}:${i}`, warehouseId: movement.destinationWarehouseId, unitPrice: Number(line.unitCost) })), direction: 'in',
+      notes: `Receipt ${movement.movementNumber}. Supplier: ${movement.supplierName || matchedSupplier?.name || 'Supplier'}`,
+    };
+  });
   const warehouseRows: ChainTransaction[] = current && warehouse ? [
     ...transfers.filter(t => t.sourceWarehouseId === current.id || t.destinationWarehouseId === current.id).map(t => {
       const incoming = t.destinationWarehouseId === current.id;
@@ -192,7 +271,7 @@ export function SupplyChainWorkspace({ sourceLoading, sourceError, onRetrySource
     }),
     ...previews.filter(row => row.direction && row.items.some(item => item.warehouseId === current.id)).map(row => ({ ...row, type: row.type === 'Refund' ? 'Order Refund' : row.type, entityId: current.id })),
   ] : [];
-  const rows = (warehouse ? warehouseRows : [...(customer ? orderRows : purchaseRows), ...previews].filter(row => row.entityId === current?.id)).sort((a, b) => b.date.localeCompare(a.date));
+  const rows = (warehouse ? warehouseRows : [...(customer ? customerOrders : purchaseRows), ...committedTransactions, ...previews].filter(row => row.entityId === current?.id)).sort((a, b) => b.date.localeCompare(a.date));
   const filteredRows = rows.filter(row => (typeFilter === 'All' || row.type === typeFilter) && `${row.type} ${row.reference} ${row.status}`.toLowerCase().includes(search.toLowerCase()));
   const selected = filteredRows.find(row => row.id === selectedId);
   const committedRows = rows.filter(row => !row.draft && ['Order', 'Purchase'].includes(row.type));
@@ -205,8 +284,31 @@ export function SupplyChainWorkspace({ sourceLoading, sourceError, onRetrySource
   const previewPending = previews.some(row => row.parentId === selected?.id);
   const canAct = (kind: 'payment' | 'refund') => canManage && !loading && !loadError && !warehouse && !previewPending && supportsAction(selected, kind);
 
+  useEffect(() => {
+    setEntityId('');
+    setSelectedId('');
+    setEditor(null);
+    setEditError('');
+    setAction(null);
+    setDetails(null);
+    setPreviews([]);
+    setDirectorySearch('');
+    setSearch('');
+    setTypeFilter('All');
+  }, [view]);
+
   function switchView(next: SupplyView) {
-    setView(next); setEntityId(''); setDirectorySearch(''); setSearch(''); setTypeFilter('All'); setSelectedId(''); setAction(null);
+    setView(next);
+    setEntityId('');
+    setDirectorySearch('');
+    setSearch('');
+    setTypeFilter('All');
+    setSelectedId('');
+    setAction(null);
+    setEditor(null);
+    setEditError('');
+    setDetails(null);
+    setPreviews([]);
   }
 
   async function saveEntity() {
@@ -219,29 +321,94 @@ export function SupplyChainWorkspace({ sourceLoading, sourceError, onRetrySource
     try {
       let id = editor.id;
       if (customer) {
-        if (!id) id = customerKey(name);
+        const originalCustomer = entities.find(e => e.id === editor.id);
+        const oldName = originalCustomer?.name?.trim() || '';
+        const oldKey = editor.id || (oldName ? customerKey(oldName) : '');
+        const newKey = customerKey(name);
+        id = newKey;
         const record: Entity = {
           ...editor,
-          id,
+          id: newKey,
           name,
           address: editor.address?.trim() || '',
           contact: editor.contact?.trim() || '',
           phone: editor.phone?.trim() || '',
           terms: editor.terms?.trim() || '',
+          viber: editor.viber?.trim() || '',
+          messenger: editor.messenger?.trim() || '',
+          email: editor.email?.trim() || '',
+          bankName: editor.bankName?.trim() || '',
+          bankAccountNumber: editor.bankAccountNumber?.trim() || '',
+          bankAccountName: editor.bankAccountName?.trim() || '',
+          bankBranchAddress: editor.bankBranchAddress?.trim() || '',
+          paymentNotes: editor.paymentNotes?.trim() || '',
           draft: false,
         };
+
+        const isRenaming = oldKey && oldKey !== newKey;
+
         setCustomerDrafts(items => {
-          const filtered = items.filter(c => c.id !== id && c.name.toLowerCase() !== name.toLowerCase());
+          const filtered = items.filter(c => 
+            c.id !== id && 
+            c.id !== oldKey && 
+            c.name.toLowerCase() !== name.toLowerCase() && 
+            (!oldName || c.name.toLowerCase() !== oldName.toLowerCase())
+          );
           const next = [...filtered, record];
           try { localStorage.setItem('activepro_supply_chain_customers', JSON.stringify(next)); } catch {}
           window.dispatchEvent(new CustomEvent('activepro_customers_changed'));
           return next;
         });
-        setHiddenCustomers(items => {
-          const next = items.filter(hId => hId !== id);
-          try { localStorage.setItem('activepro_supply_chain_hidden_customers', JSON.stringify(next)); } catch {}
-          return next;
-        });
+
+        // Persist to Supabase database so all devices/users receive the customer update
+        try {
+          await setDoc(doc(db, 'customers', newKey), {
+            id: newKey,
+            name,
+            address: record.address || '',
+            contact: record.contact || '',
+            phone: record.phone || '',
+            terms: record.terms || '',
+            viber: record.viber || '',
+            messenger: record.messenger || '',
+            email: record.email || '',
+            bankName: record.bankName || '',
+            bankAccountNumber: record.bankAccountNumber || '',
+            bankAccountName: record.bankAccountName || '',
+            bankBranchAddress: record.bankBranchAddress || '',
+            paymentNotes: record.paymentNotes || '',
+            updatedAt: serverTimestamp(),
+          });
+        } catch (custDbErr) {
+          console.warn('Could not persist customer to Supabase table:', custDbErr);
+        }
+
+        if (isRenaming) {
+          // Hide old customer key so past orders mapped to oldName won't recreate a duplicate
+          setHiddenCustomers(items => {
+            const next = Array.from(new Set([...items.filter(hId => hId !== newKey), oldKey]));
+            try { localStorage.setItem('activepro_supply_chain_hidden_customers', JSON.stringify(next)); } catch {}
+            return next;
+          });
+
+          // Sync past orders to new customer name
+          if (oldName) {
+            const matchingOrders = orders.filter(o => o.clientName?.trim().toLowerCase() === oldName.toLowerCase());
+            for (const ord of matchingOrders) {
+              try {
+                await updateDoc(doc(db, 'orders', ord.id), { clientName: name });
+              } catch (ordErr) {
+                console.warn('Could not update order clientName for renamed customer:', ordErr);
+              }
+            }
+          }
+        } else {
+          setHiddenCustomers(items => {
+            const next = items.filter(hId => hId !== id);
+            try { localStorage.setItem('activepro_supply_chain_hidden_customers', JSON.stringify(next)); } catch {}
+            return next;
+          });
+        }
       } else if (warehouse) {
         const payload = { name, location: editor.address?.trim() || 'Warehouse Facility', active: editor.active !== false };
         if (id) await updateDoc(doc(db, 'warehouses', id), payload);
@@ -257,7 +424,23 @@ export function SupplyChainWorkspace({ sourceLoading, sourceError, onRetrySource
         } else id = (await addDoc(collection(db, 'suppliers'), { name, createdAt: serverTimestamp(), updatedAt: serverTimestamp() })).id;
       }
       setMetadata(items => {
-        const next = { ...items, [`${view}:${id}`]: { ...(customer ? { name, address: editor.address, draft: false } : !warehouse ? { address: editor.address } : {}), contact: editor.contact, phone: editor.phone, terms: editor.terms } };
+        const next = {
+          ...items,
+          [`${view}:${id}`]: {
+            ...(customer ? { name, address: editor.address, draft: false } : !warehouse ? { address: editor.address } : {}),
+            contact: editor.contact,
+            phone: editor.phone,
+            terms: editor.terms,
+            viber: editor.viber,
+            messenger: editor.messenger,
+            email: editor.email,
+            bankName: editor.bankName,
+            bankAccountNumber: editor.bankAccountNumber,
+            bankAccountName: editor.bankAccountName,
+            bankBranchAddress: editor.bankBranchAddress,
+            paymentNotes: editor.paymentNotes,
+          }
+        };
         try { localStorage.setItem('activepro_supply_chain_metadata', JSON.stringify(next)); } catch {}
         return next;
       });
@@ -268,7 +451,11 @@ export function SupplyChainWorkspace({ sourceLoading, sourceError, onRetrySource
   }
 
   const handleCommitPreviews = async () => {
+    if (!previews.length) return;
     try {
+      const newCommitted: ChainTransaction[] = [];
+      const updatedOrderBalances = { ...orderBalanceOverrides };
+
       for (const preview of previews) {
         if (preview.type === 'Refund' || preview.type === 'Purchase Refund' || preview.type === 'Payment' || preview.type === 'Bill Payment') {
           await addDoc(collection(db, 'expenses'), {
@@ -279,11 +466,85 @@ export function SupplyChainWorkspace({ sourceLoading, sourceError, onRetrySource
             type: preview.type.includes('Payment') ? 'income' : 'expense'
           });
         }
+
+        // If it's a Customer Payment on an order, deduct remaining balance and persist
+        if (preview.type === 'Payment' && preview.parentId) {
+          const targetOrder = orders.find(o => o.id === preview.parentId);
+          if (targetOrder) {
+            const currentRem = updatedOrderBalances[targetOrder.id] !== undefined
+              ? updatedOrderBalances[targetOrder.id]
+              : (orderBalance(targetOrder) ?? targetOrder.totalAmount);
+            const newRem = Math.max(0, currentRem - (preview.amount || 0));
+            const newPaid = (targetOrder.amountPaid || 0) + (preview.amount || 0);
+            const newPaymentStatus = newRem <= 0 ? 'paid' : 'partially_paid';
+
+            updatedOrderBalances[targetOrder.id] = newRem;
+
+            setOrders(prev => prev.map(o => o.id === targetOrder.id ? { ...o, remainingBalance: newRem, amountPaid: newPaid, paymentStatus: newPaymentStatus as any } : o));
+            try {
+              await updateDoc(doc(db, 'orders', targetOrder.id), {
+                remainingBalance: newRem,
+                amountPaid: newPaid,
+                paymentStatus: newPaymentStatus,
+                updatedAt: serverTimestamp()
+              });
+            } catch (err) {
+              console.warn('Could not update order in database:', err);
+            }
+          }
+        }
+
+        // If it's a Supplier Bill Payment on a purchase movement, update paid/remaining amount and persist
+        if (preview.type === 'Bill Payment' && preview.parentId) {
+          const targetMovement = movements.find(m => m.id === preview.parentId);
+          if (targetMovement) {
+            const originalAmount = targetMovement.totalValue != null
+              ? Number(targetMovement.totalValue)
+              : targetMovement.items.reduce((sum, line) => sum + line.quantity * (line.unitCost || 0), 0);
+            const currentPaid = Number((targetMovement as any).amountPaid || 0);
+            const newPaid = currentPaid + (preview.amount || 0);
+            const newRem = Math.max(0, originalAmount - newPaid);
+            const newStatus = newRem <= 0 ? 'paid' : 'partially_paid';
+
+            setMovements(prev => prev.map(m => m.id === targetMovement.id ? { ...m, amountPaid: newPaid, remainingBalance: newRem, status: newStatus as any } : m));
+            try {
+              await updateDoc(doc(db, 'inventory_movements', targetMovement.id), {
+                amountPaid: newPaid,
+                remainingBalance: newRem,
+                status: newStatus,
+                lastUpdated: serverTimestamp()
+              });
+            } catch (err) {
+              console.warn('Could not update inventory movement in database:', err);
+            }
+          }
+        }
+
+        newCommitted.push({
+          ...preview,
+          status: 'Completed',
+          draft: false,
+        });
       }
+
+      setOrderBalanceOverrides(updatedOrderBalances);
+      try {
+        localStorage.setItem('activepro_order_balances', JSON.stringify(updatedOrderBalances));
+      } catch {}
+
+      setCommittedTransactions(prev => {
+        const next = [...newCommitted, ...prev];
+        try {
+          localStorage.setItem('activepro_supply_chain_committed_transactions', JSON.stringify(next));
+        } catch {}
+        return next;
+      });
+
       setPreviews([]);
       setSelectedId('');
       toast.success('All transactions successfully committed to the ledger.');
     } catch (err) {
+      console.error('Commit error:', err);
       toast.error('Failed to commit transactions. Please try again.');
     }
   };
@@ -302,7 +563,43 @@ export function SupplyChainWorkspace({ sourceLoading, sourceError, onRetrySource
         {current ? <>
           <section className="overflow-hidden rounded-2xl border bg-card shadow-sm">
             <div className="flex flex-wrap items-start justify-between gap-3 p-5"><div><div className="mb-2 flex items-center gap-2"><Badge variant="secondary">{warehouse ? 'Warehouse' : customer ? 'Customer account' : 'Supplier account'}</Badge>{warehouse && <Badge variant={current.active === false ? 'outline' : 'secondary'}>{current.active === false ? 'Inactive' : 'Active'}</Badge>}{current.draft && <Badge variant="outline">Preview</Badge>}</div><h2 className="text-xl font-bold">{current.name}</h2></div>{canManage && <div className="flex gap-2"><Button size="sm" variant="outline" onClick={() => { setEditError(''); setEditor({ ...current }); }}><Pencil className="size-3.5" />Edit</Button><Button size="sm" variant="ghost" className="text-destructive hover:text-destructive" onClick={() => setRemoving(true)}><Trash2 className="size-3.5" />Remove</Button></div>}</div>
-            <div className="grid gap-4 px-5 pb-5 sm:grid-cols-2"><InfoField icon={MapPin} label={warehouse ? "Location" : "Address"} value={current.address} /><InfoField icon={UserRound} label="Contact person" value={current.contact} /><InfoField icon={Phone} label="Contact number" value={current.phone} /><InfoField icon={CalendarDays} label={warehouse ? 'Status' : 'Payment terms'} value={warehouse ? current.active === false ? 'Inactive' : 'Active' : current.terms} /></div>
+            <div className="grid gap-4 px-5 pb-5 sm:grid-cols-2">
+              <InfoField icon={MapPin} label={warehouse ? "Location" : "Address"} value={current.address} />
+              <InfoField icon={UserRound} label="Contact person" value={current.contact} />
+              <InfoField icon={Phone} label="Contact number" value={current.phone} />
+              <InfoField icon={CalendarDays} label={warehouse ? 'Status' : 'Payment terms'} value={warehouse ? current.active === false ? 'Inactive' : 'Active' : current.terms} />
+              {customer && (
+                <>
+                  <InfoField icon={DeviceMobile} label="Viber number" value={current.viber} />
+                  <InfoField icon={ChatCircle} label="Messenger" value={current.messenger} />
+                  <InfoField icon={Envelope} label="Email address" value={current.email} />
+                </>
+              )}
+            </div>
+            {customer && current.paymentNotes && (
+              <div className="mx-5 mb-4 rounded-xl border border-amber-300 bg-amber-50/80 p-3.5 text-xs text-amber-900 shadow-sm dark:border-amber-900/60 dark:bg-amber-950/40 dark:text-amber-100 flex items-start gap-2.5">
+                <Note className="size-4 shrink-0 text-amber-600 dark:text-amber-400 mt-0.5" />
+                <div className="space-y-0.5 min-w-0 flex-1">
+                  <span className="font-bold uppercase tracking-wider text-[10px] text-amber-800 dark:text-amber-300 block">
+                    Payment & Client Notes
+                  </span>
+                  <p className="font-semibold text-amber-950 dark:text-amber-100 text-xs whitespace-pre-wrap">{current.paymentNotes}</p>
+                </div>
+              </div>
+            )}
+            {customer && (current.bankName || current.bankAccountNumber || current.bankAccountName || current.bankBranchAddress) && (
+              <div className="mx-5 mb-4 rounded-xl border bg-muted/20 p-4 text-xs space-y-2">
+                <div className="flex items-center gap-2 font-bold uppercase tracking-wider text-muted-foreground text-[10px]">
+                  <Bank className="size-3.5" /> Bank Account Details
+                </div>
+                <div className="grid gap-2 sm:grid-cols-2 pt-1">
+                  <div><span className="text-muted-foreground">Bank Name: </span><span className="font-semibold text-foreground">{current.bankName || '—'}</span></div>
+                  <div><span className="text-muted-foreground">Account Name: </span><span className="font-semibold text-foreground">{current.bankAccountName || '—'}</span></div>
+                  <div><span className="text-muted-foreground">Account Number: </span><span className="font-mono font-semibold text-foreground">{current.bankAccountNumber || '—'}</span></div>
+                  <div><span className="text-muted-foreground">Branch Address: </span><span className="font-semibold text-foreground">{current.bankBranchAddress || '—'}</span></div>
+                </div>
+              </div>
+            )}
             {metadata[`${view}:${current.id}`] && !customer && <p className="px-5 pb-4 text-xs text-amber-700 dark:text-amber-300">Contact details and payment terms are session previews.</p>}
             {(!warehouse || canViewValuation) && <div className="flex flex-wrap items-center justify-between gap-4 border-t bg-muted/30 px-5 py-5"><div><p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{warehouse ? 'Total Inventory Valuation' : 'Total Open Balance'}</p><p className="mt-1 text-3xl font-bold tracking-tight tabular-nums">{loading ? 'Loading…' : loadError ? 'Unavailable' : warehouse ? chainMoney(missingCosts ? null : valuation) : chainMoney(unknownBalance ? null : balance)}</p><p className="mt-1 text-xs text-muted-foreground">{warehouse ? missingCosts ? 'Some inventory items are missing cost prices.' : 'At product cost · Visible to administrators' : unknownBalance ? `Exact ${customer ? 'receivables' : 'payables'} are not available in the source records.` : customer ? 'Outstanding customer receivables' : 'Outstanding supplier payables'}</p></div>{overdueCount > 0 && <Badge variant="destructive">{overdueCount} overdue {overdueCount === 1 ? 'order' : 'orders'}</Badge>}{warehouse && <div className="text-right"><p className="text-xl font-semibold">{stock.reduce((sum, item) => sum + item.quantity, 0).toLocaleString()}</p><p className="text-xs text-muted-foreground">units on hand</p></div>}</div>}
           </section>
@@ -325,7 +622,49 @@ export function SupplyChainWorkspace({ sourceLoading, sourceError, onRetrySource
 
     <Dialog open={!!details} onOpenChange={open => { if (!open) setDetails(null); }}><DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl"><DialogHeader><DialogTitle>{details?.type} details</DialogTitle><DialogDescription>{details?.reference} · {formatDate(details?.date)}</DialogDescription></DialogHeader>{details && <><div className="flex flex-wrap justify-between gap-3 rounded-xl bg-muted/40 p-4"><div><p className="text-xs text-muted-foreground">Amount / value</p><p className="text-2xl font-bold">{chainMoney(details.amount)}</p></div><Badge variant="secondary" className="h-fit capitalize">{details.status.replaceAll('_', ' ')}</Badge></div>{details.direction && <div className={`rounded-lg p-3 text-sm ${details.direction === 'in' ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' : 'bg-orange-500/10 text-orange-700 dark:text-orange-300'}`}>{details.draft ? 'Preview: inventory would ' : 'Inventory direction: '}{details.direction === 'in' ? 'increase — items received' : 'decrease — items issued'}</div>}{details.notes && <p className="text-sm text-muted-foreground">{details.notes}</p>}<Table><TableHeader><TableRow><TableHead>Item</TableHead><TableHead className="text-right">Quantity</TableHead><TableHead className="text-right">Unit value</TableHead></TableRow></TableHeader><TableBody>{details.items.map(item => <TableRow key={item.id}><TableCell><p className="font-medium">{item.name}</p><p className="text-xs text-muted-foreground">{item.sku}{item.warehouseId && ` · ${warehouses.find(w => w.id === item.warehouseId)?.name || 'Warehouse'}`}</p></TableCell><TableCell className="text-right">{item.quantity}</TableCell><TableCell className="text-right">{chainMoney(item.unitPrice)}</TableCell></TableRow>)}{!details.items.length && <TableRow><TableCell colSpan={3} className="py-8 text-center text-muted-foreground">No physical items recorded.</TableCell></TableRow>}</TableBody></Table>{details.draft && <p className="text-xs text-amber-700 dark:text-amber-300">Session preview only. No financial or inventory changes posted.</p>}<Button variant="outline" onClick={() => setDetails(null)}>Close</Button></>}</DialogContent></Dialog>
 
-    <Dialog open={!!editor} onOpenChange={open => { if (!open && !saving) setEditor(null); }}><DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-xl"><DialogHeader><DialogTitle>{editor?.id ? 'Edit' : 'Add'} {singular}</DialogTitle><DialogDescription>{customer ? 'Customer profiles can be used in Order Entry to create orders.' : `The ${warehouse ? 'name, location, and status' : 'name'} will be saved. Contact details${!warehouse ? ', address, and payment terms' : ''} are session previews.`}</DialogDescription></DialogHeader>{editor && <form onSubmit={event => { event.preventDefault(); void saveEntity(); }} className="space-y-4"><Field label="Name" id="chain-entity-name"><Input id="chain-entity-name" required value={editor.name} onChange={e => setEditor({ ...editor, name: e.target.value })} /></Field><Field label={warehouse ? "Location" : "Address"} id="chain-entity-address"><Input id="chain-entity-address" value={editor.address || ''} onChange={e => setEditor({ ...editor, address: e.target.value })} placeholder={warehouse ? "e.g. Hub 1" : "Street, city, province"} /></Field><div className="grid gap-4 sm:grid-cols-2"><Field label="Contact person" id="chain-entity-contact"><Input id="chain-entity-contact" value={editor.contact || ''} onChange={e => setEditor({ ...editor, contact: e.target.value })} /></Field><Field label="Contact number" id="chain-entity-phone"><Input id="chain-entity-phone" type="tel" value={editor.phone || ''} onChange={e => setEditor({ ...editor, phone: e.target.value })} /></Field></div>{warehouse ? <Field label="Status" id="chain-entity-status"><select id="chain-entity-status" className="h-10 w-full rounded-lg border bg-background px-3 text-sm" value={editor.active === false ? 'inactive' : 'active'} onChange={e => setEditor({ ...editor, active: e.target.value === 'active' })}><option value="active">Active</option><option value="inactive">Inactive</option></select></Field> : <Field label="Payment terms" id="chain-entity-terms"><Input id="chain-entity-terms" value={editor.terms || ''} onChange={e => setEditor({ ...editor, terms: e.target.value })} placeholder="e.g. Cash on delivery, Net 30" /></Field>}{editError && <p role="alert" className="text-sm text-destructive">{editError}</p>}<div className="flex justify-end gap-2 border-t pt-4"><Button type="button" variant="outline" disabled={saving} onClick={() => setEditor(null)}>Cancel</Button><Button type="submit" disabled={saving || !editor.name.trim()}>{saving ? 'Saving…' : customer ? 'Save customer' : 'Save changes'}</Button></div></form>}</DialogContent></Dialog>
+    <Dialog open={!!editor} onOpenChange={open => { if (!open && !saving) setEditor(null); }}><DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-xl"><DialogHeader><DialogTitle>{editor?.id ? 'Edit' : 'Add'} {singular}</DialogTitle><DialogDescription>{customer ? 'Customer profiles can be used in Order Entry to create orders.' : `The ${warehouse ? 'name, location, and status' : 'name'} will be saved. Contact details${!warehouse ? ', address, and payment terms' : ''} are session previews.`}</DialogDescription></DialogHeader>{editor && <form onSubmit={event => { event.preventDefault(); void saveEntity(); }} className="space-y-4">
+      <Field label="Name" id="chain-entity-name"><Input id="chain-entity-name" required value={editor.name} onChange={e => setEditor({ ...editor, name: e.target.value })} /></Field>
+      <Field label={warehouse ? "Location" : "Address"} id="chain-entity-address"><Input id="chain-entity-address" value={editor.address || ''} onChange={e => setEditor({ ...editor, address: e.target.value })} placeholder={warehouse ? "e.g. Hub 1" : "Street, city, province"} /></Field>
+      <div className="grid gap-4 sm:grid-cols-2">
+        <Field label="Contact person" id="chain-entity-contact"><Input id="chain-entity-contact" value={editor.contact || ''} onChange={e => setEditor({ ...editor, contact: e.target.value })} /></Field>
+        <Field label="Contact number" id="chain-entity-phone"><Input id="chain-entity-phone" type="tel" value={editor.phone || ''} onChange={e => setEditor({ ...editor, phone: e.target.value })} /></Field>
+      </div>
+
+      {customer && (
+        <>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Viber Number" id="chain-entity-viber"><Input id="chain-entity-viber" value={editor.viber || ''} onChange={e => setEditor({ ...editor, viber: e.target.value })} placeholder="e.g. 09171234567" /></Field>
+            <Field label="Messenger" id="chain-entity-messenger"><Input id="chain-entity-messenger" value={editor.messenger || ''} onChange={e => setEditor({ ...editor, messenger: e.target.value })} placeholder="e.g. m.me/profile or username" /></Field>
+          </div>
+          <Field label="Email Address" id="chain-entity-email"><Input id="chain-entity-email" type="email" value={editor.email || ''} onChange={e => setEditor({ ...editor, email: e.target.value })} placeholder="e.g. client@example.com" /></Field>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Payment terms" id="chain-entity-terms"><Input id="chain-entity-terms" value={editor.terms || ''} onChange={e => setEditor({ ...editor, terms: e.target.value })} placeholder="e.g. Cash on delivery, Net 30" /></Field>
+            <Field label="Payment Notes" id="chain-entity-payment-notes"><Input id="chain-entity-payment-notes" value={editor.paymentNotes || ''} onChange={e => setEditor({ ...editor, paymentNotes: e.target.value })} placeholder="e.g. MM & add 5%, No sale of Shimano" /></Field>
+          </div>
+          <div className="rounded-xl border bg-muted/20 p-4 space-y-3">
+            <div className="flex items-center gap-1.5 font-bold uppercase tracking-wider text-[10px] text-muted-foreground">
+              <Bank className="size-3.5" /> Bank Details
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <Field label="Bank Name" id="chain-bank-name"><Input id="chain-bank-name" value={editor.bankName || ''} onChange={e => setEditor({ ...editor, bankName: e.target.value })} placeholder="e.g. BDO, BPI, Metrobank" /></Field>
+              <Field label="Account Name" id="chain-bank-acc-name"><Input id="chain-bank-acc-name" value={editor.bankAccountName || ''} onChange={e => setEditor({ ...editor, bankAccountName: e.target.value })} placeholder="e.g. Active Pro Trading" /></Field>
+              <Field label="Account Number" id="chain-bank-acc-num"><Input id="chain-bank-acc-num" value={editor.bankAccountNumber || ''} onChange={e => setEditor({ ...editor, bankAccountNumber: e.target.value })} placeholder="e.g. 0012-3456-7890" /></Field>
+              <Field label="Bank Branch Address" id="chain-bank-branch"><Input id="chain-bank-branch" value={editor.bankBranchAddress || ''} onChange={e => setEditor({ ...editor, bankBranchAddress: e.target.value })} placeholder="e.g. Ortigas Branch, Pasig City" /></Field>
+            </div>
+          </div>
+        </>
+      )}
+
+      {!customer && (
+        warehouse ? <Field label="Status" id="chain-entity-status"><select id="chain-entity-status" className="h-10 w-full rounded-lg border bg-background px-3 text-sm" value={editor.active === false ? 'inactive' : 'active'} onChange={e => setEditor({ ...editor, active: e.target.value === 'active' })}><option value="active">Active</option><option value="inactive">Inactive</option></select></Field> : <Field label="Payment terms" id="chain-entity-terms"><Input id="chain-entity-terms" value={editor.terms || ''} onChange={e => setEditor({ ...editor, terms: e.target.value })} placeholder="e.g. Cash on delivery, Net 30" /></Field>
+      )}
+
+      {editError && <p role="alert" className="text-sm text-destructive">{editError}</p>}
+      <div className="flex justify-end gap-2 border-t pt-4">
+        <Button type="button" variant="outline" disabled={saving} onClick={() => setEditor(null)}>Cancel</Button>
+        <Button type="submit" disabled={saving || !editor.name.trim()}>{saving ? 'Saving…' : customer ? 'Save customer' : 'Save changes'}</Button>
+      </div>
+    </form>}</DialogContent></Dialog>
 
     <Dialog open={removing} onOpenChange={setRemoving}><DialogContent className="sm:max-w-md"><DialogHeader><DialogTitle>Remove {current?.name}?</DialogTitle><DialogDescription>{customer ? 'This removes the customer from the directory and Order Entry. Existing orders and balances are preserved.' : warehouse ? 'The existing warehouse removal flow will show the stock impact before deletion.' : 'The existing supplier removal flow will show which product assignments are affected.'}</DialogDescription></DialogHeader><div className="flex justify-end gap-2"><Button variant="outline" onClick={() => setRemoving(false)}>Cancel</Button><Button variant="destructive" onClick={() => { if (!current) return; if (customer) {
       setHiddenCustomers(ids => {

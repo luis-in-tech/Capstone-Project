@@ -20,7 +20,7 @@ import {
   updateDefectiveTicketStatus,
   exportDefectiveProductsReportCSV,
 } from '../lib/itilService';
-import { db, doc, updateDoc, serverTimestamp } from '../lib/supabaseAdapter';
+import { db, doc, getDoc, updateDoc, collection, addDoc, serverTimestamp } from '../lib/supabaseAdapter';
 import { toast } from 'sonner';
 
 interface QuarantineLedgerProps {
@@ -60,9 +60,17 @@ export function QuarantineLedger({
 
       // If supplier replacement arrived: restock items back into inventory!
       if (newStatus === 'REPLACED') {
-        const item = inventory.find(
+        let item = inventory.find(
           (i) => i.productId === ticket.productId && i.warehouseId === ticket.warehouseId
         );
+        if (item?.id) {
+          try {
+            const freshSnap = await getDoc(doc(db, 'inventory', item.id));
+            if (freshSnap?.exists()) {
+              item = { ...item, ...(freshSnap.data() as InventoryItem) };
+            }
+          } catch {}
+        }
         if (item) {
           const newQty = item.quantity + ticket.quantity;
           const newQuarantine = Math.max(0, (item.quarantineQuantity || 0) - ticket.quantity);
@@ -76,9 +84,17 @@ export function QuarantineLedger({
         }
         toast.success(`Replacement confirmed: ${ticket.quantity} units restocked to available inventory.`);
       } else if (newStatus === 'WRITTEN_OFF') {
-        const item = inventory.find(
+        let item = inventory.find(
           (i) => i.productId === ticket.productId && i.warehouseId === ticket.warehouseId
         );
+        if (item?.id) {
+          try {
+            const freshSnap = await getDoc(doc(db, 'inventory', item.id));
+            if (freshSnap?.exists()) {
+              item = { ...item, ...(freshSnap.data() as InventoryItem) };
+            }
+          } catch {}
+        }
         if (item) {
           const newQuarantine = Math.max(0, (item.quarantineQuantity || 0) - ticket.quantity);
           try {
@@ -87,6 +103,18 @@ export function QuarantineLedger({
               lastUpdated: serverTimestamp(),
             });
           } catch {}
+        }
+        try {
+          await addDoc(collection(db, 'stockAdjustments'), {
+            productId: ticket.productId,
+            warehouseId: ticket.warehouseId,
+            adjustmentAmount: -ticket.quantity,
+            reason: `Quarantine Write-Off: Defective Ticket ${ticket.ticketNumber || ticket.id}`,
+            recordedBy: profile?.uid || 'system',
+            createdAt: serverTimestamp(),
+          });
+        } catch (adjErr) {
+          console.warn('Could not record write-off stock adjustment:', adjErr);
         }
         toast.success(`Asset written off: removed from quarantine.`);
       } else {

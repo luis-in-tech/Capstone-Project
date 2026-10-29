@@ -11,6 +11,7 @@ import {
   MagnifyingGlassIcon as Search,
   ShoppingCartIcon as ShoppingCart,
   TrashIcon as Trash2,
+  WarningCircleIcon as AlertCircle,
 } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -39,7 +40,7 @@ import {
 } from "@/components/ui/table";
 import type { InventoryItem, Product, UserProfile, Warehouse } from "../types";
 import { supabase } from "../lib/supabase";
-import { addDoc, collection, db, doc, onSnapshot, setDoc, updateDoc } from "../lib/supabaseAdapter";
+import { addDoc, collection, db, deleteDoc, doc, getDocs, onSnapshot, setDoc, updateDoc } from "../lib/supabaseAdapter";
 import {
   existingCustomers,
   money,
@@ -82,7 +83,7 @@ export function OrderEntry({
   profile: UserProfile;
   onSaved: (order: ReceiptOrder, items: ReceiptItem[]) => void;
 }) {
-  const [requestId] = useState(() => crypto.randomUUID());
+  const [requestId, setRequestId] = useState(() => crypto.randomUUID());
   const orderNumber = `ORD-${requestId.toUpperCase()}`;
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
   const [warehouseError, setWarehouseError] = useState(false);
@@ -112,6 +113,27 @@ export function OrderEntry({
   const frame = useRef<number | null>(null);
   const cameraSession = useRef(0);
   const saveLock = useRef(false);
+
+  useEffect(() => {
+    if (open) {
+      setRequestId(crypto.randomUUID());
+      setCustomerName("");
+      setIsNewCustomer(false);
+      setCustomerSearch("");
+      setAddress("");
+      setRegion("Metro Manila");
+      setTerms("COD");
+      setCustomTerms("");
+      setLines([]);
+      setDraft(null);
+      setDiscount("");
+      setGroupDiscounts([]);
+      setSaveError("");
+      setItemError("");
+      setCustomerOpen(false);
+      setReviewOpen(false);
+    }
+  }, [open]);
   const [supplyChainCustomers, setSupplyChainCustomers] = useState<Array<{
     id: string;
     name: string;
@@ -120,6 +142,7 @@ export function OrderEntry({
     phone?: string;
     terms?: string;
     region?: string;
+    paymentNotes?: string;
   }>>(() => {
     try {
       const stored = localStorage.getItem('activepro_supply_chain_customers');
@@ -342,7 +365,7 @@ export function OrderEntry({
       sku: product.sku,
       name: product.name,
       variation: product.variation || "",
-      unit: product.unit || "pc",
+      unit: product.unit || (typeof (product as any).units === 'string' && isNaN(Number((product as any).units)) ? String((product as any).units) : "pc"),
       quantity,
       warehouseId: draft.warehouseId,
       priceType: draft.priceType,
@@ -417,165 +440,144 @@ export function OrderEntry({
       let savedOrder: ReceiptOrder | null = null;
       let savedItems: ReceiptItem[] = [];
 
+      const now = new Date().toISOString();
+      const deadline = new Date(
+        Date.now() + (region === "Metro Manila" ? 7 : 14) * 24 * 60 * 60 * 1000
+      ).toISOString();
+
+      const newOrder: ReceiptOrder = {
+        id: requestId,
+        orderNumber,
+        agentId: profile?.uid || "user",
+        clientId: (customer?.id && isUuid(customer.id)) || (customer?.id && !customer.id.startsWith("draft:") && !customer.id.startsWith("customer:")) ? customer.id : (sourceOrder?.clientId || `CLI-${requestId.slice(-6).toUpperCase()}`),
+        clientName: customerName.trim(),
+        status: "pending",
+        skus: lines.map((l) => l.sku),
+        totalAmount: totals.total,
+        paymentStatus: "unpaid",
+        deliveryRegion: region,
+        deliveryCity: address.split(",")[1]?.trim() || address.trim(),
+        deliveryDeadline: deadline,
+        allocationStrategy: queueStrategy,
+        statusHistory: [
+          {
+            status: "pending",
+            changedBy: profile?.displayName || profile?.email || "User",
+            timestamp: now,
+            note: "Order created; stock reserved at the selected warehouses.",
+          },
+        ],
+        receiptDetails: {
+          address: address.trim(),
+          paymentTerms: terms === "Custom" ? customTerms.trim() : terms,
+          subtotal: totals.subtotal,
+          discount: totals.discount,
+          orderDiscount: Number(discount || 0),
+          groupDiscounts: totals.groups,
+          preparedBy: profile?.displayName || profile?.email || "User",
+        },
+        stockReserved: true,
+        createdAt: now,
+        updatedAt: now,
+      };
+
+      const newItems: ReceiptItem[] = lines.map((line, index) => ({
+        id: crypto.randomUUID ? crypto.randomUUID() : `item-${requestId}-${index}`,
+        orderId: requestId,
+        productId: line.productId,
+        warehouseId: line.warehouseId,
+        sku: line.sku,
+        name: line.name,
+        unit: line.unit || "pc",
+        quantity: line.quantity,
+        unitPrice: line.unitPrice,
+        subtotal: roundMoney(line.quantity * line.unitPrice),
+        locationAisle: line.locationAisle,
+        locationBin: line.locationBin,
+        entryDetails: {
+          priceType: line.priceType,
+          prices: line.prices,
+          variation: line.variation || "",
+          unit: line.unit || "pc",
+          position: index,
+        },
+      }));
+
+      // Track state for compensation rollback in case of partial network or database failure
+      const modifiedInventory: { id: string; prevQty: number }[] = [];
+      let orderCreated = false;
+
       try {
-        const { data, error } = await supabase.rpc("create_order_entry", {
-          p_request_id: requestId,
-          p_order: {
-            customerSourceId,
-            clientName: customerName.trim(),
-            address: address.trim(),
-            deliveryRegion: region,
-            paymentTerms: terms === "Custom" ? customTerms.trim() : terms,
-            discount: totals.discount,
-            orderDiscount: Number(discount || 0),
-            groupDiscounts: totals.groups,
-            items: lines,
-          },
-        });
-        if (!error && data?.order && Array.isArray(data.items)) {
-          const autoDeadline = data.order.deliveryDeadline || new Date(
-            Date.now() + (region === "Metro Manila" ? 7 : 14) * 24 * 60 * 60 * 1000
-          ).toISOString();
-          savedOrder = {
-            ...data.order,
-            clientName: customerName.trim(),
-            deliveryRegion: region,
-            deliveryDeadline: autoDeadline,
-            allocationStrategy: queueStrategy,
-            receiptDetails: {
-              ...(data.order.receiptDetails || {}),
-              address: address.trim(),
-              paymentTerms: terms === "Custom" ? customTerms.trim() : terms,
-              preparedBy: profile?.displayName || profile?.email || "User",
-            },
-          };
-          savedItems = data.items;
+        await setDoc(doc(db, "orders", requestId), newOrder);
+        orderCreated = true;
 
-          if (data.order.id && data.order.clientName !== customerName.trim()) {
-            try {
-              await updateDoc(doc(db, "orders", data.order.id), {
-                clientName: customerName.trim(),
-                deliveryRegion: region,
-                deliveryDeadline: autoDeadline,
-                allocationStrategy: queueStrategy,
-                receiptDetails: savedOrder.receiptDetails,
-              });
-            } catch (syncErr) {
-              console.warn("Could not sync clientName to orders table:", syncErr);
-            }
-          }
-        } else if (error) {
-          throw error;
+        for (const item of newItems) {
+          await addDoc(collection(db, "orders", requestId, "items"), item);
         }
-      } catch (rpcErr) {
-        console.warn("create_order_entry RPC failed, executing database fallback:", rpcErr);
 
-        const now = new Date().toISOString();
-        const deadline = new Date(
-          Date.now() + (region === "Metro Manila" ? 7 : 14) * 24 * 60 * 60 * 1000
-        ).toISOString();
+        // Aggregate line item quantities per product and warehouse before stock deduction
+        const aggregatedDeductions = new Map<string, { productId: string; warehouseId: string; totalQty: number }>();
+        for (const line of lines) {
+          const key = `${line.productId}_${line.warehouseId}`;
+          const current = aggregatedDeductions.get(key) || { productId: line.productId, warehouseId: line.warehouseId, totalQty: 0 };
+          current.totalQty += line.quantity;
+          aggregatedDeductions.set(key, current);
+        }
 
-        const fallbackOrder: ReceiptOrder = {
-          id: requestId,
-          orderNumber,
-          agentId: profile?.uid || "user",
-          clientId: (customer?.id && isUuid(customer.id)) || (customer?.id && !customer.id.startsWith("draft:") && !customer.id.startsWith("customer:")) ? customer.id : (sourceOrder?.clientId || `CLI-${requestId.slice(-6).toUpperCase()}`),
-          clientName: customerName.trim(),
-          status: "pending",
-          skus: lines.map((l) => l.sku),
-          totalAmount: totals.total,
-          paymentStatus: "unpaid",
-          deliveryRegion: region,
-          deliveryCity: address.split(",")[1]?.trim() || address.trim(),
-          deliveryDeadline: deadline,
-          allocationStrategy: queueStrategy,
-          statusHistory: [
-            {
-              status: "pending",
-              changedBy: profile?.displayName || profile?.email || "User",
-              timestamp: now,
-              note: "Order created; stock reserved at the selected warehouses.",
-            },
-          ],
-          receiptDetails: {
-            address: address.trim(),
-            paymentTerms: terms === "Custom" ? customTerms.trim() : terms,
-            subtotal: totals.subtotal,
-            discount: totals.discount,
-            orderDiscount: Number(discount || 0),
-            groupDiscounts: totals.groups,
-            preparedBy: profile?.displayName || profile?.email || "User",
-          },
-          stockReserved: true,
-          createdAt: now,
-          updatedAt: now,
-        };
+        for (const ded of aggregatedDeductions.values()) {
+          const inv = inventory.find(
+            (i) => i.productId === ded.productId && i.warehouseId === ded.warehouseId
+          );
+          if (inv) {
+            modifiedInventory.push({ id: inv.id, prevQty: inv.quantity });
+            await updateDoc(doc(db, "inventory", inv.id), {
+              quantity: Math.max(0, inv.quantity - ded.totalQty),
+              lastUpdated: now,
+            });
+          }
+          await addDoc(collection(db, "stockAdjustments"), {
+            productId: ded.productId,
+            warehouseId: ded.warehouseId,
+            adjustmentAmount: -ded.totalQty,
+            reason: `Auto-deduction: Order ${orderNumber}`,
+            recordedBy: profile?.uid || "user",
+            timestamp: now,
+          });
+        }
 
-        const fallbackItems: ReceiptItem[] = lines.map((line, index) => ({
-          id: crypto.randomUUID ? crypto.randomUUID() : `item-${requestId}-${index}`,
-          orderId: requestId,
-          productId: line.productId,
-          warehouseId: line.warehouseId,
-          sku: line.sku,
-          name: line.name,
-          quantity: line.quantity,
-          unitPrice: line.unitPrice,
-          subtotal: roundMoney(line.quantity * line.unitPrice),
-          locationAisle: line.locationAisle,
-          locationBin: line.locationBin,
-          entryDetails: {
-            priceType: line.priceType,
-            prices: line.prices,
-            variation: line.variation || "",
-            unit: line.unit || "pc",
-            position: index,
-          },
-        }));
-
+        savedOrder = newOrder;
+        savedItems = newItems;
+      } catch (dbErr: any) {
+        console.error("Order creation failed mid-flight; executing compensation rollback:", dbErr);
+        // Rollback any warehouse deductions that succeeded before the crash
+        for (const roll of modifiedInventory) {
+          try {
+            await updateDoc(doc(db, "inventory", roll.id), {
+              quantity: roll.prevQty,
+              lastUpdated: new Date().toISOString(),
+            });
+          } catch (rollErr) {
+            console.warn("Rollback inventory error:", rollErr);
+          }
+        }
+        // Delete dangling order and any created line items if order was created
         try {
-          await setDoc(doc(db, "orders", requestId), fallbackOrder);
-
-          for (const item of fallbackItems) {
-            try {
-              await addDoc(collection(db, "orders", requestId, "items"), item);
-            } catch (itemErr) {
-              console.warn("Failed saving order item to database:", itemErr);
-            }
+          const itemsSnap = await getDocs(collection(db, "orders", requestId, "items"));
+          for (const itemDoc of itemsSnap.docs) {
+            await deleteDoc(doc(db, "orders", requestId, "items", itemDoc.id)).catch(() => {});
           }
-
-          for (const line of lines) {
-            const inv = inventory.find(
-              (i) => i.productId === line.productId && i.warehouseId === line.warehouseId
-            );
-            if (inv) {
-              try {
-                await updateDoc(doc(db, "inventory", inv.id), {
-                  quantity: Math.max(0, inv.quantity - line.quantity),
-                  lastUpdated: now,
-                });
-              } catch (invErr) {
-                console.warn("Failed updating inventory stock:", invErr);
-              }
-            }
-            try {
-              await addDoc(collection(db, "stockAdjustments"), {
-                productId: line.productId,
-                warehouseId: line.warehouseId,
-                adjustmentAmount: -line.quantity,
-                reason: `Auto-deduction: Order ${orderNumber}`,
-                recordedBy: profile?.uid || "user",
-                timestamp: now,
-              });
-            } catch (adjErr) {
-              console.warn("Failed recording stock adjustment:", adjErr);
-            }
-          }
-        } catch (dbErr) {
-          console.warn("Database fallback error (continuing with local state):", dbErr);
+        } catch (itemDelErr) {
+          console.warn("Rollback delete order items error:", itemDelErr);
         }
 
-        savedOrder = fallbackOrder;
-        savedItems = fallbackItems;
+        if (orderCreated) {
+          try {
+            await deleteDoc(doc(db, "orders", requestId));
+          } catch (delErr) {
+            console.warn("Rollback delete order error:", delErr);
+          }
+        }
+        throw new Error(dbErr?.message || "Failed to confirm order and reserve inventory. Cart preserved.");
       }
 
       if (!savedOrder) {
@@ -662,8 +664,12 @@ export function OrderEntry({
                         onClick={() => {
                           const nextState = !isNewCustomer;
                           setIsNewCustomer(nextState);
-                          if (nextState && customerSearch.trim()) {
+                          if (nextState) {
                             setCustomerName(customerSearch.trim());
+                            setAddress("");
+                            setRegion("Metro Manila");
+                            setTerms("COD");
+                            setCustomTerms("");
                           }
                         }}
                       >
@@ -713,6 +719,10 @@ export function OrderEntry({
                                 onClick={() => {
                                   setCustomerName(customerSearch.trim());
                                   setIsNewCustomer(true);
+                                  setAddress("");
+                                  setRegion("Metro Manila");
+                                  setTerms("COD");
+                                  setCustomTerms("");
                                   setCustomerOpen(false);
                                 }}
                               >
@@ -734,14 +744,14 @@ export function OrderEntry({
                                   onClick={() => {
                                     setCustomerName(c.name);
                                     setIsNewCustomer(false);
-                                    setAddress(c.address);
+                                    setAddress(c.address || "");
                                     const validRegion = [
                                       "Metro Manila",
                                       "Luzon",
                                       "Visayas",
                                       "Mindanao",
-                                    ].includes(c.region)
-                                      ? c.region
+                                    ].includes(c.region || "")
+                                      ? (c.region as string)
                                       : (c.address?.toLowerCase().includes("manila") ? "Metro Manila" : "Luzon");
                                     setRegion(validRegion);
                                     if (c.terms) {
@@ -752,6 +762,9 @@ export function OrderEntry({
                                         setTerms("Custom");
                                         setCustomTerms(c.terms);
                                       }
+                                    } else {
+                                      setTerms("COD");
+                                      setCustomTerms("");
                                     }
                                     setCustomerOpen(false);
                                   }}
@@ -785,7 +798,11 @@ export function OrderEntry({
                               className="w-full justify-start text-xs text-muted-foreground hover:text-foreground"
                               onClick={() => {
                                 setIsNewCustomer(true);
-                                if (customerSearch.trim()) setCustomerName(customerSearch.trim());
+                                setCustomerName(customerSearch.trim());
+                                setAddress("");
+                                setRegion("Metro Manila");
+                                setTerms("COD");
+                                setCustomTerms("");
                                 setCustomerOpen(false);
                               }}
                             >
@@ -796,6 +813,17 @@ export function OrderEntry({
                       </Popover>
                     )}
                   </div>
+                  {customer?.paymentNotes && (
+                    <div className="sm:col-span-2 rounded-xl border border-amber-300 bg-amber-50/80 p-3.5 text-xs text-amber-900 shadow-sm dark:border-amber-900/60 dark:bg-amber-950/40 dark:text-amber-100 flex items-start gap-2.5">
+                      <AlertCircle className="size-4 shrink-0 text-amber-600 dark:text-amber-400 mt-0.5" />
+                      <div className="space-y-0.5 min-w-0 flex-1">
+                        <span className="font-bold uppercase tracking-wider text-[10px] text-amber-800 dark:text-amber-300 block">
+                          Client Payment Notes
+                        </span>
+                        <p className="font-semibold text-amber-950 dark:text-amber-100 text-xs whitespace-pre-wrap">{customer.paymentNotes}</p>
+                      </div>
+                    </div>
+                  )}
                   <div className="space-y-1.5">
                     <Label htmlFor="entry-terms">Payment Terms</Label>
                     <select

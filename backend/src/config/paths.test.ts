@@ -30,4 +30,19 @@ describe('Paths and Security Isolation', () => {
     const resolved = resolveAndValidate('src/App.tsx');
     expect(resolved).toBe(path.resolve(FRONTEND_ROOT, 'src/App.tsx'));
   });
+
+  it('should block access to .env files inside frontend root', () => {
+    const envPath = path.join(FRONTEND_ROOT, '.env');
+    expect(isPathSafe(envPath)).toBe(false);
+  });
+
+  it('should block access to .env.local files', () => {
+    const envPath = path.join(FRONTEND_ROOT, '.env.local');
+    expect(isPathSafe(envPath)).toBe(false);
+  });
+
+  it('should block access to .git directory', () => {
+    const gitPath = path.join(FRONTEND_ROOT, '.git', 'config');
+    expect(isPathSafe(gitPath)).toBe(false);
+  });
 });

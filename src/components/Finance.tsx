@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter, DialogDescription } from '@/components/ui/dialog';
 import {
   TrendUpIcon as TrendingUp,
@@ -39,12 +40,15 @@ import {
   FileArrowUpIcon as FileUp,
   CheckCircleIcon as CheckCircle2,
   WarningCircleIcon as AlertCircle,
-  FileTextIcon as FileCheck
+  FileTextIcon as FileCheck,
+  CheckIcon as Check,
+  MagnifyingGlassIcon as SearchIcon
 } from '@phosphor-icons/react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, PieChart, Pie, Cell, LineChart, Line } from 'recharts';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import { useAuth } from '../hooks/useAuth';
+import { useStaffAccess } from '../hooks/useStaffAccess';
 import { toast } from 'sonner';
 
 export interface PLRow {
@@ -434,48 +438,59 @@ function FinancialImportModal({ isOpen, onClose, categories }: FinancialImportMo
       const effective = importType === 'auto' ? detectedType : importType;
       const existingCats = new Set(categories.map(c => c.name.toLowerCase()));
 
-      let importedCount = 0;
+      // Pre-provision missing categories in one pass before processing expenses
+      if (effective === 'expenses') {
+        const uniqueNewCats = Array.from(
+          new Set(parsedRows.map(r => r.category?.trim()).filter(Boolean))
+        ).filter(cat => !existingCats.has(cat!.toLowerCase()));
 
-      for (const row of parsedRows) {
-        if (effective === 'expenses') {
-          // Provision category if not exists
-          if (row.category && !existingCats.has(row.category.toLowerCase())) {
-            try {
-              await addDoc(collection(db, 'expenseCategories'), {
-                name: row.category,
-                description: 'Auto-provisioned from financial CSV import',
-                isActive: true,
-                createdAt: serverTimestamp(),
-              });
-              existingCats.add(row.category.toLowerCase());
-            } catch (catErr) {
-              console.warn('Could not auto-create category:', catErr);
-            }
+        for (const newCat of uniqueNewCats) {
+          try {
+            await addDoc(collection(db, 'expenseCategories'), {
+              name: newCat,
+              description: 'Auto-provisioned from financial CSV import',
+              isActive: true,
+              createdAt: serverTimestamp(),
+            });
+            existingCats.add(newCat!.toLowerCase());
+          } catch (catErr) {
+            console.warn('Could not auto-create category:', catErr);
           }
-
-          await addDoc(collection(db, 'expenses'), {
-            category: row.category || 'Cost of Goods Sold',
-            amount: row.amount,
-            description: row.description,
-            date: row.date,
-            recordedBy: 'csv_import',
-          });
-        } else {
-          // Orders / Sales
-          await addDoc(collection(db, 'orders'), {
-            orderNumber: row.orderNumber,
-            clientName: row.clientName,
-            clientId: `cli_imp_${Date.now()}_${importedCount}`,
-            agentId: 'system',
-            status: 'completed',
-            paymentStatus: 'paid',
-            totalAmount: row.amount,
-            deliveryRegion: 'Metro Manila',
-            createdAt: row.date,
-            updatedAt: row.date,
-          });
         }
-        importedCount++;
+      }
+
+      // Process rows in parallel chunks of 10 for faster throughput and UI responsiveness
+      const CHUNK_SIZE = 10;
+      let importedCount = 0;
+      for (let i = 0; i < parsedRows.length; i += CHUNK_SIZE) {
+        const chunk = parsedRows.slice(i, i + CHUNK_SIZE);
+        await Promise.all(chunk.map(async (row, cIdx) => {
+          const globalIdx = i + cIdx;
+          if (effective === 'expenses') {
+            await addDoc(collection(db, 'expenses'), {
+              category: row.category || 'Cost of Goods Sold',
+              amount: row.amount,
+              description: row.description,
+              date: row.date,
+              recordedBy: 'csv_import',
+            });
+          } else {
+            // Orders / Sales
+            await addDoc(collection(db, 'orders'), {
+              orderNumber: row.orderNumber,
+              clientName: row.clientName,
+              clientId: `cli_imp_${Date.now()}_${globalIdx}`,
+              agentId: 'system',
+              status: 'completed',
+              paymentStatus: 'paid',
+              totalAmount: row.amount,
+              deliveryRegion: 'Metro Manila',
+              createdAt: row.date,
+              updatedAt: row.date,
+            });
+          }
+          importedCount++;
+        }));
       }
 
       toast.success(`Successfully imported ${importedCount} ${effective} into Supabase!`);
@@ -713,8 +728,16 @@ function FinancialImportModal({ isOpen, onClose, categories }: FinancialImportMo
 
 export function Finance() {
   const { profile } = useAuth();
+  const access = useStaffAccess();
+  const isExpenseOnly = profile?.role !== 'admin' && access.permissions.financials === 'expense_only';
   const [selectedPeriod, setSelectedPeriod] = useState<'2025' | '2026' | 'all'>('2025');
-  const [activeLedgerTab, setActiveLedgerTab] = useState<'statement' | 'ledger'>('statement');
+  const [activeLedgerTab, setActiveLedgerTab] = useState<'statement' | 'ledger'>(() => isExpenseOnly ? 'ledger' : 'statement');
+
+  useEffect(() => {
+    if (isExpenseOnly) {
+      setActiveLedgerTab('ledger');
+    }
+  }, [isExpenseOnly]);
   const [chartGranularity, setChartGranularity] = useState<'monthly' | 'quarterly' | 'annual'>('monthly');
   const [trajectoryGranularity, setTrajectoryGranularity] = useState<'daily' | 'weekly' | 'monthly'>('daily');
   const [expenses, setExpenses] = useState<Expense[]>([]);
@@ -728,6 +751,62 @@ export function Finance() {
   const [editingExpense, setEditingExpense] = useState<Expense | null>(null);
   const [isEditExpenseOpen, setIsEditExpenseOpen] = useState(false);
   const [isCSVImportOpen, setIsCSVImportOpen] = useState(false);
+
+  // Order selection & search in Record Entry modal
+  const [selectedExpenseOrderId, setSelectedExpenseOrderId] = useState<string>('none');
+  const [expenseOrderSearch, setExpenseOrderSearch] = useState('');
+  const [isExpenseOrderPickerOpen, setIsExpenseOrderPickerOpen] = useState(false);
+
+  // Order selection & search in Edit Expense modal
+  const [editExpenseOrderId, setEditExpenseOrderId] = useState<string>('none');
+  const [editExpenseOrderSearch, setEditExpenseOrderSearch] = useState('');
+  const [isEditExpenseOrderPickerOpen, setIsEditExpenseOrderPickerOpen] = useState(false);
+
+  useEffect(() => {
+    if (!isAddExpenseOpen) {
+      setSelectedExpenseOrderId('none');
+      setExpenseOrderSearch('');
+      setIsExpenseOrderPickerOpen(false);
+    }
+  }, [isAddExpenseOpen]);
+
+  useEffect(() => {
+    if (editingExpense) {
+      setEditExpenseOrderId(editingExpense.orderId || 'none');
+    } else {
+      setEditExpenseOrderId('none');
+    }
+    setEditExpenseOrderSearch('');
+    setIsEditExpenseOrderPickerOpen(false);
+  }, [editingExpense, isEditExpenseOpen]);
+
+  const filteredExpenseOrders = React.useMemo(() => {
+    const sorted = [...orders].sort((a, b) => (b.orderNumber || '').localeCompare(a.orderNumber || ''));
+    if (!expenseOrderSearch.trim()) return sorted;
+    const q = expenseOrderSearch.toLowerCase();
+    return sorted.filter(o =>
+      (o.orderNumber || '').toLowerCase().includes(q) ||
+      (o.clientName || '').toLowerCase().includes(q)
+    );
+  }, [orders, expenseOrderSearch]);
+
+  const selectedExpenseOrder = React.useMemo(() => {
+    return orders.find(o => o.id === selectedExpenseOrderId);
+  }, [orders, selectedExpenseOrderId]);
+
+  const filteredEditExpenseOrders = React.useMemo(() => {
+    const sorted = [...orders].sort((a, b) => (b.orderNumber || '').localeCompare(a.orderNumber || ''));
+    if (!editExpenseOrderSearch.trim()) return sorted;
+    const q = editExpenseOrderSearch.toLowerCase();
+    return sorted.filter(o =>
+      (o.orderNumber || '').toLowerCase().includes(q) ||
+      (o.clientName || '').toLowerCase().includes(q)
+    );
+  }, [orders, editExpenseOrderSearch]);
+
+  const selectedEditExpenseOrder = React.useMemo(() => {
+    return orders.find(o => o.id === editExpenseOrderId);
+  }, [orders, editExpenseOrderId]);
 
   type SortKey = 'date' | 'category' | 'amount' | 'orderId';
   type SortDirection = 'asc' | 'desc';
@@ -1489,13 +1568,19 @@ export function Finance() {
     e.preventDefault();
     const formData = new FormData(e.currentTarget);
     const orderId = formData.get('orderId') as string;
+    const amount = Number(formData.get('amount'));
+
+    if (isNaN(amount) || amount <= 0) {
+      toast.error('Amount must be greater than ₱0.00');
+      return;
+    }
 
     const dateVal = formData.get('date') as string;
 
     const newExpense = {
       category: formData.get('category'),
       description: formData.get('description'),
-      amount: Number(formData.get('amount')),
+      amount,
       date: dateVal ? new Date(dateVal) : serverTimestamp(),
       recordedBy: profile?.uid,
       ...(orderId && orderId !== 'none' ? { orderId } : {})
@@ -1516,13 +1601,19 @@ export function Finance() {
 
     const formData = new FormData(e.currentTarget);
     const orderId = formData.get('orderId') as string;
+    const amount = Number(formData.get('amount'));
+
+    if (isNaN(amount) || amount <= 0) {
+      toast.error('Amount must be greater than ₱0.00');
+      return;
+    }
 
     const dateVal = formData.get('date') as string;
 
     const updatedExpense = {
       category: formData.get('category'),
       description: formData.get('description'),
-      amount: Number(formData.get('amount')),
+      amount,
       date: dateVal ? new Date(dateVal) : editingExpense.date,
       ...(orderId && orderId !== 'none' ? { orderId } : { orderId: null })
     };
@@ -1656,69 +1747,76 @@ export function Finance() {
     <div className="space-y-6">
       {/* Enterprise Utility Toolbar */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <PageHeading title="Financials" subtitle="Track revenue, expenses, and audited profit & loss statements." />
+        <PageHeading
+          title={isExpenseOnly ? "Itemized Expense Ledger" : "Financials"}
+          subtitle={isExpenseOnly ? "Record itemized expenses and monitor expense allocations." : "Track revenue, expenses, and audited profit & loss statements."}
+        />
 
         {/* Period Selector & Action Controls */}
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="flex items-center gap-0.5 bg-muted/80 p-0.5 rounded-sm border border-border">
-            <Calendar className="w-3.5 h-3.5 text-muted-foreground ml-1.5 mr-1" />
+        {!isExpenseOnly && (
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex items-center gap-0.5 bg-muted/80 p-0.5 rounded-sm border border-border">
+              <Calendar className="w-3.5 h-3.5 text-muted-foreground ml-1.5 mr-1" />
+              <Button
+                variant={selectedPeriod === '2025' ? 'default' : 'ghost'}
+                size="sm"
+                className={`h-6.5 px-2.5 text-[9px] font-black uppercase tracking-wider rounded-sm transition-all ${selectedPeriod === '2025'
+                    ? 'bg-[#1A2332] text-white shadow-none'
+                    : 'text-muted-foreground hover:text-foreground hover:bg-muted'
+                  }`}
+                onClick={() => setSelectedPeriod('2025')}
+              >
+                FY 2025 (Q1 P&L)
+              </Button>
+              <Button
+                variant={selectedPeriod === '2026' ? 'default' : 'ghost'}
+                size="sm"
+                className={`h-6.5 px-2.5 text-[9px] font-black uppercase tracking-wider rounded-sm transition-all ${selectedPeriod === '2026'
+                    ? 'bg-[#1A2332] text-white shadow-none'
+                    : 'text-muted-foreground hover:text-foreground hover:bg-muted'
+                  }`}
+                onClick={() => setSelectedPeriod('2026')}
+              >
+                FY 2026 (Live Ops)
+              </Button>
+              <Button
+                variant={selectedPeriod === 'all' ? 'default' : 'ghost'}
+                size="sm"
+                className={`h-6.5 px-2.5 text-[9px] font-black uppercase tracking-wider rounded-sm transition-all ${selectedPeriod === 'all'
+                    ? 'bg-[#1A2332] text-white shadow-none'
+                    : 'text-muted-foreground hover:text-foreground hover:bg-muted'
+                  }`}
+                onClick={() => setSelectedPeriod('all')}
+              >
+                All Periods
+              </Button>
+            </div>
+
             <Button
-              variant={selectedPeriod === '2025' ? 'default' : 'ghost'}
+              variant="outline"
               size="sm"
-              className={`h-6.5 px-2.5 text-[9px] font-black uppercase tracking-wider rounded-sm transition-all ${selectedPeriod === '2025'
-                  ? 'bg-[#1A2332] text-white shadow-none'
-                  : 'text-muted-foreground hover:text-foreground hover:bg-muted'
-                }`}
-              onClick={() => setSelectedPeriod('2025')}
+              className="h-7 gap-1.5 px-2.5 text-[9px] font-black uppercase tracking-wider rounded-sm border border-emerald-500/40 text-emerald-700 dark:text-emerald-400 bg-emerald-50/50 dark:bg-emerald-950/30 hover:bg-emerald-100 dark:hover:bg-emerald-950/50 shadow-none transition-all"
+              onClick={() => setIsCSVImportOpen(true)}
             >
-              FY 2025 (Q1 P&L)
+              <FileUp className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" /> Import Financials (CSV)
             </Button>
+
             <Button
-              variant={selectedPeriod === '2026' ? 'default' : 'ghost'}
+              variant="outline"
               size="sm"
-              className={`h-6.5 px-2.5 text-[9px] font-black uppercase tracking-wider rounded-sm transition-all ${selectedPeriod === '2026'
-                  ? 'bg-[#1A2332] text-white shadow-none'
-                  : 'text-muted-foreground hover:text-foreground hover:bg-muted'
-                }`}
-              onClick={() => setSelectedPeriod('2026')}
+              className="h-7 gap-1.5 px-2.5 text-[9px] font-black uppercase tracking-wider rounded-sm border-border hover:bg-muted shadow-none"
+              onClick={exportPLStatementCSV}
             >
-              FY 2026 (Live Ops)
-            </Button>
-            <Button
-              variant={selectedPeriod === 'all' ? 'default' : 'ghost'}
-              size="sm"
-              className={`h-6.5 px-2.5 text-[9px] font-black uppercase tracking-wider rounded-sm transition-all ${selectedPeriod === 'all'
-                  ? 'bg-[#1A2332] text-white shadow-none'
-                  : 'text-muted-foreground hover:text-foreground hover:bg-muted'
-                }`}
-              onClick={() => setSelectedPeriod('all')}
-            >
-              All Periods
+              <Download className="w-3.5 h-3.5 text-foreground/70" /> Export P&L (CSV)
             </Button>
           </div>
-
-          <Button
-            variant="outline"
-            size="sm"
-            className="h-7 gap-1.5 px-2.5 text-[9px] font-black uppercase tracking-wider rounded-sm border border-emerald-500/40 text-emerald-700 dark:text-emerald-400 bg-emerald-50/50 dark:bg-emerald-950/30 hover:bg-emerald-100 dark:hover:bg-emerald-950/50 shadow-none transition-all"
-            onClick={() => setIsCSVImportOpen(true)}
-          >
-            <FileUp className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" /> Import Financials (CSV)
-          </Button>
-
-          <Button
-            variant="outline"
-            size="sm"
-            className="h-7 gap-1.5 px-2.5 text-[9px] font-black uppercase tracking-wider rounded-sm border-border hover:bg-muted shadow-none"
-            onClick={exportPLStatementCSV}
-          >
-            <Download className="w-3.5 h-3.5 text-foreground/70" /> Export P&L (CSV)
-          </Button>
-        </div>
+        )}
       </div>
 
-      {/* Financial Health Summary (4 KPIs) - Flat Enterprise Density */}
-      <div className="grid gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-4">
+      {!isExpenseOnly && (
+        <>
+          {/* Financial Health Summary (4 KPIs) - Flat Enterprise Density */}
+          <div className="grid gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-4">
         {/* Total Revenue - Green accounting indicator preserved */}
         <div className="border border-emerald-300 dark:border-emerald-800/60 bg-emerald-50/40 dark:bg-emerald-950/20 rounded-sm p-3 shadow-none">
           <div className="flex items-center justify-between pb-1.5 border-b border-emerald-200/60 dark:border-emerald-900/40">
@@ -1969,28 +2067,32 @@ export function Finance() {
           </ResponsiveContainer>
         </div>
       </div>
+      </>
+      )}
 
       <div className="flex flex-col lg:flex-row gap-6">
         {/* Profit & Loss Detailed Table */}
         <div className="flex-1 min-w-0 space-y-4">
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 border-b border-border pb-2.5">
             <div className="flex flex-wrap items-center gap-1.5 bg-muted/60 p-0.5 rounded-sm border border-border">
-              <Button
-                variant={activeLedgerTab === 'statement' ? 'default' : 'ghost'}
-                size="sm"
-                className={`h-7 gap-1.5 px-3 text-[10px] font-black uppercase tracking-wider rounded-sm transition-all ${activeLedgerTab === 'statement'
-                    ? 'bg-[#1A2332] text-white shadow-none'
-                    : 'text-muted-foreground hover:text-foreground'
-                  }`}
-                onClick={() => setActiveLedgerTab('statement')}
-              >
-                <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-400" />
-                {selectedPeriod === '2025'
-                  ? 'Audited P&L Statement (Q1 2025)'
-                  : selectedPeriod === '2026'
-                    ? 'Live P&L Statement (FY 2026)'
-                    : 'Consolidated P&L Statement (All Periods)'}
-              </Button>
+              {!isExpenseOnly && (
+                <Button
+                  variant={activeLedgerTab === 'statement' ? 'default' : 'ghost'}
+                  size="sm"
+                  className={`h-7 gap-1.5 px-3 text-[10px] font-black uppercase tracking-wider rounded-sm transition-all ${activeLedgerTab === 'statement'
+                      ? 'bg-[#1A2332] text-white shadow-none'
+                      : 'text-muted-foreground hover:text-foreground'
+                    }`}
+                  onClick={() => setActiveLedgerTab('statement')}
+                >
+                  <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-400" />
+                  {selectedPeriod === '2025'
+                    ? 'Audited P&L Statement (Q1 2025)'
+                    : selectedPeriod === '2026'
+                      ? 'Live P&L Statement (FY 2026)'
+                      : 'Consolidated P&L Statement (All Periods)'}
+                </Button>
+              )}
               <Button
                 variant={activeLedgerTab === 'ledger' ? 'default' : 'ghost'}
                 size="sm"
@@ -2241,22 +2343,81 @@ export function Finance() {
 
                         <div className="space-y-1">
                           <Label htmlFor="expense-order" className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Linked Order (Optional)</Label>
-                          <Select name="orderId">
-                            <SelectTrigger id="expense-order" className="w-full rounded-sm border-border h-8 text-xs">
-                              <SelectValue placeholder="No order linked" />
-                            </SelectTrigger>
-                            <SelectContent className="rounded-sm">
-                              <SelectItem value="none" className="text-xs font-semibold">None / General</SelectItem>
-                              {orders
-                                .sort((a, b) => b.orderNumber.localeCompare(a.orderNumber))
-                                .map(order => (
-                                  <SelectItem key={order.id} value={order.id} className="text-xs font-semibold">
-                                    {order.orderNumber} - {order.clientName}
-                                  </SelectItem>
-                                ))
+                          <input type="hidden" name="orderId" value={selectedExpenseOrderId} />
+                          <Popover open={isExpenseOrderPickerOpen} onOpenChange={open => {
+                            setIsExpenseOrderPickerOpen(open);
+                            if (!open) setExpenseOrderSearch('');
+                          }}>
+                            <PopoverTrigger
+                              render={
+                                <Button
+                                  id="expense-order"
+                                  type="button"
+                                  variant="outline"
+                                  className="w-full justify-between rounded-sm border-border h-8 text-xs font-normal bg-background px-3 hover:bg-muted/50"
+                                />
                               }
-                            </SelectContent>
-                          </Select>
+                              role="combobox"
+                              aria-expanded={isExpenseOrderPickerOpen}
+                            >
+                              <span className={`truncate ${selectedExpenseOrderId === 'none' || !selectedExpenseOrder ? 'text-muted-foreground' : 'text-foreground font-semibold'}`}>
+                                {selectedExpenseOrderId !== 'none' && selectedExpenseOrder
+                                  ? `${selectedExpenseOrder.orderNumber} - ${selectedExpenseOrder.clientName}`
+                                  : 'No order linked'}
+                              </span>
+                              <ChevronDown className="w-3.5 h-3.5 shrink-0 opacity-50 ml-1" />
+                            </PopoverTrigger>
+                            <PopoverContent className="w-[var(--anchor-width,340px)] min-w-[280px] p-2 bg-popover rounded-sm border border-border shadow-md" align="start">
+                              <div className="relative mb-2">
+                                <SearchIcon className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground pointer-events-none" />
+                                <Input
+                                  autoFocus
+                                  placeholder="Search by order # or client name..."
+                                  value={expenseOrderSearch}
+                                  onChange={e => setExpenseOrderSearch(e.target.value)}
+                                  className="h-8 pl-8 text-xs rounded-sm border-border"
+                                />
+                              </div>
+                              <div className="max-h-56 overflow-y-auto space-y-0.5">
+                                <button
+                                  type="button"
+                                  className={`flex w-full items-center justify-between rounded-sm px-2.5 py-1.5 text-xs text-left cursor-pointer transition-colors ${
+                                    selectedExpenseOrderId === 'none' ? 'bg-primary/10 text-primary font-bold' : 'hover:bg-muted text-foreground font-medium'
+                                  }`}
+                                  onClick={() => {
+                                    setSelectedExpenseOrderId('none');
+                                    setIsExpenseOrderPickerOpen(false);
+                                    setExpenseOrderSearch('');
+                                  }}
+                                >
+                                  <span>None / General</span>
+                                  {selectedExpenseOrderId === 'none' && <Check className="w-3.5 h-3.5 text-primary shrink-0" />}
+                                </button>
+                                {filteredExpenseOrders.map(order => (
+                                  <button
+                                    key={order.id}
+                                    type="button"
+                                    className={`flex w-full items-center justify-between rounded-sm px-2.5 py-1.5 text-xs text-left cursor-pointer transition-colors ${
+                                      selectedExpenseOrderId === order.id ? 'bg-primary/10 text-primary font-bold' : 'hover:bg-muted text-foreground font-medium'
+                                    }`}
+                                    onClick={() => {
+                                      setSelectedExpenseOrderId(order.id);
+                                      setIsExpenseOrderPickerOpen(false);
+                                      setExpenseOrderSearch('');
+                                    }}
+                                  >
+                                    <span className="truncate">{order.orderNumber} - {order.clientName}</span>
+                                    {selectedExpenseOrderId === order.id && <Check className="w-3.5 h-3.5 text-primary shrink-0" />}
+                                  </button>
+                                ))}
+                                {filteredExpenseOrders.length === 0 && expenseOrderSearch.trim() !== '' && (
+                                  <p className="p-3 text-center text-xs text-muted-foreground">
+                                    No matching orders found.
+                                  </p>
+                                )}
+                              </div>
+                            </PopoverContent>
+                          </Popover>
                           <p className="text-[9px] text-muted-foreground font-medium italic">Link this expense to a specific B2B order for job-costing.</p>
                         </div>
 
@@ -2660,22 +2821,81 @@ export function Finance() {
                   </div>
                   <div className="space-y-1">
                     <Label htmlFor="edit-expense-orderId" className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Linked Order (Optional)</Label>
-                    <Select name="orderId" defaultValue={editingExpense.orderId || 'none'}>
-                      <SelectTrigger id="edit-expense-orderId" className="w-full rounded-sm border-border h-8 text-xs">
-                        <SelectValue placeholder="No order linked" />
-                      </SelectTrigger>
-                      <SelectContent className="rounded-sm">
-                        <SelectItem value="none" className="text-xs font-semibold">None / General Expense</SelectItem>
-                        {orders
-                          .sort((a, b) => b.orderNumber.localeCompare(a.orderNumber))
-                          .map(order => (
-                            <SelectItem key={order.id} value={order.id} className="text-xs font-semibold">
-                              {order.orderNumber} - {order.clientName}
-                            </SelectItem>
-                          ))
+                    <input type="hidden" name="orderId" value={editExpenseOrderId} />
+                    <Popover open={isEditExpenseOrderPickerOpen} onOpenChange={open => {
+                      setIsEditExpenseOrderPickerOpen(open);
+                      if (!open) setEditExpenseOrderSearch('');
+                    }}>
+                      <PopoverTrigger
+                        render={
+                          <Button
+                            id="edit-expense-orderId"
+                            type="button"
+                            variant="outline"
+                            className="w-full justify-between rounded-sm border-border h-8 text-xs font-normal bg-background px-3 hover:bg-muted/50"
+                          />
                         }
-                      </SelectContent>
-                    </Select>
+                        role="combobox"
+                        aria-expanded={isEditExpenseOrderPickerOpen}
+                      >
+                        <span className={`truncate ${editExpenseOrderId === 'none' || !selectedEditExpenseOrder ? 'text-muted-foreground' : 'text-foreground font-semibold'}`}>
+                          {editExpenseOrderId !== 'none' && selectedEditExpenseOrder
+                            ? `${selectedEditExpenseOrder.orderNumber} - ${selectedEditExpenseOrder.clientName}`
+                            : 'No order linked'}
+                        </span>
+                        <ChevronDown className="w-3.5 h-3.5 shrink-0 opacity-50 ml-1" />
+                      </PopoverTrigger>
+                      <PopoverContent className="w-[var(--anchor-width,340px)] min-w-[280px] p-2 bg-popover rounded-sm border border-border shadow-md" align="start">
+                        <div className="relative mb-2">
+                          <SearchIcon className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground pointer-events-none" />
+                          <Input
+                            autoFocus
+                            placeholder="Search by order # or client name..."
+                            value={editExpenseOrderSearch}
+                            onChange={e => setEditExpenseOrderSearch(e.target.value)}
+                            className="h-8 pl-8 text-xs rounded-sm border-border"
+                          />
+                        </div>
+                        <div className="max-h-56 overflow-y-auto space-y-0.5">
+                          <button
+                            type="button"
+                            className={`flex w-full items-center justify-between rounded-sm px-2.5 py-1.5 text-xs text-left cursor-pointer transition-colors ${
+                              editExpenseOrderId === 'none' ? 'bg-primary/10 text-primary font-bold' : 'hover:bg-muted text-foreground font-medium'
+                            }`}
+                            onClick={() => {
+                              setEditExpenseOrderId('none');
+                              setIsEditExpenseOrderPickerOpen(false);
+                              setEditExpenseOrderSearch('');
+                            }}
+                          >
+                            <span>None / General Expense</span>
+                            {editExpenseOrderId === 'none' && <Check className="w-3.5 h-3.5 text-primary shrink-0" />}
+                          </button>
+                          {filteredEditExpenseOrders.map(order => (
+                            <button
+                              key={order.id}
+                              type="button"
+                              className={`flex w-full items-center justify-between rounded-sm px-2.5 py-1.5 text-xs text-left cursor-pointer transition-colors ${
+                                editExpenseOrderId === order.id ? 'bg-primary/10 text-primary font-bold' : 'hover:bg-muted text-foreground font-medium'
+                              }`}
+                              onClick={() => {
+                                setEditExpenseOrderId(order.id);
+                                setIsEditExpenseOrderPickerOpen(false);
+                                setEditExpenseOrderSearch('');
+                              }}
+                            >
+                              <span className="truncate">{order.orderNumber} - {order.clientName}</span>
+                              {editExpenseOrderId === order.id && <Check className="w-3.5 h-3.5 text-primary shrink-0" />}
+                            </button>
+                          ))}
+                          {filteredEditExpenseOrders.length === 0 && editExpenseOrderSearch.trim() !== '' && (
+                            <p className="p-3 text-center text-xs text-muted-foreground">
+                              No matching orders found.
+                            </p>
+                          )}
+                        </div>
+                      </PopoverContent>
+                    </Popover>
                   </div>
                   <DialogFooter className="pt-2">
                     <Button type="submit" className="w-full h-8 bg-[#1A2332] text-white font-bold uppercase tracking-wider text-xs rounded-sm hover:bg-[#1A2332]/90 shadow-none">Save Changes</Button>
