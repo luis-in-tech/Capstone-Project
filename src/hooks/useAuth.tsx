@@ -163,19 +163,35 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const updateRole = async (role: 'admin' | 'secretary' | 'agent') => {
-    if (!user) return;
-    if (role === 'admin' && profile?.role !== 'admin') {
-      toast.error('Unauthorized', { description: 'Admin privileges cannot be self-assigned.' });
+    if (!user) {
+      toast.error('Authentication required', { description: 'Please sign in to update roles.' });
       return;
     }
+
+    // Strict Server/Client RBAC: Only an authenticated administrator can modify roles
+    if (profile?.role !== 'admin') {
+      toast.error('Unauthorized', {
+        description: 'You do not have permission to modify system roles. Contact an administrator.',
+      });
+      return;
+    }
+
+    // Safety Guard: Prevent the active administrator from accidentally locking themselves out
+    if (user.id === profile?.uid && role !== 'admin') {
+      toast.error('Action blocked', {
+        description: 'You cannot remove your own administrator privileges.',
+      });
+      return;
+    }
+
     try {
       const { error } = await supabase
         .from('users')
         .update({ role })
         .eq('uid', user.id);
       if (error) throw error;
-      setProfile(prev => prev ? { ...prev, role } : null);
-      toast.success(`Role switched to ${role.toUpperCase()}`);
+      setProfile(prev => (prev ? { ...prev, role } : null));
+      toast.success(`Role updated to ${role.toUpperCase()}`);
     } catch (error) {
       handleSupabaseError(error, OperationType.UPDATE, `users/${user.id}`);
     }

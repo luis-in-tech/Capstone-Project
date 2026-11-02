@@ -414,13 +414,40 @@ export function SupplyChainWorkspace({ sourceLoading, sourceError, onRetrySource
         if (id) await updateDoc(doc(db, 'warehouses', id), payload);
         else {
           const saved = await addDoc(collection(db, 'warehouses'), payload); id = saved.id;
-          for (const product of products) await addDoc(collection(db, 'inventory'), { productId: product.id, warehouseId: id, quantity: 0, lastUpdated: serverTimestamp() });
+          const CHUNK_SIZE = 25;
+          for (let i = 0; i < products.length; i += CHUNK_SIZE) {
+            const chunk = products.slice(i, i + CHUNK_SIZE);
+            await Promise.all(
+              chunk.map(product =>
+                addDoc(collection(db, 'inventory'), {
+                  productId: product.id,
+                  warehouseId: id,
+                  quantity: 0,
+                  lastUpdated: serverTimestamp()
+                })
+              )
+            );
+          }
         }
       } else {
         if (id) {
           const original = suppliers.find(supplier => supplier.id === id);
           await updateDoc(doc(db, 'suppliers', id), { name, updatedAt: serverTimestamp() });
-          if (original && original.name !== name) for (const product of products.filter(p => p.supplier === original.name)) await updateDoc(doc(db, 'products', product.id), { supplier: name, updatedAt: serverTimestamp() });
+          if (original && original.name !== name) {
+            const matching = products.filter(p => p.supplier === original.name);
+            const CHUNK_SIZE = 25;
+            for (let i = 0; i < matching.length; i += CHUNK_SIZE) {
+              const chunk = matching.slice(i, i + CHUNK_SIZE);
+              await Promise.all(
+                chunk.map(product =>
+                  updateDoc(doc(db, 'products', product.id), {
+                    supplier: name,
+                    updatedAt: serverTimestamp()
+                  })
+                )
+              );
+            }
+          }
         } else id = (await addDoc(collection(db, 'suppliers'), { name, createdAt: serverTimestamp(), updatedAt: serverTimestamp() })).id;
       }
       setMetadata(items => {

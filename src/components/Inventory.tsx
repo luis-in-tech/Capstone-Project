@@ -433,14 +433,16 @@ export function Inventory() {
       } else {
         const docRef = await addDoc(collection(db, 'products'), newProduct);
         // Initialize inventory for all warehouses
-        for (const wh of warehouses) {
-          await addDoc(collection(db, 'inventory'), {
-            productId: docRef.id,
-            warehouseId: wh.id,
-            quantity: 0,
-            lastUpdated: serverTimestamp()
-          });
-        }
+        await Promise.all(
+          warehouses.map(wh =>
+            addDoc(collection(db, 'inventory'), {
+              productId: docRef.id,
+              warehouseId: wh.id,
+              quantity: 0,
+              lastUpdated: serverTimestamp()
+            })
+          )
+        );
       }
       setProductImage(null);
       setProductImagePreview('');

@@ -378,7 +378,44 @@ export function Pricelist() {
 
     const w = window.open('', '_blank');
     if (!w) return toast.error('Allow pop-ups to preview this pricelist PDF');
-    w.document.write(`<!DOCTYPE html><html><head><title>${escapeHtml(target.name)}</title><style>body{font-family:'Segoe UI',Roboto,sans-serif;padding:32px;color:#1e293b;max-width:900px;margin:0 auto}h1{margin-bottom:4px;font-size:24px;color:#0f172a}p{color:#64748b;font-size:13px;margin-top:0;margin-bottom:24px}table{width:100%;border-collapse:collapse;margin-top:16px}th{background:#0f172a;color:white;padding:10px 12px;text-align:left;font-size:12px;text-transform:uppercase;letter-spacing:0.5px}td{font-size:13px}</style></head><body><h1>${escapeHtml(target.name)}</h1><p>Date Created: ${dateLabel(target.createdAt)}</p><table><thead><tr><th>SKU</th><th>Item Name</th><th style="text-align:right;">Price</th></tr></thead><tbody>${tableRows}</tbody></table></body></html>`);
+    w.document.write(`<!DOCTYPE html><html><head><title>${escapeHtml(target.name)}</title><style>
+      body{font-family:'Segoe UI',Roboto,sans-serif;padding:32px;color:#1e293b;max-width:960px;margin:0 auto}
+      h1{margin-bottom:4px;font-size:24px;color:#0f172a}
+      p{color:#64748b;font-size:13px;margin-top:0;margin-bottom:24px}
+      table{width:100%;border-collapse:collapse;margin-top:16px}
+      th{background:#0f172a;color:white;padding:10px 12px;text-align:left;font-size:12px;text-transform:uppercase;letter-spacing:0.5px}
+      td{font-size:13px}
+      .no-print{margin-bottom:24px;padding:12px 18px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;display:flex;align-items:center;justify-content:space-between;gap:12px;box-shadow:0 1px 3px rgba(0,0,0,0.05)}
+      .print-btn{background:#0f172a;color:white;border:none;padding:9px 18px;border-radius:6px;font-weight:600;font-size:13px;cursor:pointer;display:inline-flex;align-items:center;gap:6px;transition:background 0.2s}
+      .print-btn:hover{background:#1e293b}
+      .close-btn{background:white;border:1px solid #cbd5e1;color:#475569;padding:9px 16px;border-radius:6px;font-size:13px;font-weight:500;cursor:pointer;transition:background 0.2s}
+      .close-btn:hover{background:#f1f5f9}
+      @media print{
+        .no-print{display:none !important}
+        body{padding:0 !important;max-width:100% !important}
+        table{page-break-inside:auto}
+        tr{page-break-inside:avoid;page-break-after:auto}
+      }
+    </style></head><body>
+      <div class="no-print">
+        <div>
+          <strong style="color:#0f172a;font-size:14px;display:block;">Pricelist PDF Preview</strong>
+          <span style="color:#64748b;font-size:12px;">Click below to download or print this document as a PDF file.</span>
+        </div>
+        <div style="display:flex;gap:10px;">
+          <button class="print-btn" onclick="window.print()">📥 Download / Save as PDF</button>
+          <button class="close-btn" onclick="window.close()">Close</button>
+        </div>
+      </div>
+      <h1>${escapeHtml(target.name)}</h1>
+      <p>Date Created: ${dateLabel(target.createdAt)}</p>
+      <table><thead><tr><th>SKU</th><th>Item Name</th><th style="text-align:right;">Price</th></tr></thead><tbody>${tableRows}</tbody></table>
+      <script>
+        window.onload = function() {
+          setTimeout(function() { window.print(); }, 400);
+        };
+      </script>
+    </body></html>`);
     w.document.close();
     if (recordExport) save(saved.map(p => p.id === target.id ? { ...p, lastPdfGeneratedAt: new Date().toISOString() } : p));
   };

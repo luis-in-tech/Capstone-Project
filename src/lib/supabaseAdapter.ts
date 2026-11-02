@@ -442,10 +442,15 @@ export async function updateDoc(docRef: any, data: any) {
   try {
     const { error } = await supabase.from(docRef.path).update(data).eq('id', docRef.id);
     if (error) {
-      const { error: err2 } = await supabase.from(docRef.path).update(data).eq('uid', docRef.id);
-      if (err2) {
-        console.warn(`Supabase updateDoc fallback for ${docRef.path}:`, err2);
-        throw err2;
+      // Only fallback to 'uid' on tables specifically defined with a uid column (users, profiles)
+      if (docRef.path === 'users' || docRef.path === 'profiles') {
+        const { error: err2 } = await supabase.from(docRef.path).update(data).eq('uid', docRef.id);
+        if (err2) {
+          console.warn(`Supabase updateDoc fallback for ${docRef.path}:`, err2);
+          throw err2;
+        }
+      } else {
+        throw error;
       }
     }
   } catch (err) {

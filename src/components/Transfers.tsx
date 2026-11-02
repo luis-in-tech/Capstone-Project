@@ -121,20 +121,24 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
     }
 
     try {
-      for (const item of validItems) {
-        const prodId = products.find(p => p.name === item.productName)?.id || item.productName;
-        const qty = Number(item.quantity);
-        const newTransfer: Omit<Transfer, 'id'> = {
-          sourceWarehouseId: sourceWh,
-          destinationWarehouseId: destWh,
-          productId: prodId,
-          quantity: qty,
-          status: 'pending',
-          initiatedBy: profile?.uid || 'Unknown',
-          createdAt: serverTimestamp()
-        };
-        await addDoc(collection(db, 'transfers'), newTransfer);
-      }
+      // Parallel execution: initiate all transfer line items concurrently
+      await Promise.all(
+        validItems.map(item => {
+          const prodId = products.find(p => p.name === item.productName)?.id || item.productName;
+          const qty = Number(item.quantity);
+          const newTransfer: Omit<Transfer, 'id'> = {
+            sourceWarehouseId: sourceWh,
+            destinationWarehouseId: destWh,
+            productId: prodId,
+            quantity: qty,
+            status: 'pending',
+            initiatedBy: profile?.uid || 'Unknown',
+            createdAt: serverTimestamp(),
+          };
+          return addDoc(collection(db, 'transfers'), newTransfer);
+        })
+      );
+
       setIsAddTransferOpen(false);
       setTransferItems([{ id: Date.now(), productName: '', quantity: 1 }]);
       toast.success('Warehouse transport requests initiated');

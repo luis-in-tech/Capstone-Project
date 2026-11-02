@@ -40,7 +40,7 @@ import {
 } from "@/components/ui/table";
 import type { InventoryItem, Product, UserProfile, Warehouse } from "../types";
 import { supabase } from "../lib/supabase";
-import { addDoc, collection, db, deleteDoc, doc, getDocs, onSnapshot, setDoc, updateDoc } from "../lib/supabaseAdapter";
+import { addDoc, collection, db, deleteDoc, doc, getDoc, getDocs, onSnapshot, setDoc, updateDoc } from "../lib/supabaseAdapter";
 import {
   existingCustomers,
   money,
@@ -525,13 +525,26 @@ export function OrderEntry({
         }
 
         for (const ded of aggregatedDeductions.values()) {
-          const inv = inventory.find(
+          let inv = inventory.find(
             (i) => i.productId === ded.productId && i.warehouseId === ded.warehouseId
           );
+
+          // Concurrency Protection: Re-fetch fresh live inventory directly from database
+          if (inv?.id) {
+            try {
+              const freshSnap = await getDoc(doc(db, "inventory", inv.id));
+              if (freshSnap?.exists()) {
+                inv = { ...inv, ...(freshSnap.data() as InventoryItem) };
+              }
+            } catch (fetchErr) {
+              console.warn("Could not refetch latest live inventory document:", fetchErr);
+            }
+          }
+
           if (inv) {
             modifiedInventory.push({ id: inv.id, prevQty: inv.quantity });
             await updateDoc(doc(db, "inventory", inv.id), {
-              quantity: Math.max(0, inv.quantity - ded.totalQty),
+              quantity: Math.max(0, Number(inv.quantity) - ded.totalQty),
               lastUpdated: now,
             });
           }
