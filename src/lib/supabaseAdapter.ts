@@ -418,7 +418,18 @@ export async function addDoc(col: any, data: any) {
 
   // 2. Sync to Supabase in background
   try {
-    const { data: res, error } = await supabase.from(col.path).insert([payload]).select().single();
+    let { data: res, error } = await supabase.from(col.path).insert([payload]).select().single();
+    if (error && error.code === 'PGRST204') {
+      const match = error.message?.match(/Could not find the '([^']+)' column/i);
+      if (match && match[1] && match[1] in payload) {
+        const sanitized = { ...payload };
+        delete sanitized[match[1]];
+        console.warn(`Supabase addDoc retry without unmigrated column '${match[1]}' for ${col.path}`);
+        const retryRes = await supabase.from(col.path).insert([sanitized]).select().single();
+        res = retryRes.data;
+        error = retryRes.error;
+      }
+    }
     if (error) {
       console.warn(`Supabase addDoc write failed for ${col.path}:`, error);
       throw error;
@@ -440,7 +451,17 @@ export async function updateDoc(docRef: any, data: any) {
   saveLocalDoc(docRef.path, { id: docRef.id, ...data });
 
   try {
-    const { error } = await supabase.from(docRef.path).update(data).eq('id', docRef.id);
+    let { error } = await supabase.from(docRef.path).update(data).eq('id', docRef.id);
+    if (error && error.code === 'PGRST204') {
+      const match = error.message?.match(/Could not find the '([^']+)' column/i);
+      if (match && match[1] && match[1] in data) {
+        const sanitized = { ...data };
+        delete sanitized[match[1]];
+        console.warn(`Supabase updateDoc retry without unmigrated column '${match[1]}' for ${docRef.path}`);
+        const retryRes = await supabase.from(docRef.path).update(sanitized).eq('id', docRef.id);
+        error = retryRes.error;
+      }
+    }
     if (error) {
       // Only fallback to 'uid' on tables specifically defined with a uid column (users, profiles)
       if (docRef.path === 'users' || docRef.path === 'profiles') {
