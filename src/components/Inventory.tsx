@@ -366,8 +366,8 @@ export function Inventory() {
     const name = cleanItemName(String(formData.get('name') || addName || '').trim());
     const category = String(addCategory || formData.get('category') || 'Uncategorized').trim() || 'Uncategorized';
     const supplier = String(addSupplier || formData.get('supplier') || 'N/A').trim() || 'N/A';
-    const unit = (String(formData.get('unit') ?? addUnits).trim() || 'pc').toLowerCase();
-    const units = 1;
+    const unit = String(formData.get('unit') ?? addUnits).trim() || 'pc';
+
 
     if (!sku) {
       toast.error('SKU Code is required.');
@@ -426,7 +426,6 @@ export function Inventory() {
         name,
         category,
         supplier,
-        units,
         unit,
         basePrice,
         wholesalePrice: mmPrice,
@@ -449,14 +448,16 @@ export function Inventory() {
       } else {
         const docRef = await addDoc(collection(db, 'products'), newProduct);
         // Initialize inventory for all warehouses
-        for (const wh of warehouses) {
-          await addDoc(collection(db, 'inventory'), {
-            productId: docRef.id,
-            warehouseId: wh.id,
-            quantity: 0,
-            lastUpdated: serverTimestamp()
-          });
-        }
+        await Promise.all(
+          warehouses.map(wh =>
+            addDoc(collection(db, 'inventory'), {
+              productId: docRef.id,
+              warehouseId: wh.id,
+              quantity: 0,
+              lastUpdated: serverTimestamp()
+            })
+          )
+        );
       }
       setProductImage(null);
       setProductImagePreview('');
@@ -568,8 +569,8 @@ export function Inventory() {
     const name = cleanItemName(String(editName || form.get('name') || '').trim());
     const category = String(editCategory || form.get('category') || 'Uncategorized').trim() || 'Uncategorized';
     const supplier = String(editSupplier || form.get('supplier') || 'N/A').trim() || 'N/A';
-    const unit = (String(form.get('unit') ?? editUnits).trim() || 'pc').toLowerCase();
-    const units = 1;
+    const unit = String(form.get('unit') ?? editUnits).trim() || 'pc';
+
 
     if (!sku) {
       toast.error('SKU Code is required.');
@@ -626,7 +627,6 @@ export function Inventory() {
         name,
         category,
         supplier,
-        units,
         unit,
         basePrice,
         mmPrice,
@@ -2027,7 +2027,7 @@ export function Inventory() {
                       <dt className="text-muted-foreground">Category</dt><dd className="font-medium">{selectedProduct.category || 'Uncategorized'}</dd>
                       <dt className="text-muted-foreground">Preferred Supplier</dt><dd className="font-medium">{selectedProduct.supplier || 'N/A'}</dd>
                       <dt className="text-muted-foreground">Location (Aisle/Bin)</dt><dd className="font-medium">{selectedProduct.locationAisle || selectedProduct.locationBin ? `${selectedProduct.locationAisle || 'N/A'} / ${selectedProduct.locationBin || 'N/A'}` : 'Not Assigned'}</dd>
-                      <dt className="text-muted-foreground">Units</dt><dd className="font-medium">{selectedProduct.units ?? selectedProduct.unit ?? 1}</dd>
+                      <dt className="text-muted-foreground">Unit of Measurement</dt><dd className="font-medium">{selectedProduct.unit || (typeof selectedProduct.units === 'string' ? selectedProduct.units : 'pc')}</dd>
                     </dl>
                     <div className="mt-2 flex items-center gap-3 border-y border-border py-3"><span className="font-mono text-sm font-black text-muted-foreground">02</span><Tag className="h-5 w-5" /><h3 className="text-base font-bold uppercase tracking-wider">Pricing (₱)</h3></div>
                     <dl className="grid grid-cols-[minmax(8rem,1fr)_minmax(0,1fr)] gap-x-5 gap-y-3 pt-3 text-sm">

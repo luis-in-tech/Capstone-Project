@@ -536,13 +536,23 @@ export function Orders() {
       const origSnap = await getDocs(collection(db, 'orders', editingPendingOrder.id, 'items'));
       const origItems = origSnap.docs.map(d => ({ id: d.id, ...d.data() } as ReceiptItem));
 
-      // Validate stock availability for items with increased quantities
+      // Validate stock availability for items with increased quantities using fresh live inventory
       for (const item of editOrderItems) {
         const orig = origItems.find(o => o.id === item.id);
         const oldQty = orig ? Number(orig.quantity) : 0;
         const delta = Number(item.quantity) - oldQty;
         if (delta > 0) {
-          const inv = inventory.find(i => i.productId === item.productId && (!item.warehouseId || i.warehouseId === item.warehouseId));
+          let inv = inventory.find(i => i.productId === item.productId && (!item.warehouseId || i.warehouseId === item.warehouseId));
+          if (inv?.id) {
+            try {
+              const freshSnap = await getDoc(doc(db, 'inventory', inv.id));
+              if (freshSnap?.exists()) {
+                inv = { ...inv, ...(freshSnap.data() as InventoryItem) };
+              }
+            } catch (fetchErr) {
+              console.warn('Could not refetch latest live inventory for pre-validation:', fetchErr);
+            }
+          }
           const available = inv ? Number(inv.quantity) : 0;
           if (available < delta) {
             toast.error(`Insufficient stock for ${item.name}. Available: ${available}, needed addition: ${delta}`);

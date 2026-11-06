@@ -17,7 +17,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { useAuth } from '../hooks/useAuth';
 import { supabase } from '../lib/supabase';
-import { addDoc, collection, db, doc, onSnapshot, setDoc, updateDoc } from '../lib/supabaseAdapter';
+import { addDoc, collection, db, doc, getDoc, onSnapshot, setDoc, updateDoc } from '../lib/supabaseAdapter';
 import { availableStock, newMovementDraft, purchaseTotal, validateMovement, type InventoryMovementRecord, type MovementDraft, type MovementLine } from '../lib/inventoryMovement';
 import type { InventoryItem, Product, Warehouse } from '../types';
 import { Transfers } from './Transfers';
@@ -618,49 +618,119 @@ export function InventoryMovement() {
         await setDoc(doc(db, 'inventory_movements', saved.id), dbPayload);
 
         const now = new Date().toISOString();
-        for (const item of preparedItems) {
-          if (external) {
-            const existing = inventory.find(i => i.productId === item.productId && i.warehouseId === draft.destinationWarehouseId);
-            if (existing) {
-              await updateDoc(doc(db, 'inventory', existing.id), {
-                quantity: existing.quantity + item.quantity,
-                lastUpdated: now
-              });
-            } else {
-              await addDoc(collection(db, 'inventory'), {
-                productId: item.productId,
-                warehouseId: draft.destinationWarehouseId,
-                quantity: item.quantity,
-                lastUpdated: now
-              });
-            }
-            try {
-              await addDoc(collection(db, 'stockAdjustments'), {
-                productId: item.productId,
-                warehouseId: draft.destinationWarehouseId,
-                adjustmentAmount: item.quantity,
-                reason: `${fallbackMovNumber} external receipt`,
-                recordedBy: profile?.uid || 'user',
-                timestamp: now
-              });
-            } catch (adjErr) {
-              console.warn('Stock adjustment fallback error:', adjErr);
-            }
-          } else {
-            if (draft.sourceWarehouseId) {
-              const sourceInv = inventory.find(i => i.productId === item.productId && i.warehouseId === draft.sourceWarehouseId);
-              if (sourceInv) {
-                await updateDoc(doc(db, 'inventory', sourceInv.id), {
-                  quantity: Math.max(0, sourceInv.quantity - item.quantity),
+        const rollbackActions: Array<() => Promise<void>> = [];
+
+        try {
+          for (const item of preparedItems) {
+            if (external) {
+              const existing = inventory.find(i => i.productId === item.productId && i.warehouseId === draft.destinationWarehouseId);
+              if (existing) {
+                let currentQty = existing.quantity;
+                try {
+                  const snap = await getDoc(doc(db, 'inventory', existing.id));
+                  if (snap && snap.exists()) {
+                    const snapQty = Number(snap.data()?.quantity);
+                    if (!Number.isNaN(snapQty)) currentQty = snapQty;
+                  }
+                } catch (readErr) {
+                  console.warn('Could not read live inventory quantity; falling back to local state:', readErr);
+                }
+
+                await updateDoc(doc(db, 'inventory', existing.id), {
+                  quantity: currentQty + item.quantity,
+                  lastUpdated: now
+                });
+              } else {
+                await addDoc(collection(db, 'inventory'), {
+                  productId: item.productId,
+                  warehouseId: draft.destinationWarehouseId,
+                  quantity: item.quantity,
                   lastUpdated: now
                 });
               }
               try {
                 await addDoc(collection(db, 'stockAdjustments'), {
                   productId: item.productId,
-                  warehouseId: draft.sourceWarehouseId,
-                  adjustmentAmount: -item.quantity,
-                  reason: `${fallbackMovNumber} internal transfer sent`,
+                  warehouseId: draft.destinationWarehouseId,
+                  adjustmentAmount: item.quantity,
+                  reason: `${fallbackMovNumber} external receipt`,
+                  recordedBy: profile?.uid || 'user',
+                  timestamp: now
+                });
+              } catch (adjErr) {
+                console.warn('Stock adjustment fallback error:', adjErr);
+              }
+            } else {
+              if (draft.sourceWarehouseId) {
+                const sourceInv = inventory.find(i => i.productId === item.productId && i.warehouseId === draft.sourceWarehouseId);
+                if (sourceInv) {
+                  let currentSrcQty = sourceInv.quantity;
+                  try {
+                    const snap = await getDoc(doc(db, 'inventory', sourceInv.id));
+                    if (snap && snap.exists()) {
+                      const snapQty = Number(snap.data()?.quantity);
+                      if (!Number.isNaN(snapQty)) currentSrcQty = snapQty;
+                    }
+                  } catch (readErr) {
+                    console.warn('Could not read live source inventory quantity; falling back to local state:', readErr);
+                  }
+
+                  await updateDoc(doc(db, 'inventory', sourceInv.id), {
+                    quantity: Math.max(0, currentSrcQty - item.quantity),
+                    lastUpdated: now
+                  });
+
+                  rollbackActions.push(async () => {
+                    await updateDoc(doc(db, 'inventory', sourceInv.id), {
+                      quantity: currentSrcQty,
+                      lastUpdated: new Date().toISOString()
+                    });
+                  });
+                }
+                try {
+                  await addDoc(collection(db, 'stockAdjustments'), {
+                    productId: item.productId,
+                    warehouseId: draft.sourceWarehouseId,
+                    adjustmentAmount: -item.quantity,
+                    reason: `${fallbackMovNumber} internal transfer sent`,
+                    recordedBy: profile?.uid || 'user',
+                    timestamp: now
+                  });
+                } catch (adjErr) {
+                  console.warn('Stock adjustment fallback error:', adjErr);
+                }
+              }
+              const destInv = inventory.find(i => i.productId === item.productId && i.warehouseId === draft.destinationWarehouseId);
+              if (destInv) {
+                let currentDestQty = destInv.quantity;
+                try {
+                  const snap = await getDoc(doc(db, 'inventory', destInv.id));
+                  if (snap && snap.exists()) {
+                    const snapQty = Number(snap.data()?.quantity);
+                    if (!Number.isNaN(snapQty)) currentDestQty = snapQty;
+                  }
+                } catch (readErr) {
+                  console.warn('Could not read live destination inventory quantity; falling back to local state:', readErr);
+                }
+
+                await updateDoc(doc(db, 'inventory', destInv.id), {
+                  quantity: currentDestQty + item.quantity,
+                  lastUpdated: now
+                });
+              } else {
+                await addDoc(collection(db, 'inventory'), {
+                  productId: item.productId,
+                  warehouseId: draft.destinationWarehouseId,
+                  quantity: item.quantity,
+                  lastUpdated: now
+                });
+              }
+              try {
+                await addDoc(collection(db, 'stockAdjustments'), {
+                  productId: item.productId,
+                  warehouseId: draft.destinationWarehouseId,
+                  adjustmentAmount: item.quantity,
+                  reason: `${fallbackMovNumber} internal transfer received`,
                   recordedBy: profile?.uid || 'user',
                   timestamp: now
                 });
@@ -668,33 +738,16 @@ export function InventoryMovement() {
                 console.warn('Stock adjustment fallback error:', adjErr);
               }
             }
-            const destInv = inventory.find(i => i.productId === item.productId && i.warehouseId === draft.destinationWarehouseId);
-            if (destInv) {
-              await updateDoc(doc(db, 'inventory', destInv.id), {
-                quantity: destInv.quantity + item.quantity,
-                lastUpdated: now
-              });
-            } else {
-              await addDoc(collection(db, 'inventory'), {
-                productId: item.productId,
-                warehouseId: draft.destinationWarehouseId,
-                quantity: item.quantity,
-                lastUpdated: now
-              });
-            }
+          }
+        } catch (itemErr) {
+          for (const rollback of rollbackActions.reverse()) {
             try {
-              await addDoc(collection(db, 'stockAdjustments'), {
-                productId: item.productId,
-                warehouseId: draft.destinationWarehouseId,
-                adjustmentAmount: item.quantity,
-                reason: `${fallbackMovNumber} internal transfer received`,
-                recordedBy: profile?.uid || 'user',
-                timestamp: now
-              });
-            } catch (adjErr) {
-              console.warn('Stock adjustment fallback error:', adjErr);
+              await rollback();
+            } catch (rbErr) {
+              console.error('Compensation rollback error:', rbErr);
             }
           }
+          throw itemErr;
         }
 
         setMovements(prev => [saved, ...prev.filter(item => item.id !== saved.id)]);

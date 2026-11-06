@@ -2299,9 +2299,9 @@ export function Finance() {
                         <Plus className="w-3 h-3" /> Record Entry
                       </Button>
                     } />
-                    <DialogContent className="rounded-sm max-w-md border border-border shadow-lg p-5">
-                      <DialogHeader className="pb-2 border-b border-border">
-                        <DialogTitle className="text-sm font-black uppercase tracking-wider">Record Operational Expense</DialogTitle>
+                    <DialogContent className="rounded-sm sm:max-w-xl max-w-xl border border-border shadow-lg p-6">
+                      <DialogHeader className="pb-3 border-b border-border">
+                        <DialogTitle className="text-base font-black uppercase tracking-wider">Record Operational Expense</DialogTitle>
                         <DialogDescription className="text-xs text-muted-foreground">Map local expenses to the centralized financial ledger.</DialogDescription>
                       </DialogHeader>
                       <form onSubmit={handleAddExpense} className="space-y-3.5 pt-3 font-sans">
@@ -2948,7 +2948,7 @@ export function Finance() {
             <div className="p-3">
               <div className="h-47.5 w-full">
                 {pieData.length > 0 ? (
-                  <ResponsiveContainer width="100%" height="100%">
+                  <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={190}>
                     <PieChart>
                       <Pie
                         data={pieData}

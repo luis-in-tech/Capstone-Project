@@ -69,18 +69,18 @@ export function QuarantineLedger({
             if (freshSnap?.exists()) {
               item = { ...item, ...(freshSnap.data() as InventoryItem) };
             }
-          } catch {}
+          } catch (fetchErr) {
+            console.warn('Could not refetch latest inventory for replacement restock:', fetchErr);
+          }
         }
         if (item) {
           const newQty = item.quantity + ticket.quantity;
           const newQuarantine = Math.max(0, (item.quarantineQuantity || 0) - ticket.quantity);
-          try {
-            await updateDoc(doc(db, 'inventory', item.id), {
-              quantity: newQty,
-              quarantineQuantity: newQuarantine,
-              lastUpdated: serverTimestamp(),
-            });
-          } catch {}
+          await updateDoc(doc(db, 'inventory', item.id), {
+            quantity: newQty,
+            quarantineQuantity: newQuarantine,
+            lastUpdated: serverTimestamp(),
+          });
         }
         toast.success(`Replacement confirmed: ${ticket.quantity} units restocked to available inventory.`);
       } else if (newStatus === 'WRITTEN_OFF') {
@@ -93,37 +93,34 @@ export function QuarantineLedger({
             if (freshSnap?.exists()) {
               item = { ...item, ...(freshSnap.data() as InventoryItem) };
             }
-          } catch {}
+          } catch (fetchErr) {
+            console.warn('Could not refetch latest inventory for write-off:', fetchErr);
+          }
         }
         if (item) {
           const newQuarantine = Math.max(0, (item.quarantineQuantity || 0) - ticket.quantity);
-          try {
-            await updateDoc(doc(db, 'inventory', item.id), {
-              quarantineQuantity: newQuarantine,
-              lastUpdated: serverTimestamp(),
-            });
-          } catch {}
-        }
-        try {
-          await addDoc(collection(db, 'stockAdjustments'), {
-            productId: ticket.productId,
-            warehouseId: ticket.warehouseId,
-            adjustmentAmount: -ticket.quantity,
-            reason: `Quarantine Write-Off: Defective Ticket ${ticket.ticketNumber || ticket.id}`,
-            recordedBy: profile?.uid || 'system',
-            createdAt: serverTimestamp(),
+          await updateDoc(doc(db, 'inventory', item.id), {
+            quarantineQuantity: newQuarantine,
+            lastUpdated: serverTimestamp(),
           });
-        } catch (adjErr) {
-          console.warn('Could not record write-off stock adjustment:', adjErr);
         }
+        await addDoc(collection(db, 'stockAdjustments'), {
+          productId: ticket.productId,
+          warehouseId: ticket.warehouseId,
+          adjustmentAmount: -ticket.quantity,
+          reason: `Quarantine Write-Off: Defective Ticket ${ticket.ticketNumber || ticket.id}`,
+          recordedBy: profile?.uid || 'system',
+          createdAt: serverTimestamp(),
+        });
         toast.success(`Asset written off: removed from quarantine.`);
       } else {
         toast.success(`Ticket ${ticket.ticketNumber} status updated to ${newStatus.replace('_', ' ')}.`);
       }
 
       onRefresh();
-    } catch {
-      toast.error('Could not update defective ticket.');
+    } catch (err: any) {
+      console.error('Failed to process defective stock status change:', err);
+      toast.error('Could not update defective ticket: ' + (err?.message || 'Database error'));
     }
   };
 
