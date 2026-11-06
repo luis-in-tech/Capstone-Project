@@ -640,7 +640,7 @@ export function Settings() {
           </CardHeader>
           <CardContent className="space-y-6 pt-2">
             <div className="flex items-center gap-4">
-              <div className="h-16 w-16 rounded-2xl bg-muted border-2 border-border overflow-hidden flex-shrink-0">
+              <div className="h-16 w-16 rounded-2xl bg-muted border-2 border-border overflow-hidden shrink-0">
                 {profile?.photoUrl ? (
                   <img src={profile.photoUrl} alt={profile.displayName} className="h-full w-full object-cover" referrerPolicy="no-referrer" />
                 ) : (
@@ -830,7 +830,7 @@ export function Settings() {
                   variant={activeFilter === tab.id ? 'default' : 'ghost'}
                   size="sm"
                   onClick={() => setActiveFilter(tab.id as any)}
-                  className={`h-7 px-3 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all flex items-center gap-1.5 flex-shrink-0 ${activeFilter === tab.id ? 'shadow-sm' : 'text-muted-foreground hover:text-foreground bg-muted/30'
+                  className={`h-7 px-3 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all flex items-center gap-1.5 shrink-0 ${activeFilter === tab.id ? 'shadow-sm' : 'text-muted-foreground hover:text-foreground bg-muted/30'
                     }`}
                 >
                   <tab.icon className="w-3 h-3" />
@@ -843,7 +843,7 @@ export function Settings() {
             </div>
 
             {/* Scrollable Notification Stream */}
-            <div className="space-y-2.5 max-h-[380px] overflow-y-auto pr-1">
+            <div className="space-y-2.5 max-h-95 overflow-y-auto pr-1">
               {filteredNotifications.length > 0 ? (
                 filteredNotifications.map(item => {
                   const isRead = readIds.has(item.id);
@@ -858,7 +858,7 @@ export function Settings() {
                     >
                       <div className="flex items-start justify-between gap-3">
                         <div className="flex items-start gap-3 min-w-0">
-                          <div className={`p-2 rounded-xl flex-shrink-0 mt-0.5 ${item.type === 'order'
+                          <div className={`p-2 rounded-xl shrink-0 mt-0.5 ${item.type === 'order'
                               ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
                               : item.type === 'logistics'
                                 ? 'bg-indigo-500/10 text-indigo-600 dark:text-indigo-400'
@@ -903,7 +903,7 @@ export function Settings() {
                           </div>
                         </div>
 
-                        <div className="flex flex-col items-end flex-shrink-0">
+                        <div className="flex flex-col items-end shrink-0">
                           <span className="text-[10px] font-bold text-muted-foreground whitespace-nowrap flex items-center gap-1">
                             <Clock className="w-2.5 h-2.5" />
                             {getRelativeTime(item.timestamp)}

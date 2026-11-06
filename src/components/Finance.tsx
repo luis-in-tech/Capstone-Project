@@ -170,7 +170,7 @@ const CustomTrajectoryTooltip = ({ active, payload, label }: any) => {
   const fullDate = payload[0]?.payload?.fullDate || label;
 
   return (
-    <div className="bg-[#1A2332] text-white p-2.5 rounded-sm border border-neutral-700 shadow-md space-y-1.5 min-w-[210px]">
+    <div className="bg-[#1A2332] text-white p-2.5 rounded-sm border border-neutral-700 shadow-md space-y-1.5 min-w-52.5">
       <div className="flex items-center justify-between border-b border-neutral-700/80 pb-1.5">
         <span className="text-[10px] font-black uppercase tracking-wider text-neutral-300 flex items-center gap-1.5">
           <Calendar className="w-3 h-3 text-emerald-400" /> {fullDate}
@@ -511,7 +511,7 @@ function FinancialImportModal({ isOpen, onClose, categories }: FinancialImportMo
       if (!open) resetState();
       onClose();
     }}>
-      <DialogContent className="sm:max-w-[720px] max-h-[90vh] flex flex-col p-5 rounded-sm border border-border shadow-md">
+      <DialogContent className="sm:max-w-180 max-h-[90vh] flex flex-col p-5 rounded-sm border border-border shadow-md">
         <DialogHeader className="pb-3 border-b border-border">
           <div className="flex items-center gap-2">
             <div className="p-1.5 rounded-sm bg-emerald-500/10 text-emerald-600">
@@ -646,10 +646,10 @@ function FinancialImportModal({ isOpen, onClose, categories }: FinancialImportMo
                         <TableCell className="py-2 font-mono text-[11px]">
                           {row.date.split('T')[0]}
                         </TableCell>
-                        <TableCell className="py-2 font-bold text-foreground truncate max-w-[150px]">
+                        <TableCell className="py-2 font-bold text-foreground truncate max-w-37.5">
                           {row.category || row.clientName}
                         </TableCell>
-                        <TableCell className="py-2 text-muted-foreground truncate max-w-[200px]">
+                        <TableCell className="py-2 text-muted-foreground truncate max-w-50">
                           {row.description || row.orderNumber}
                         </TableCell>
                         <TableCell className="py-2 font-mono font-bold text-right text-emerald-600">
@@ -1923,7 +1923,7 @@ export function Finance() {
             </div>
           </div>
         </div>
-        <div className="p-4 h-[300px] overflow-hidden">
+        <div className="p-4 h-75 overflow-hidden">
           <ResponsiveContainer width="100%" height={260}>
             <BarChart
               data={chartData}
@@ -2022,7 +2022,7 @@ export function Finance() {
             </div>
           </div>
         </div>
-        <div className="p-4 h-[300px] overflow-hidden">
+        <div className="p-4 h-75 overflow-hidden">
           <ResponsiveContainer width="100%" height={260}>
             <LineChart data={chartData12Months} margin={{ top: 5, right: 20, left: -20, bottom: 5 }}>
               <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--border)" />
@@ -2135,7 +2135,7 @@ export function Finance() {
                         <Settings className="w-3 h-3" /> Manage Categories
                       </Button>
                     } />
-                    <DialogContent className="sm:max-w-[700px] max-h-[85vh] flex flex-col rounded-sm border border-border shadow-lg p-5">
+                    <DialogContent className="sm:max-w-175 max-h-[85vh] flex flex-col rounded-sm border border-border shadow-lg p-5">
                       <DialogHeader className="pb-2 border-b border-border">
                         <DialogTitle className="text-sm font-black uppercase tracking-wider">Expense Category Management</DialogTitle>
                         <DialogDescription className="text-xs text-muted-foreground">Add, edit, or archive operational expenditure classifications.</DialogDescription>
@@ -2199,7 +2199,7 @@ export function Finance() {
                                     <div className="flex flex-col">
                                       <span className="text-xs font-bold text-foreground uppercase tracking-tight">{cat.name}</span>
                                       {cat.description && (
-                                        <span className="text-[10px] text-muted-foreground font-medium leading-tight mt-0.5 line-clamp-1 max-w-[280px]">
+                                        <span className="text-[10px] text-muted-foreground font-medium leading-tight mt-0.5 line-clamp-1 max-w-70">
                                           {cat.description}
                                         </span>
                                       )}
@@ -2367,7 +2367,7 @@ export function Finance() {
                               </span>
                               <ChevronDown className="w-3.5 h-3.5 shrink-0 opacity-50 ml-1" />
                             </PopoverTrigger>
-                            <PopoverContent className="w-[var(--anchor-width,340px)] min-w-[280px] p-2 bg-popover rounded-sm border border-border shadow-md" align="start">
+                            <PopoverContent className="w-(--anchor-width,340px) min-w-70 p-2 bg-popover rounded-sm border border-border shadow-md" align="start">
                               <div className="relative mb-2">
                                 <SearchIcon className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground pointer-events-none" />
                                 <Input
@@ -2470,7 +2470,7 @@ export function Finance() {
                           {selectedPeriod === '2025' ? '2025' : selectedPeriod === '2026' ? '2026' : 'ALL'}
                         </SelectValue>
                       </SelectTrigger>
-                      <SelectContent className="rounded-sm w-auto min-w-[220px]">
+                      <SelectContent className="rounded-sm w-auto min-w-55">
                         <SelectItem value="2025">Monthly 2025 (Q1 Audited)</SelectItem>
                         <SelectItem value="2026">Quarterly 2026 (Live Ops)</SelectItem>
                         <SelectItem value="all">All Periods (Consolidated)</SelectItem>
@@ -2530,17 +2530,17 @@ export function Finance() {
                 <Table id="pl-statement-print-area">
                   <TableHeader className="bg-neutral-100 dark:bg-neutral-900 border-b border-neutral-300 dark:border-neutral-700">
                     <TableRow className="hover:bg-transparent">
-                      <TableHead className="text-[10px] font-black uppercase tracking-widest text-neutral-600 dark:text-neutral-400 py-2 pl-4 min-w-[260px]">
+                      <TableHead className="text-[10px] font-black uppercase tracking-widest text-neutral-600 dark:text-neutral-400 py-2 pl-4 min-w-65">
                         Account / Line Item
                       </TableHead>
                       {activePLData.colHeaders.map((ch, cIdx) => (
                         <TableHead
                           key={cIdx}
                           className={`text-[10px] font-black uppercase tracking-widest text-right py-2 ${cIdx === activePLData.colHeaders.length - 2
-                              ? 'text-foreground font-bold bg-neutral-200/50 dark:bg-neutral-800/50 min-w-[130px] px-3'
+                              ? 'text-foreground font-bold bg-neutral-200/50 dark:bg-neutral-800/50 min-w-32.5 px-3'
                               : cIdx === activePLData.colHeaders.length - 1
-                                ? 'text-neutral-600 dark:text-neutral-400 pr-4 min-w-[90px]'
-                                : 'text-neutral-600 dark:text-neutral-400 min-w-[110px] px-3'
+                                ? 'text-neutral-600 dark:text-neutral-400 pr-4 min-w-22.5'
+                                : 'text-neutral-600 dark:text-neutral-400 min-w-27.5 px-3'
                             }`}
                         >
                           {ch}
@@ -2665,7 +2665,7 @@ export function Finance() {
                     <TableHeader className="bg-neutral-100 dark:bg-neutral-900 border-b border-neutral-300 dark:border-neutral-700">
                       <TableRow>
                         <TableHead
-                          className="text-[10px] font-black uppercase tracking-widest text-neutral-600 dark:text-neutral-400 py-2 px-3 cursor-pointer hover:bg-neutral-200/50 dark:hover:bg-neutral-800 transition-colors min-w-[90px]"
+                          className="text-[10px] font-black uppercase tracking-widest text-neutral-600 dark:text-neutral-400 py-2 px-3 cursor-pointer hover:bg-neutral-200/50 dark:hover:bg-neutral-800 transition-colors min-w-22.5"
                           onClick={() => toggleSort('date')}
                         >
                           <div className="flex items-center gap-1">
@@ -2673,7 +2673,7 @@ export function Finance() {
                           </div>
                         </TableHead>
                         <TableHead
-                          className="text-[10px] font-black uppercase tracking-widest text-neutral-600 dark:text-neutral-400 py-2 px-3 cursor-pointer hover:bg-neutral-200/50 dark:hover:bg-neutral-800 transition-colors min-w-[120px]"
+                          className="text-[10px] font-black uppercase tracking-widest text-neutral-600 dark:text-neutral-400 py-2 px-3 cursor-pointer hover:bg-neutral-200/50 dark:hover:bg-neutral-800 transition-colors min-w-30"
                           onClick={() => toggleSort('category')}
                         >
                           <div className="flex items-center gap-1">
@@ -2681,7 +2681,7 @@ export function Finance() {
                           </div>
                         </TableHead>
                         <TableHead
-                          className="text-[10px] font-black uppercase tracking-widest text-neutral-600 dark:text-neutral-400 py-2 px-3 cursor-pointer hover:bg-neutral-200/50 dark:hover:bg-neutral-800 transition-colors min-w-[200px]"
+                          className="text-[10px] font-black uppercase tracking-widest text-neutral-600 dark:text-neutral-400 py-2 px-3 cursor-pointer hover:bg-neutral-200/50 dark:hover:bg-neutral-800 transition-colors min-w-50"
                           onClick={() => toggleSort('orderId')}
                         >
                           <div className="flex items-center gap-1">
@@ -2689,14 +2689,14 @@ export function Finance() {
                           </div>
                         </TableHead>
                         <TableHead
-                          className="text-[10px] font-black uppercase tracking-widest text-neutral-600 dark:text-neutral-400 py-2 px-3 text-right cursor-pointer hover:bg-neutral-200/50 dark:hover:bg-neutral-800 transition-colors min-w-[100px]"
+                          className="text-[10px] font-black uppercase tracking-widest text-neutral-600 dark:text-neutral-400 py-2 px-3 text-right cursor-pointer hover:bg-neutral-200/50 dark:hover:bg-neutral-800 transition-colors min-w-25"
                           onClick={() => toggleSort('amount')}
                         >
                           <div className="flex items-center justify-end gap-1">
                             Amount {sortKey === 'amount' ? (sortDirection === 'asc' ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />) : <ArrowUpDown className="w-2.5 h-2.5 opacity-40" />}
                           </div>
                         </TableHead>
-                        <TableHead className="text-[10px] font-black uppercase tracking-widest text-neutral-600 dark:text-neutral-400 py-2 px-3 text-right min-w-[80px]">Actions</TableHead>
+                        <TableHead className="text-[10px] font-black uppercase tracking-widest text-neutral-600 dark:text-neutral-400 py-2 px-3 text-right min-w-20">Actions</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -2712,7 +2712,7 @@ export function Finance() {
                                 {e.category}
                               </span>
                             </TableCell>
-                            <TableCell className="text-xs font-semibold text-foreground max-w-[250px] py-1.5 px-3">
+                            <TableCell className="text-xs font-semibold text-foreground max-w-62.5 py-1.5 px-3">
                               <div className="flex flex-col">
                                 {linkedOrder && (
                                   <span className="text-[9px] font-bold text-emerald-600 dark:text-emerald-400 uppercase tracking-tighter">
@@ -2845,7 +2845,7 @@ export function Finance() {
                         </span>
                         <ChevronDown className="w-3.5 h-3.5 shrink-0 opacity-50 ml-1" />
                       </PopoverTrigger>
-                      <PopoverContent className="w-[var(--anchor-width,340px)] min-w-[280px] p-2 bg-popover rounded-sm border border-border shadow-md" align="start">
+                      <PopoverContent className="w-(--anchor-width,340px) min-w-70 p-2 bg-popover rounded-sm border border-border shadow-md" align="start">
                         <div className="relative mb-2">
                           <SearchIcon className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground pointer-events-none" />
                           <Input
@@ -2946,7 +2946,7 @@ export function Finance() {
               </div>
             </div>
             <div className="p-3">
-              <div className="h-[190px] w-full">
+              <div className="h-47.5 w-full">
                 {pieData.length > 0 ? (
                   <ResponsiveContainer width="100%" height="100%">
                     <PieChart>

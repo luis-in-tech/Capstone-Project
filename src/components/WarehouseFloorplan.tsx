@@ -116,7 +116,7 @@ export function WarehouseFloorplan({ warehouseId, storageKey, zones, canEdit, co
       {door && <div className="flex flex-wrap items-center gap-3"><label className="flex items-center gap-2">Entrance edge<select className="rounded border bg-background p-1" value={door.edge} onChange={e => setPlan(p => ({ ...p, doors: p.doors.map(d => d.id === door.id ? { ...d, edge: e.target.value as Door['edge'] } : d) }))}>{['top', 'bottom', 'left', 'right'].map(edge => <option key={edge} value={edge}>{edge[0].toUpperCase() + edge.slice(1)}</option>)}</select></label><Button size="sm" variant="outline" onClick={() => { setPlan(p => ({ ...p, doors: p.doors.filter(d => d.id !== door.id) })); setChosen(''); }}><Trash2 className="size-3" />Delete Entrance</Button></div>}
     </div>}
     <div className={compact ? 'p-2' : 'overflow-x-auto p-4'}>
-      <div ref={canvas} aria-label="Warehouse floorplan, not to scale" className={`relative border-[3px] border-foreground/45 bg-muted/15 ${compact ? 'h-44' : 'h-[460px] min-w-[520px]'}`}
+      <div ref={canvas} aria-label="Warehouse floorplan, not to scale" className={`relative border-[3px] border-foreground/45 bg-muted/15 ${compact ? 'h-44' : 'h-115 min-w-130'}`}
         onPointerMove={move} onPointerUp={() => { drag.current = null; }} onPointerCancel={() => { drag.current = null; }} onLostPointerCapture={() => { drag.current = null; }}>
         {!zones.length && <p className="absolute inset-8 flex items-center justify-center text-center text-sm text-muted-foreground">No zones yet. {canEdit ? 'Use Edit Layout to add a zone.' : 'Zones will appear here when created.'}</p>}
         {zones.map((z, i) => { const b = boxFor(plan, z, i); const stats = summary(z.id); const active = editing ? chosen === z.id : selected === z.id;

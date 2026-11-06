@@ -1049,7 +1049,7 @@ export function LogisticsOptimizer() {
                     <summary className="flex cursor-pointer list-none items-center gap-3 rounded-lg px-4 py-3 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden"><FileText className="h-4 w-4" />Report details<ChevronDown className="ml-auto h-4 w-4 group-open:rotate-180" /></summary>
                     <dl className="grid grid-cols-[auto_1fr] gap-x-5 gap-y-3 border-t border-border p-4 text-sm">
                       <dt className="text-muted-foreground">Incident type</dt><dd>{incidentType}</dd>
-                      <dt className="text-muted-foreground">Reported by</dt><dd className="break-words">{inc.reporter}</dd>
+                      <dt className="text-muted-foreground">Reported by</dt><dd className="wrap-break-word">{inc.reporter}</dd>
                       <dt className="text-muted-foreground">Reported at</dt><dd>{inc.timestamp}</dd>
                       <dt className="text-muted-foreground">Corridor</dt><dd>{inc.corridor}</dd>
                     </dl>

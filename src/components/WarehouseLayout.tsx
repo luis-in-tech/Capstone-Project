@@ -318,7 +318,7 @@ export function WarehouseLayout({ warehouses, products, inventory }: { warehouse
       <aside className="min-w-0 space-y-4">
         <Button variant="ghost" className="h-auto whitespace-normal px-0 text-left" onClick={() => { setSelected(''); setSearch(''); }}><ArrowLeft className="size-4 shrink-0" />Back to Warehouse Layout</Button>
         <section className="rounded-2xl border bg-card p-5">
-          <p className="text-xs font-medium text-muted-foreground">{selectedZone ? 'Selected Zone' : 'Unallocated inventory'}</p><h3 className="mt-2 break-words text-xl font-bold">{selectedName}</h3><p className="mt-1 break-words text-sm text-muted-foreground">{warehouse.name}</p>
+          <p className="text-xs font-medium text-muted-foreground">{selectedZone ? 'Selected Zone' : 'Unallocated inventory'}</p><h3 className="mt-2 wrap-break-word text-xl font-bold">{selectedName}</h3><p className="mt-1 wrap-break-word text-sm text-muted-foreground">{warehouse.name}</p>
           <dl className="mt-5 grid grid-cols-2 gap-3 border-t pt-4"><div><dt className="text-xs text-muted-foreground">Total products</dt><dd className="mt-1 text-xl font-semibold tabular-nums">{selectedSummary.products.toLocaleString()}</dd></div><div><dt className="text-xs text-muted-foreground">Total units</dt><dd className="mt-1 text-xl font-semibold tabular-nums">{selectedSummary.units.toLocaleString()}</dd></div></dl>
         </section>
         {zones.length > 0 && <nav aria-label="Warehouse zones" className="rounded-2xl border bg-card p-4"><p className="mb-3 text-xs font-medium text-muted-foreground">Zone overview · Not to Scale</p>{floorplan(true)}</nav>}
@@ -326,7 +326,7 @@ export function WarehouseLayout({ warehouses, products, inventory }: { warehouse
       </aside>
       <section className="min-w-0 overflow-hidden rounded-2xl border bg-card lg:col-span-3">
         <div className="space-y-4 border-b p-5">
-          <div><h3 className="break-words text-lg font-bold">{selectedZone ? `Products Recorded in ${selectedZone.name}` : 'Unassigned Stock'}</h3><p className="mt-1 text-sm text-muted-foreground">{selectedZone ? 'View recorded inventory. Manage stock through inventory allocation or Inventory Movement.' : 'Stock that has not yet been allocated to a zone.'}</p></div>
+          <div><h3 className="wrap-break-word text-lg font-bold">{selectedZone ? `Products Recorded in ${selectedZone.name}` : 'Unassigned Stock'}</h3><p className="mt-1 text-sm text-muted-foreground">{selectedZone ? 'View recorded inventory. Manage stock through inventory allocation or Inventory Movement.' : 'Stock that has not yet been allocated to a zone.'}</p></div>
           <div className="relative"><SearchBar aria-label="Search zone products" placeholder="Search SKU, item, category or supplier..." value={search} onValueChange={setSearch} className="pl-9" /></div>
           {canEdit && zones.length > 0 && selectedProductIds.length > 0 && (
             <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-primary/30 bg-primary/5 p-3.5 text-sm">
@@ -432,7 +432,7 @@ export function WarehouseLayout({ warehouses, products, inventory }: { warehouse
       </section>
     </div> : <>
       <section aria-label="Warehouse Zone Layout" className="rounded-2xl border bg-card p-5 sm:p-6">
-        <div className="mb-5 flex items-center gap-3"><div className="rounded-xl bg-gold/20 p-2.5"><WarehouseIcon className="size-5" /></div><div className="min-w-0"><h3 className="break-words font-semibold">{warehouse.name}</h3><p className="text-xs text-muted-foreground">Warehouse Zone Layout · {zones.length} zones</p></div></div>
+        <div className="mb-5 flex items-center gap-3"><div className="rounded-xl bg-gold/20 p-2.5"><WarehouseIcon className="size-5" /></div><div className="min-w-0"><h3 className="wrap-break-word font-semibold">{warehouse.name}</h3><p className="text-xs text-muted-foreground">Warehouse Zone Layout · {zones.length} zones</p></div></div>
         {floorplan()}
         <p className="mt-5 text-xs text-muted-foreground">Conceptual zones only. This layout does not represent the physical shape or scale of the warehouse.</p>
       </section>

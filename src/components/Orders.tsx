@@ -6,7 +6,7 @@ import { useStaffAccess } from '../hooks/useStaffAccess';
 import React, { useState, useEffect, useRef } from 'react';
 import { db, storage } from '../lib/supabaseAdapter';
 import { collection, onSnapshot, query, orderBy, where, getDocs, getDoc, updateDoc, deleteDoc, doc, serverTimestamp, addDoc } from '../lib/supabaseAdapter';
-import { Order, OrderStatus, Product, InventoryItem, OrderItem } from '../types';
+import { Order, OrderStatus, Product, InventoryItem, OrderItem, UserProfile } from '../types';
 import { handleSupabaseError, OperationType } from '../lib/supabaseErrorHandler';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -38,6 +38,7 @@ import {
   ChecksIcon as CheckCheck,
   PencilSimpleIcon as Pencil,
   TrashIcon as Trash2,
+  DotsSixVerticalIcon as DotsSixVertical,
 } from '@phosphor-icons/react';
 import { Badge } from '@/components/ui/badge';
 import { useAuth } from '../hooks/useAuth';
@@ -67,6 +68,7 @@ export function Orders() {
   const [orders, setOrders] = useState<Order[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
+  const [users, setUsers] = useState<UserProfile[]>([]);
   const [isNewOrderOpen, setIsNewOrderOpen] = useState(false);
   const [orderEntryKey, setOrderEntryKey] = useState(0);
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
@@ -90,6 +92,16 @@ export function Orders() {
   const [isIncidentsDialogOpen, setIsIncidentsDialogOpen] = useState(false);
   const [incidentFilter, setIncidentFilter] = useState<'all' | 'SLA_BREACH' | 'DEFECTIVE_ASSET'>('all');
   const [orderViewMode, setOrderViewMode] = useState<'all' | 'fifo_queue'>('all');
+  const [customOrderIds, setCustomOrderIds] = useState<string[]>(() => {
+    try {
+      const stored = localStorage.getItem('activepro_custom_order_ids');
+      return stored ? JSON.parse(stored) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [draggedOrderId, setDraggedOrderId] = useState<string | null>(null);
+  const [dragOverOrderId, setDragOverOrderId] = useState<string | null>(null);
   const [resolvingIncident, setResolvingIncident] = useState<ITILIncident | null>(null);
   const [resolutionInput, setResolutionInput] = useState('');
   const [isSubmittingResolution, setIsSubmittingResolution] = useState(false);
@@ -136,13 +148,96 @@ export function Orders() {
     });
   }, [filteredOrders]);
 
-  // FR-09: Algorithmic FIFO queue ordering vs standard chronological status view
   const fulfillmentStrategy = (localStorage.getItem('activepro.fulfillment_strategy') as 'FIFO'|'LIFO') || 'FIFO';
-  const displayOrders = orderViewMode === 'fifo_queue'
-    ? prioritizeOrderQueue(filteredOrders, fulfillmentStrategy)
-    : statusChronologicalOrders;
+
+  // System-wide unified ordering: Combines Canva Status Grouping, In-place Row Stability, and Manual Drag & Drop
+  const displayOrders = React.useMemo(() => {
+    if (orderViewMode === 'fifo_queue') {
+      return prioritizeOrderQueue(filteredOrders, fulfillmentStrategy);
+    }
+
+    if (!customOrderIds.length) {
+      return statusChronologicalOrders;
+    }
+
+    // Preserve custom drag-and-drop / in-place stability
+    const orderMap = new Map(filteredOrders.map(o => [o.id, o]));
+    const arranged: Order[] = [];
+    for (const id of customOrderIds) {
+      const found = orderMap.get(id);
+      if (found) {
+        arranged.push(found);
+        orderMap.delete(id);
+      }
+    }
+    // Append any newly added orders using statusChronological order
+    for (const order of statusChronologicalOrders) {
+      if (orderMap.has(order.id)) {
+        arranged.push(order);
+        orderMap.delete(order.id);
+      }
+    }
+    return arranged;
+  }, [filteredOrders, customOrderIds, statusChronologicalOrders, orderViewMode, fulfillmentStrategy]);
+
+  const handleDragStart = (e: React.DragEvent, id: string) => {
+    setDraggedOrderId(id);
+    e.dataTransfer.setData('text/plain', id);
+    e.dataTransfer.effectAllowed = 'move';
+  };
+
+  const handleDragOver = (e: React.DragEvent, targetId: string) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    if (dragOverOrderId !== targetId) {
+      setDragOverOrderId(targetId);
+    }
+  };
+
+  const handleDrop = (e: React.DragEvent, targetId: string) => {
+    e.preventDefault();
+    setDragOverOrderId(null);
+    if (!draggedOrderId || draggedOrderId === targetId) {
+      setDraggedOrderId(null);
+      return;
+    }
+    const currentList = displayOrders.map(o => o.id);
+    const fromIndex = currentList.indexOf(draggedOrderId);
+    const toIndex = currentList.indexOf(targetId);
+    if (fromIndex === -1 || toIndex === -1) {
+      setDraggedOrderId(null);
+      return;
+    }
+
+    const updated = [...currentList];
+    const [moved] = updated.splice(fromIndex, 1);
+    updated.splice(toIndex, 0, moved);
+
+    setCustomOrderIds(updated);
+    localStorage.setItem('activepro_custom_order_ids', JSON.stringify(updated));
+    setDraggedOrderId(null);
+    toast.success('Order arrangement updated.');
+  };
+
+  const handleDragEnd = () => {
+    setDraggedOrderId(null);
+    setDragOverOrderId(null);
+  };
 
   const activeIncidents = incidents.filter(i => i.status !== 'RESOLVED' && i.status !== 'CLOSED');
+
+  const resolveUserName = (changedBy?: string): string => {
+    if (!changedBy) return 'Staff';
+    if (changedBy === profile?.uid) {
+      return profile?.displayName || profile?.email || profile?.role || 'Admin';
+    }
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(changedBy);
+    if (isUuid) {
+      const matched = users.find(u => u.uid === changedBy || (u as any).id === changedBy);
+      return matched?.displayName || matched?.email || matched?.role || 'Staff';
+    }
+    return changedBy;
+  };
 
   const getOrderOverrides = (): Record<string, Partial<Order>> => {
     try {
@@ -202,10 +297,16 @@ export function Orders() {
       handleSupabaseError(error, OperationType.GET, 'inventory');
     });
 
+    const unsubUsers = onSnapshot(collection(db, 'users'), (snap) => {
+      setUsers(snap.docs.map(d => ({ id: d.id, ...d.data() } as UserProfile)));
+    }, () => {
+    });
+
     return () => {
       unsubOrders();
       unsubProducts();
       unsubInventory();
+      unsubUsers();
     };
   }, [profile]);
 
@@ -240,11 +341,18 @@ export function Orders() {
       console.warn('Could not verify concurrent order status:', checkErr);
     }
 
+    // Freeze current row order in place so the row does not jump
+    if (!customOrderIds.length && displayOrders.length > 0) {
+      const currentSequence = displayOrders.map(o => o.id);
+      setCustomOrderIds(currentSequence);
+      localStorage.setItem('activepro_custom_order_ids', JSON.stringify(currentSequence));
+    }
+    const authorName = profile?.displayName || profile?.email || profile?.role || 'Staff';
     const statusHistory = [...(order.statusHistory || [])];
     if (statusHistory.at(-1)?.status !== order.status) {
-      statusHistory.push({ status: order.status, changedBy: profile?.uid || '', timestamp: new Date().toISOString() });
+      statusHistory.push({ status: order.status, changedBy: authorName, timestamp: new Date().toISOString() });
     }
-    statusHistory.push({ status: newStatus, changedBy: profile?.uid || '', timestamp: new Date().toISOString() });
+    statusHistory.push({ status: newStatus, changedBy: authorName, timestamp: new Date().toISOString() });
     saveOrderOverride(order.id, { status: newStatus, statusHistory });
     try {
       let updatedData: any = null;
@@ -317,6 +425,12 @@ export function Orders() {
       timestamp: now,
       note: `Reverted to ${target.replaceAll('_', ' ')}`,
     });
+
+    if (!customOrderIds.length && displayOrders.length > 0) {
+      const currentSequence = displayOrders.map(o => o.id);
+      setCustomOrderIds(currentSequence);
+      localStorage.setItem('activepro_custom_order_ids', JSON.stringify(currentSequence));
+    }
 
     saveOrderOverride(order.id, { status: target, statusHistory });
 
@@ -767,10 +881,10 @@ export function Orders() {
                       <Table>
                         <TableHeader className="bg-muted">
                           <TableRow>
-                            <TableHead className="text-[10px] font-bold uppercase py-2 min-w-[150px]">Item</TableHead>
-                            <TableHead className="text-[10px] font-bold uppercase py-2 text-center min-w-[80px]">Qty</TableHead>
-                            <TableHead className="text-[10px] font-bold uppercase py-2 text-right min-w-[100px]">Price</TableHead>
-                            <TableHead className="text-[10px] font-bold uppercase py-2 text-right min-w-[100px]">Total</TableHead>
+                            <TableHead className="text-[10px] font-bold uppercase py-2 min-w-37.5">Item</TableHead>
+                            <TableHead className="text-[10px] font-bold uppercase py-2 text-center min-w-20">Qty</TableHead>
+                            <TableHead className="text-[10px] font-bold uppercase py-2 text-right min-w-25">Price</TableHead>
+                            <TableHead className="text-[10px] font-bold uppercase py-2 text-right min-w-25">Total</TableHead>
                           </TableRow>
                         </TableHeader>
                         <TableBody>
@@ -803,10 +917,10 @@ export function Orders() {
                     </div>
                   </div>
                 ) : (
-                  <div className="space-y-4 pr-2 max-h-[400px] overflow-y-auto">
+                  <div className="space-y-4 pr-2 max-h-100 overflow-y-auto">
                     {selectedOrder?.statusHistory?.slice().reverse().map((entry, idx) => (
                       <div key={idx} className="relative pl-6 pb-6 border-l-2 border-border last:pb-0">
-                        <div className={`absolute left-[-9px] top-0 w-4 h-4 rounded-full border-2 border-background ${entry.status === 'delivered' ? 'bg-emerald-500' :
+                        <div className={`absolute -left-2.25 top-0 w-4 h-4 rounded-full border-2 border-background ${entry.status === 'delivered' ? 'bg-emerald-500' :
                           entry.status === 'pending' ? 'bg-zinc-300' : 'bg-blue-500'
                           }`} />
                         <div className="bg-muted rounded-xl p-3 border border-border group hover:border-foreground/20 transition-colors">
@@ -827,7 +941,7 @@ export function Orders() {
                             <div className="w-4 h-4 bg-background rounded-full flex items-center justify-center">
                               <UserIcon className="w-2 h-2 text-zinc-500" />
                             </div>
-                            <span className="text-[9px] font-bold text-zinc-500 uppercase tracking-tight">Modified by {entry.changedBy}</span>
+                            <span className="text-[9px] font-bold text-zinc-500 uppercase tracking-tight">Modified by {resolveUserName(entry.changedBy)}</span>
                           </div>
                         </div>
                       </div>
@@ -892,12 +1006,14 @@ export function Orders() {
 
                   {selectedOrder?.photoValidationUrl && (
                     <div className="pt-4 space-y-2">
-                      <p className="text-[10px] font-black uppercase tracking-tighter text-zinc-400">Dispatch Proof</p>
+                      <p className="text-[10px] font-bold uppercase tracking-wider text-blue-600">Dispatch Photo Proof (Click to view full image)</p>
                       <img
                         src={selectedOrder.photoValidationUrl}
                         alt="Dispatch Validation"
-                        className="w-full h-32 object-cover rounded-lg border border-border"
+                        className="w-full h-32 object-cover rounded-lg border border-border cursor-pointer hover:opacity-90 transition-opacity"
                         referrerPolicy="no-referrer"
+                        onClick={() => window.open(selectedOrder.photoValidationUrl)}
+                        title="Click to view full photo proof"
                       />
                     </div>
                   )}
@@ -1197,32 +1313,48 @@ export function Orders() {
             onValueChange={setSearchQuery}
           />
         </div>
-        <div className="flex items-center gap-1.5 bg-muted p-1 rounded-xl shrink-0">
-          <button
-            type="button"
-            className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-all ${
-              orderViewMode === 'all'
-                ? 'bg-background shadow-xs text-foreground font-semibold'
-                : 'text-muted-foreground hover:text-foreground'
-            }`}
-            onClick={() => setOrderViewMode('all')}
-          >
-            All Orders ({filteredOrders.length})
-          </button>
-          <button
-            type="button"
-            className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-all flex items-center gap-1.5 ${
-              orderViewMode === 'fifo_queue'
-                ? 'bg-background shadow-xs text-foreground font-semibold'
-                : 'text-muted-foreground hover:text-foreground'
-            }`}
-            onClick={() => setOrderViewMode('fifo_queue')}
-            title="Sort orders by ITIL FIFO fulfillment priority (oldest & overdue first)"
-          >
-            <ListFilter className="size-3.5" />
-            <span>FIFO Queue</span>
-            <Badge variant="secondary" className="h-4 px-1 text-[9px] font-bold">FR-09</Badge>
-          </button>
+        <div className="flex flex-wrap items-center gap-2">
+          {customOrderIds.length > 0 && orderViewMode === 'all' && (
+            <button
+              type="button"
+              className="text-[11px] font-medium text-muted-foreground hover:text-foreground px-2.5 py-1 rounded-lg border border-border bg-card hover:bg-muted transition-colors shadow-xs"
+              onClick={() => {
+                setCustomOrderIds([]);
+                localStorage.removeItem('activepro_custom_order_ids');
+                toast.info('Orders reset to default status grouping.');
+              }}
+              title="Reset custom row order back to default status grouping"
+            >
+              Reset to Status Grouping
+            </button>
+          )}
+          <div className="flex items-center gap-1.5 bg-muted p-1 rounded-xl shrink-0">
+            <button
+              type="button"
+              className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-all ${
+                orderViewMode === 'all'
+                  ? 'bg-background shadow-xs text-foreground font-semibold'
+                  : 'text-muted-foreground hover:text-foreground'
+              }`}
+              onClick={() => setOrderViewMode('all')}
+            >
+              All Orders ({filteredOrders.length})
+            </button>
+            <button
+              type="button"
+              className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-all flex items-center gap-1.5 ${
+                orderViewMode === 'fifo_queue'
+                  ? 'bg-background shadow-xs text-foreground font-semibold'
+                  : 'text-muted-foreground hover:text-foreground'
+              }`}
+              onClick={() => setOrderViewMode('fifo_queue')}
+              title="Sort orders by ITIL FIFO fulfillment priority (oldest & overdue first)"
+            >
+              <ListFilter className="size-3.5" />
+              <span>FIFO Queue</span>
+              <Badge variant="secondary" className="h-4 px-1 text-[9px] font-bold">FR-09</Badge>
+            </button>
+          </div>
         </div>
       </div>
 
@@ -1232,14 +1364,31 @@ export function Orders() {
           const deadlineDate = typeof order.deliveryDeadline?.toDate === 'function' ? order.deliveryDeadline.toDate() : order.deliveryDeadline ? new Date(order.deliveryDeadline) : null;
           const isOverdue = deadlineDate && deadlineDate < new Date() && !['delivered', 'completed', 'cancelled', 'escalated'].includes(order.status);
           return (
-            <div key={order.id} className="bg-card border border-border rounded-xl p-4 space-y-3">
+            <div
+              key={order.id}
+              draggable
+              onDragStart={(e) => handleDragStart(e, order.id)}
+              onDragOver={(e) => handleDragOver(e, order.id)}
+              onDrop={(e) => handleDrop(e, order.id)}
+              onDragEnd={handleDragEnd}
+              className={`bg-card border border-border rounded-xl p-4 space-y-3 transition-colors ${
+                draggedOrderId === order.id ? 'opacity-30 bg-muted/70' : ''
+              } ${
+                dragOverOrderId === order.id ? 'border-t-2 border-blue-500 bg-blue-50/20 dark:bg-blue-950/20' : ''
+              }`}
+            >
               <div className="flex items-start justify-between gap-2">
-                <div className="min-w-0">
-                  <p className="text-xs font-mono text-zinc-400">{order.orderNumber}</p>
-                  <p className="text-sm font-bold text-zinc-900 dark:text-white mt-0.5">{order.clientName}</p>
+                <div className="flex items-start gap-2 min-w-0">
+                  <div className="pt-0.5 cursor-grab active:cursor-grabbing text-zinc-400 hover:text-zinc-800" title="Drag to reorder">
+                    <DotsSixVertical className="w-4 h-4 shrink-0" />
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-xs font-mono text-zinc-400">{order.orderNumber}</p>
+                    <p className="text-sm font-bold text-zinc-900 dark:text-white mt-0.5">{order.clientName}</p>
                   <p className="text-[10px] text-zinc-400 uppercase font-bold tracking-tighter">
                     {order.deliveryRegion}{order.deliveryCity ? ` • ${order.deliveryCity}` : ''}
                   </p>
+                </div>
                 </div>
                 <Badge variant="outline" className={`shrink-0 gap-1.5 h-6 capitalize text-[10px] font-bold ${order.status === 'delivered' || order.status === 'completed' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
                   order.status === 'out_for_delivery' ? 'bg-blue-50 text-blue-700 border-blue-200' :
@@ -1321,8 +1470,8 @@ export function Orders() {
                   </>
                 )}
                 {order.photoValidationUrl && (
-                  <Button size="icon" variant="ghost" className="h-7 w-7 text-zinc-400 hover:text-zinc-900" onClick={() => window.open(order.photoValidationUrl)}>
-                    <FileText className="w-4 h-4" />
+                  <Button size="icon" variant="ghost" className="h-7 w-7 text-blue-600 hover:text-blue-700 hover:bg-blue-50" title="View Dispatch Photo Proof" onClick={() => window.open(order.photoValidationUrl)}>
+                    <ImageIcon className="w-4 h-4" />
                   </Button>
                 )}
               </div>
@@ -1347,12 +1496,13 @@ export function Orders() {
           <Table>
             <TableHeader className="bg-muted/50">
               <TableRow>
-                <TableHead className="text-[10px] font-bold uppercase tracking-widest min-w-[120px]">Order ID</TableHead>
-                <TableHead className="text-[10px] font-bold uppercase tracking-widest min-w-[150px]">Client Name</TableHead>
-                <TableHead className="text-[10px] font-bold uppercase tracking-widest min-w-[120px]">Status</TableHead>
-                <TableHead className="text-[10px] font-bold uppercase tracking-widest text-center min-w-[120px]">Deadline</TableHead>
-                <TableHead className="text-[10px] font-bold uppercase tracking-widest text-right min-w-[100px]">Amount</TableHead>
-                <TableHead className="text-[10px] font-bold uppercase tracking-widest text-center min-w-[140px]">Actions</TableHead>
+                <TableHead className="w-9 px-2 text-center"><span className="sr-only">Reorder</span></TableHead>
+                <TableHead className="text-[10px] font-bold uppercase tracking-widest min-w-30">Order ID</TableHead>
+                <TableHead className="text-[10px] font-bold uppercase tracking-widest min-w-37.5">Client Name</TableHead>
+                <TableHead className="text-[10px] font-bold uppercase tracking-widest min-w-30">Status</TableHead>
+                <TableHead className="text-[10px] font-bold uppercase tracking-widest text-center min-w-30">Deadline</TableHead>
+                <TableHead className="text-[10px] font-bold uppercase tracking-widest text-right min-w-25">Amount</TableHead>
+                <TableHead className="text-[10px] font-bold uppercase tracking-widest text-center min-w-35">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -1360,7 +1510,24 @@ export function Orders() {
                 const deadlineDate = typeof order.deliveryDeadline?.toDate === 'function' ? order.deliveryDeadline.toDate() : order.deliveryDeadline ? new Date(order.deliveryDeadline) : null;
                 const isOverdue = deadlineDate && deadlineDate < new Date() && !['delivered', 'completed', 'cancelled', 'escalated'].includes(order.status);
                 return (
-                  <TableRow key={order.id} className="group transition-colors">
+                  <TableRow
+                    key={order.id}
+                    draggable
+                    onDragStart={(e) => handleDragStart(e, order.id)}
+                    onDragOver={(e) => handleDragOver(e, order.id)}
+                    onDrop={(e) => handleDrop(e, order.id)}
+                    onDragEnd={handleDragEnd}
+                    className={`group transition-colors select-none ${
+                      draggedOrderId === order.id ? 'opacity-30 bg-muted/70' : ''
+                    } ${
+                      dragOverOrderId === order.id ? 'border-t-2 border-blue-500 bg-blue-50/20 dark:bg-blue-950/20' : ''
+                    }`}
+                  >
+                    <TableCell className="w-9 px-2 py-3 text-center cursor-grab active:cursor-grabbing text-zinc-400 hover:text-zinc-800 dark:hover:text-zinc-100">
+                      <div className="flex items-center justify-center p-1 rounded hover:bg-muted" title="Drag to reorder row">
+                        <DotsSixVertical className="w-4 h-4" />
+                      </div>
+                    </TableCell>
                     <TableCell className="font-mono text-xs text-zinc-400 font-medium">
                       {order.orderNumber}
                     </TableCell>
@@ -1460,8 +1627,8 @@ export function Orders() {
                           </>
                         )}
                         {order.photoValidationUrl && (
-                          <Button size="icon" variant="ghost" className="h-7 w-7 text-zinc-400 hover:text-zinc-900" onClick={() => window.open(order.photoValidationUrl)}>
-                            <FileText className="w-4 h-4" />
+                          <Button size="icon" variant="ghost" className="h-7 w-7 text-blue-600 hover:text-blue-700 hover:bg-blue-50" title="View Dispatch Photo Proof" onClick={() => window.open(order.photoValidationUrl)}>
+                            <ImageIcon className="w-4 h-4" />
                           </Button>
                         )}
                       </div>
@@ -1471,7 +1638,7 @@ export function Orders() {
               })}
               {filteredOrders.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={6} className="text-center py-12">
+                  <TableCell colSpan={7} className="text-center py-12">
                     <div className="flex flex-col items-center gap-2 text-zinc-400">
                       <ShoppingCart className="w-8 h-8 opacity-20" />
                       <p className="text-xs font-medium italic">No orders match your search criteria.</p>

@@ -278,7 +278,7 @@ export function QuarantineLedger({
                     <div className="flex flex-col">
                       <span className="text-xs font-semibold text-amber-700">{ticket.defectReason}</span>
                       {ticket.resolutionNotes && (
-                        <span className="text-[10px] text-muted-foreground truncate max-w-[150px]">
+                        <span className="text-[10px] text-muted-foreground truncate max-w-37.5">
                           {ticket.resolutionNotes}
                         </span>
                       )}

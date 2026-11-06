@@ -48,11 +48,11 @@ export function validateVariations(draft: VariationDraft, parentSku: string, pro
   const error = attributeError(parseAttributes(draft));
   if (error) return error;
   if (!draft.variants.some(v => v.enabled)) return 'Enable at least one variant.';
-  const used = new Set(products.filter(p => !parentId || (p.id !== parentId && p.parentProductId !== parentId)).map(p => p.sku.trim().toLowerCase()));
-  used.add(parentSku.trim().toLowerCase());
+  const used = new Set(products.filter(p => !parentId || (p.id !== parentId && p.parentProductId !== parentId)).map(p => (p.sku || '').trim().toLowerCase()).filter(Boolean));
+  used.add((parentSku || '').trim().toLowerCase());
   for (const v of draft.variants) {
-    if (!v.sku.trim() || used.has(v.sku.trim().toLowerCase())) return `Variant SKU must be unique: ${v.sku || Object.values(v.values).join(' / ')}.`;
-    used.add(v.sku.trim().toLowerCase());
+    if (!(v.sku || '').trim() || used.has((v.sku || '').trim().toLowerCase())) return `Variant SKU must be unique: ${v.sku || Object.values(v.values).join(' / ')}.`;
+    used.add((v.sku || '').trim().toLowerCase());
     for (const [key, label] of variantFields) {
       if (key === 'promoPrice' && v[key] === '') continue;
       const value = Number(v[key]);

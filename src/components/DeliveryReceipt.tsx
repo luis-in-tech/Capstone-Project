@@ -113,7 +113,7 @@ export function DeliveryReceipt({
         </div>
         <style>{printStyles}</style>
         <div className="overflow-x-auto">
-          <div ref={content} className="min-w-[640px]">
+          <div ref={content} className="min-w-160">
             {pages.map((page, index) => (
               <section className="dr-page shadow-sm" key={index}>
                 <div className="dr-heading">

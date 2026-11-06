@@ -955,7 +955,7 @@ export function OrderEntry({
                         onChange={(e) => setSearch(e.target.value)}
                       />
                     </div>
-                    <div className="max-h-[380px] overflow-y-auto rounded-xl border divide-y">
+                    <div className="max-h-95 overflow-y-auto rounded-xl border divide-y">
                       {filteredProducts.map((p) => {
                         const stock = activeWarehouses.reduce(
                           (sum, w) =>
@@ -1084,7 +1084,7 @@ export function OrderEntry({
                 <ClipboardList className="size-4" />
                 View Order List
               </Button>
-              <div className="max-h-[330px] overflow-y-auto space-y-2">
+              <div className="max-h-82.5 overflow-y-auto space-y-2">
                 {lines.map((line) => (
                   <div
                     key={line.id}

@@ -295,7 +295,7 @@ export function SupplyChain() {
                   <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Affected Items:</p>
                   {deletingReference.affectedItems.map(item => (
                     <div key={item.id} className="flex items-center justify-between text-xs py-0.5">
-                      <span className="font-semibold truncate max-w-[200px]">{item.name}</span>
+                      <span className="font-semibold truncate max-w-50">{item.name}</span>
                       <span className="font-mono text-[10px] text-muted-foreground">{item.sku}</span>
                     </div>
                   ))}

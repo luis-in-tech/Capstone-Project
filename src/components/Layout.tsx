@@ -68,7 +68,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
       {/* Brand Header */}
       <div className={`px-4 py-3.5 border-b border-sidebar-border ${isCollapsed ? 'flex justify-center px-0' : ''}`}>
         <div className="flex items-center gap-2.5">
-          <div className="w-7 h-7 flex-shrink-0">
+          <div className="w-7 h-7 shrink-0">
             <img src="/logo.png" alt="Active Pro" className="w-full h-full object-contain" />
           </div>
           {!isCollapsed && (
@@ -107,7 +107,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
                     }`}
                     title={isCollapsed ? item.name : undefined}
                   >
-                    <item.icon className={`w-4 h-4 flex-shrink-0 ${isActive ? 'text-[#fdd001]' : 'text-sidebar-foreground/50 group-hover:text-sidebar-foreground'}`} />
+                    <item.icon className={`w-4 h-4 shrink-0 ${isActive ? 'text-[#fdd001]' : 'text-sidebar-foreground/50 group-hover:text-sidebar-foreground'}`} />
                     {!isCollapsed && <span className="flex-1 truncate">{item.name}</span>}
                   </Link>
                 );
@@ -137,7 +137,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
           className={`flex items-center ${isCollapsed ? 'justify-center p-1.5' : 'gap-2.5 p-2'} mb-2 rounded-sm bg-neutral-100/70 dark:bg-white/5 hover:bg-neutral-200/60 dark:hover:bg-white/10 border border-sidebar-border transition-all group relative overflow-hidden w-full`}
           title={isCollapsed ? profile?.displayName || 'User' : undefined}
         >
-          <div className="w-7 h-7 bg-neutral-200/70 dark:bg-white/10 rounded-sm flex-shrink-0 overflow-hidden border border-sidebar-border group-hover:border-[#fdd001] transition-colors flex items-center justify-center">
+          <div className="w-7 h-7 bg-neutral-200/70 dark:bg-white/10 rounded-sm shrink-0 overflow-hidden border border-sidebar-border group-hover:border-[#fdd001] transition-colors flex items-center justify-center">
             {profile?.photoUrl ? (
               <img src={profile.photoUrl} alt={profile.displayName} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
             ) : (
@@ -167,7 +167,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
             onClick={() => setIsTutorialOpen(true)}
             title={isCollapsed ? "System Guide" : undefined}
           >
-            <HelpCircle className="w-3.5 h-3.5 flex-shrink-0" />
+            <HelpCircle className="w-3.5 h-3.5 shrink-0" />
             {!isCollapsed && "System Guide"}
           </button>
 
@@ -176,7 +176,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
             onClick={logout}
             title={isCollapsed ? "Logout" : undefined}
           >
-            <LogOut className="w-3.5 h-3.5 flex-shrink-0" />
+            <LogOut className="w-3.5 h-3.5 shrink-0" />
             {!isCollapsed && "Logout"}
           </button>
         </div>

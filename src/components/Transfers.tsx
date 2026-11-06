@@ -520,7 +520,7 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
                         type="button"
                         variant="ghost"
                         size="icon"
-                        className={`text-red-500 hover:bg-red-500/10 hover:text-red-600 shrink-0 ${index === 0 ? 'mb-[2px]' : ''}`}
+                        className={`text-red-500 hover:bg-red-500/10 hover:text-red-600 shrink-0 ${index === 0 ? 'mb-0.5' : ''}`}
                         onClick={() => setTransferItems(transferItems.filter((_, i) => i !== index))}
                       >
                         <X className="w-4 h-4" />
@@ -562,7 +562,7 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
             <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
               {/* Facility Filter */}
               <Select value={warehouseFilter} onValueChange={setWarehouseFilter}>
-                <SelectTrigger className="h-9 w-full sm:w-[180px] text-xs">
+                <SelectTrigger className="h-9 w-full sm:w-45 text-xs">
                   <SelectValue placeholder="All Facilities">
                     {warehouseFilter === 'all'
                       ? 'All Facilities'
@@ -579,7 +579,7 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
 
               {/* Status Filter */}
               <Select value={statusFilter} onValueChange={setStatusFilter}>
-                <SelectTrigger className="h-9 w-full sm:w-[150px] text-xs">
+                <SelectTrigger className="h-9 w-full sm:w-37.5 text-xs">
                   <SelectValue placeholder="All Statuses">
                     {statusFilter === 'all'
                       ? 'All Statuses'
@@ -745,12 +745,12 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
           <Table>
             <TableHeader className="bg-muted/50">
               <TableRow>
-                <TableHead className="text-[10px] font-bold uppercase tracking-widest min-w-[120px]">Movement ID</TableHead>
-                <TableHead className="text-[10px] font-bold uppercase tracking-widest min-w-[170px]">Asset Details</TableHead>
-                <TableHead className="text-[10px] font-bold uppercase tracking-widest min-w-[200px]">Traffic Flow</TableHead>
-                <TableHead className="text-[10px] font-bold uppercase tracking-widest min-w-[150px]">Dispatch Proof</TableHead>
-                <TableHead className="text-[10px] font-bold uppercase tracking-widest min-w-[140px]">Operational Status</TableHead>
-                <TableHead className="text-[10px] font-bold uppercase tracking-widest text-center min-w-[180px]">Actions</TableHead>
+                <TableHead className="text-[10px] font-bold uppercase tracking-widest min-w-30">Movement ID</TableHead>
+                <TableHead className="text-[10px] font-bold uppercase tracking-widest min-w-42.5">Asset Details</TableHead>
+                <TableHead className="text-[10px] font-bold uppercase tracking-widest min-w-50">Traffic Flow</TableHead>
+                <TableHead className="text-[10px] font-bold uppercase tracking-widest min-w-37.5">Dispatch Proof</TableHead>
+                <TableHead className="text-[10px] font-bold uppercase tracking-widest min-w-35">Operational Status</TableHead>
+                <TableHead className="text-[10px] font-bold uppercase tracking-widest text-center min-w-45">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -783,7 +783,7 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
                     <TableCell>
                       {t.driverName || t.vehiclePlate ? (
                         <div className="flex flex-col text-[11px]">
-                          <span className="font-medium text-foreground truncate max-w-[140px]">{t.driverName || 'Driver'}</span>
+                          <span className="font-medium text-foreground truncate max-w-35">{t.driverName || 'Driver'}</span>
                           {t.vehiclePlate && <span className="font-mono text-[10px] text-muted-foreground">{t.vehiclePlate}</span>}
                         </div>
                       ) : (

@@ -26,10 +26,10 @@ function MixedPricing({ sections, baseline, scope }: { sections: PricelistSectio
       className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium text-amber-700 outline-offset-2 focus-visible:outline-2 focus-visible:outline-ring dark:text-amber-400">
       <TriangleAlert className="h-4 w-4" aria-hidden="true" />Mixed pricing
     </Tooltip.Trigger>
-    <Tooltip.Portal><Tooltip.Positioner side="bottom" align="start" sideOffset={6} className="z-[100]">
+    <Tooltip.Portal><Tooltip.Positioner side="bottom" align="start" sideOffset={6} className="z-100">
       <Tooltip.Popup className="max-h-72 w-80 max-w-[90vw] overflow-y-auto rounded-lg border bg-popover p-3 text-sm text-popover-foreground shadow-md">
         <p className="font-semibold">Different from {scope} pricing ({labels[baseline]})</p>
-        <ul className="mt-2 space-y-2">{differences.map(({ section, item }, index) => <li key={`${item.productId}-${index}`} className="break-words">
+        <ul className="mt-2 space-y-2">{differences.map(({ section, item }, index) => <li key={`${item.productId}-${index}`} className="wrap-break-word">
           {scope === 'master' && <span className="block text-xs text-muted-foreground">{section}</span>}
           <span>{item.name} ({item.sku}) — <b>{labels[item.priceType]}</b></span>
         </li>)}</ul>
@@ -98,7 +98,7 @@ export function PricelistBuilder({ initial, products, stockMap, close, save, pre
     setBusy(true); setError('');
     try { await save(build(), draft); } catch { setError('Could not save this pricelist to the database. Your changes are still open; please try again.'); } finally { setBusy(false); }
   };
-  return <Dialog open onOpenChange={open => { if (!open && !busy) close(); }}><DialogContent className="max-h-[94vh] w-[96vw] overflow-y-auto sm:!max-w-[96vw] lg:!max-w-[96vw]">
+  return <Dialog open onOpenChange={open => { if (!open && !busy) close(); }}><DialogContent className="max-h-[94vh] w-[96vw] overflow-y-auto sm:max-w-[96vw]! lg:max-w-[96vw]!">
     <DialogHeader><DialogTitle>{initial ? 'Edit Pricelist' : 'Pricelist Builder'}</DialogTitle><DialogDescription>Create headings, add database products, and arrange your pricelist.</DialogDescription></DialogHeader>
     <fieldset disabled={busy} className="min-w-0 space-y-5">
       <div className="grid gap-4 sm:grid-cols-2"><label className="space-y-2">Pricelist name<Input value={name} onChange={e => setName(e.target.value)} placeholder="Enter pricelist name" /></label><div className="space-y-2"><p>Master price scheme</p><div className="flex flex-wrap items-center gap-2"><PriceSelect value={master} onChange={v => setMaster(v || 'base')} promo={!!items.length && items.every(i => products.find(p => p.id === i.productId)?.promoPrice != null)} mainOnly={mainOnly} /><MixedPricing sections={resolved} baseline={master} scope="master" /></div><p className="text-xs text-muted-foreground">Sections and items follow this unless overridden.</p><Button variant="outline" onClick={() => setSections(old => old.map(s => ({ ...s, priceType: undefined, items: s.items.map(i => ({ ...i, priceOverride: undefined })) })))}>Apply master to all</Button></div></div>

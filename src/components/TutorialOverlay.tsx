@@ -237,7 +237,7 @@ export const TutorialOverlay = ({ open, onOpenChange }: { open: boolean, onOpenC
 
                     {/* Video Placeholder */}
                     <div className="bg-zinc-950 rounded-2xl overflow-hidden border border-zinc-200 aspect-video flex flex-col items-center justify-center relative group cursor-pointer hover:border-zinc-400 transition-all">
-                       <div className="absolute inset-0 bg-gradient-to-b from-zinc-900/80 to-zinc-950/95" />
+                       <div className="absolute inset-0 bg-linear-to-b from-zinc-900/80 to-zinc-950/95" />
                        <div className="relative z-10 flex flex-col items-center gap-4">
                           <div className="w-16 h-16 rounded-full bg-white/10 border-2 border-white/20 flex items-center justify-center group-hover:bg-white/20 group-hover:scale-110 transition-all">
                              <Play className="w-6 h-6 text-white ml-0.5" />

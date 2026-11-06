@@ -87,7 +87,7 @@ export const About = () => {
                     { phase: 'Phase 3', title: 'Mobile Fulfillment', desc: 'Photo Validation & Real-time GPS Tracking.' },
                   ].map((item, i) => (
                     <div key={i} className="flex gap-6 items-start">
-                      <span className="text-[10px] font-black uppercase text-zinc-400 pt-1.5 min-w-[60px]">{item.phase}</span>
+                      <span className="text-[10px] font-black uppercase text-zinc-400 pt-1.5 min-w-15">{item.phase}</span>
                       <div>
                         <h4 className="text-lg font-black tracking-tight text-zinc-900">{item.title}</h4>
                         <p className="text-zinc-500 font-medium">{item.desc}</p>
@@ -100,7 +100,7 @@ export const About = () => {
             
             <div className="pt-24 flex justify-center">
               <Link to="/login">
-                <Button size="lg" className="h-14 px-10 bg-zinc-900 text-white font-black uppercase tracking-widest text-sm hover:translate-y-[-2px] transition-all">
+                <Button size="lg" className="h-14 px-10 bg-zinc-900 text-white font-black uppercase tracking-widest text-sm hover:translate-y-0.5` transition-all">
                   Join the Network
                 </Button>
               </Link>

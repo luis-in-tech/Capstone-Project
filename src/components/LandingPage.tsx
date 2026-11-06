@@ -81,7 +81,7 @@ export const LandingPage = () => {
                 </p>
                 <div className="flex flex-col sm:flex-row gap-4">
                   <Link to="/onboarding">
-                    <Button size="lg" className="h-14 px-8 bg-zinc-900 text-white font-black uppercase tracking-widest text-sm hover:translate-y-[-2px] transition-all shadow-xl shadow-zinc-200 group">
+                    <Button size="lg" className="h-14 px-8 bg-zinc-900 text-white font-black uppercase tracking-widest text-sm hover:-translate-y-0.5 transition-all shadow-xl shadow-zinc-200 group">
                       Initialize System <ArrowRight className="ml-2 w-4 h-4 group-hover:translate-x-1 transition-transform" />
                     </Button>
                   </Link>
@@ -107,7 +107,7 @@ export const LandingPage = () => {
                 transition={{ duration: 1 }}
                 className="absolute inset-0 flex items-center justify-center"
               >
-                <Warehouse className="w-[800px] h-[800px] text-zinc-900" />
+                <Warehouse className="w-200 h-200 text-zinc-900" />
               </motion.div>
               <div className="absolute top-20 right-20 w-80 h-80 bg-zinc-100 rounded-3xl border border-zinc-200 -rotate-12 shadow-2xl flex items-center justify-center p-8 overflow-hidden">
                 <div className="w-full space-y-4 opacity-50">

@@ -62,7 +62,7 @@ function Choice({ id, label, value, onChange, options, placeholder = 'Select an 
             </span>
             <ChevronDown className="size-4 shrink-0 text-muted-foreground" />
           </PopoverTrigger>
-          <PopoverContent className="w-[var(--anchor-width,320px)] min-w-[280px] p-2" align="start">
+          <PopoverContent className="w-(--anchor-width,320px) min-w-70 p-2" align="start">
             <Input
               autoFocus
               aria-label={searchPlaceholder}
@@ -737,7 +737,7 @@ export function InventoryMovement() {
             <Button variant="ghost" className="h-10" onClick={() => { setSearch(''); setTypeFilter('all'); setWarehouseFilter('all'); setSupplierFilter('all'); setStatusFilter('all'); }}>Reset filters</Button>
           </div>
         </div>
-        <Table><TableHeader className="bg-muted/40"><TableRow>{['Movement ID', 'Type', 'Supplier / Source', 'Warehouse / Destination', 'Items', 'Total Value', 'Status', 'Date & Time', 'Recorded By', 'Actions'].map(label => <TableHead key={label} className={`whitespace-nowrap text-[10px] font-bold uppercase tracking-wide ${label === 'Actions' ? 'text-center min-w-[80px]' : ''}`}>{label}</TableHead>)}</TableRow></TableHeader>
+        <Table><TableHeader className="bg-muted/40"><TableRow>{['Movement ID', 'Type', 'Supplier / Source', 'Warehouse / Destination', 'Items', 'Total Value', 'Status', 'Date & Time', 'Recorded By', 'Actions'].map(label => <TableHead key={label} className={`whitespace-nowrap text-[10px] font-bold uppercase tracking-wide ${label === 'Actions' ? 'text-center min-w-20' : ''}`}>{label}</TableHead>)}</TableRow></TableHeader>
           <TableBody>{filtered.map(movement => <TableRow key={movement.id}>
             <TableCell><button className="whitespace-nowrap font-mono text-xs font-semibold hover:underline focus-visible:outline-2" onClick={() => setSelected(movement)}>{movement.movementNumber}</button></TableCell><TableCell><TypeBadge external={movement.type === 'external'} /></TableCell>
             <TableCell className="min-w-36 text-sm">{movement.type === 'external' ? movement.supplierName : movement.sourceWarehouseName}</TableCell><TableCell className="min-w-36 text-sm">{movement.destinationWarehouseName}</TableCell>
