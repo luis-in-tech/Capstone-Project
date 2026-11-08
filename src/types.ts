@@ -24,9 +24,13 @@ export interface StaffDelegation {
 
 export type MovementAccess = 'both' | 'external' | 'internal' | 'none';
 export type SupplyChainView = 'customers' | 'suppliers' | 'warehouses';
+export type PriceAccess = 'all' | 'selling_no_cost' | 'main_only';
+export type FinancialsAccess = 'full' | 'expense_only' | 'none';
 export interface StaffPermissions {
   inventory: 'view' | 'adjust';
   pricelist: 'view' | 'edit';
+  priceAccess?: PriceAccess;
+  financials?: FinancialsAccess;
   orders: 'none' | 'view' | 'create';
   movementView: MovementAccess;
   movementCreate: MovementAccess;
@@ -61,6 +65,8 @@ export interface Product {
   supplierId?: string;
   locationAisle?: string;
   locationBin?: string;
+  unit?: string;
+  units?: number | string;
   createdAt: any;
   updatedAt: any;
 }
@@ -106,6 +112,7 @@ export interface Order {
   skus?: string[];
   totalAmount: number;
   amountPaid?: number;
+  remainingBalance?: number;
   paymentStatus: PaymentStatus;
   deliveryRegion: string;
   deliveryCity?: string;
@@ -119,6 +126,7 @@ export interface Order {
     quantity: number;
     receivedDate?: string;
   }>;
+  receiptDetails?: any;
   createdAt: any;
   updatedAt: any;
 }
@@ -188,6 +196,9 @@ export interface OrderItem {
   subtotal: number;
   locationAisle?: string;
   locationBin?: string;
+  unit?: string;
+  units?: number | string;
+  entryDetails?: any;
 }
 
 export interface Expense {

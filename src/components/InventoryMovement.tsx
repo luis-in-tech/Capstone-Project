@@ -5,18 +5,19 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { ReceiptBatchLabels } from './ReceiptBatchLabels';
 import { receiptDateToday } from '../lib/receiptBatches';
-import { DownloadSimpleIcon as ArrowDownToLine, ArrowRightIcon as ArrowRight, ArrowsLeftRightIcon as ArrowRightLeft, CheckIcon as Check, CheckCircleIcon as CheckCircle2, CaretLeftIcon as ChevronLeft, ClockIcon as Clock3, EyeIcon as Eye, ClockCounterClockwiseIcon as History, SpinnerGapIcon as Loader2, PackageIcon as Package, PlusIcon as Plus, MagnifyingGlassIcon as Search, TrashIcon as Trash2, UserIcon as UserRound } from '@phosphor-icons/react';
+import { DownloadSimpleIcon as ArrowDownToLine, ArrowRightIcon as ArrowRight, ArrowsLeftRightIcon as ArrowRightLeft, CheckIcon as Check, CheckCircleIcon as CheckCircle2, CaretDownIcon as ChevronDown, CaretLeftIcon as ChevronLeft, ClockIcon as Clock3, EyeIcon as Eye, ClockCounterClockwiseIcon as History, SpinnerGapIcon as Loader2, PackageIcon as Package, PlusIcon as Plus, MagnifyingGlassIcon as Search, TrashIcon as Trash2, UserIcon as UserRound } from '@phosphor-icons/react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { useAuth } from '../hooks/useAuth';
 import { supabase } from '../lib/supabase';
-import { addDoc, collection, db, doc, onSnapshot, setDoc, updateDoc } from '../lib/supabaseAdapter';
+import { addDoc, collection, db, doc, getDoc, onSnapshot, setDoc, updateDoc } from '../lib/supabaseAdapter';
 import { availableStock, newMovementDraft, purchaseTotal, validateMovement, type InventoryMovementRecord, type MovementDraft, type MovementLine } from '../lib/inventoryMovement';
 import type { InventoryItem, Product, Warehouse } from '../types';
 import { Transfers } from './Transfers';
@@ -26,12 +27,80 @@ const money = (amount: number) => new Intl.NumberFormat('en-PH', { style: 'curre
 const dateTime = (date: string) => new Date(date).toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Manila' });
 type Option = { id: string; name: string };
 
-function Choice({ id, label, value, onChange, options, placeholder = 'Select an option' }: {
-  id: string; label: string; value: string; onChange: (value: string) => void; options: Option[]; placeholder?: string;
+function Choice({ id, label, value, onChange, options, placeholder = 'Select an option', searchable = false, searchPlaceholder = 'Search…' }: {
+  id: string; label: string; value: string; onChange: (value: string) => void; options: Option[]; placeholder?: string; searchable?: boolean; searchPlaceholder?: string;
 }) {
   const isUuid = (val?: string | null) => Boolean(val && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val));
   const selectedOption = options.find(option => option.id === value || option.name === value);
   const displayText = selectedOption?.name ?? (isUuid(value) ? undefined : (value && value !== 'all' ? value : undefined));
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState('');
+
+  if (searchable) {
+    const filteredOptions = options.filter(option =>
+      option.name.toLowerCase().includes(search.trim().toLowerCase())
+    );
+
+    return (
+      <div className="space-y-2">
+        <Label htmlFor={id} className="text-xs font-semibold">{label}</Label>
+        <Popover open={open} onOpenChange={isOpen => { setOpen(isOpen); if (!isOpen) setSearch(''); }}>
+          <PopoverTrigger
+            render={
+              <Button
+                id={id}
+                variant="outline"
+                className="w-full h-10 justify-between font-normal rounded-lg bg-background"
+              />
+            }
+            role="combobox"
+            aria-expanded={open}
+            aria-label={label}
+          >
+            <span className={`truncate ${!displayText ? 'text-muted-foreground' : 'text-foreground'}`}>
+              {displayText || placeholder}
+            </span>
+            <ChevronDown className="size-4 shrink-0 text-muted-foreground" />
+          </PopoverTrigger>
+          <PopoverContent className="w-(--anchor-width,320px) min-w-70 p-2" align="start">
+            <Input
+              autoFocus
+              aria-label={searchPlaceholder}
+              placeholder={searchPlaceholder}
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+            />
+            <div className="mt-2 max-h-60 overflow-y-auto space-y-1">
+              {filteredOptions.map(option => (
+                <button
+                  key={option.id}
+                  type="button"
+                  className="flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-sm hover:bg-muted focus:bg-muted cursor-pointer"
+                  onClick={() => {
+                    onChange(option.id);
+                    setOpen(false);
+                    setSearch('');
+                  }}
+                >
+                  <div className="min-w-0 flex-1">
+                    <span className="block truncate font-medium">{option.name}</span>
+                  </div>
+                  {(value === option.id || value === option.name) && (
+                    <Check className="size-4 shrink-0 text-primary ml-2" />
+                  )}
+                </button>
+              ))}
+              {!filteredOptions.length && (
+                <p className="p-3 text-center text-xs text-muted-foreground">
+                  No matching suppliers found.
+                </p>
+              )}
+            </div>
+          </PopoverContent>
+        </Popover>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-2">
@@ -549,49 +618,119 @@ export function InventoryMovement() {
         await setDoc(doc(db, 'inventory_movements', saved.id), dbPayload);
 
         const now = new Date().toISOString();
-        for (const item of preparedItems) {
-          if (external) {
-            const existing = inventory.find(i => i.productId === item.productId && i.warehouseId === draft.destinationWarehouseId);
-            if (existing) {
-              await updateDoc(doc(db, 'inventory', existing.id), {
-                quantity: existing.quantity + item.quantity,
-                lastUpdated: now
-              });
-            } else {
-              await addDoc(collection(db, 'inventory'), {
-                productId: item.productId,
-                warehouseId: draft.destinationWarehouseId,
-                quantity: item.quantity,
-                lastUpdated: now
-              });
-            }
-            try {
-              await addDoc(collection(db, 'stockAdjustments'), {
-                productId: item.productId,
-                warehouseId: draft.destinationWarehouseId,
-                adjustmentAmount: item.quantity,
-                reason: `${fallbackMovNumber} external receipt`,
-                recordedBy: profile?.uid || 'user',
-                timestamp: now
-              });
-            } catch (adjErr) {
-              console.warn('Stock adjustment fallback error:', adjErr);
-            }
-          } else {
-            if (draft.sourceWarehouseId) {
-              const sourceInv = inventory.find(i => i.productId === item.productId && i.warehouseId === draft.sourceWarehouseId);
-              if (sourceInv) {
-                await updateDoc(doc(db, 'inventory', sourceInv.id), {
-                  quantity: Math.max(0, sourceInv.quantity - item.quantity),
+        const rollbackActions: Array<() => Promise<void>> = [];
+
+        try {
+          for (const item of preparedItems) {
+            if (external) {
+              const existing = inventory.find(i => i.productId === item.productId && i.warehouseId === draft.destinationWarehouseId);
+              if (existing) {
+                let currentQty = existing.quantity;
+                try {
+                  const snap = await getDoc(doc(db, 'inventory', existing.id));
+                  if (snap && snap.exists()) {
+                    const snapQty = Number(snap.data()?.quantity);
+                    if (!Number.isNaN(snapQty)) currentQty = snapQty;
+                  }
+                } catch (readErr) {
+                  console.warn('Could not read live inventory quantity; falling back to local state:', readErr);
+                }
+
+                await updateDoc(doc(db, 'inventory', existing.id), {
+                  quantity: currentQty + item.quantity,
+                  lastUpdated: now
+                });
+              } else {
+                await addDoc(collection(db, 'inventory'), {
+                  productId: item.productId,
+                  warehouseId: draft.destinationWarehouseId,
+                  quantity: item.quantity,
                   lastUpdated: now
                 });
               }
               try {
                 await addDoc(collection(db, 'stockAdjustments'), {
                   productId: item.productId,
-                  warehouseId: draft.sourceWarehouseId,
-                  adjustmentAmount: -item.quantity,
-                  reason: `${fallbackMovNumber} internal transfer sent`,
+                  warehouseId: draft.destinationWarehouseId,
+                  adjustmentAmount: item.quantity,
+                  reason: `${fallbackMovNumber} external receipt`,
+                  recordedBy: profile?.uid || 'user',
+                  timestamp: now
+                });
+              } catch (adjErr) {
+                console.warn('Stock adjustment fallback error:', adjErr);
+              }
+            } else {
+              if (draft.sourceWarehouseId) {
+                const sourceInv = inventory.find(i => i.productId === item.productId && i.warehouseId === draft.sourceWarehouseId);
+                if (sourceInv) {
+                  let currentSrcQty = sourceInv.quantity;
+                  try {
+                    const snap = await getDoc(doc(db, 'inventory', sourceInv.id));
+                    if (snap && snap.exists()) {
+                      const snapQty = Number(snap.data()?.quantity);
+                      if (!Number.isNaN(snapQty)) currentSrcQty = snapQty;
+                    }
+                  } catch (readErr) {
+                    console.warn('Could not read live source inventory quantity; falling back to local state:', readErr);
+                  }
+
+                  await updateDoc(doc(db, 'inventory', sourceInv.id), {
+                    quantity: Math.max(0, currentSrcQty - item.quantity),
+                    lastUpdated: now
+                  });
+
+                  rollbackActions.push(async () => {
+                    await updateDoc(doc(db, 'inventory', sourceInv.id), {
+                      quantity: currentSrcQty,
+                      lastUpdated: new Date().toISOString()
+                    });
+                  });
+                }
+                try {
+                  await addDoc(collection(db, 'stockAdjustments'), {
+                    productId: item.productId,
+                    warehouseId: draft.sourceWarehouseId,
+                    adjustmentAmount: -item.quantity,
+                    reason: `${fallbackMovNumber} internal transfer sent`,
+                    recordedBy: profile?.uid || 'user',
+                    timestamp: now
+                  });
+                } catch (adjErr) {
+                  console.warn('Stock adjustment fallback error:', adjErr);
+                }
+              }
+              const destInv = inventory.find(i => i.productId === item.productId && i.warehouseId === draft.destinationWarehouseId);
+              if (destInv) {
+                let currentDestQty = destInv.quantity;
+                try {
+                  const snap = await getDoc(doc(db, 'inventory', destInv.id));
+                  if (snap && snap.exists()) {
+                    const snapQty = Number(snap.data()?.quantity);
+                    if (!Number.isNaN(snapQty)) currentDestQty = snapQty;
+                  }
+                } catch (readErr) {
+                  console.warn('Could not read live destination inventory quantity; falling back to local state:', readErr);
+                }
+
+                await updateDoc(doc(db, 'inventory', destInv.id), {
+                  quantity: currentDestQty + item.quantity,
+                  lastUpdated: now
+                });
+              } else {
+                await addDoc(collection(db, 'inventory'), {
+                  productId: item.productId,
+                  warehouseId: draft.destinationWarehouseId,
+                  quantity: item.quantity,
+                  lastUpdated: now
+                });
+              }
+              try {
+                await addDoc(collection(db, 'stockAdjustments'), {
+                  productId: item.productId,
+                  warehouseId: draft.destinationWarehouseId,
+                  adjustmentAmount: item.quantity,
+                  reason: `${fallbackMovNumber} internal transfer received`,
                   recordedBy: profile?.uid || 'user',
                   timestamp: now
                 });
@@ -599,33 +738,16 @@ export function InventoryMovement() {
                 console.warn('Stock adjustment fallback error:', adjErr);
               }
             }
-            const destInv = inventory.find(i => i.productId === item.productId && i.warehouseId === draft.destinationWarehouseId);
-            if (destInv) {
-              await updateDoc(doc(db, 'inventory', destInv.id), {
-                quantity: destInv.quantity + item.quantity,
-                lastUpdated: now
-              });
-            } else {
-              await addDoc(collection(db, 'inventory'), {
-                productId: item.productId,
-                warehouseId: draft.destinationWarehouseId,
-                quantity: item.quantity,
-                lastUpdated: now
-              });
-            }
+          }
+        } catch (itemErr) {
+          for (const rollback of rollbackActions.reverse()) {
             try {
-              await addDoc(collection(db, 'stockAdjustments'), {
-                productId: item.productId,
-                warehouseId: draft.destinationWarehouseId,
-                adjustmentAmount: item.quantity,
-                reason: `${fallbackMovNumber} internal transfer received`,
-                recordedBy: profile?.uid || 'user',
-                timestamp: now
-              });
-            } catch (adjErr) {
-              console.warn('Stock adjustment fallback error:', adjErr);
+              await rollback();
+            } catch (rbErr) {
+              console.error('Compensation rollback error:', rbErr);
             }
           }
+          throw itemErr;
         }
 
         setMovements(prev => [saved, ...prev.filter(item => item.id !== saved.id)]);
@@ -668,7 +790,7 @@ export function InventoryMovement() {
             <Button variant="ghost" className="h-10" onClick={() => { setSearch(''); setTypeFilter('all'); setWarehouseFilter('all'); setSupplierFilter('all'); setStatusFilter('all'); }}>Reset filters</Button>
           </div>
         </div>
-        <Table><TableHeader className="bg-muted/40"><TableRow>{['Movement ID', 'Type', 'Supplier / Source', 'Warehouse / Destination', 'Items', 'Total Value', 'Status', 'Date & Time', 'Recorded By', 'Actions'].map(label => <TableHead key={label} className={`whitespace-nowrap text-[10px] font-bold uppercase tracking-wide ${label === 'Actions' ? 'text-center min-w-[80px]' : ''}`}>{label}</TableHead>)}</TableRow></TableHeader>
+        <Table><TableHeader className="bg-muted/40"><TableRow>{['Movement ID', 'Type', 'Supplier / Source', 'Warehouse / Destination', 'Items', 'Total Value', 'Status', 'Date & Time', 'Recorded By', 'Actions'].map(label => <TableHead key={label} className={`whitespace-nowrap text-[10px] font-bold uppercase tracking-wide ${label === 'Actions' ? 'text-center min-w-20' : ''}`}>{label}</TableHead>)}</TableRow></TableHeader>
           <TableBody>{filtered.map(movement => <TableRow key={movement.id}>
             <TableCell><button className="whitespace-nowrap font-mono text-xs font-semibold hover:underline focus-visible:outline-2" onClick={() => setSelected(movement)}>{movement.movementNumber}</button></TableCell><TableCell><TypeBadge external={movement.type === 'external'} /></TableCell>
             <TableCell className="min-w-36 text-sm">{movement.type === 'external' ? movement.supplierName : movement.sourceWarehouseName}</TableCell><TableCell className="min-w-36 text-sm">{movement.destinationWarehouseName}</TableCell>
@@ -690,7 +812,7 @@ export function InventoryMovement() {
             <div className="grid gap-6 lg:grid-cols-[1fr_280px]">
               <div className="space-y-6">
                 <section className="space-y-4"><h3 className="text-sm font-semibold">01 / {external ? 'Receipt details' : 'Transfer route'}</h3><div className="grid gap-4 sm:grid-cols-2">
-                  {external ? <Choice id="movement-supplier" label="Supplier *" value={draft.supplierId} onChange={supplierId => updateDraft({ supplierId })} options={supplierOptions} placeholder="Select supplier" /> : <Choice id="movement-source" label="Source warehouse *" value={draft.sourceWarehouseId} onChange={sourceWarehouseId => updateDraft({ sourceWarehouseId })} options={activeWarehouses} placeholder="Select source" />}
+                  {external ? <Choice id="movement-supplier" label="Supplier *" value={draft.supplierId} onChange={supplierId => updateDraft({ supplierId })} options={supplierOptions} placeholder="Search existing suppliers" searchable searchPlaceholder="Search supplier name…" /> : <Choice id="movement-source" label="Source warehouse *" value={draft.sourceWarehouseId} onChange={sourceWarehouseId => updateDraft({ sourceWarehouseId })} options={activeWarehouses} placeholder="Select source" />}
                   <Choice id="movement-destination" label={external ? 'Receiving warehouse *' : 'Destination warehouse *'} value={draft.destinationWarehouseId} onChange={destinationWarehouseId => updateDraft({ destinationWarehouseId })} options={activeWarehouses.filter(warehouse => external || warehouse.id !== draft.sourceWarehouseId)} placeholder={external ? 'Select receiving warehouse' : 'Select destination'} />
                   {zonesReady && <>{!external && <Choice id="movement-source-zone" label="Source zone (optional)" value={draft.sourceZoneId || 'unassigned'} onChange={sourceZoneId => updateDraft({ sourceZoneId: sourceZoneId === 'unassigned' ? '' : sourceZoneId })} options={zoneOptions(draft.sourceWarehouseId)} />}<Choice id="movement-destination-zone" label="Destination zone (optional)" value={draft.destinationZoneId || 'unassigned'} onChange={destinationZoneId => updateDraft({ destinationZoneId: destinationZoneId === 'unassigned' ? '' : destinationZoneId })} options={zoneOptions(draft.destinationWarehouseId)} /></>}
                   {external && <div className="space-y-2 sm:col-span-2"><Label htmlFor="receipt-date">Received date *</Label><Input id="receipt-date" type="date" required max={receiptDateToday()} value={draft.receivedDate || ''} onChange={event => updateDraft({ receivedDate: event.target.value })} /><p className="text-xs text-muted-foreground">Batch sequence resets per product on this date.</p></div>}
@@ -709,7 +831,7 @@ export function InventoryMovement() {
               </div>
               <aside className="h-fit space-y-5 rounded-xl border bg-muted/25 p-5 lg:sticky lg:top-0"><h3 className="text-sm font-semibold">Movement summary</h3><TypeBadge external={external} /><div className="space-y-3 text-xs"><div className="flex justify-between gap-3"><span className="text-muted-foreground">Products</span><span>{draft.items.length}</span></div><div className="flex justify-between gap-3"><span className="text-muted-foreground">Total units</span><span>{Number.isFinite(units) ? units : '—'}</span></div><div className="border-t pt-3"><p className="text-muted-foreground">{external ? 'Purchase value' : 'Purchase expense'}</p><p className="mt-1 text-2xl font-semibold">{external ? Number.isFinite(total) ? money(total) : '—' : 'None'}</p></div></div><p className="rounded-lg bg-background p-3 text-xs leading-relaxed text-muted-foreground">{external ? 'Confirmation adds stock to the receiving warehouse and records this total as a purchase expense.' : 'Confirmation deducts stock from the source and adds it to the destination. No purchase expense is recorded.'}</p><div className="space-y-3 border-t pt-4 text-xs"><p className="flex items-center gap-2"><UserRound className="size-3.5 text-muted-foreground" />{profile?.displayName || profile?.email}</p><p className="flex items-start gap-2 text-muted-foreground"><Clock3 className="mt-0.5 size-3.5 shrink-0" />Movement ID and date/time are assigned automatically on confirmation.</p></div></aside>
             </div>
-          </div> : <div className="space-y-5"><div className="flex flex-wrap items-center justify-between gap-3"><TypeBadge external={external} /><span className="text-xs text-muted-foreground">{draft.items.length} products · {units} units</span></div><div className="grid gap-4 rounded-xl border bg-muted/20 p-5 sm:grid-cols-2"><div><p className="text-xs text-muted-foreground">{external ? 'Supplier' : 'Source warehouse'}</p><p className="mt-1 font-semibold">{external ? supplierName : warehouseName(draft.sourceWarehouseId)}</p></div><div><p className="text-xs text-muted-foreground">{external ? 'Receiving warehouse' : 'Destination warehouse'}</p><p className="mt-1 font-semibold">{warehouseName(draft.destinationWarehouseId)}</p></div>{external ? <div><p className="text-xs text-muted-foreground">Invoice number</p><p className="mt-1 font-medium">{draft.invoiceNumber}</p></div> : (draft.driverName || draft.vehiclePlate) && <div><p className="text-xs text-muted-foreground">Transport details</p><p className="mt-1">{[draft.driverName, draft.vehiclePlate].filter(Boolean).join(' · ')}</p></div>}<div><p className="text-xs text-muted-foreground">Recorded by</p><p className="mt-1 font-medium">{profile?.displayName || profile?.email}</p></div></div><ItemsSummary items={draft.items} external={external} />{external && <div className="space-y-3"><p className="text-sm">Received date: {draft.receivedDate}</p>{draft.items.map(item => <div key={item.productId} className="space-y-1"><Label htmlFor={`lot-${item.productId}`}>Supplier lot ? {item.name} (optional)</Label><Input id={`lot-${item.productId}`} value={item.supplierLot || ''} onChange={event => updateLine(item.productId, { supplierLot: event.target.value })} /></div>)}</div>}{draft.notes.trim() && <div><p className="mb-1 text-xs text-muted-foreground">Notes</p><p className="whitespace-pre-wrap wrap-break-word text-sm">{draft.notes}</p></div>}<div className="rounded-xl border border-emerald-200 bg-emerald-50/60 p-5 dark:border-emerald-900 dark:bg-emerald-950/30"><h3 className="flex items-center gap-2 font-semibold"><CheckCircle2 className="size-4 text-emerald-600" />What happens on confirmation</h3><p className="mt-2 text-sm">{external ? `${units} units will be added to ${warehouseName(draft.destinationWarehouseId)}. A purchase expense of ${money(total)} will be recorded.` : `${units} units will be deducted from ${warehouseName(draft.sourceWarehouseId)} and added to ${warehouseName(draft.destinationWarehouseId)}.`}</p><p className="mt-2 text-xs text-muted-foreground">A unique Movement ID and system date/time will be saved with this record. Confirmed movements cannot be edited here.</p></div></div>}
+          </div> : <div className="space-y-5"><div className="flex flex-wrap items-center justify-between gap-3"><TypeBadge external={external} /><span className="text-xs text-muted-foreground">{draft.items.length} products · {units} units</span></div><div className="grid gap-4 rounded-xl border bg-muted/20 p-5 sm:grid-cols-2"><div><p className="text-xs text-muted-foreground">{external ? 'Supplier' : 'Source warehouse'}</p><p className="mt-1 font-semibold">{external ? supplierName : warehouseName(draft.sourceWarehouseId)}</p></div><div><p className="text-xs text-muted-foreground">{external ? 'Receiving warehouse' : 'Destination warehouse'}</p><p className="mt-1 font-semibold">{warehouseName(draft.destinationWarehouseId)}</p></div>{external ? <div><p className="text-xs text-muted-foreground">Invoice number</p><p className="mt-1 font-medium">{draft.invoiceNumber}</p></div> : (draft.driverName || draft.vehiclePlate) && <div><p className="text-xs text-muted-foreground">Transport details</p><p className="mt-1">{[draft.driverName, draft.vehiclePlate].filter(Boolean).join(' · ')}</p></div>}<div><p className="text-xs text-muted-foreground">Recorded by</p><p className="mt-1 font-medium">{profile?.displayName || profile?.email}</p></div></div><ItemsSummary items={draft.items} external={external} />{external && <div className="space-y-3 rounded-xl border bg-muted/20 p-4"><div className="flex items-center justify-between"><p className="text-xs font-semibold">Received date: <span className="font-normal text-muted-foreground">{draft.receivedDate}</span></p><span className="text-[11px] text-muted-foreground">Traceability (Optional)</span></div>{draft.items.map(item => <div key={item.productId} className="space-y-1.5"><Label htmlFor={`lot-${item.productId}`} className="text-xs font-medium">Batch / Lot Number (optional) · <span className="text-muted-foreground">{item.name}</span></Label><Input id={`lot-${item.productId}`} placeholder="e.g. BATCH-2026-X1, LOT-009" value={item.supplierLot || ''} onChange={event => updateLine(item.productId, { supplierLot: event.target.value })} /><p className="text-[11px] text-muted-foreground">Optional manufacturer batch or lot code from packaging for warranty and inventory traceability.</p></div>)}</div>}{draft.notes.trim() && <div><p className="mb-1 text-xs text-muted-foreground">Notes</p><p className="whitespace-pre-wrap wrap-break-word text-sm">{draft.notes}</p></div>}<div className="rounded-xl border border-emerald-200 bg-emerald-50/60 p-5 dark:border-emerald-900 dark:bg-emerald-950/30"><h3 className="flex items-center gap-2 font-semibold"><CheckCircle2 className="size-4 text-emerald-600" />What happens on confirmation</h3><p className="mt-2 text-sm">{external ? `${units} units will be added to ${warehouseName(draft.destinationWarehouseId)}. A purchase expense of ${money(total)} will be recorded.` : `${units} units will be deducted from ${warehouseName(draft.sourceWarehouseId)} and added to ${warehouseName(draft.destinationWarehouseId)}.`}</p><p className="mt-2 text-xs text-muted-foreground">A unique Movement ID and system date/time will be saved with this record. Confirmed movements cannot be edited here.</p></div></div>}
         </div>
         {step === 'review' && zonesReady && <div className="border-t bg-muted/20 px-6 py-3 text-xs text-muted-foreground">{!external && <>Source zone: <strong>{zones.find(z => z.id === draft.sourceZoneId)?.name || 'Unassigned'}</strong> · </>}Destination zone: <strong>{zones.find(z => z.id === draft.destinationZoneId)?.name || 'Unassigned'}</strong></div>}
         {formError && <div role="alert" className="shrink-0 border-t border-destructive/30 bg-destructive/5 px-6 py-3 text-sm text-destructive">{formError}</div>}

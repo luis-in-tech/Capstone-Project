@@ -228,7 +228,7 @@ export function ITILIncidentConsole({
                   <TableCell>
                     <div className="flex flex-col">
                       <span className="text-xs font-bold">{inc.orderNumber || 'General Stock'}</span>
-                      <span className="text-[10px] text-muted-foreground truncate max-w-[180px]">
+                      <span className="text-[10px] text-muted-foreground truncate max-w-45">
                         {inc.clientName || inc.deliveryLocation}
                       </span>
                     </div>

@@ -17,28 +17,29 @@
 
 import { Router } from 'express';
 import { validatePath, validateRenamePaths } from '../middleware/validatePath';
+import { requireRole } from '../middleware/rbac.middleware';
 import * as filesCtrl from '../controllers/files.controller';
 
 const router = Router();
 
 // ─── Routes ───────────────────────────────────────────────────────────────────
 
-// GET /tree — no path guard needed (returns the entire configured root)
-router.get('/tree', filesCtrl.getTree);
+// GET /tree — restricted to admin or cmo
+router.get('/tree', requireRole(['admin', 'cmo']), filesCtrl.getTree);
 
-// GET /read?path=src%2FApp.tsx — path guard validates the query param
-router.get('/read', validatePath, filesCtrl.readFile);
+// GET /read?path=src%2FApp.tsx — restricted to admin or cmo, path guard validates query param
+router.get('/read', requireRole(['admin', 'cmo']), validatePath, filesCtrl.readFile);
 
-// POST /write — path guard validates req.body.path
-router.post('/write', validatePath, filesCtrl.writeFile);
+// POST /write — restricted to admin, path guard validates req.body.path
+router.post('/write', requireRole(['admin', 'cmo']), validatePath, filesCtrl.writeFile);
 
-// POST /mkdir — path guard validates req.body.path
-router.post('/mkdir', validatePath, filesCtrl.makeDirectory);
+// POST /mkdir — restricted to admin, path guard validates req.body.path
+router.post('/mkdir', requireRole(['admin', 'cmo']), validatePath, filesCtrl.makeDirectory);
 
-// PUT /rename — dual-path guard validates both oldPath and newPath in body
-router.put('/rename', validateRenamePaths, filesCtrl.renameEntry);
+// PUT /rename — restricted to admin, dual-path guard validates both paths
+router.put('/rename', requireRole(['admin', 'cmo']), validateRenamePaths, filesCtrl.renameEntry);
 
-// DELETE /delete — accepts path from query string OR body
-router.delete('/delete', validatePath, filesCtrl.deleteEntry);
+// DELETE /delete — restricted to admin, accepts path from query string or body
+router.delete('/delete', requireRole(['admin', 'cmo']), validatePath, filesCtrl.deleteEntry);
 
 export default router;

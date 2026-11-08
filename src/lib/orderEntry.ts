@@ -114,6 +114,7 @@ export interface ExistingCustomer {
   terms?: string;
   phone?: string;
   contact?: string;
+  paymentNotes?: string;
 }
 
 // Use the same name grouping as Supply Chain, limited to orders visible to this user.
@@ -127,6 +128,7 @@ export function existingCustomers(
     terms?: string;
     phone?: string;
     contact?: string;
+    paymentNotes?: string;
   }> = [],
 ): ExistingCustomer[] {
   const customers = new Map<string, ExistingCustomer>();
@@ -161,6 +163,7 @@ export function existingCustomers(
       if (extra.terms?.trim()) item.terms = extra.terms.trim();
       if (extra.phone?.trim()) item.phone = extra.phone.trim();
       if (extra.contact?.trim()) item.contact = extra.contact.trim();
+      if (extra.paymentNotes?.trim()) item.paymentNotes = extra.paymentNotes.trim();
       customers.set(key, item);
     } else {
       if (!existing.address && extra.address?.trim()) {
@@ -171,6 +174,7 @@ export function existingCustomers(
       }
       if (extra.phone?.trim()) existing.phone = extra.phone.trim();
       if (extra.contact?.trim()) existing.contact = extra.contact.trim();
+      if (extra.paymentNotes?.trim()) existing.paymentNotes = extra.paymentNotes.trim();
     }
   }
 

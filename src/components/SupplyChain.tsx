@@ -197,6 +197,19 @@ export function SupplyChain() {
   const categories = Array.from(new Set([...managedCategories.map(item => item.name), ...products.map(product => product.category).filter(Boolean)])).sort();
   const suppliers = Array.from(new Set([...managedSuppliers.map(item => item.name), ...products.map(product => product.supplier).filter(Boolean) as string[]])).sort();
 
+  const combinedSuppliers: NamedOption[] = React.useMemo(() => {
+    const list = [...managedSuppliers];
+    const existingNames = new Set(managedSuppliers.map(s => s.name.toLowerCase()));
+    products.forEach(p => {
+      const sName = p.supplier?.trim();
+      if (sName && sName !== 'N/A' && !existingNames.has(sName.toLowerCase())) {
+        existingNames.add(sName.toLowerCase());
+        list.push({ id: `product-supplier:${sName.toLowerCase().replace(/\s+/g, '-')}`, name: sName });
+      }
+    });
+    return list.sort((a, b) => a.name.localeCompare(b.name));
+  }, [managedSuppliers, products]);
+
   if (!getSupplyChainViews(permissions.supplyChain).length) return null;
 
   return (
@@ -208,13 +221,13 @@ export function SupplyChain() {
         products={products}
         inventory={inventory}
         warehouses={warehouses}
-        suppliers={managedSuppliers}
+        suppliers={combinedSuppliers}
         onRemoveWarehouse={handleDeleteWarehouse}
         onRemoveSupplier={(name) => {
           const affected = products.filter(product => product.supplier === name);
           setDeletingReference({ name, type: 'supplier', affectedCount: affected.length, affectedItems: affected });
         }}
-        categoriesContent={<CategoryWorkspace products={products} inventory={inventory} warehouses={warehouses} suppliers={managedSuppliers} loading={['products', 'inventory', 'warehouses', 'suppliers'].some(table => !sourceLoaded[table])} error={Object.values(sourceErrors).some(Boolean)} onRetry={() => setSourceReload(value => value + 1)} />}
+        categoriesContent={<CategoryWorkspace products={products} inventory={inventory} warehouses={warehouses} suppliers={combinedSuppliers} loading={['products', 'inventory', 'warehouses', 'suppliers'].some(table => !sourceLoaded[table])} error={Object.values(sourceErrors).some(Boolean)} onRetry={() => setSourceReload(value => value + 1)} />}
       />
 
       <Dialog open={referenceManager !== null} onOpenChange={(open) => { if (!open) { setReferenceManager(null); setNewReferenceName(''); setEditingReferenceName(null); } }}>
@@ -282,7 +295,7 @@ export function SupplyChain() {
                   <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Affected Items:</p>
                   {deletingReference.affectedItems.map(item => (
                     <div key={item.id} className="flex items-center justify-between text-xs py-0.5">
-                      <span className="font-semibold truncate max-w-[200px]">{item.name}</span>
+                      <span className="font-semibold truncate max-w-50">{item.name}</span>
                       <span className="font-mono text-[10px] text-muted-foreground">{item.sku}</span>
                     </div>
                   ))}

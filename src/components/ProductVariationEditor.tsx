@@ -15,9 +15,9 @@ function VariantImage({ variant, label, onChange }: { variant: VariantDraft; lab
     return () => URL.revokeObjectURL(url);
   }, [variant.imageFile]);
   const source = preview || variant.photoUrl;
-  return <div className="flex items-center gap-2">
-    <label className="relative flex h-14 w-14 shrink-0 cursor-pointer items-center justify-center overflow-hidden rounded-lg border border-dashed border-border bg-muted hover:bg-muted/70 focus-within:ring-2 focus-within:ring-ring" title={source ? 'Replace variant image' : 'Add variant image'}>
-      {source ? <img src={source} alt={`${label} preview`} className="h-full w-full object-cover" /> : <ImagePlus className="h-5 w-5 text-muted-foreground" />}
+  return <div className="flex items-center justify-center gap-1">
+    <label className="relative flex h-10 w-10 shrink-0 cursor-pointer items-center justify-center overflow-hidden rounded-md border border-dashed border-border bg-muted hover:bg-muted/70 focus-within:ring-2 focus-within:ring-ring" title={source ? 'Replace variant image' : 'Add variant image'}>
+      {source ? <img src={source} alt={`${label} preview`} className="h-full w-full object-cover" /> : <ImagePlus className="h-4 w-4 text-muted-foreground" />}
       <input type="file" accept="image/*" aria-label={`${label} image`} className="absolute inset-0 h-full w-full cursor-pointer opacity-0" onChange={event => {
         const file = event.target.files?.[0];
         event.target.value = '';
@@ -26,7 +26,7 @@ function VariantImage({ variant, label, onChange }: { variant: VariantDraft; lab
         onChange({ imageFile: file });
       }} />
     </label>
-    {source && <Button type="button" variant="ghost" size="icon" aria-label={`Remove ${label} image`} onClick={() => onChange({ imageFile: undefined, photoUrl: '' })}><X className="h-4 w-4" /></Button>}
+    {source && <Button type="button" variant="ghost" size="icon" className="h-6 w-6" aria-label={`Remove ${label} image`} onClick={() => onChange({ imageFile: undefined, photoUrl: '' })}><X className="h-3 w-3" /></Button>}
   </div>;
 }
 
@@ -73,19 +73,48 @@ export function ProductVariationEditor({ value, onChange, sku, locked = false }:
           <div className="flex flex-wrap items-center gap-3"><Button type="button" variant="outline" size="sm" disabled={!bulkValid || !Object.values(bulk).some(v => v !== '') || !value.variants.some(v => v.enabled)} onClick={() => { const updates = Object.fromEntries(Object.entries(bulk).filter(([, v]) => v !== '')); onChange({ ...value, variants: value.variants.map(v => v.enabled ? { ...v, ...updates } : v) }); setApplied(`Applied to ${value.variants.filter(v => v.enabled).length} variants. You can edit individual cells below.`); }}>Apply to All Variants</Button><span className="text-xs text-muted-foreground" role="status">{applied}</span></div>
         </div>
         <div className="flex items-center justify-between"><h4 className="text-sm font-semibold">Variants</h4><span className="text-xs text-muted-foreground">{value.variants.filter(v => v.enabled).length} enabled · new variants start at 0 stock</span></div>
-        <p className="text-xs text-muted-foreground">Uncheck combinations you do not sell. Disabled variants retain their stock and history. Scroll horizontally to edit all columns.</p>
-        <div className="overflow-x-auto rounded-lg border"><Table>
-          <TableHeader><TableRow><TableHead className="min-w-28">Image</TableHead><TableHead className="min-w-44">Variant</TableHead><TableHead className="min-w-44">Variant SKU</TableHead>{variantFields.map(([key, label]) => <TableHead key={key} className="min-w-28">{label}</TableHead>)}</TableRow></TableHeader>
-          <TableBody>{value.variants.map(variant => {
-            const label = Object.values(variant.values).join(' / ');
-            const present = currentKeys.has(combinationKey(variant.values));
-            return <TableRow key={variant.id} className={!variant.enabled ? 'bg-muted/40 text-muted-foreground' : ''}>
-              <TableCell><VariantImage variant={variant} label={label} onChange={patch => onChange({ ...value, variants: value.variants.map(v => v.id === variant.id ? { ...v, ...patch } : v) })} /></TableCell>
-              <TableCell><label className="flex items-center gap-2 text-xs font-semibold"><input aria-label={`Enable ${label}`} type="checkbox" checked={variant.enabled} disabled={!present} onChange={e => onChange({ ...value, variants: value.variants.map(v => v.id === variant.id ? { ...v, enabled: e.target.checked } : v) })} />{label}</label>{!present && <span className="text-[10px]">Attribute value removed</span>}</TableCell>
-              <TableCell><Input aria-label={`${label} SKU`} value={variant.sku} onChange={e => onChange({ ...value, variants: value.variants.map(v => v.id === variant.id ? { ...v, sku: e.target.value } : v) })} /></TableCell>
-              {variantFields.map(([key, title]) => <TableCell key={key}><Input aria-label={`${label} ${title}`} type="number" min="0" step={['minStockLevel', 'reorderPoint'].includes(key) ? '1' : '0.01'} value={variant[key]} placeholder={key === 'promoPrice' ? 'None' : '0'} onChange={e => onChange({ ...value, variants: value.variants.map(v => v.id === variant.id ? { ...v, [key]: e.target.value } : v) })} /></TableCell>)}
-            </TableRow>;
-          })}</TableBody>
+        <p className="text-xs text-muted-foreground">Uncheck combinations you do not sell. Disabled variants retain their stock and history.</p>
+        <div className="rounded-lg border"><Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead className="w-14 min-w-14 px-2 text-center">Image</TableHead>
+              <TableHead className="w-36 min-w-36 px-2">Variant</TableHead>
+              <TableHead className="w-56 min-w-56 px-2">Variant SKU</TableHead>
+              {variantFields.map(([key, label]) => (
+                <TableHead key={key} className="min-w-18 px-1 text-center whitespace-nowrap">
+                  {label === 'Critical Stock' ? 'Critical' : label === 'Restock Level' ? 'Restock' : label}
+                </TableHead>
+              ))}
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {value.variants.map(variant => {
+              const label = Object.values(variant.values).join(' / ');
+              const present = currentKeys.has(combinationKey(variant.values));
+              return (
+                <TableRow key={variant.id} className={!variant.enabled ? 'bg-muted/40 text-muted-foreground' : ''}>
+                  <TableCell className="w-14 min-w-14 p-1.5 text-center">
+                    <VariantImage variant={variant} label={label} onChange={patch => onChange({ ...value, variants: value.variants.map(v => v.id === variant.id ? { ...v, ...patch } : v) })} />
+                  </TableCell>
+                  <TableCell className="w-36 min-w-36 px-2">
+                    <label className="flex items-center gap-1.5 text-xs font-semibold cursor-pointer">
+                      <input aria-label={`Enable ${label}`} type="checkbox" checked={variant.enabled} disabled={!present} onChange={e => onChange({ ...value, variants: value.variants.map(v => v.id === variant.id ? { ...v, enabled: e.target.checked } : v) })} className="rounded" />
+                      <span className="text-xs font-semibold text-foreground truncate" title={label}>{label}</span>
+                    </label>
+                    {!present && <span className="block text-[10px] text-muted-foreground">Attribute removed</span>}
+                  </TableCell>
+                  <TableCell className="w-56 min-w-56 px-2">
+                    <Input aria-label={`${label} SKU`} value={variant.sku} onChange={e => onChange({ ...value, variants: value.variants.map(v => v.id === variant.id ? { ...v, sku: e.target.value } : v) })} className="h-8 font-mono text-xs w-full" />
+                  </TableCell>
+                  {variantFields.map(([key, title]) => (
+                    <TableCell key={key} className="min-w-18 px-1">
+                      <Input aria-label={`${label} ${title}`} type="number" min="0" step={['minStockLevel', 'reorderPoint'].includes(key) ? '1' : '0.01'} value={variant[key]} placeholder={key === 'promoPrice' ? 'None' : '0'} onChange={e => onChange({ ...value, variants: value.variants.map(v => v.id === variant.id ? { ...v, [key]: e.target.value } : v) })} className="h-8 px-1.5 text-xs text-center w-full" />
+                    </TableCell>
+                  ))}
+                </TableRow>
+              );
+            })}
+          </TableBody>
         </Table></div>
       </>}
     </>}

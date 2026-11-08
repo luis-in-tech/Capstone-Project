@@ -285,8 +285,8 @@ export function DefectiveStockModal({
       toast.success(`Segregated ${qty} unit(s) into Quarantine. Return slip generated.`);
       setGeneratedTicket(ticket);
       onSuccess(ticket);
-    } catch {
-      toast.error('Failed to log defective stock exception.');
+    } catch (err: any) {
+      toast.error(err?.message || 'Failed to log defective stock exception.');
     } finally {
       setIsSubmitting(false);
     }
@@ -356,7 +356,7 @@ export function DefectiveStockModal({
                   type="button"
                   id="select-ci-trigger"
                   onClick={() => setIsProductOpen((prev) => !prev)}
-                  className={`w-full min-h-[42px] px-3 py-2 rounded-xl border text-left flex items-center justify-between gap-2 transition-all ${isProductOpen
+                  className={`w-full min-h-10.5 px-3 py-2 rounded-xl border text-left flex items-center justify-between gap-2 transition-all ${isProductOpen
                     ? 'border-amber-500 ring-2 ring-amber-500/20 bg-background'
                     : 'border-input bg-background/60 hover:bg-muted/40'
                     }`}
@@ -367,7 +367,7 @@ export function DefectiveStockModal({
                       <span className="px-2 py-0.5 rounded bg-muted font-mono font-bold text-[11px] text-foreground shrink-0 border border-border/50">
                         {selectedProduct.sku}
                       </span>
-                      <span className="font-semibold text-foreground text-xs leading-tight break-words flex-1">
+                      <span className="font-semibold text-foreground text-xs leading-tight wrap-break-word flex-1">
                         {selectedProduct.name}
                       </span>
                       {selectedProduct.category && (
@@ -444,7 +444,7 @@ export function DefectiveStockModal({
                                   <span className="font-mono font-bold text-[11px] px-1.5 py-0.5 rounded bg-muted text-foreground border border-border/50">
                                     {p.sku}
                                   </span>
-                                  <span className="text-xs font-semibold leading-tight text-foreground break-words">
+                                  <span className="text-xs font-semibold leading-tight text-foreground wrap-break-word">
                                     {p.name}
                                   </span>
                                 </div>
@@ -491,7 +491,7 @@ export function DefectiveStockModal({
                     type="button"
                     id="select-wh-trigger"
                     onClick={() => setIsWarehouseOpen((prev) => !prev)}
-                    className={`w-full min-h-[42px] px-3 py-2 rounded-xl border text-left flex items-center justify-between gap-2 transition-all ${isWarehouseOpen
+                    className={`w-full min-h-10.5 px-3 py-2 rounded-xl border text-left flex items-center justify-between gap-2 transition-all ${isWarehouseOpen
                       ? 'border-amber-500 ring-2 ring-amber-500/20 bg-background'
                       : 'border-input bg-background/60 hover:bg-muted/40'
                       }`}
@@ -598,7 +598,7 @@ export function DefectiveStockModal({
                     value={quantity}
                     disabled={isZeroStock}
                     onChange={(e) => setQuantity(e.target.value)}
-                    className={`h-[42px] text-xs rounded-xl ${isZeroStock
+                    className={`h-10.5 text-xs rounded-xl ${isZeroStock
                       ? 'opacity-50 cursor-not-allowed bg-muted/40'
                       : isQuantityExceeded
                         ? 'border-destructive ring-1 ring-destructive'
@@ -641,7 +641,7 @@ export function DefectiveStockModal({
                     value={defectReason}
                     onValueChange={(val) => setDefectReason(val as DefectiveStockTicket['defectReason'])}
                   >
-                    <SelectTrigger className="h-[42px] text-xs rounded-xl">
+                    <SelectTrigger className="h-10.5 text-xs rounded-xl">
                       <SelectValue>{defectReason}</SelectValue>
                     </SelectTrigger>
                     <SelectContent>
@@ -675,7 +675,7 @@ export function DefectiveStockModal({
                     value={supplierName}
                     onChange={(e) => setSupplierName(e.target.value)}
                     placeholder="e.g., Shimano, Giant, Active Pro Supplier"
-                    className="h-[42px] text-xs rounded-xl"
+                    className="h-10.5 text-xs rounded-xl"
                   />
                 </div>
               </div>
@@ -688,7 +688,7 @@ export function DefectiveStockModal({
                     type="file"
                     accept="image/*"
                     onChange={handlePhotoUpload}
-                    className="h-[42px] text-xs cursor-pointer rounded-xl"
+                    className="h-10.5 text-xs cursor-pointer rounded-xl"
                   />
                 </div>
                 {photoPreview && (
@@ -705,7 +705,7 @@ export function DefectiveStockModal({
                   value={notes}
                   onChange={(e) => setNotes(e.target.value)}
                   placeholder="Describe crack, bent spoke, scratches, or missing hardware..."
-                  className="h-[42px] text-xs rounded-xl"
+                  className="h-10.5 text-xs rounded-xl"
                 />
               </div>
             </div>

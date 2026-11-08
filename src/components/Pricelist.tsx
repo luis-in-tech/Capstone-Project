@@ -25,13 +25,11 @@ const GEMINI_API_KEY = (import.meta.env.VITE_GEMINI_API_KEY as string) || '';
 
 // Pre-optimized candidate vision models in priority order of stability & quota availability
 const CANDIDATE_VISION_MODELS = [
-  { ver: 'v1', model: 'gemini-3.5-flash' },
-  { ver: 'v1beta', model: 'gemini-3.5-flash' },
-  { ver: 'v1', model: 'gemini-3.6-flash' },
-  { ver: 'v1beta', model: 'gemini-3.6-flash' },
-  { ver: 'v1', model: 'gemini-3.8-flash' },
-  { ver: 'v1beta', model: 'gemini-3.8-flash' },
-  { ver: 'v1', model: 'gemini-3.7-flash' },
+  { ver: 'v1beta', model: 'gemini-1.5-flash' },
+  { ver: 'v1', model: 'gemini-1.5-flash' },
+  { ver: 'v1beta', model: 'gemini-2.0-flash' },
+  { ver: 'v1', model: 'gemini-2.0-flash' },
+  { ver: 'v1beta', model: 'gemini-1.5-pro' },
 ];
 
 /**
@@ -288,6 +286,8 @@ export function Pricelist() {
   const [scanPreviewUrl, setScanPreviewUrl] = useState('');
 
   const canEdit = permissions.pricelist === 'edit';
+  const priceAccess = profile?.role === 'admin' ? 'all' : (permissions.priceAccess || 'all');
+  const canViewWholesale = priceAccess === 'all' || priceAccess === 'selling_no_cost';
 
   const [syncing, setSyncing] = useState(false);
 
@@ -366,12 +366,11 @@ export function Pricelist() {
     if (!target) return;
     let tableRows = '';
     for (const { name: cat, items } of sectionsFor(target)) {
-      tableRows += `<tr style="background-color: #f1f5f9; font-weight: bold;"><td colspan="4" style="padding: 10px 12px; font-size: 14px; border: 1px solid #cbd5e1; color: #0f172a; text-transform: uppercase; letter-spacing: 0.5px;">${escapeHtml(cat)}</td></tr>`;
+      tableRows += `<tr style="background-color: #f1f5f9; font-weight: bold;"><td colspan="3" style="padding: 10px 12px; font-size: 14px; border: 1px solid #cbd5e1; color: #0f172a; text-transform: uppercase; letter-spacing: 0.5px;">${escapeHtml(cat)}</td></tr>`;
       for (const i of items) {
         tableRows += `<tr>
           <td style="padding: 8px 12px; border: 1px solid #e2e8f0; font-family: monospace; font-size: 12px;">${escapeHtml(i.sku)}</td>
           <td style="padding: 8px 12px; border: 1px solid #e2e8f0; font-weight: 600;">${escapeHtml(i.name)}</td>
-          <td style="padding: 8px 12px; border: 1px solid #e2e8f0; font-size: 12px; color: #475569;">${schemeLabel(i.priceType)}</td>
           <td style="padding: 8px 12px; border: 1px solid #e2e8f0; text-align: right; font-weight: bold; color: #0f172a;">₱${i.price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
         </tr>`;
       }
@@ -379,7 +378,44 @@ export function Pricelist() {
 
     const w = window.open('', '_blank');
     if (!w) return toast.error('Allow pop-ups to preview this pricelist PDF');
-    w.document.write(`<!DOCTYPE html><html><head><title>${escapeHtml(target.name)}</title><style>body{font-family:'Segoe UI',Roboto,sans-serif;padding:32px;color:#1e293b;max-width:900px;margin:0 auto}h1{margin-bottom:4px;font-size:24px;color:#0f172a}p{color:#64748b;font-size:13px;margin-top:0;margin-bottom:24px}table{width:100%;border-collapse:collapse;margin-top:16px}th{background:#0f172a;color:white;padding:10px 12px;text-align:left;font-size:12px;text-transform:uppercase;letter-spacing:0.5px}td{font-size:13px}</style></head><body><h1>${escapeHtml(target.name)}</h1><p>Date Created: ${dateLabel(target.createdAt)}</p><table><thead><tr><th>SKU</th><th>Item Name</th><th>Price Scheme</th><th style="text-align:right;">Price</th></tr></thead><tbody>${tableRows}</tbody></table></body></html>`);
+    w.document.write(`<!DOCTYPE html><html><head><title>${escapeHtml(target.name)}</title><style>
+      body{font-family:'Segoe UI',Roboto,sans-serif;padding:32px;color:#1e293b;max-width:960px;margin:0 auto}
+      h1{margin-bottom:4px;font-size:24px;color:#0f172a}
+      p{color:#64748b;font-size:13px;margin-top:0;margin-bottom:24px}
+      table{width:100%;border-collapse:collapse;margin-top:16px}
+      th{background:#0f172a;color:white;padding:10px 12px;text-align:left;font-size:12px;text-transform:uppercase;letter-spacing:0.5px}
+      td{font-size:13px}
+      .no-print{margin-bottom:24px;padding:12px 18px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;display:flex;align-items:center;justify-content:space-between;gap:12px;box-shadow:0 1px 3px rgba(0,0,0,0.05)}
+      .print-btn{background:#0f172a;color:white;border:none;padding:9px 18px;border-radius:6px;font-weight:600;font-size:13px;cursor:pointer;display:inline-flex;align-items:center;gap:6px;transition:background 0.2s}
+      .print-btn:hover{background:#1e293b}
+      .close-btn{background:white;border:1px solid #cbd5e1;color:#475569;padding:9px 16px;border-radius:6px;font-size:13px;font-weight:500;cursor:pointer;transition:background 0.2s}
+      .close-btn:hover{background:#f1f5f9}
+      @media print{
+        .no-print{display:none !important}
+        body{padding:0 !important;max-width:100% !important}
+        table{page-break-inside:auto}
+        tr{page-break-inside:avoid;page-break-after:auto}
+      }
+    </style></head><body>
+      <div class="no-print">
+        <div>
+          <strong style="color:#0f172a;font-size:14px;display:block;">Pricelist PDF Preview</strong>
+          <span style="color:#64748b;font-size:12px;">Click below to download or print this document as a PDF file.</span>
+        </div>
+        <div style="display:flex;gap:10px;">
+          <button class="print-btn" onclick="window.print()">📥 Download / Save as PDF</button>
+          <button class="close-btn" onclick="window.close()">Close</button>
+        </div>
+      </div>
+      <h1>${escapeHtml(target.name)}</h1>
+      <p>Date Created: ${dateLabel(target.createdAt)}</p>
+      <table><thead><tr><th>SKU</th><th>Item Name</th><th style="text-align:right;">Price</th></tr></thead><tbody>${tableRows}</tbody></table>
+      <script>
+        window.onload = function() {
+          setTimeout(function() { window.print(); }, 400);
+        };
+      </script>
+    </body></html>`);
     w.document.close();
     if (recordExport) save(saved.map(p => p.id === target.id ? { ...p, lastPdfGeneratedAt: new Date().toISOString() } : p));
   };
@@ -543,7 +579,7 @@ export function Pricelist() {
   };
   const cancelScan = () => { if (syncing) return; setScanItems(null); setScanPreviewUrl(''); setScanName(''); };
 
-  if (loading) return <div className="flex min-h-[400px] items-center justify-center"><Loader2 className="h-8 w-8 animate-spin"/></div>;
+  if (loading) return <div className="flex min-h-100 items-center justify-center"><Loader2 className="h-8 w-8 animate-spin"/></div>;
   return (
     <div className="space-y-5 pb-20">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
@@ -566,9 +602,9 @@ export function Pricelist() {
 
       <div className="rounded-2xl border bg-card p-4"><div className="grid gap-3 md:grid-cols-4"><div><label className="text-xs invisible select-none block">Search</label><div className="relative mt-1"><SearchBar className="pl-9" placeholder="Search by pricelist name..." value={search} onValueChange={setSearch}/></div></div><Filter label="Date Created" value={dateFilter} set={setDateFilter} options={[["all","All Dates"],["today","Today"],["week","This Week"],["month","This Month"],["custom","Custom Date Range"]]}/><Filter label="Pricelist Type" value={typeFilter} set={setTypeFilter} options={[["all","All Types"],["Regular","Regular"],["Metro Manila","Metro Manila"],["Provincial","Provincial"],["Promo","Promo"],["Mixed","Mixed"]]}/><Filter label="PDF Status" value={pdfFilter} set={setPdfFilter} options={[["all","All Statuses"],["never","Never Exported"],["exported","Exported"]]}/></div>{dateFilter === 'custom' && <div className="mt-3 grid grid-cols-2 gap-3"><Field label="From" value={from} set={setFrom}/><Field label="To" value={to} set={setTo}/></div>}</div>
 
-      <div className="overflow-x-auto rounded-2xl border"><Table><TableHeader><TableRow><TableHead className="w-12"/><TableHead>Name</TableHead><TableHead>Type</TableHead><TableHead>Items</TableHead><TableHead>Date Created</TableHead><TableHead>Last PDF Generated</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader><TableBody>{filtered.map(p => <TableRow key={p.id}><TableCell><input type="checkbox" checked={selectedPdfId === p.id} onChange={e => setSelectedPdfId(e.target.checked ? p.id : '')}/></TableCell><TableCell><span className="flex items-center gap-2 font-bold"><FileText className="h-5 w-5"/>{p.name}</span></TableCell><TableCell>{listType(p)}</TableCell><TableCell>{p.items.length}</TableCell><TableCell>{dateLabel(p.createdAt)}</TableCell><TableCell>{dateLabel(p.lastPdfGeneratedAt)}</TableCell><TableCell><div className="flex justify-end gap-2"><Icon title="View" onClick={() => setViewId(p.id)}><Eye/></Icon>{canEdit && <><Icon title="Edit pricelist" onClick={() => { setEditing(p); setCreateOpen(true); }}><Pencil/></Icon><Icon title="Rename" onClick={() => { setRenameId(p.id); setRename(p.name); }}><Pencil/></Icon><Icon title="Delete" danger onClick={() => remove(p)}><Trash2/></Icon></>}</div></TableCell></TableRow>)}{!filtered.length && <TableRow><TableCell colSpan={7} className="h-40 text-center text-muted-foreground">No saved pricelists match the selected filters.</TableCell></TableRow>}</TableBody></Table></div>
+      <div className="overflow-x-auto rounded-2xl border"><Table><TableHeader><TableRow><TableHead className="w-12"/><TableHead>Name</TableHead><TableHead>Type</TableHead><TableHead>Items</TableHead><TableHead>Date Created</TableHead><TableHead>Last PDF Generated</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader><TableBody>{filtered.map(p => <TableRow key={p.id}><TableCell><input type="checkbox" checked={selectedPdfId === p.id} onChange={e => setSelectedPdfId(e.target.checked ? p.id : '')}/></TableCell><TableCell><span className="flex items-center gap-2 font-bold"><FileText className="h-5 w-5"/>{p.name}</span></TableCell><TableCell>{listType(p)}</TableCell><TableCell>{p.items.length}</TableCell><TableCell>{dateLabel(p.createdAt)}</TableCell><TableCell>{dateLabel(p.lastPdfGeneratedAt)}</TableCell><TableCell><div className="flex justify-end gap-2"><Icon title="View" onClick={() => setViewId(p.id)}><Eye/></Icon>{canEdit && <><Icon title="Edit pricelist" onClick={() => { setEditing(p); setCreateOpen(true); }}><Pencil/></Icon><Icon title="Delete" danger onClick={() => remove(p)}><Trash2/></Icon></>}</div></TableCell></TableRow>)}{!filtered.length && <TableRow><TableCell colSpan={7} className="h-40 text-center text-muted-foreground">No saved pricelists match the selected filters.</TableCell></TableRow>}</TableBody></Table></div>
 
-      <Dialog open={!!view} onOpenChange={o => !o && setViewId('')}><DialogContent className="max-h-[94vh] w-[96vw] max-w-[96vw] overflow-y-auto sm:!max-w-[96vw] lg:!max-w-[96vw]"><DialogHeader><DialogTitle>{view?.name}</DialogTitle><DialogDescription>{view && `${view.items.length} items - Created ${dateLabel(view.createdAt)}`}</DialogDescription></DialogHeader><Items items={view?.items || []} sections={view?.sections} stockMap={stockMap}/><DialogFooter><Button variant="outline" onClick={() => setViewId('')}>Close</Button><Button onClick={() => generatePdf()}><Download className="mr-2 h-4 w-4"/>Generate PDF</Button></DialogFooter></DialogContent></Dialog>
+      <Dialog open={!!view} onOpenChange={o => !o && setViewId('')}><DialogContent className="max-h-[94vh] w-[96vw] max-w-[96vw] overflow-y-auto sm:max-w-[96vw]! lg:max-w-[96vw]!"><DialogHeader><DialogTitle>{view?.name}</DialogTitle><DialogDescription>{view && `${view.items.length} items - Created ${dateLabel(view.createdAt)}`}</DialogDescription></DialogHeader><Items items={view?.items || []} sections={view?.sections} stockMap={stockMap}/><DialogFooter><Button variant="outline" onClick={() => setViewId('')}>Close</Button><Button onClick={() => generatePdf()}><Download className="mr-2 h-4 w-4"/>Generate PDF</Button></DialogFooter></DialogContent></Dialog>
 
       <Dialog open={!!renameId && canEdit} onOpenChange={o => !o && setRenameId('')}><DialogContent><DialogHeader><DialogTitle>Rename Pricelist</DialogTitle></DialogHeader><Label>Pricelist Name</Label><Input value={rename} onChange={e => setRename(e.target.value)}/><DialogFooter><Button variant="outline" onClick={() => setRenameId('')}>Cancel</Button><Button onClick={doRename}>Rename</Button></DialogFooter></DialogContent></Dialog>
 
@@ -726,6 +762,10 @@ function Field({label,value,set}:{label:string;value:string;set:(v:string)=>void
 function Icon({title,onClick,danger,children}:{title:string;onClick:()=>void;danger?:boolean;children:React.ReactElement}){return <Button variant="outline" size="icon" title={title} onClick={onClick} className={danger?'text-destructive':''}>{React.cloneElement(children,{className:'h-4 w-4'} as React.HTMLAttributes<HTMLElement>)}</Button>}
 
 function Items({ items, sections, stockMap = {} }: { items: PricelistItem[]; sections?: SavedPricelist['sections']; stockMap?: Record<string, number> }) {
+  const { profile } = useAuth();
+  const { permissions } = useStaffAccess();
+  const priceAccess = profile?.role === 'admin' ? 'all' : (permissions.priceAccess || 'all');
+  const canViewWholesale = priceAccess === 'all' || priceAccess === 'selling_no_cost';
   const grouped = sectionsFor({ items, sections });
 
   return (
@@ -760,7 +800,7 @@ function Items({ items, sections, stockMap = {} }: { items: PricelistItem[]; sec
                       </Badge>
                     </TableCell>
                     <TableCell>{schemeLabel(i.priceType)}</TableCell>
-                    <TableCell className="text-right font-bold text-sm">₱{i.price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</TableCell>
+                    <TableCell className="text-right font-bold text-sm">{canViewWholesale || i.priceType === 'base' ? `₱${i.price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '— (Restricted)'}</TableCell>
                   </TableRow>
                 );
               })}

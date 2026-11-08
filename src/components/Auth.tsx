@@ -141,7 +141,7 @@ export function Auth() {
             <Button 
               type="submit" 
               disabled={isLoading}
-              className="w-full bg-gold hover:bg-gold-alt text-navy h-12 text-xs font-black uppercase tracking-[0.1em] rounded-xl shadow-xl group"
+              className="w-full bg-gold hover:bg-gold-alt text-navy h-12 text-xs font-black uppercase tracking-widest rounded-xl shadow-xl group"
             >
               {isLoading ? (
                 <div className="w-4 h-4 border-2 border-navy border-t-transparent rounded-full animate-spin" />

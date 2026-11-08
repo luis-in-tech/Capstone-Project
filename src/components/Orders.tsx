@@ -5,10 +5,11 @@ import { hasAdminRole } from '../lib/staffPermissions';
 import { useStaffAccess } from '../hooks/useStaffAccess';
 import React, { useState, useEffect, useRef } from 'react';
 import { db, storage } from '../lib/supabaseAdapter';
-import { collection, onSnapshot, query, orderBy, where, getDocs } from '../lib/supabaseAdapter';
-import { Order, OrderStatus, Product, InventoryItem, OrderItem } from '../types';
+import { collection, onSnapshot, query, orderBy, where, getDocs, getDoc, updateDoc, deleteDoc, doc, serverTimestamp, addDoc } from '../lib/supabaseAdapter';
+import { Order, OrderStatus, Product, InventoryItem, OrderItem, UserProfile } from '../types';
 import { handleSupabaseError, OperationType } from '../lib/supabaseErrorHandler';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
@@ -35,6 +36,9 @@ import {
   DownloadIcon as Download,
   FunnelSimpleIcon as ListFilter,
   ChecksIcon as CheckCheck,
+  PencilSimpleIcon as Pencil,
+  TrashIcon as Trash2,
+  DotsSixVerticalIcon as DotsSixVertical,
 } from '@phosphor-icons/react';
 import { Badge } from '@/components/ui/badge';
 import { useAuth } from '../hooks/useAuth';
@@ -43,7 +47,7 @@ import { format } from 'date-fns';
 import { OrderEntry } from './OrderEntry';
 import { DeliveryReceipt } from './DeliveryReceipt';
 import { supabase } from '../lib/supabase';
-import { type ReceiptOrder, type ReceiptItem, money } from '../lib/orderEntry';
+import { type ReceiptOrder, type ReceiptItem, money, roundMoney } from '../lib/orderEntry';
 import {
   evaluateAndSyncSLAIncidents,
   getLocalIncidents,
@@ -64,6 +68,7 @@ export function Orders() {
   const [orders, setOrders] = useState<Order[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
+  const [users, setUsers] = useState<UserProfile[]>([]);
   const [isNewOrderOpen, setIsNewOrderOpen] = useState(false);
   const [orderEntryKey, setOrderEntryKey] = useState(0);
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
@@ -87,11 +92,26 @@ export function Orders() {
   const [isIncidentsDialogOpen, setIsIncidentsDialogOpen] = useState(false);
   const [incidentFilter, setIncidentFilter] = useState<'all' | 'SLA_BREACH' | 'DEFECTIVE_ASSET'>('all');
   const [orderViewMode, setOrderViewMode] = useState<'all' | 'fifo_queue'>('all');
+  const [customOrderIds, setCustomOrderIds] = useState<string[]>(() => {
+    try {
+      const stored = localStorage.getItem('activepro_custom_order_ids');
+      return stored ? JSON.parse(stored) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [draggedOrderId, setDraggedOrderId] = useState<string | null>(null);
+  const [dragOverOrderId, setDragOverOrderId] = useState<string | null>(null);
   const [resolvingIncident, setResolvingIncident] = useState<ITILIncident | null>(null);
   const [resolutionInput, setResolutionInput] = useState('');
   const [isSubmittingResolution, setIsSubmittingResolution] = useState(false);
 
   const [activeTab, setActiveTab] = useState<'items' | 'history'>('items');
+
+  // Pending Order Editing State (Client Feedback Page 19)
+  const [editingPendingOrder, setEditingPendingOrder] = useState<ReceiptOrder | null>(null);
+  const [editOrderItems, setEditOrderItems] = useState<ReceiptItem[]>([]);
+  const [isSavingEditOrder, setIsSavingEditOrder] = useState(false);
 
   const filteredOrders = orders.filter(order => {
     const queryStr = searchQuery.toLowerCase();
@@ -103,13 +123,121 @@ export function Orders() {
     return matchesSku || matchesOrderNumber || matchesClient || matchesCity || matchesRegion;
   });
 
-  // FR-09: Algorithmic FIFO queue ordering vs standard descending creation view
+  // Chronological Status Priority Sorting (Client Feedback Page 18)
+  const statusGroupRank = (st: OrderStatus): number => {
+    switch (st) {
+      case 'pending': return 0;
+      case 'preparing': return 1;
+      case 'out_for_delivery': return 2;
+      case 'delivered': return 3;
+      case 'completed': return 4;
+      case 'cancelled': return 5;
+      case 'escalated': return 6;
+      default: return 7;
+    }
+  };
+
+  const statusChronologicalOrders = React.useMemo(() => {
+    return [...filteredOrders].sort((a, b) => {
+      const rankA = statusGroupRank(a.status);
+      const rankB = statusGroupRank(b.status);
+      if (rankA !== rankB) return rankA - rankB;
+      const timeA = new Date(a.createdAt || 0).getTime();
+      const timeB = new Date(b.createdAt || 0).getTime();
+      return timeB - timeA;
+    });
+  }, [filteredOrders]);
+
   const fulfillmentStrategy = (localStorage.getItem('activepro.fulfillment_strategy') as 'FIFO'|'LIFO') || 'FIFO';
-  const displayOrders = orderViewMode === 'fifo_queue'
-    ? prioritizeOrderQueue(filteredOrders, fulfillmentStrategy)
-    : filteredOrders;
+
+  // System-wide unified ordering: Combines Canva Status Grouping, In-place Row Stability, and Manual Drag & Drop
+  const displayOrders = React.useMemo(() => {
+    if (orderViewMode === 'fifo_queue') {
+      return prioritizeOrderQueue(filteredOrders, fulfillmentStrategy);
+    }
+
+    if (!customOrderIds.length) {
+      return statusChronologicalOrders;
+    }
+
+    // Preserve custom drag-and-drop / in-place stability
+    const orderMap = new Map(filteredOrders.map(o => [o.id, o]));
+    const arranged: Order[] = [];
+    for (const id of customOrderIds) {
+      const found = orderMap.get(id);
+      if (found) {
+        arranged.push(found);
+        orderMap.delete(id);
+      }
+    }
+    // Append any newly added orders using statusChronological order
+    for (const order of statusChronologicalOrders) {
+      if (orderMap.has(order.id)) {
+        arranged.push(order);
+        orderMap.delete(order.id);
+      }
+    }
+    return arranged;
+  }, [filteredOrders, customOrderIds, statusChronologicalOrders, orderViewMode, fulfillmentStrategy]);
+
+  const handleDragStart = (e: React.DragEvent, id: string) => {
+    setDraggedOrderId(id);
+    e.dataTransfer.setData('text/plain', id);
+    e.dataTransfer.effectAllowed = 'move';
+  };
+
+  const handleDragOver = (e: React.DragEvent, targetId: string) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    if (dragOverOrderId !== targetId) {
+      setDragOverOrderId(targetId);
+    }
+  };
+
+  const handleDrop = (e: React.DragEvent, targetId: string) => {
+    e.preventDefault();
+    setDragOverOrderId(null);
+    if (!draggedOrderId || draggedOrderId === targetId) {
+      setDraggedOrderId(null);
+      return;
+    }
+    const currentList = displayOrders.map(o => o.id);
+    const fromIndex = currentList.indexOf(draggedOrderId);
+    const toIndex = currentList.indexOf(targetId);
+    if (fromIndex === -1 || toIndex === -1) {
+      setDraggedOrderId(null);
+      return;
+    }
+
+    const updated = [...currentList];
+    const [moved] = updated.splice(fromIndex, 1);
+    updated.splice(toIndex, 0, moved);
+
+    setCustomOrderIds(updated);
+    localStorage.setItem('activepro_custom_order_ids', JSON.stringify(updated));
+    setDraggedOrderId(null);
+    toast.success('Order arrangement updated.');
+  };
+
+  const handleDragEnd = () => {
+    setDraggedOrderId(null);
+    setDragOverOrderId(null);
+  };
 
   const activeIncidents = incidents.filter(i => i.status !== 'RESOLVED' && i.status !== 'CLOSED');
+
+  const resolveUserName = (changedBy?: string): string => {
+    if (!changedBy) return 'Staff';
+    if (changedBy === profile?.uid) {
+      return profile?.displayName || profile?.email || profile?.role || 'Admin';
+    }
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(changedBy);
+    if (isUuid) {
+      const matched = users.find(u => u.uid === changedBy || (u as any).id === changedBy);
+      return matched?.displayName || matched?.email || matched?.role || 'Staff';
+    }
+    return changedBy;
+  };
 
   const getOrderOverrides = (): Record<string, Partial<Order>> => {
     try {
@@ -169,10 +297,16 @@ export function Orders() {
       handleSupabaseError(error, OperationType.GET, 'inventory');
     });
 
+    const unsubUsers = onSnapshot(collection(db, 'users'), (snap) => {
+      setUsers(snap.docs.map(d => ({ id: d.id, ...d.data() } as UserProfile)));
+    }, () => {
+    });
+
     return () => {
       unsubOrders();
       unsubProducts();
       unsubInventory();
+      unsubUsers();
     };
   }, [profile]);
 
@@ -187,11 +321,38 @@ export function Orders() {
       return;
     }
     statusLock.current = true;
+
+    // Optimistic concurrency check: ensure order wasn't modified concurrently by another staff member
+    try {
+      const { data: latestOrder, error: checkError } = await supabase
+        .from('orders')
+        .select('status')
+        .eq('id', order.id)
+        .maybeSingle();
+
+      if (!checkError && latestOrder && latestOrder.status !== order.status) {
+        toast.error(`Order status was modified by another staff member to "${latestOrder.status.replaceAll('_', ' ')}". Refreshing order.`);
+        setOrders(current => current.map(item => item.id === order.id ? { ...item, status: latestOrder.status } : item));
+        setSelectedOrder(current => current?.id === order.id ? { ...current, status: latestOrder.status } : current);
+        statusLock.current = false;
+        return;
+      }
+    } catch (checkErr) {
+      console.warn('Could not verify concurrent order status:', checkErr);
+    }
+
+    // Freeze current row order in place so the row does not jump
+    if (!customOrderIds.length && displayOrders.length > 0) {
+      const currentSequence = displayOrders.map(o => o.id);
+      setCustomOrderIds(currentSequence);
+      localStorage.setItem('activepro_custom_order_ids', JSON.stringify(currentSequence));
+    }
+    const authorName = profile?.displayName || profile?.email || profile?.role || 'Staff';
     const statusHistory = [...(order.statusHistory || [])];
     if (statusHistory.at(-1)?.status !== order.status) {
-      statusHistory.push({ status: order.status, changedBy: profile?.uid || '', timestamp: new Date().toISOString() });
+      statusHistory.push({ status: order.status, changedBy: authorName, timestamp: new Date().toISOString() });
     }
-    statusHistory.push({ status: newStatus, changedBy: profile?.uid || '', timestamp: new Date().toISOString() });
+    statusHistory.push({ status: newStatus, changedBy: authorName, timestamp: new Date().toISOString() });
     saveOrderOverride(order.id, { status: newStatus, statusHistory });
     try {
       let updatedData: any = null;
@@ -199,8 +360,30 @@ export function Orders() {
       if (error) {
         console.warn('Supabase transition_order_entry RPC error, falling back to client adapter:', error);
         const { updateDoc, doc } = await import('../lib/supabaseAdapter');
-        await updateDoc(doc(db, 'orders', order.id), { status: newStatus, statusHistory });
-        updatedData = { ...order, status: newStatus, statusHistory };
+        await updateDoc(doc(db, 'orders', order.id), { status: newStatus, statusHistory, stockReserved: ['cancelled', 'escalated'].includes(newStatus) ? false : (order as any).stockReserved });
+        
+        if (['cancelled', 'escalated'].includes(newStatus) && (order as any).stockReserved !== false) {
+          try {
+            const { getDocs, query, collection, where } = await import('../lib/supabaseAdapter');
+            const itemsSnap = await getDocs(query(collection(db, 'order_items'), where('orderId', '==', order.id)));
+            const invSnap = await getDocs(collection(db, 'inventory'));
+            const invList = invSnap.docs.map((d: any) => ({ id: d.id, ...d.data() }));
+            for (const itemDoc of itemsSnap.docs) {
+              const it = itemDoc.data();
+              const match = invList.find((inv: any) => inv.productId === it.productId && (!it.warehouseId || inv.warehouseId === it.warehouseId));
+              if (match) {
+                await updateDoc(doc(db, 'inventory', match.id), {
+                  quantity: Number(match.quantity || 0) + Number(it.quantity || 0),
+                  lastUpdated: new Date().toISOString()
+                });
+              }
+            }
+          } catch (restockErr) {
+            console.warn('Fallback restocking error:', restockErr);
+          }
+        }
+
+        updatedData = { ...order, status: newStatus, statusHistory, stockReserved: ['cancelled', 'escalated'].includes(newStatus) ? false : (order as any).stockReserved };
       } else {
         updatedData = data || { ...order, status: newStatus, statusHistory };
       }
@@ -242,6 +425,12 @@ export function Orders() {
       timestamp: now,
       note: `Reverted to ${target.replaceAll('_', ' ')}`,
     });
+
+    if (!customOrderIds.length && displayOrders.length > 0) {
+      const currentSequence = displayOrders.map(o => o.id);
+      setCustomOrderIds(currentSequence);
+      localStorage.setItem('activepro_custom_order_ids', JSON.stringify(currentSequence));
+    }
 
     saveOrderOverride(order.id, { status: target, statusHistory });
 
@@ -312,10 +501,202 @@ export function Orders() {
     }
   };
 
+  const handleStartEditPendingOrder = async (order: Order) => {
+    setEditingPendingOrder(order as ReceiptOrder);
+    setEditOrderItems([]);
+    setIsLoadingItems(true);
+    try {
+      const itemsSnap = await getDocs(collection(db, 'orders', order.id, 'items'));
+      const items = itemsSnap.docs
+        .map(d => ({ id: d.id, ...d.data() } as ReceiptItem))
+        .sort((a, b) => (a.entryDetails?.position ?? 0) - (b.entryDetails?.position ?? 0));
+      setEditOrderItems(items);
+    } catch (err) {
+      handleSupabaseError(err, OperationType.GET, `orders/${order.id}/items`);
+    } finally {
+      setIsLoadingItems(false);
+    }
+  };
+
+  const handleSavePendingOrderEdit = async () => {
+    if (!editingPendingOrder) return;
+    if (editOrderItems.length === 0) {
+      toast.error('An order must have at least one item. Cancel the order instead if all items are unavailable.');
+      return;
+    }
+    for (const item of editOrderItems) {
+      if (!Number.isInteger(Number(item.quantity)) || Number(item.quantity) <= 0) {
+        toast.error(`Invalid quantity for ${item.name}. Must be at least 1.`);
+        return;
+      }
+    }
+
+    setIsSavingEditOrder(true);
+    try {
+      const origSnap = await getDocs(collection(db, 'orders', editingPendingOrder.id, 'items'));
+      const origItems = origSnap.docs.map(d => ({ id: d.id, ...d.data() } as ReceiptItem));
+
+      // Validate stock availability for items with increased quantities using fresh live inventory
+      for (const item of editOrderItems) {
+        const orig = origItems.find(o => o.id === item.id);
+        const oldQty = orig ? Number(orig.quantity) : 0;
+        const delta = Number(item.quantity) - oldQty;
+        if (delta > 0) {
+          let inv = inventory.find(i => i.productId === item.productId && (!item.warehouseId || i.warehouseId === item.warehouseId));
+          if (inv?.id) {
+            try {
+              const freshSnap = await getDoc(doc(db, 'inventory', inv.id));
+              if (freshSnap?.exists()) {
+                inv = { ...inv, ...(freshSnap.data() as InventoryItem) };
+              }
+            } catch (fetchErr) {
+              console.warn('Could not refetch latest live inventory for pre-validation:', fetchErr);
+            }
+          }
+          const available = inv ? Number(inv.quantity) : 0;
+          if (available < delta) {
+            toast.error(`Insufficient stock for ${item.name}. Available: ${available}, needed addition: ${delta}`);
+            setIsSavingEditOrder(false);
+            return;
+          }
+        }
+      }
+
+      // 1. Process removed items: reinstate stock & delete line item
+      for (const orig of origItems) {
+        const stillPresent = editOrderItems.find(item => item.id === orig.id);
+        if (!stillPresent) {
+          let inv = inventory.find(i => i.productId === orig.productId && (!orig.warehouseId || i.warehouseId === orig.warehouseId));
+          if (inv?.id) {
+            try {
+              const freshSnap = await getDoc(doc(db, 'inventory', inv.id));
+              if (freshSnap?.exists()) {
+                inv = { ...inv, ...(freshSnap.data() as InventoryItem) };
+              }
+            } catch {}
+          }
+          if (inv) {
+            await updateDoc(doc(db, 'inventory', inv.id), {
+              quantity: Number(inv.quantity) + Number(orig.quantity),
+              lastUpdated: serverTimestamp()
+            });
+            try {
+              await addDoc(collection(db, 'stockAdjustments'), {
+                productId: orig.productId,
+                warehouseId: orig.warehouseId || inv.warehouseId,
+                adjustmentAmount: Number(orig.quantity),
+                reason: `Order ${editingPendingOrder.orderNumber} edited: removed ${orig.name}`,
+                recordedBy: profile?.uid || 'staff',
+                timestamp: serverTimestamp()
+              });
+            } catch {}
+          }
+          await deleteDoc(doc(db, 'order_items', orig.id));
+        }
+      }
+
+      // 2. Process modified items: adjust inventory delta & update line item
+      for (const item of editOrderItems) {
+        const orig = origItems.find(o => o.id === item.id);
+        const oldQty = orig ? Number(orig.quantity) : 0;
+        const delta = Number(item.quantity) - oldQty;
+        if (delta !== 0) {
+          let inv = inventory.find(i => i.productId === item.productId && (!item.warehouseId || i.warehouseId === item.warehouseId));
+          if (inv?.id) {
+            try {
+              const freshSnap = await getDoc(doc(db, 'inventory', inv.id));
+              if (freshSnap?.exists()) {
+                inv = { ...inv, ...(freshSnap.data() as InventoryItem) };
+              }
+            } catch {}
+          }
+          if (inv) {
+            await updateDoc(doc(db, 'inventory', inv.id), {
+              quantity: Math.max(0, Number(inv.quantity) - delta),
+              lastUpdated: serverTimestamp()
+            });
+            try {
+              await addDoc(collection(db, 'stockAdjustments'), {
+                productId: item.productId,
+                warehouseId: item.warehouseId || inv.warehouseId,
+                adjustmentAmount: -delta,
+                reason: `Order ${editingPendingOrder.orderNumber} edited: ${item.name} qty changed from ${oldQty} to ${item.quantity}`,
+                recordedBy: profile?.uid || 'staff',
+                timestamp: serverTimestamp()
+              });
+            } catch {}
+          }
+        }
+        const newSubtotal = roundMoney(Number(item.quantity) * Number(item.unitPrice || 0));
+        await updateDoc(doc(db, 'order_items', item.id), {
+          quantity: Number(item.quantity),
+          subtotal: newSubtotal,
+          updatedAt: serverTimestamp()
+        });
+      }
+
+      // 3. Recalculate order totals
+      const newSubtotal = roundMoney(editOrderItems.reduce((sum, it) => sum + roundMoney(Number(it.quantity) * Number(it.unitPrice || 0)), 0));
+      const discount = Number(editingPendingOrder.receiptDetails?.discount || 0);
+      const newTotal = Math.max(0, roundMoney(newSubtotal - discount));
+      const newSkus = Array.from(new Set(editOrderItems.map(it => it.sku).filter(Boolean)));
+
+      const updatedOrder: Partial<Order> = {
+        totalAmount: newTotal,
+        skus: newSkus,
+        receiptDetails: {
+          ...(editingPendingOrder.receiptDetails || { address: '', paymentTerms: '', preparedBy: '' }),
+          subtotal: newSubtotal,
+          discount
+        },
+        updatedAt: serverTimestamp()
+      };
+
+      await updateDoc(doc(db, 'orders', editingPendingOrder.id), updatedOrder);
+
+      // Update local states
+      setOrders(prev => prev.map(o => o.id === editingPendingOrder.id ? { ...o, ...updatedOrder } : o));
+      if (selectedOrder?.id === editingPendingOrder.id) {
+        setSelectedOrder(prev => prev ? { ...prev, ...updatedOrder } : null);
+        setOrderItems(editOrderItems.map(it => ({ ...it, quantity: Number(it.quantity), subtotal: roundMoney(Number(it.quantity) * Number(it.unitPrice || 0)) })));
+      }
+
+      toast.success(`Order ${editingPendingOrder.orderNumber} updated successfully.`);
+      setEditingPendingOrder(null);
+    } catch (err) {
+      handleSupabaseError(err, OperationType.UPDATE, `orders/${editingPendingOrder.id}`);
+    } finally {
+      setIsSavingEditOrder(false);
+    }
+  };
+
   const handleDispatch = async () => {
     if (!dispatchOrder || !photoFile || statusLock.current) return;
     statusLock.current = true;
     setIsUploading(true);
+
+    // Optimistic concurrency check before dispatching
+    try {
+      const { data: latestOrder, error: checkError } = await supabase
+        .from('orders')
+        .select('status')
+        .eq('id', dispatchOrder.id)
+        .maybeSingle();
+
+      if (!checkError && latestOrder && ['cancelled', 'escalated', 'delivered', 'completed'].includes(latestOrder.status)) {
+        toast.error(`Order was already modified to "${latestOrder.status.replaceAll('_', ' ')}" by another staff member.`);
+        setOrders(current => current.map(item => item.id === dispatchOrder.id ? { ...item, status: latestOrder.status } : item));
+        setSelectedOrder(current => current?.id === dispatchOrder.id ? { ...current, status: latestOrder.status } : current);
+        setIsDispatchDialogOpen(false);
+        setDispatchOrder(null);
+        statusLock.current = false;
+        setIsUploading(false);
+        return;
+      }
+    } catch (checkErr) {
+      console.warn('Could not verify concurrent dispatch order status:', checkErr);
+    }
+
     try {
       let downloadUrl = photoPreview || '';
       try {
@@ -456,7 +837,35 @@ export function Orders() {
               </DialogDescription>
             </DialogHeader>
 
-            <Button variant="outline" className="self-start" disabled={isLoadingItems || !orderItems.length} onClick={() => { setIsOrderDetailsOpen(false); setReceiptItems(orderItems); setReceiptOrder(selectedOrder); }}><FileText className="size-4" />View Delivery Receipt</Button>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button variant="outline" className="self-start" disabled={isLoadingItems || !orderItems.length} onClick={() => {
+                const enrichedItems = orderItems.map(item => {
+                  const prod = products.find(p => p.id === item.productId);
+                  const unit = item.entryDetails?.unit || (item as any).entry_details?.unit || item.unit || (item as any).units || (prod?.units != null ? String(prod.units) : prod?.unit) || 'pc';
+                  return {
+                    ...item,
+                    unit,
+                    entryDetails: {
+                      ...(item.entryDetails || {}),
+                      unit,
+                    }
+                  };
+                });
+                setIsOrderDetailsOpen(false);
+                setReceiptItems(enrichedItems);
+                setReceiptOrder(selectedOrder);
+              }}><FileText className="size-4" />View Delivery Receipt</Button>
+              {selectedOrder?.status === 'pending' && canManageOrders && (
+                <Button variant="outline" className="self-start" onClick={() => {
+                  if (selectedOrder) {
+                    setIsOrderDetailsOpen(false);
+                    handleStartEditPendingOrder(selectedOrder);
+                  }
+                }}>
+                  <Pencil className="size-4" />Edit Pending Order
+                </Button>
+              )}
+            </div>
             <div className="flex items-center gap-4 border-b border-border px-6 -mx-6">
               <button
                 className={`pb-3 text-xs font-black uppercase tracking-widest transition-all relative ${activeTab === 'items' ? 'text-primary border-b-2 border-primary' : 'text-zinc-500 hover:text-foreground'
@@ -482,10 +891,10 @@ export function Orders() {
                       <Table>
                         <TableHeader className="bg-muted">
                           <TableRow>
-                            <TableHead className="text-[10px] font-bold uppercase py-2 min-w-[150px]">Item</TableHead>
-                            <TableHead className="text-[10px] font-bold uppercase py-2 text-center min-w-[80px]">Qty</TableHead>
-                            <TableHead className="text-[10px] font-bold uppercase py-2 text-right min-w-[100px]">Price</TableHead>
-                            <TableHead className="text-[10px] font-bold uppercase py-2 text-right min-w-[100px]">Total</TableHead>
+                            <TableHead className="text-[10px] font-bold uppercase py-2 min-w-37.5">Item</TableHead>
+                            <TableHead className="text-[10px] font-bold uppercase py-2 text-center min-w-20">Qty</TableHead>
+                            <TableHead className="text-[10px] font-bold uppercase py-2 text-right min-w-25">Price</TableHead>
+                            <TableHead className="text-[10px] font-bold uppercase py-2 text-right min-w-25">Total</TableHead>
                           </TableRow>
                         </TableHeader>
                         <TableBody>
@@ -518,10 +927,10 @@ export function Orders() {
                     </div>
                   </div>
                 ) : (
-                  <div className="space-y-4 pr-2 max-h-[400px] overflow-y-auto">
+                  <div className="space-y-4 pr-2 max-h-100 overflow-y-auto">
                     {selectedOrder?.statusHistory?.slice().reverse().map((entry, idx) => (
                       <div key={idx} className="relative pl-6 pb-6 border-l-2 border-border last:pb-0">
-                        <div className={`absolute left-[-9px] top-0 w-4 h-4 rounded-full border-2 border-background ${entry.status === 'delivered' ? 'bg-emerald-500' :
+                        <div className={`absolute -left-2.25 top-0 w-4 h-4 rounded-full border-2 border-background ${entry.status === 'delivered' ? 'bg-emerald-500' :
                           entry.status === 'pending' ? 'bg-zinc-300' : 'bg-blue-500'
                           }`} />
                         <div className="bg-muted rounded-xl p-3 border border-border group hover:border-foreground/20 transition-colors">
@@ -542,7 +951,7 @@ export function Orders() {
                             <div className="w-4 h-4 bg-background rounded-full flex items-center justify-center">
                               <UserIcon className="w-2 h-2 text-zinc-500" />
                             </div>
-                            <span className="text-[9px] font-bold text-zinc-500 uppercase tracking-tight">Modified by {entry.changedBy}</span>
+                            <span className="text-[9px] font-bold text-zinc-500 uppercase tracking-tight">Modified by {resolveUserName(entry.changedBy)}</span>
                           </div>
                         </div>
                       </div>
@@ -607,12 +1016,14 @@ export function Orders() {
 
                   {selectedOrder?.photoValidationUrl && (
                     <div className="pt-4 space-y-2">
-                      <p className="text-[10px] font-black uppercase tracking-tighter text-zinc-400">Dispatch Proof</p>
+                      <p className="text-[10px] font-bold uppercase tracking-wider text-blue-600">Dispatch Photo Proof (Click to view full image)</p>
                       <img
                         src={selectedOrder.photoValidationUrl}
                         alt="Dispatch Validation"
-                        className="w-full h-32 object-cover rounded-lg border border-border"
+                        className="w-full h-32 object-cover rounded-lg border border-border cursor-pointer hover:opacity-90 transition-opacity"
                         referrerPolicy="no-referrer"
+                        onClick={() => window.open(selectedOrder.photoValidationUrl)}
+                        title="Click to view full photo proof"
                       />
                     </div>
                   )}
@@ -763,6 +1174,144 @@ export function Orders() {
           </DialogContent>
         </Dialog>
 
+        {/* Edit Pending Order Dialog (Client Feedback Page 19) */}
+        <Dialog open={!!editingPendingOrder} onOpenChange={(open) => {
+          if (!open && !isSavingEditOrder) setEditingPendingOrder(null);
+        }}>
+          <DialogContent className="sm:max-w-3xl w-[95vw] max-h-[90vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <Pencil className="w-4 h-4 text-primary" />
+                Edit Pending Order: {editingPendingOrder?.orderNumber}
+              </DialogTitle>
+              <DialogDescription>
+                Modify quantities or remove unavailable/damaged items before order preparation. Stock reservations are automatically reconciled.
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="space-y-4 py-2">
+              <div className="rounded-xl border bg-muted/20 p-4">
+                <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                  <div>
+                    <span className="text-muted-foreground">Customer: </span>
+                    <span className="font-bold">{editingPendingOrder?.clientName}</span>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground">Delivery City: </span>
+                    <span className="font-medium">{editingPendingOrder?.deliveryCity || editingPendingOrder?.deliveryRegion || 'Metro Manila'}</span>
+                  </div>
+                </div>
+              </div>
+
+              {isLoadingItems ? (
+                <div className="py-8 text-center text-xs text-muted-foreground">
+                  Loading order items...
+                </div>
+              ) : (
+                <div className="rounded-xl border overflow-hidden">
+                  <Table>
+                    <TableHeader className="bg-muted">
+                      <TableRow>
+                        <TableHead className="text-xs font-bold">Item Description</TableHead>
+                        <TableHead className="text-xs font-bold text-center w-28">Quantity</TableHead>
+                        <TableHead className="text-xs font-bold text-right w-28">Unit Price</TableHead>
+                        <TableHead className="text-xs font-bold text-right w-28">Subtotal</TableHead>
+                        <TableHead className="w-12 text-center" />
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {editOrderItems.map((item, idx) => (
+                        <TableRow key={item.id || idx}>
+                          <TableCell>
+                            <p className="font-semibold text-xs">{item.name}</p>
+                            <p className="text-[10px] font-mono text-muted-foreground">{item.sku}</p>
+                          </TableCell>
+                          <TableCell className="text-center">
+                            <Input
+                              type="number"
+                              min="1"
+                              step="1"
+                              className="h-8 w-20 mx-auto text-center font-bold text-xs"
+                              value={item.quantity}
+                              onChange={(e) => {
+                                const val = Math.max(1, parseInt(e.target.value, 10) || 1);
+                                setEditOrderItems(prev => prev.map((it, i) => i === idx ? { ...it, quantity: val, subtotal: roundMoney(val * Number(it.unitPrice || 0)) } : it));
+                              }}
+                            />
+                          </TableCell>
+                          <TableCell className="text-right text-xs font-medium">
+                            {money(Number(item.unitPrice || 0))}
+                          </TableCell>
+                          <TableCell className="text-right text-xs font-bold">
+                            {money(roundMoney(Number(item.quantity) * Number(item.unitPrice || 0)))}
+                          </TableCell>
+                          <TableCell className="text-center">
+                            <Button
+                              type="button"
+                              size="icon"
+                              variant="ghost"
+                              className="h-7 w-7 text-destructive hover:bg-destructive/10"
+                              disabled={editOrderItems.length <= 1}
+                              onClick={() => {
+                                setEditOrderItems(prev => prev.filter((_, i) => i !== idx));
+                              }}
+                              title={editOrderItems.length <= 1 ? "Order must have at least one item" : "Remove item"}
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </Button>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              )}
+
+              <div className="flex flex-col items-end gap-1 pt-2 border-t">
+                <div className="text-xs text-muted-foreground flex gap-4">
+                  <span>Subtotal:</span>
+                  <span className="font-semibold text-foreground">
+                    {money(roundMoney(editOrderItems.reduce((sum, it) => sum + roundMoney(Number(it.quantity) * Number(it.unitPrice || 0)), 0)))}
+                  </span>
+                </div>
+                {Number(editingPendingOrder?.receiptDetails?.discount || 0) > 0 && (
+                  <div className="text-xs text-muted-foreground flex gap-4">
+                    <span>Discount:</span>
+                    <span className="font-semibold text-emerald-600">
+                      -{money(Number(editingPendingOrder?.receiptDetails?.discount || 0))}
+                    </span>
+                  </div>
+                )}
+                <div className="text-sm font-bold flex gap-4 pt-1">
+                  <span>New Total:</span>
+                  <span className="text-base text-primary font-black">
+                    {money(Math.max(0, roundMoney(
+                      editOrderItems.reduce((sum, it) => sum + roundMoney(Number(it.quantity) * Number(it.unitPrice || 0)), 0) -
+                      Number(editingPendingOrder?.receiptDetails?.discount || 0)
+                    )))}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <DialogFooter>
+              <Button
+                variant="outline"
+                disabled={isSavingEditOrder}
+                onClick={() => setEditingPendingOrder(null)}
+              >
+                Cancel
+              </Button>
+              <Button
+                disabled={isSavingEditOrder || isLoadingItems || editOrderItems.length === 0}
+                onClick={handleSavePendingOrderEdit}
+              >
+                {isSavingEditOrder ? 'Saving...' : 'Save Order Changes'}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
       </div >
 
       <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
@@ -774,32 +1323,48 @@ export function Orders() {
             onValueChange={setSearchQuery}
           />
         </div>
-        <div className="flex items-center gap-1.5 bg-muted p-1 rounded-xl shrink-0">
-          <button
-            type="button"
-            className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-all ${
-              orderViewMode === 'all'
-                ? 'bg-background shadow-xs text-foreground font-semibold'
-                : 'text-muted-foreground hover:text-foreground'
-            }`}
-            onClick={() => setOrderViewMode('all')}
-          >
-            All Orders ({filteredOrders.length})
-          </button>
-          <button
-            type="button"
-            className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-all flex items-center gap-1.5 ${
-              orderViewMode === 'fifo_queue'
-                ? 'bg-background shadow-xs text-foreground font-semibold'
-                : 'text-muted-foreground hover:text-foreground'
-            }`}
-            onClick={() => setOrderViewMode('fifo_queue')}
-            title="Sort orders by ITIL FIFO fulfillment priority (oldest & overdue first)"
-          >
-            <ListFilter className="size-3.5" />
-            <span>FIFO Queue</span>
-            <Badge variant="secondary" className="h-4 px-1 text-[9px] font-bold">FR-09</Badge>
-          </button>
+        <div className="flex flex-wrap items-center gap-2">
+          {customOrderIds.length > 0 && orderViewMode === 'all' && (
+            <button
+              type="button"
+              className="text-[11px] font-medium text-muted-foreground hover:text-foreground px-2.5 py-1 rounded-lg border border-border bg-card hover:bg-muted transition-colors shadow-xs"
+              onClick={() => {
+                setCustomOrderIds([]);
+                localStorage.removeItem('activepro_custom_order_ids');
+                toast.info('Orders reset to default status grouping.');
+              }}
+              title="Reset custom row order back to default status grouping"
+            >
+              Reset to Status Grouping
+            </button>
+          )}
+          <div className="flex items-center gap-1.5 bg-muted p-1 rounded-xl shrink-0">
+            <button
+              type="button"
+              className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-all ${
+                orderViewMode === 'all'
+                  ? 'bg-background shadow-xs text-foreground font-semibold'
+                  : 'text-muted-foreground hover:text-foreground'
+              }`}
+              onClick={() => setOrderViewMode('all')}
+            >
+              All Orders ({filteredOrders.length})
+            </button>
+            <button
+              type="button"
+              className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-all flex items-center gap-1.5 ${
+                orderViewMode === 'fifo_queue'
+                  ? 'bg-background shadow-xs text-foreground font-semibold'
+                  : 'text-muted-foreground hover:text-foreground'
+              }`}
+              onClick={() => setOrderViewMode('fifo_queue')}
+              title="Sort orders by ITIL FIFO fulfillment priority (oldest & overdue first)"
+            >
+              <ListFilter className="size-3.5" />
+              <span>FIFO Queue</span>
+              <Badge variant="secondary" className="h-4 px-1 text-[9px] font-bold">FR-09</Badge>
+            </button>
+          </div>
         </div>
       </div>
 
@@ -809,14 +1374,31 @@ export function Orders() {
           const deadlineDate = typeof order.deliveryDeadline?.toDate === 'function' ? order.deliveryDeadline.toDate() : order.deliveryDeadline ? new Date(order.deliveryDeadline) : null;
           const isOverdue = deadlineDate && deadlineDate < new Date() && !['delivered', 'completed', 'cancelled', 'escalated'].includes(order.status);
           return (
-            <div key={order.id} className="bg-card border border-border rounded-xl p-4 space-y-3">
+            <div
+              key={order.id}
+              draggable
+              onDragStart={(e) => handleDragStart(e, order.id)}
+              onDragOver={(e) => handleDragOver(e, order.id)}
+              onDrop={(e) => handleDrop(e, order.id)}
+              onDragEnd={handleDragEnd}
+              className={`bg-card border border-border rounded-xl p-4 space-y-3 transition-colors ${
+                draggedOrderId === order.id ? 'opacity-30 bg-muted/70' : ''
+              } ${
+                dragOverOrderId === order.id ? 'border-t-2 border-blue-500 bg-blue-50/20 dark:bg-blue-950/20' : ''
+              }`}
+            >
               <div className="flex items-start justify-between gap-2">
-                <div className="min-w-0">
-                  <p className="text-xs font-mono text-zinc-400">{order.orderNumber}</p>
-                  <p className="text-sm font-bold text-zinc-900 dark:text-white mt-0.5">{order.clientName}</p>
+                <div className="flex items-start gap-2 min-w-0">
+                  <div className="pt-0.5 cursor-grab active:cursor-grabbing text-zinc-400 hover:text-zinc-800" title="Drag to reorder">
+                    <DotsSixVertical className="w-4 h-4 shrink-0" />
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-xs font-mono text-zinc-400">{order.orderNumber}</p>
+                    <p className="text-sm font-bold text-zinc-900 dark:text-white mt-0.5">{order.clientName}</p>
                   <p className="text-[10px] text-zinc-400 uppercase font-bold tracking-tighter">
                     {order.deliveryRegion}{order.deliveryCity ? ` • ${order.deliveryCity}` : ''}
                   </p>
+                </div>
                 </div>
                 <Badge variant="outline" className={`shrink-0 gap-1.5 h-6 capitalize text-[10px] font-bold ${order.status === 'delivered' || order.status === 'completed' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
                   order.status === 'out_for_delivery' ? 'bg-blue-50 text-blue-700 border-blue-200' :
@@ -845,9 +1427,14 @@ export function Orders() {
                 {canManageOrders && (
                   <>
                     {order.status === 'pending' && (
-                      <Button size="icon" variant="ghost" className="h-7 w-7 text-zinc-400 hover:text-zinc-900" onClick={() => updateOrderStatus(order, 'preparing')} title="Move to Preparing">
-                        <ChevronRight className="w-4 h-4" />
-                      </Button>
+                      <>
+                        <Button size="icon" variant="ghost" className="h-7 w-7 text-amber-600 hover:bg-amber-50" onClick={() => handleStartEditPendingOrder(order)} title="Edit Pending Order">
+                          <Pencil className="w-4 h-4" />
+                        </Button>
+                        <Button size="icon" variant="ghost" className="h-7 w-7 text-zinc-400 hover:text-zinc-900" onClick={() => updateOrderStatus(order, 'preparing')} title="Move to Preparing">
+                          <ChevronRight className="w-4 h-4" />
+                        </Button>
+                      </>
                     )}
                     {order.status === 'preparing' && (
                       <Button size="icon" variant="ghost" className="h-7 w-7 text-blue-500 hover:bg-blue-50" onClick={() => updateOrderStatus(order, 'out_for_delivery')} title="Dispatch Order">
@@ -893,8 +1480,8 @@ export function Orders() {
                   </>
                 )}
                 {order.photoValidationUrl && (
-                  <Button size="icon" variant="ghost" className="h-7 w-7 text-zinc-400 hover:text-zinc-900" onClick={() => window.open(order.photoValidationUrl)}>
-                    <FileText className="w-4 h-4" />
+                  <Button size="icon" variant="ghost" className="h-7 w-7 text-blue-600 hover:text-blue-700 hover:bg-blue-50" title="View Dispatch Photo Proof" onClick={() => window.open(order.photoValidationUrl)}>
+                    <ImageIcon className="w-4 h-4" />
                   </Button>
                 )}
               </div>
@@ -919,12 +1506,13 @@ export function Orders() {
           <Table>
             <TableHeader className="bg-muted/50">
               <TableRow>
-                <TableHead className="text-[10px] font-bold uppercase tracking-widest min-w-[120px]">Order ID</TableHead>
-                <TableHead className="text-[10px] font-bold uppercase tracking-widest min-w-[150px]">Client Name</TableHead>
-                <TableHead className="text-[10px] font-bold uppercase tracking-widest min-w-[120px]">Status</TableHead>
-                <TableHead className="text-[10px] font-bold uppercase tracking-widest text-center min-w-[120px]">Deadline</TableHead>
-                <TableHead className="text-[10px] font-bold uppercase tracking-widest text-right min-w-[100px]">Amount</TableHead>
-                <TableHead className="text-[10px] font-bold uppercase tracking-widest text-center min-w-[140px]">Actions</TableHead>
+                <TableHead className="w-9 px-2 text-center"><span className="sr-only">Reorder</span></TableHead>
+                <TableHead className="text-[10px] font-bold uppercase tracking-widest min-w-30">Order ID</TableHead>
+                <TableHead className="text-[10px] font-bold uppercase tracking-widest min-w-37.5">Client Name</TableHead>
+                <TableHead className="text-[10px] font-bold uppercase tracking-widest min-w-30">Status</TableHead>
+                <TableHead className="text-[10px] font-bold uppercase tracking-widest text-center min-w-30">Deadline</TableHead>
+                <TableHead className="text-[10px] font-bold uppercase tracking-widest text-right min-w-25">Amount</TableHead>
+                <TableHead className="text-[10px] font-bold uppercase tracking-widest text-center min-w-35">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -932,7 +1520,24 @@ export function Orders() {
                 const deadlineDate = typeof order.deliveryDeadline?.toDate === 'function' ? order.deliveryDeadline.toDate() : order.deliveryDeadline ? new Date(order.deliveryDeadline) : null;
                 const isOverdue = deadlineDate && deadlineDate < new Date() && !['delivered', 'completed', 'cancelled', 'escalated'].includes(order.status);
                 return (
-                  <TableRow key={order.id} className="group transition-colors">
+                  <TableRow
+                    key={order.id}
+                    draggable
+                    onDragStart={(e) => handleDragStart(e, order.id)}
+                    onDragOver={(e) => handleDragOver(e, order.id)}
+                    onDrop={(e) => handleDrop(e, order.id)}
+                    onDragEnd={handleDragEnd}
+                    className={`group transition-colors select-none ${
+                      draggedOrderId === order.id ? 'opacity-30 bg-muted/70' : ''
+                    } ${
+                      dragOverOrderId === order.id ? 'border-t-2 border-blue-500 bg-blue-50/20 dark:bg-blue-950/20' : ''
+                    }`}
+                  >
+                    <TableCell className="w-9 px-2 py-3 text-center cursor-grab active:cursor-grabbing text-zinc-400 hover:text-zinc-800 dark:hover:text-zinc-100">
+                      <div className="flex items-center justify-center p-1 rounded hover:bg-muted" title="Drag to reorder row">
+                        <DotsSixVertical className="w-4 h-4" />
+                      </div>
+                    </TableCell>
                     <TableCell className="font-mono text-xs text-zinc-400 font-medium">
                       {order.orderNumber}
                     </TableCell>
@@ -979,9 +1584,14 @@ export function Orders() {
                         {canManageOrders && (
                           <>
                             {order.status === 'pending' && (
-                              <Button size="icon" variant="ghost" className="h-7 w-7 text-zinc-400 hover:text-zinc-900" onClick={() => updateOrderStatus(order, 'preparing')} title="Move to Preparing">
-                                <ChevronRight className="w-4 h-4" />
-                              </Button>
+                              <>
+                                <Button size="icon" variant="ghost" className="h-7 w-7 text-amber-600 hover:bg-amber-50" onClick={() => handleStartEditPendingOrder(order)} title="Edit Pending Order">
+                                  <Pencil className="w-4 h-4" />
+                                </Button>
+                                <Button size="icon" variant="ghost" className="h-7 w-7 text-zinc-400 hover:text-zinc-900" onClick={() => updateOrderStatus(order, 'preparing')} title="Move to Preparing">
+                                  <ChevronRight className="w-4 h-4" />
+                                </Button>
+                              </>
                             )}
                             {order.status === 'preparing' && (
                               <Button size="icon" variant="ghost" className="h-7 w-7 text-blue-500 hover:bg-blue-50" onClick={() => updateOrderStatus(order, 'out_for_delivery')} title="Dispatch Order">
@@ -1027,8 +1637,8 @@ export function Orders() {
                           </>
                         )}
                         {order.photoValidationUrl && (
-                          <Button size="icon" variant="ghost" className="h-7 w-7 text-zinc-400 hover:text-zinc-900" onClick={() => window.open(order.photoValidationUrl)}>
-                            <FileText className="w-4 h-4" />
+                          <Button size="icon" variant="ghost" className="h-7 w-7 text-blue-600 hover:text-blue-700 hover:bg-blue-50" title="View Dispatch Photo Proof" onClick={() => window.open(order.photoValidationUrl)}>
+                            <ImageIcon className="w-4 h-4" />
                           </Button>
                         )}
                       </div>
@@ -1038,7 +1648,7 @@ export function Orders() {
               })}
               {filteredOrders.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={6} className="text-center py-12">
+                  <TableCell colSpan={7} className="text-center py-12">
                     <div className="flex flex-col items-center gap-2 text-zinc-400">
                       <ShoppingCart className="w-8 h-8 opacity-20" />
                       <p className="text-xs font-medium italic">No orders match your search criteria.</p>

@@ -4,7 +4,7 @@ import React, { useState, useEffect } from 'react';
 import { useStaffAccess } from '../hooks/useStaffAccess';
 import { permitsMovement } from '../lib/staffPermissions';
 import { db } from '../lib/supabaseAdapter';
-import { collection, onSnapshot, addDoc, updateDoc, doc, query, orderBy, serverTimestamp } from '../lib/supabaseAdapter';
+import { collection, onSnapshot, addDoc, updateDoc, doc, getDoc, query, orderBy, serverTimestamp } from '../lib/supabaseAdapter';
 import { Transfer, Product, Warehouse, InventoryItem, TransferStatus } from '../types';
 import { handleSupabaseError, OperationType } from '../lib/supabaseErrorHandler';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
@@ -99,6 +99,7 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
     }
 
     // Check availability in source facility and enforce strictly positive integer quantity
+    const aggregatedReq = new Map<string, { productName: string; totalQty: number }>();
     for (const item of validItems) {
       const qty = Number(item.quantity);
       if (!Number.isInteger(qty) || qty <= 0) {
@@ -106,28 +107,38 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
         return;
       }
       const prodId = products.find(p => p.name === item.productName)?.id || item.productName;
+      const current = aggregatedReq.get(prodId) || { productName: item.productName, totalQty: 0 };
+      current.totalQty += qty;
+      aggregatedReq.set(prodId, current);
+    }
+
+    for (const [prodId, data] of aggregatedReq.entries()) {
       const sourceInv = inventory.find(i => i.productId === prodId && i.warehouseId === sourceWh);
-      if (!sourceInv || sourceInv.quantity < qty) {
-        toast.error(`Insufficient stock for ${item.productName} in source warehouse (Available: ${sourceInv?.quantity ?? 0}, Requested: ${qty})`);
+      if (!sourceInv || sourceInv.quantity < data.totalQty) {
+        toast.error(`Insufficient stock for ${data.productName} in source warehouse (Available: ${sourceInv?.quantity ?? 0}, Requested: ${data.totalQty})`);
         return;
       }
     }
 
     try {
-      for (const item of validItems) {
-        const prodId = products.find(p => p.name === item.productName)?.id || item.productName;
-        const qty = Number(item.quantity);
-        const newTransfer: Omit<Transfer, 'id'> = {
-          sourceWarehouseId: sourceWh,
-          destinationWarehouseId: destWh,
-          productId: prodId,
-          quantity: qty,
-          status: 'pending',
-          initiatedBy: profile?.uid || 'Unknown',
-          createdAt: serverTimestamp()
-        };
-        await addDoc(collection(db, 'transfers'), newTransfer);
-      }
+      // Parallel execution: initiate all transfer line items concurrently
+      await Promise.all(
+        validItems.map(item => {
+          const prodId = products.find(p => p.name === item.productName)?.id || item.productName;
+          const qty = Number(item.quantity);
+          const newTransfer: Omit<Transfer, 'id'> = {
+            sourceWarehouseId: sourceWh,
+            destinationWarehouseId: destWh,
+            productId: prodId,
+            quantity: qty,
+            status: 'pending',
+            initiatedBy: profile?.uid || 'Unknown',
+            createdAt: serverTimestamp(),
+          };
+          return addDoc(collection(db, 'transfers'), newTransfer);
+        })
+      );
+
       setIsAddTransferOpen(false);
       setTransferItems([{ id: Date.now(), productName: '', quantity: 1 }]);
       toast.success('Warehouse transport requests initiated');
@@ -143,9 +154,21 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
     setIsProcessing(true);
 
     try {
-      const sourceInv = inventory.find(
+      let sourceInv = inventory.find(
         i => i.productId === dispatchingTransfer.productId && i.warehouseId === dispatchingTransfer.sourceWarehouseId
       );
+
+      // Fetch fresh live inventory item from database to prevent race conditions & lost updates
+      if (sourceInv?.id) {
+        try {
+          const freshSnap = await getDoc(doc(db, 'inventory', sourceInv.id));
+          if (freshSnap && freshSnap.exists()) {
+            sourceInv = { ...sourceInv, ...(freshSnap.data() as InventoryItem) };
+          }
+        } catch (fetchErr) {
+          console.warn('Could not refetch latest source inventory; using snapshot state:', fetchErr);
+        }
+      }
 
       if (!sourceInv || sourceInv.quantity < dispatchingTransfer.quantity) {
         toast.error(`Insufficient stock at source warehouse to dispatch transport. Available: ${sourceInv?.quantity ?? 0}`);
@@ -155,7 +178,7 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
 
       // 1. Immediately deduct from source warehouse (Eliminates Ghost Inventory!)
       await updateDoc(doc(db, 'inventory', sourceInv.id), {
-        quantity: sourceInv.quantity - dispatchingTransfer.quantity,
+        quantity: Math.max(0, sourceInv.quantity - dispatchingTransfer.quantity),
         lastUpdated: serverTimestamp()
       });
 
@@ -215,9 +238,21 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
   const handleConfirmArrival = async (transfer: Transfer) => {
     setIsProcessing(true);
     try {
-      const destInv = inventory.find(
+      let destInv = inventory.find(
         i => i.productId === transfer.productId && i.warehouseId === transfer.destinationWarehouseId
       );
+
+      // Fetch fresh live inventory item from database to prevent race conditions & lost updates
+      if (destInv?.id) {
+        try {
+          const freshSnap = await getDoc(doc(db, 'inventory', destInv.id));
+          if (freshSnap && freshSnap.exists()) {
+            destInv = { ...destInv, ...(freshSnap.data() as InventoryItem) };
+          }
+        } catch (fetchErr) {
+          console.warn('Could not refetch latest destination inventory; using snapshot state:', fetchErr);
+        }
+      }
 
       if (destInv) {
         await updateDoc(doc(db, 'inventory', destInv.id), {
@@ -280,9 +315,20 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
     try {
       // If transfer was in_transit, stock was already deducted upon dispatch! We MUST restore it to source warehouse.
       if (cancellingTransfer.status === 'in_transit') {
-        const sourceInv = inventory.find(
+        let sourceInv = inventory.find(
           i => i.productId === cancellingTransfer.productId && i.warehouseId === cancellingTransfer.sourceWarehouseId
         );
+
+        if (sourceInv?.id) {
+          try {
+            const freshSnap = await getDoc(doc(db, 'inventory', sourceInv.id));
+            if (freshSnap && freshSnap.exists()) {
+              sourceInv = { ...sourceInv, ...(freshSnap.data() as InventoryItem) };
+            }
+          } catch (fetchErr) {
+            console.warn('Could not refetch latest source inventory for cancellation rollback:', fetchErr);
+          }
+        }
 
         if (sourceInv) {
           await updateDoc(doc(db, 'inventory', sourceInv.id), {
@@ -478,7 +524,7 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
                         type="button"
                         variant="ghost"
                         size="icon"
-                        className={`text-red-500 hover:bg-red-500/10 hover:text-red-600 shrink-0 ${index === 0 ? 'mb-[2px]' : ''}`}
+                        className={`text-red-500 hover:bg-red-500/10 hover:text-red-600 shrink-0 ${index === 0 ? 'mb-0.5' : ''}`}
                         onClick={() => setTransferItems(transferItems.filter((_, i) => i !== index))}
                       >
                         <X className="w-4 h-4" />
@@ -520,7 +566,7 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
             <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
               {/* Facility Filter */}
               <Select value={warehouseFilter} onValueChange={setWarehouseFilter}>
-                <SelectTrigger className="h-9 w-full sm:w-[180px] text-xs">
+                <SelectTrigger className="h-9 w-full sm:w-45 text-xs">
                   <SelectValue placeholder="All Facilities">
                     {warehouseFilter === 'all'
                       ? 'All Facilities'
@@ -537,7 +583,7 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
 
               {/* Status Filter */}
               <Select value={statusFilter} onValueChange={setStatusFilter}>
-                <SelectTrigger className="h-9 w-full sm:w-[150px] text-xs">
+                <SelectTrigger className="h-9 w-full sm:w-37.5 text-xs">
                   <SelectValue placeholder="All Statuses">
                     {statusFilter === 'all'
                       ? 'All Statuses'
@@ -703,12 +749,12 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
           <Table>
             <TableHeader className="bg-muted/50">
               <TableRow>
-                <TableHead className="text-[10px] font-bold uppercase tracking-widest min-w-[120px]">Movement ID</TableHead>
-                <TableHead className="text-[10px] font-bold uppercase tracking-widest min-w-[170px]">Asset Details</TableHead>
-                <TableHead className="text-[10px] font-bold uppercase tracking-widest min-w-[200px]">Traffic Flow</TableHead>
-                <TableHead className="text-[10px] font-bold uppercase tracking-widest min-w-[150px]">Dispatch Proof</TableHead>
-                <TableHead className="text-[10px] font-bold uppercase tracking-widest min-w-[140px]">Operational Status</TableHead>
-                <TableHead className="text-[10px] font-bold uppercase tracking-widest text-center min-w-[180px]">Actions</TableHead>
+                <TableHead className="text-[10px] font-bold uppercase tracking-widest min-w-30">Movement ID</TableHead>
+                <TableHead className="text-[10px] font-bold uppercase tracking-widest min-w-42.5">Asset Details</TableHead>
+                <TableHead className="text-[10px] font-bold uppercase tracking-widest min-w-50">Traffic Flow</TableHead>
+                <TableHead className="text-[10px] font-bold uppercase tracking-widest min-w-37.5">Dispatch Proof</TableHead>
+                <TableHead className="text-[10px] font-bold uppercase tracking-widest min-w-35">Operational Status</TableHead>
+                <TableHead className="text-[10px] font-bold uppercase tracking-widest text-center min-w-45">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -741,7 +787,7 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
                     <TableCell>
                       {t.driverName || t.vehiclePlate ? (
                         <div className="flex flex-col text-[11px]">
-                          <span className="font-medium text-foreground truncate max-w-[140px]">{t.driverName || 'Driver'}</span>
+                          <span className="font-medium text-foreground truncate max-w-35">{t.driverName || 'Driver'}</span>
                           {t.vehiclePlate && <span className="font-mono text-[10px] text-muted-foreground">{t.vehiclePlate}</span>}
                         </div>
                       ) : (

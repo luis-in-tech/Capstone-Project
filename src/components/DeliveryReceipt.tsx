@@ -113,7 +113,7 @@ export function DeliveryReceipt({
         </div>
         <style>{printStyles}</style>
         <div className="overflow-x-auto">
-          <div ref={content} className="min-w-[640px]">
+          <div ref={content} className="min-w-160">
             {pages.map((page, index) => (
               <section className="dr-page shadow-sm" key={index}>
                 <div className="dr-heading">
@@ -169,7 +169,7 @@ export function DeliveryReceipt({
                       <tr key={item.id}>
                         <td>{entry.number}</td>
                         <td>{item.quantity}</td>
-                        <td>{item.entryDetails?.unit || "pc"}</td>
+                        <td>{item.entryDetails?.unit || (item as any).entry_details?.unit || item.unit || (item as any).units || "pc"}</td>
                         <td>
                           {item.name}
                           {item.entryDetails?.variation

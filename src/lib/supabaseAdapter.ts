@@ -302,16 +302,16 @@ export async function getDocs(q: any) {
     console.warn(`Supabase fetch failed for ${q.path}, utilizing local persistent records:`, err);
   }
 
-  // Merge remote data with local persistent cache
+  // Merge remote data with local persistent cache (server data authoritative)
   const localItems = getLocalCollection(q.path);
   const mergedMap = new Map<string, any>();
 
-  for (const item of remoteData) {
+  for (const item of localItems) {
     const id = item.id || item.uid;
     if (id) mergedMap.set(id, item);
   }
 
-  for (const item of localItems) {
+  for (const item of remoteData) {
     const id = item.id || item.uid;
     if (id) {
       const existing = mergedMap.get(id);
@@ -351,13 +351,26 @@ export async function getDocs(q: any) {
 
 export function onSnapshot(q: any, callback: (snap: any) => void, errorCb?: (e: any) => void) {
   let isUnmounted = false;
+  let isFetching = false;
+  let hasPendingFetch = false;
 
   const fetchAndNotify = async () => {
+    if (isFetching) {
+      hasPendingFetch = true;
+      return;
+    }
+    isFetching = true;
     try {
       const snap = await getDocs(q);
       if (!isUnmounted) callback(snap);
     } catch (e) {
       if (!isUnmounted && errorCb) errorCb(e);
+    } finally {
+      isFetching = false;
+      if (hasPendingFetch && !isUnmounted) {
+        hasPendingFetch = false;
+        fetchAndNotify();
+      }
     }
   };
 
@@ -405,14 +418,30 @@ export async function addDoc(col: any, data: any) {
 
   // 2. Sync to Supabase in background
   try {
-    const { data: res, error } = await supabase.from(col.path).insert([payload]).select().single();
-    if (!error && res?.id) {
+    let { data: res, error } = await supabase.from(col.path).insert([payload]).select().single();
+    if (error && error.code === 'PGRST204') {
+      const match = error.message?.match(/Could not find the '([^']+)' column/i);
+      if (match && match[1] && match[1] in payload) {
+        const sanitized = { ...payload };
+        delete sanitized[match[1]];
+        console.warn(`Supabase addDoc retry without unmigrated column '${match[1]}' for ${col.path}`);
+        const retryRes = await supabase.from(col.path).insert([sanitized]).select().single();
+        res = retryRes.data;
+        error = retryRes.error;
+      }
+    }
+    if (error) {
+      console.warn(`Supabase addDoc write failed for ${col.path}:`, error);
+      throw error;
+    }
+    if (res?.id) {
       payload.id = res.id;
       saveLocalDoc(col.path, payload);
       return { id: res.id };
     }
   } catch (err) {
     console.warn(`Supabase addDoc write failed for ${col.path}, stored locally:`, err);
+    throw err;
   }
 
   return { id: payload.id };
@@ -422,13 +451,32 @@ export async function updateDoc(docRef: any, data: any) {
   saveLocalDoc(docRef.path, { id: docRef.id, ...data });
 
   try {
-    const { error } = await supabase.from(docRef.path).update(data).eq('id', docRef.id);
+    let { error } = await supabase.from(docRef.path).update(data).eq('id', docRef.id);
+    if (error && error.code === 'PGRST204') {
+      const match = error.message?.match(/Could not find the '([^']+)' column/i);
+      if (match && match[1] && match[1] in data) {
+        const sanitized = { ...data };
+        delete sanitized[match[1]];
+        console.warn(`Supabase updateDoc retry without unmigrated column '${match[1]}' for ${docRef.path}`);
+        const retryRes = await supabase.from(docRef.path).update(sanitized).eq('id', docRef.id);
+        error = retryRes.error;
+      }
+    }
     if (error) {
-      const { error: err2 } = await supabase.from(docRef.path).update(data).eq('uid', docRef.id);
-      if (err2) console.warn(`Supabase updateDoc fallback for ${docRef.path}:`, err2);
+      // Only fallback to 'uid' on tables specifically defined with a uid column (users, profiles)
+      if (docRef.path === 'users' || docRef.path === 'profiles') {
+        const { error: err2 } = await supabase.from(docRef.path).update(data).eq('uid', docRef.id);
+        if (err2) {
+          console.warn(`Supabase updateDoc fallback for ${docRef.path}:`, err2);
+          throw err2;
+        }
+      } else {
+        throw error;
+      }
     }
   } catch (err) {
     console.warn(`Supabase updateDoc error on ${docRef.path}, preserved locally:`, err);
+    throw err;
   }
 }
 
@@ -439,10 +487,14 @@ export async function deleteDoc(docRef: any) {
     const { error } = await supabase.from(docRef.path).delete().eq('id', docRef.id);
     if (error) {
       const { error: err2 } = await supabase.from(docRef.path).delete().eq('uid', docRef.id);
-      if (err2) console.warn(`Supabase deleteDoc fallback for ${docRef.path}:`, err2);
+      if (err2) {
+        console.warn(`Supabase deleteDoc fallback for ${docRef.path}:`, err2);
+        throw err2;
+      }
     }
   } catch (err) {
     console.warn(`Supabase deleteDoc error on ${docRef.path}:`, err);
+    throw err;
   }
 }
 
@@ -461,7 +513,7 @@ export async function getDoc(docRef: any) {
       }
     }
     if (remoteData) {
-      data = localMatch ? { ...remoteData, ...localMatch } : remoteData;
+      data = localMatch ? { ...localMatch, ...remoteData } : remoteData;
     }
   } catch (err) {
     console.warn(`Supabase getDoc failed for ${docRef.path}/${docRef.id}, using local:`, err);
@@ -490,9 +542,11 @@ export async function setDoc(docRef: any, data: any) {
     const { error } = await supabase.from(docRef.path).upsert([payload]);
     if (error) {
       console.warn(`Supabase setDoc failed for ${docRef.path}, stored locally:`, error);
+      throw error;
     }
   } catch (err) {
     console.warn(`Supabase setDoc exception for ${docRef.path}, stored locally:`, err);
+    throw err;
   }
 }
 

@@ -20,7 +20,7 @@ import {
   updateDefectiveTicketStatus,
   exportDefectiveProductsReportCSV,
 } from '../lib/itilService';
-import { db, doc, updateDoc, serverTimestamp } from '../lib/supabaseAdapter';
+import { db, doc, getDoc, updateDoc, collection, addDoc, serverTimestamp } from '../lib/supabaseAdapter';
 import { toast } from 'sonner';
 
 interface QuarantineLedgerProps {
@@ -60,42 +60,67 @@ export function QuarantineLedger({
 
       // If supplier replacement arrived: restock items back into inventory!
       if (newStatus === 'REPLACED') {
-        const item = inventory.find(
+        let item = inventory.find(
           (i) => i.productId === ticket.productId && i.warehouseId === ticket.warehouseId
         );
+        if (item?.id) {
+          try {
+            const freshSnap = await getDoc(doc(db, 'inventory', item.id));
+            if (freshSnap?.exists()) {
+              item = { ...item, ...(freshSnap.data() as InventoryItem) };
+            }
+          } catch (fetchErr) {
+            console.warn('Could not refetch latest inventory for replacement restock:', fetchErr);
+          }
+        }
         if (item) {
           const newQty = item.quantity + ticket.quantity;
           const newQuarantine = Math.max(0, (item.quarantineQuantity || 0) - ticket.quantity);
-          try {
-            await updateDoc(doc(db, 'inventory', item.id), {
-              quantity: newQty,
-              quarantineQuantity: newQuarantine,
-              lastUpdated: serverTimestamp(),
-            });
-          } catch {}
+          await updateDoc(doc(db, 'inventory', item.id), {
+            quantity: newQty,
+            quarantineQuantity: newQuarantine,
+            lastUpdated: serverTimestamp(),
+          });
         }
         toast.success(`Replacement confirmed: ${ticket.quantity} units restocked to available inventory.`);
       } else if (newStatus === 'WRITTEN_OFF') {
-        const item = inventory.find(
+        let item = inventory.find(
           (i) => i.productId === ticket.productId && i.warehouseId === ticket.warehouseId
         );
+        if (item?.id) {
+          try {
+            const freshSnap = await getDoc(doc(db, 'inventory', item.id));
+            if (freshSnap?.exists()) {
+              item = { ...item, ...(freshSnap.data() as InventoryItem) };
+            }
+          } catch (fetchErr) {
+            console.warn('Could not refetch latest inventory for write-off:', fetchErr);
+          }
+        }
         if (item) {
           const newQuarantine = Math.max(0, (item.quarantineQuantity || 0) - ticket.quantity);
-          try {
-            await updateDoc(doc(db, 'inventory', item.id), {
-              quarantineQuantity: newQuarantine,
-              lastUpdated: serverTimestamp(),
-            });
-          } catch {}
+          await updateDoc(doc(db, 'inventory', item.id), {
+            quarantineQuantity: newQuarantine,
+            lastUpdated: serverTimestamp(),
+          });
         }
+        await addDoc(collection(db, 'stockAdjustments'), {
+          productId: ticket.productId,
+          warehouseId: ticket.warehouseId,
+          adjustmentAmount: -ticket.quantity,
+          reason: `Quarantine Write-Off: Defective Ticket ${ticket.ticketNumber || ticket.id}`,
+          recordedBy: profile?.uid || 'system',
+          createdAt: serverTimestamp(),
+        });
         toast.success(`Asset written off: removed from quarantine.`);
       } else {
         toast.success(`Ticket ${ticket.ticketNumber} status updated to ${newStatus.replace('_', ' ')}.`);
       }
 
       onRefresh();
-    } catch {
-      toast.error('Could not update defective ticket.');
+    } catch (err: any) {
+      console.error('Failed to process defective stock status change:', err);
+      toast.error('Could not update defective ticket: ' + (err?.message || 'Database error'));
     }
   };
 
@@ -250,7 +275,7 @@ export function QuarantineLedger({
                     <div className="flex flex-col">
                       <span className="text-xs font-semibold text-amber-700">{ticket.defectReason}</span>
                       {ticket.resolutionNotes && (
-                        <span className="text-[10px] text-muted-foreground truncate max-w-[150px]">
+                        <span className="text-[10px] text-muted-foreground truncate max-w-37.5">
                           {ticket.resolutionNotes}
                         </span>
                       )}

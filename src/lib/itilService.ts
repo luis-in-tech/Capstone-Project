@@ -1,5 +1,5 @@
 import { db } from './supabaseAdapter';
-import { collection, addDoc, updateDoc, doc, serverTimestamp } from './supabaseAdapter';
+import { collection, addDoc, getDoc, updateDoc, doc, serverTimestamp } from './supabaseAdapter';
 import type { Order, ITILIncident, DefectiveStockTicket, UserProfile, InventoryItem } from '../types';
 
 const ITIL_INCIDENTS_STORAGE_KEY = 'activepro_db_itil_incidents';
@@ -175,6 +175,16 @@ export async function logDefectiveStockException(params: {
   notes?: string;
   inventory: InventoryItem[];
 }): Promise<{ ticket: DefectiveStockTicket; incident: ITILIncident }> {
+  // 0. Validate stock availability in origin warehouse first
+  const targetItem = params.inventory.find(
+    (i) => i.productId === params.productId && i.warehouseId === params.warehouseId
+  );
+  if (!targetItem || targetItem.quantity < params.quantity) {
+    throw new Error(
+      `Cannot quarantine ${params.quantity} unit(s) of ${params.productName}. Only ${targetItem?.quantity ?? 0} available in ${params.warehouseName}.`
+    );
+  }
+
   const timestamp = new Date().toISOString();
   const ticketSuffix = Math.floor(1000 + Math.random() * 9000);
   const defTicketNumber = `DEF-2026-${ticketSuffix}`;
@@ -238,21 +248,26 @@ export async function logDefectiveStockException(params: {
   saveLocalDefectiveTickets([defectiveTicket, ...currentTickets]);
 
   // 4. Update warehouse stock: segregate from available quantity into quarantineQuantity
-  const targetItem = params.inventory.find(
-    (i) => i.productId === params.productId && i.warehouseId === params.warehouseId
-  );
-
-  if (targetItem) {
-    const newQty = Math.max(0, targetItem.quantity - params.quantity);
-    const newQuarantineQty = (targetItem.quarantineQuantity || 0) + params.quantity;
-
+  let currentTarget = targetItem;
+  if (targetItem?.id) {
     try {
-      await updateDoc(doc(db, 'inventory', targetItem.id), {
-        quantity: newQty,
-        quarantineQuantity: newQuarantineQty,
-        lastUpdated: serverTimestamp(),
-      });
-    } catch (e) {
+      const freshSnap = await getDoc(doc(db, 'inventory', targetItem.id));
+      if (freshSnap?.exists()) {
+        currentTarget = { ...targetItem, ...(freshSnap.data() as InventoryItem) };
+      }
+    } catch {}
+  }
+
+  const newQty = Math.max(0, currentTarget.quantity - params.quantity);
+  const newQuarantineQty = (currentTarget.quarantineQuantity || 0) + params.quantity;
+
+  try {
+    await updateDoc(doc(db, 'inventory', currentTarget.id), {
+      quantity: newQty,
+      quarantineQuantity: newQuarantineQty,
+      lastUpdated: serverTimestamp(),
+    });
+  } catch (e) {
       console.warn('Inventory quarantine update fallback to local:', e);
       // Update local storage representation of inventory
       try {
@@ -268,7 +283,6 @@ export async function logDefectiveStockException(params: {
         }
       } catch {}
     }
-  }
 
   // 5. Log audit trail entry in stockAdjustments
   try {

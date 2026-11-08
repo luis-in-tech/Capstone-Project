@@ -9,13 +9,14 @@
  */
 
 import { Router } from 'express';
+import { requireRole } from '../middleware/rbac.middleware';
 import * as restoreCtrl from '../controllers/restore.controller';
 
 const router = Router();
 
 // ─── Routes ───────────────────────────────────────────────────────────────────
 
-router.get( '/backups',                  restoreCtrl.listBackups);
-router.post('/backups/:id/restore',      restoreCtrl.restoreBackup);
+router.get( '/backups',                  requireRole(['admin', 'cmo']), restoreCtrl.listBackups);
+router.post('/backups/:id/restore',      requireRole(['admin', 'cmo']), restoreCtrl.restoreBackup);
 
 export default router;

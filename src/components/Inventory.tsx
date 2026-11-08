@@ -47,6 +47,9 @@ export const cleanItemName = (name: string): string => {
 export function Inventory() {
   const { profile } = useAuth();
   const { permissions } = useStaffAccess();
+  const priceAccess = profile?.role === 'admin' ? 'all' : (permissions.priceAccess || 'all');
+  const canViewCost = priceAccess === 'all';
+  const canViewWholesale = priceAccess === 'all' || priceAccess === 'selling_no_cost';
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const [products, setProducts] = useState<Product[]>([]);
@@ -82,16 +85,19 @@ export function Inventory() {
   const [addName, setAddName] = useState('');
   const [addCategory, setAddCategory] = useState('Uncategorized');
   const [addSupplier, setAddSupplier] = useState('N/A');
+  const [addUnits, setAddUnits] = useState('pc');
 
   // Edit Product form state for uniqueness and select tracking
   const [editSku, setEditSku] = useState('');
   const [editName, setEditName] = useState('');
   const [editCategory, setEditCategory] = useState('Uncategorized');
   const [editSupplier, setEditSupplier] = useState('N/A');
+  const [editUnits, setEditUnits] = useState('pc');
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [isStockUpdateOpen, setIsStockUpdateOpen] = useState(false);
   const [isDetailOpen, setIsDetailOpen] = useState(false);
   const [selectedWarehouseId, setSelectedWarehouseId] = useState('');
+  const [adjustQty, setAdjustQty] = useState('');
 
   // Warehouse Filter State (for filtering inventory view)
   const [warehouseFilter, setWarehouseFilter] = useState<string>('all');
@@ -187,7 +193,7 @@ export function Inventory() {
   const adjustmentProduct = selectedProduct?.hasVariations ? childrenOf(selectedProduct.id).find(p => p.id === selectedVariantId) : selectedProduct;
 
   useEffect(() => { setSelectedVariantId(''); }, [selectedProduct?.id]);
-  useEffect(() => { if (!isStockUpdateOpen) setSelectedVariantId(''); }, [isStockUpdateOpen]);
+  useEffect(() => { if (!isStockUpdateOpen) { setSelectedVariantId(''); setAdjustQty(''); } }, [isStockUpdateOpen]);
   useEffect(() => {
     if (selectedProduct) {
       const latest = products.find(p => p.id === selectedProduct.id);
@@ -223,6 +229,7 @@ export function Inventory() {
       setEditName(editingProduct.name || '');
       setEditCategory(editingProduct.category || 'Uncategorized');
       setEditSupplier(editingProduct.supplier || 'N/A');
+      setEditUnits(editingProduct.unit || (typeof editingProduct.units === 'string' && isNaN(Number(editingProduct.units)) ? editingProduct.units : 'pc'));
       setEditProductImage(null);
       setEditProductImagePreview(editingProduct.photoUrl || '');
     } else {
@@ -238,6 +245,7 @@ export function Inventory() {
       setAddName('');
       setAddCategory('Uncategorized');
       setAddSupplier('N/A');
+      setAddUnits('pc');
     }
   }, [isAddProductOpen]);
 
@@ -358,6 +366,8 @@ export function Inventory() {
     const name = cleanItemName(String(formData.get('name') || addName || '').trim());
     const category = String(addCategory || formData.get('category') || 'Uncategorized').trim() || 'Uncategorized';
     const supplier = String(addSupplier || formData.get('supplier') || 'N/A').trim() || 'N/A';
+    const unit = String(formData.get('unit') ?? addUnits).trim() || 'pc';
+
 
     if (!sku) {
       toast.error('SKU Code is required.');
@@ -376,11 +386,30 @@ export function Inventory() {
       return;
     }
 
-    const basePrice = Number(formData.get('basePrice')) || 0;
+        const rawBasePrice = Number(formData.get('basePrice')) || 0;
+    const basePrice = rawBasePrice > 0 ? rawBasePrice : (addVariations.enabled ? Number(addVariations.variants.find(v => v.enabled)?.basePrice || addVariations.variants[0]?.basePrice) || 0 : 0);
+    if (basePrice <= 0) {
+      toast.error('Base Price / Retail Price must be greater than ₱0.00.');
+      return;
+    }
     const mmPrice = Number(formData.get('mmPrice')) || Number(formData.get('wholesalePrice')) || 0;
     const provincialPrice = Number(formData.get('provincialPrice')) || Number(formData.get('dealerPrice')) || 0;
     const costPrice = Number(formData.get('costPrice')) || 0;
     const promoPriceValue = formData.get('promoPrice');
+
+    const rawAddAisle = String(formData.get('locationAisle') || '').trim().toUpperCase();
+    const locationAisle = rawAddAisle.replace(/^([A-Z]+)(\d+)$/, '$1-$2');
+    const rawAddBin = String(formData.get('locationBin') || '').trim().toUpperCase();
+    const locationBin = rawAddBin.replace(/^([A-Z]+)(\d+)$/, '$1-$2');
+
+    if (locationAisle && (!locationAisle.includes('-') || !/\d/.test(locationAisle))) {
+      toast.error('Aisle Location must include a hyphen and a number (e.g. C-01).');
+      return;
+    }
+    if (locationBin && (!locationBin.includes('-') || !/\d/.test(locationBin))) {
+      toast.error('Bin Location must include a hyphen and a number (e.g. BAY-05).');
+      return;
+    }
 
     const variationError = validateVariations(addVariations, sku, products);
     if (variationError) { toast.error(variationError); return; }
@@ -397,6 +426,7 @@ export function Inventory() {
         name,
         category,
         supplier,
+        unit,
         basePrice,
         wholesalePrice: mmPrice,
         dealerPrice: provincialPrice,
@@ -405,8 +435,8 @@ export function Inventory() {
         costPrice,
         promoPrice: promoPriceValue ? Number(promoPriceValue) : undefined,
         photoUrl,
-        locationAisle: String(formData.get('locationAisle') || '').trim(),
-        locationBin: String(formData.get('locationBin') || '').trim(),
+        locationAisle,
+        locationBin,
         minStockLevel: Number(formData.get('minStockLevel')) || 0,
         reorderPoint: Number(formData.get('reorderPoint')) || 0,
         createdAt: new Date(),
@@ -418,14 +448,16 @@ export function Inventory() {
       } else {
         const docRef = await addDoc(collection(db, 'products'), newProduct);
         // Initialize inventory for all warehouses
-        for (const wh of warehouses) {
-          await addDoc(collection(db, 'inventory'), {
-            productId: docRef.id,
-            warehouseId: wh.id,
-            quantity: 0,
-            lastUpdated: serverTimestamp()
-          });
-        }
+        await Promise.all(
+          warehouses.map(wh =>
+            addDoc(collection(db, 'inventory'), {
+              productId: docRef.id,
+              warehouseId: wh.id,
+              quantity: 0,
+              lastUpdated: serverTimestamp()
+            })
+          )
+        );
       }
       setProductImage(null);
       setProductImagePreview('');
@@ -494,6 +526,8 @@ export function Inventory() {
             costPrice: Number(row.Cost) || 0,
             minStockLevel: Number(row['Minimum Stock Level']) || 0,
             reorderPoint: Number(row['Reorder Point']) || 0,
+            units: Number(row['Units'] || row['Unit'] || 1) || 1,
+            unit: String(row['Units'] || row['Unit'] || '1').toLowerCase(),
             createdAt: now, updatedAt: now,
           },
         };
@@ -535,6 +569,8 @@ export function Inventory() {
     const name = cleanItemName(String(editName || form.get('name') || '').trim());
     const category = String(editCategory || form.get('category') || 'Uncategorized').trim() || 'Uncategorized';
     const supplier = String(editSupplier || form.get('supplier') || 'N/A').trim() || 'N/A';
+    const unit = String(form.get('unit') ?? editUnits).trim() || 'pc';
+
 
     if (!sku) {
       toast.error('SKU Code is required.');
@@ -552,6 +588,20 @@ export function Inventory() {
       toast.error(`Item Name must be unique. A product named "${name}" already exists.`);
       return;
     }
+
+    const rawEditAisle = String(form.get('locationAisle') || '').trim().toUpperCase();
+    const locationAisle = rawEditAisle.replace(/^([A-Z]+)(\d+)$/, '$1-$2');
+    const rawEditBin = String(form.get('locationBin') || '').trim().toUpperCase();
+    const locationBin = rawEditBin.replace(/^([A-Z]+)(\d+)$/, '$1-$2');
+
+    if (locationAisle && (!locationAisle.includes('-') || !/\d/.test(locationAisle))) {
+      toast.error('Aisle Location must include a hyphen and a number (e.g. C-01).');
+      return;
+    }
+    if (locationBin && (!locationBin.includes('-') || !/\d/.test(locationBin))) {
+      toast.error('Bin Location must include a hyphen and a number (e.g. BAY-05).');
+      return;
+    }
     setIsSubmittingProduct(true);
     try {
       let photoUrl = editingProduct.photoUrl || '';
@@ -561,6 +611,13 @@ export function Inventory() {
         photoUrl = '';
       }
 
+      const rawBasePrice = Number(form.get('basePrice')) || 0;
+      const basePrice = rawBasePrice > 0 ? rawBasePrice : (editVariations.enabled ? Number(editVariations.variants.find(v => v.enabled)?.basePrice || editVariations.variants[0]?.basePrice) || 0 : 0);
+      if (basePrice <= 0) {
+        toast.error('Base Price / Retail Price must be greater than ₱0.00.');
+        setIsSubmittingProduct(false);
+        return;
+      }
       const mmPrice = Number(form.get('mmPrice')) || 0;
       const provincialPrice = Number(form.get('provincialPrice')) || 0;
       const promoVal = form.get('promoPrice');
@@ -570,7 +627,8 @@ export function Inventory() {
         name,
         category,
         supplier,
-        basePrice: Number(form.get('basePrice')) || 0,
+        unit,
+        basePrice,
         mmPrice,
         wholesalePrice: mmPrice,
         provincialPrice,
@@ -578,8 +636,8 @@ export function Inventory() {
         costPrice: Number(form.get('costPrice')) || 0,
         promoPrice,
         photoUrl,
-        locationAisle: String(form.get('locationAisle') || '').trim(),
-        locationBin: String(form.get('locationBin') || '').trim(),
+        locationAisle,
+        locationBin,
         minStockLevel: Number(form.get('minStockLevel')) || 0,
         reorderPoint: Number(form.get('reorderPoint')) || 0,
         updatedAt: new Date(),
@@ -830,13 +888,22 @@ export function Inventory() {
     const min = Math.min(...values), max = Math.max(...values);
     return min === max ? `₱${min.toLocaleString()}` : `₱${min.toLocaleString()}–₱${max.toLocaleString()}`;
   };
+
+  const allowedVariantFields = useMemo(() => {
+    return variantFields.filter(([key]) => {
+      if (key === 'costPrice') return canViewCost;
+      if (key === 'mmPrice' || key === 'provincialPrice' || key === 'promoPrice') return canViewWholesale;
+      return true;
+    });
+  }, [canViewCost, canViewWholesale]);
+
   const renderVariantDetails = (parent: Product) => <section className="space-y-3 py-3">
     <p className="text-xs text-muted-foreground">Stock is tracked separately for each variant and warehouse. Disabled variants retain their history and any remaining stock.</p>
     <div className="overflow-x-auto rounded-lg border"><Table>
-      <TableHeader><TableRow><TableHead className="min-w-40">Variant</TableHead><TableHead>Variant SKU</TableHead>{variantFields.map(([key, label]) => <TableHead key={key}>{label}</TableHead>)}{warehouses.map(w => <TableHead key={w.id}>{w.name}</TableHead>)}<TableHead>Total Stock</TableHead><TableHead>Status</TableHead><TableHead>Actions</TableHead></TableRow></TableHeader>
+      <TableHeader><TableRow><TableHead className="min-w-40">Variant</TableHead><TableHead>Variant SKU</TableHead>{allowedVariantFields.map(([key, label]) => <TableHead key={key}>{label}</TableHead>)}{warehouses.map(w => <TableHead key={w.id}>{w.name}</TableHead>)}<TableHead>Total Stock</TableHead><TableHead>Status</TableHead><TableHead>Actions</TableHead></TableRow></TableHeader>
       <TableBody>{childrenOf(parent.id).map(v => <TableRow key={v.id} className={v.variantEnabled === false ? 'bg-muted/30' : ''}>
         <TableCell className="font-medium"><div className="flex items-center gap-2">{v.photoUrl && <img src={v.photoUrl} alt={variantLabel(v)} className="h-12 w-12 shrink-0 rounded-lg border border-border object-cover" />}<span>{variantLabel(v)}{v.variantEnabled === false && <Badge variant="secondary" className="ml-2">Disabled</Badge>}</span></div></TableCell><TableCell className="font-mono text-xs">{v.sku}</TableCell>
-        {variantFields.map(([key]) => <TableCell key={key}>{v[key] == null ? '—' : Number(v[key]).toLocaleString()}</TableCell>)}
+        {allowedVariantFields.map(([key]) => <TableCell key={key}>{v[key] == null ? '—' : Number(v[key]).toLocaleString()}</TableCell>)}
         {warehouses.map(w => <TableCell key={w.id}>{getStockCount(v.id, w.id).toLocaleString()}</TableCell>)}
         <TableCell className="font-bold">{getStockCount(v.id).toLocaleString()}</TableCell><TableCell>{getProductStatus(v, getStockCount(v.id)) === 'out' ? 'Out of Stock' : getProductStatus(v, getStockCount(v.id)) === 'low' ? 'Low Stock' : 'In Stock'}</TableCell>
         <TableCell><div className="flex gap-1"><Button type="button" variant="outline" size="icon" aria-label={`QR label for ${v.sku}`} onClick={() => setQrProduct(v)}><QrCode className="h-4 w-4" /></Button>{canAdjustStock && <Button type="button" variant="outline" size="icon" aria-label={`Adjust ${v.sku}`} onClick={() => { setSelectedVariantId(v.id); setIsDetailOpen(false); setIsStockUpdateOpen(true); }}><SlidersHorizontal className="h-4 w-4" /></Button>}</div></TableCell>
@@ -997,8 +1064,8 @@ export function Inventory() {
             const stockA = inventory.find(i => i.productId === v.id && i.warehouseId === whA?.id)?.quantity || 0;
             const stockB = inventory.find(i => i.productId === v.id && i.warehouseId === whB?.id)?.quantity || 0;
             const quarantine = inventory.find(i => i.productId === v.id)?.quarantineQuantity || 0;
-            const cost = v.costPrice || p.costPrice || 0;
-            const totalValue = (stockA + stockB + quarantine) * cost;
+            const cost = canViewCost ? (v.costPrice || p.costPrice || 0) : 'N/A';
+            const totalValue = canViewCost ? ((stockA + stockB + quarantine) * (Number(cost) || 0)) : 'N/A';
             csvRows.push([
               `"${v.sku || ''}"`,
               `"${p.name} - ${variantLabel(v)}"`,
@@ -1012,8 +1079,8 @@ export function Inventory() {
         const stockA = inventory.find(i => i.productId === p.id && i.warehouseId === whA?.id)?.quantity || 0;
         const stockB = inventory.find(i => i.productId === p.id && i.warehouseId === whB?.id)?.quantity || 0;
         const quarantine = inventory.find(i => i.productId === p.id)?.quarantineQuantity || 0;
-        const cost = p.costPrice || 0;
-        const totalValue = (stockA + stockB + quarantine) * cost;
+        const cost = canViewCost ? (p.costPrice || 0) : 'N/A';
+        const totalValue = canViewCost ? ((stockA + stockB + quarantine) * (Number(cost) || 0)) : 'N/A';
         csvRows.push([
           `"${p.sku || ''}"`,
           `"${p.name}"`,
@@ -1103,7 +1170,7 @@ export function Inventory() {
           { label: 'Total Products', value: totalProducts.toLocaleString(), helper: 'All active products', icon: Package, tone: 'bg-blue-500/10 text-blue-500' },
           { label: 'Low Stock', value: lowStockProducts.toLocaleString(), helper: 'Products low on stock', icon: AlertTriangle, tone: 'bg-amber-500/10 text-amber-500' },
           { label: 'Out of Stock', value: outOfStockProducts.toLocaleString(), helper: 'Products out of stock', icon: Package, tone: 'bg-red-500/10 text-red-500' },
-          { label: 'Inventory Value', value: '₱' + inventoryValue.toLocaleString(undefined, { maximumFractionDigits: 2 }), helper: 'Across ' + activeWarehouseLabel, icon: CircleDollarSign, tone: 'bg-emerald-500/10 text-emerald-600' },
+          { label: 'Inventory Value', value: canViewCost ? '₱' + inventoryValue.toLocaleString(undefined, { maximumFractionDigits: 2 }) : '—', helper: canViewCost ? 'Across ' + activeWarehouseLabel : 'Requires Cost Permission', icon: CircleDollarSign, tone: 'bg-emerald-500/10 text-emerald-600' },
         ].map(metric => (
           <Card key={metric.label} className="rounded-2xl border-border/70 shadow-sm">
             <CardContent className="flex items-center gap-4 p-5">
@@ -1139,14 +1206,14 @@ export function Inventory() {
               <TableRow>
                 <TableHead className="w-10 text-center text-[10px] font-bold uppercase px-2">#</TableHead>
                 <TableHead className="w-28 text-[10px] font-bold uppercase px-2">SKU</TableHead>
-                <TableHead className="min-w-[190px] max-w-[260px] text-[10px] font-bold uppercase px-2">Product</TableHead>
-                <TableHead className="w-32 text-[10px] font-bold uppercase px-2">Pricing (₱)</TableHead>
+                <TableHead className="min-w-47.5 max-w-65 text-[10px] font-bold uppercase px-2">Product</TableHead>
+                <TableHead className="w-32 text-[10px] font-bold uppercase px-2">{canViewWholesale ? 'Pricing (₱)' : 'Retail Price (₱)'}</TableHead>
                 <TableHead className="w-20 text-[10px] font-bold uppercase px-2">Cost (₱)</TableHead>
                 <TableHead className="w-24 text-center text-[10px] font-bold uppercase px-2">Stock</TableHead>
                 <TableHead className="w-24 text-[10px] font-bold uppercase px-2">Stock Levels</TableHead>
                 <TableHead className="w-28 text-[10px] font-bold uppercase px-2">Supplier</TableHead>
                 <TableHead className="w-24 text-center text-[10px] font-bold uppercase px-2">Status</TableHead>
-                <TableHead className="w-[180px] text-center text-[10px] font-bold uppercase px-3">Actions</TableHead>
+                <TableHead className="w-45 text-center text-[10px] font-bold uppercase px-3">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -1162,7 +1229,7 @@ export function Inventory() {
                     <TableCell className="w-28 font-mono text-xs text-muted-foreground px-2 py-2 truncate" title={product.sku}>
                       {product.sku}
                     </TableCell>
-                    <TableCell className="min-w-[190px] max-w-[260px] px-2 py-2">
+                    <TableCell className="min-w-47.5 max-w-65 px-2 py-2">
                       <div className="flex items-center gap-2.5">
                         <div className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-border bg-muted">
                           {product.photoUrl ? (
@@ -1185,7 +1252,7 @@ export function Inventory() {
                     <TableCell className="w-32 px-2 py-2">
                       {product.hasVariations ? (
                         <div className="space-y-0.5 text-[11px]">
-                          {variantFields.slice(0, 3).map(([key, label]) => (
+                          {(canViewWholesale ? variantFields.slice(0, 3) : variantFields.slice(0, 1)).map(([key, label]) => (
                             <p key={key} className="truncate">
                               <span className="text-muted-foreground">{label}: </span>
                               <strong>{variantRange(product, key)}</strong>
@@ -1195,13 +1262,17 @@ export function Inventory() {
                       ) : (
                         <div className="grid grid-cols-[2.4rem_auto] text-[11px] leading-tight">
                           <span className="text-muted-foreground">Retail:</span><strong>₱{(product.basePrice || 0).toLocaleString()}</strong>
-                          <span className="text-muted-foreground">MM:</span><strong>₱{(product.mmPrice ?? product.wholesalePrice ?? 0).toLocaleString()}</strong>
-                          <span className="text-muted-foreground">Prov.:</span><strong>₱{(product.provincialPrice ?? product.dealerPrice ?? 0).toLocaleString()}</strong>
+                          {canViewWholesale && (
+                            <>
+                              <span className="text-muted-foreground">MM:</span><strong>₱{(product.mmPrice ?? product.wholesalePrice ?? 0).toLocaleString()}</strong>
+                              <span className="text-muted-foreground">Prov.:</span><strong>₱{(product.provincialPrice ?? product.dealerPrice ?? 0).toLocaleString()}</strong>
+                            </>
+                          )}
                         </div>
                       )}
                     </TableCell>
                     <TableCell className="w-20 px-2 py-2 text-xs font-semibold">
-                      {product.hasVariations ? variantRange(product, 'costPrice') : `₱${(product.costPrice || 0).toLocaleString()}`}
+                      {canViewCost ? (product.hasVariations ? variantRange(product, 'costPrice') : `₱${(product.costPrice || 0).toLocaleString()}`) : '—'}
                     </TableCell>
                     <TableCell className="w-24 px-2 py-2 text-center">
                       <Badge variant="outline" className={'rounded-full px-2.5 py-0.5 text-[11px] ' + statusClass}>
@@ -1228,7 +1299,7 @@ export function Inventory() {
                       </Badge>
                     </TableCell>
                     <TableCell
-                      className="w-[180px] text-center px-3 py-2"
+                      className="w-45 text-center px-3 py-2"
                       onClick={(event) => event.stopPropagation()}
                     >
                       <div className="flex justify-center gap-1">
@@ -1441,20 +1512,40 @@ export function Inventory() {
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="locationAisle">Aisle Location</Label>
-                    <Input id="locationAisle" name="locationAisle" placeholder="e.g. A1" />
+                    <Input id="locationAisle" name="locationAisle" placeholder="e.g. A-01" className="uppercase" />
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="locationBin">Bin Location</Label>
-                    <Input id="locationBin" name="locationBin" placeholder="e.g. B-23" />
+                    <Input id="locationBin" name="locationBin" placeholder="e.g. B-23" className="uppercase" />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="unit">Unit of Measurement</Label>
+                    <Input
+                      id="unit"
+                      name="unit"
+                      list="uom-options"
+                      placeholder="e.g. pc, set, pair, gross, box"
+                      value={addUnits}
+                      onChange={(e) => setAddUnits(e.target.value)}
+                    />
+                    <datalist id="uom-options">
+                      <option value="pc">Piece (pc)</option>
+                      <option value="set">Set (set)</option>
+                      <option value="pair">Pair (pair)</option>
+                      <option value="gross">Gross (gross)</option>
+                      <option value="box">Box (box)</option>
+                      <option value="roll">Roll (roll)</option>
+                      <option value="bundle">Bundle (bundle)</option>
+                    </datalist>
                   </div>
                 </div>
               </section>
             </div>
             <ProductVariationEditor value={addVariations} onChange={setAddVariations} sku={addSku} />
-            {!addVariations.enabled && <><section className="space-y-3">
+            {/* Pricing & Stock Controls */}<section className="space-y-3">
               <h3 className="border-b border-border pb-2 text-sm font-bold">Pricing</h3>
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-                <div className="space-y-2"><Label htmlFor="basePrice">Price (₱)</Label><Input id="basePrice" name="basePrice" type="number" min="0" step="0.01" required /></div>
+                <div className="space-y-2"><Label htmlFor="basePrice">Price (₱)</Label><Input id="basePrice" name="basePrice" type="number" min="0.01" step="0.01" required={!addVariations.enabled} /></div>
                 <div className="space-y-2"><Label htmlFor="costPrice">Cost (₱)</Label><Input id="costPrice" name="costPrice" type="number" min="0" step="0.01" /></div>
                 <div className="space-y-2"><Label htmlFor="promoPrice">Promo Price (₱)</Label><Input id="promoPrice" name="promoPrice" type="number" min="0" step="0.01" /></div>
                 <div className="space-y-2"><Label htmlFor="mmPrice">Metro Manila Wholesale (₱)</Label><Input id="mmPrice" name="mmPrice" type="number" min="0" step="0.01" /></div>
@@ -1468,7 +1559,6 @@ export function Inventory() {
                   <div className="space-y-2"><Label htmlFor="reorderPoint">Restock Level</Label><Input id="reorderPoint" name="reorderPoint" type="number" min="0" defaultValue="0" /></div>
                 </div>
               </section>
-            </>}
             <DialogFooter>
               <Button type="submit" disabled={isSubmittingProduct || isAddSkuDuplicate || isAddNameDuplicate}>
                 {isSubmittingProduct ? 'Adding...' : 'Add Product'}
@@ -1625,23 +1715,34 @@ export function Inventory() {
                     </div>
                     <div className="space-y-2">
                       <Label htmlFor="edit-locationAisle">Aisle Location</Label>
-                      <Input id="edit-locationAisle" name="locationAisle" placeholder="e.g. A1" defaultValue={editingProduct.locationAisle} />
+                      <Input id="edit-locationAisle" name="locationAisle" placeholder="e.g. A-01" defaultValue={editingProduct.locationAisle} className="uppercase" />
                     </div>
                     <div className="space-y-2">
                       <Label htmlFor="edit-locationBin">Bin Location</Label>
-                      <Input id="edit-locationBin" name="locationBin" placeholder="e.g. B-23" defaultValue={editingProduct.locationBin} />
+                      <Input id="edit-locationBin" name="locationBin" placeholder="e.g. B-23" defaultValue={editingProduct.locationBin} className="uppercase" />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="edit-unit">Unit of Measurement</Label>
+                      <Input
+                        id="edit-unit"
+                        name="unit"
+                        list="uom-options"
+                        placeholder="e.g. pc, set, pair, gross, box"
+                        value={editUnits}
+                        onChange={(e) => setEditUnits(e.target.value)}
+                      />
                     </div>
                   </div>
                 </section>
               </div>
 
               <ProductVariationEditor value={editVariations} onChange={setEditVariations} sku={editSku} key={editingProduct.id} locked={variantModeLocked} />
-              {!editVariations.enabled && <><section className="space-y-3">
+              {/* Pricing & Stock Controls */}<section className="space-y-3">
                 <h3 className="border-b border-border pb-2 text-sm font-bold">Pricing</h3>
                 <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
                   <div className="space-y-2">
                     <Label htmlFor="edit-basePrice">Price (₱)</Label>
-                    <Input id="edit-basePrice" name="basePrice" type="number" step="0.01" min="0" defaultValue={editingProduct.basePrice} required />
+                    <Input id="edit-basePrice" name="basePrice" type="number" step="0.01" min="0.01" defaultValue={editingProduct.basePrice} required={!editVariations.enabled} />
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="edit-costPrice">Cost (₱)</Label>
@@ -1675,8 +1776,6 @@ export function Inventory() {
                     </div>
                   </div>
                 </section>
-
-              </>}
               <DialogFooter>
                 <Button type="button" variant="outline" onClick={() => { setEditingProduct(null); setEditProductImage(null); setEditProductImagePreview(''); }}>Cancel</Button>
                 <Button type="submit" disabled={isSubmittingProduct || isEditSkuDuplicate || isEditNameDuplicate || !editSku.trim() || !editName.trim()}>
@@ -1710,53 +1809,175 @@ export function Inventory() {
 
       {/* Stock Update Dialog */}
       <Dialog open={isStockUpdateOpen} onOpenChange={setIsStockUpdateOpen}>
-        <DialogContent>
+        <DialogContent className="sm:max-w-xl max-h-[92vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Manual Stock Adjustment</DialogTitle>
             <DialogDescription>
-              Adjust current counts for <span className="font-bold">{selectedProduct?.name}</span>. This action will be logged for auditing.
+              Adjust current counts for <span className="font-bold text-foreground">{selectedProduct?.name}</span>. This action will be logged for auditing.
             </DialogDescription>
           </DialogHeader>
-          <form onSubmit={updateStock} className="space-y-4 pt-4">
-            {selectedProduct?.hasVariations && <div className="space-y-2"><Label htmlFor="adjust-variant">Variant</Label><select id="adjust-variant" required className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm" value={selectedVariantId} onChange={e => setSelectedVariantId(e.target.value)}><option value="">Select a variant...</option>{childrenOf(selectedProduct.id).map(v => <option key={v.id} value={v.id}>{variantLabel(v)} — {v.sku}{v.variantEnabled === false ? ' (disabled)' : ''}</option>)}</select><p className="text-xs text-muted-foreground">Adjustments apply only to the selected variant and warehouse.</p></div>}
+          <form onSubmit={updateStock} className="space-y-4 pt-2">
+            {selectedProduct?.hasVariations && (
+              <div className="space-y-2">
+                <Label htmlFor="adjust-variant">Variant</Label>
+                <select
+                  id="adjust-variant"
+                  required
+                  className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm font-medium"
+                  value={selectedVariantId}
+                  onChange={e => setSelectedVariantId(e.target.value)}
+                >
+                  <option value="">Select a variant...</option>
+                  {childrenOf(selectedProduct.id).map(v => (
+                    <option key={v.id} value={v.id}>
+                      {variantLabel(v)} — {v.sku}{v.variantEnabled === false ? ' (disabled)' : ''}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-xs text-muted-foreground">Adjustments apply only to the selected variant and warehouse.</p>
+              </div>
+            )}
+
+            {/* Warehouse Stock Breakdown Panel */}
+            <div className="rounded-xl border border-border bg-muted/40 p-3.5 space-y-2.5">
+              <div className="flex items-center justify-between border-b border-border/70 pb-2">
+                <div className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-muted-foreground">
+                  <WarehouseIcon className="h-4 w-4 text-[#1a73e8]" />
+                  <span>Current Warehouse Stock</span>
+                </div>
+                <div className="text-xs font-bold text-muted-foreground">
+                  Total Across All: <span className="font-black text-[#d97706]">{adjustmentProduct ? getStockCount(adjustmentProduct.id).toLocaleString() : 0} units</span>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-0.5">
+                {warehouses.map((wh) => {
+                  const whCount = adjustmentProduct ? getStockCount(adjustmentProduct.id, wh.id) : 0;
+                  const isSelected = selectedWarehouseId === wh.id;
+                  return (
+                    <button
+                      key={wh.id}
+                      type="button"
+                      onClick={() => setSelectedWarehouseId(wh.id)}
+                      className={`flex items-center justify-between rounded-lg border px-3 py-2 text-left text-xs transition-all ${
+                        isSelected
+                          ? 'border-[#1a73e8] bg-[#1a73e8]/10 ring-1 ring-[#1a73e8] font-bold text-foreground shadow-sm'
+                          : 'border-border/70 bg-card hover:bg-muted/60 hover:border-border text-foreground'
+                      }`}
+                    >
+                      <span className="truncate pr-2 font-medium">{wh.name}</span>
+                      <Badge
+                        variant="outline"
+                        className={`shrink-0 font-bold px-2 py-0.5 text-[11px] ${
+                          whCount > 0
+                            ? 'bg-emerald-500/10 text-emerald-600 border-emerald-500/30 dark:text-emerald-400'
+                            : 'bg-muted text-muted-foreground'
+                        }`}
+                      >
+                        {whCount.toLocaleString()} units
+                      </Badge>
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="text-[11px] text-muted-foreground italic">
+                Tip: Click any warehouse above to select it directly for adjustment.
+              </p>
+            </div>
+
+            {/* Target Warehouse Selector */}
             <div className="space-y-2">
-              <Label>Target Warehouse</Label>
+              <Label htmlFor="warehouseId">Target Warehouse</Label>
               <Select name="warehouseId" required value={selectedWarehouseId} onValueChange={(value) => value !== null && setSelectedWarehouseId(value)}>
-                <SelectTrigger>
+                <SelectTrigger id="warehouseId">
                   <SelectValue placeholder="Select warehouse...">
                     {selectedWarehouseId ? warehouses.find(w => w.id === selectedWarehouseId)?.name : 'Select warehouse...'}
                   </SelectValue>
                 </SelectTrigger>
                 <SelectContent>
-                  {warehouses.map(wh => (
-                    <SelectItem key={wh.id} value={wh.id}>{wh.name}</SelectItem>
-                  ))}
+                  {warehouses.map(wh => {
+                    const whCount = adjustmentProduct ? getStockCount(adjustmentProduct.id, wh.id) : 0;
+                    return (
+                      <SelectItem key={wh.id} value={wh.id}>
+                        <div className="flex items-center justify-between w-full gap-4">
+                          <span>{wh.name}</span>
+                          <span className="text-xs font-semibold text-muted-foreground">({whCount} units)</span>
+                        </div>
+                      </SelectItem>
+                    );
+                  })}
                 </SelectContent>
               </Select>
             </div>
+
+            {/* Adjustment Qty & Calculation Preview */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className="space-y-2">
-                <Label>Adjustment Qty</Label>
-                <Input name="quantity" type="number" required placeholder="+/- units" />
+                <Label htmlFor="adjust-quantity">Adjustment Qty</Label>
+                <Input
+                  id="adjust-quantity"
+                  name="quantity"
+                  type="number"
+                  required
+                  placeholder="+/- units (e.g. 5 or -2)"
+                  value={adjustQty}
+                  onChange={e => setAdjustQty(e.target.value)}
+                />
               </div>
+
               <div className="space-y-2">
-                <Label>Current System Total</Label>
-                <div className="h-10 px-3 flex items-center bg-muted border border-border rounded-lg text-xs font-bold">
-                  {adjustmentProduct ? getStockCount(adjustmentProduct.id, selectedProduct?.hasVariations ? selectedWarehouseId || undefined : undefined) : 0} units
+                <Label>Selected Warehouse Balance</Label>
+                <div className="h-10 px-3 flex items-center justify-between bg-muted/60 border border-border rounded-lg text-xs font-semibold">
+                  <span className="text-muted-foreground">
+                    {selectedWarehouseId ? 'Projected Balance:' : 'Current Stock:'}
+                  </span>
+                  {selectedWarehouseId ? (
+                    <span className="font-bold">
+                      {adjustmentProduct ? getStockCount(adjustmentProduct.id, selectedWarehouseId) : 0}
+                      {adjustQty && Number(adjustQty) !== 0 && (
+                        <>
+                          <span className="text-muted-foreground mx-1">
+                            {Number(adjustQty) > 0 ? `+ ${Number(adjustQty)}` : `- ${Math.abs(Number(adjustQty))}`} =
+                          </span>
+                          <span className={`font-black ${
+                            (adjustmentProduct ? getStockCount(adjustmentProduct.id, selectedWarehouseId) : 0) + Number(adjustQty) < 0
+                              ? 'text-red-500'
+                              : 'text-emerald-600 dark:text-emerald-400'
+                          }`}>
+                            {(adjustmentProduct ? getStockCount(adjustmentProduct.id, selectedWarehouseId) : 0) + Number(adjustQty)} units
+                          </span>
+                        </>
+                      )}
+                      {!adjustQty && ' units'}
+                    </span>
+                  ) : (
+                    <span className="text-muted-foreground italic">Select warehouse</span>
+                  )}
                 </div>
               </div>
             </div>
+
+            {/* Adjustment Reason */}
             <div className="space-y-2">
               <Label htmlFor="reason" className="flex items-center">
                 Adjustment Reason <span className="text-red-500 ml-1.5 font-black uppercase text-[9px] tracking-widest">(Required)</span>
               </Label>
-              <Input id="reason" name="reason" required placeholder="e.g., Damaged item, Physical count correction..." className="border-red-500/30 focus-visible:ring-red-500/20" />
+              <Input
+                id="reason"
+                name="reason"
+                required
+                placeholder="e.g., Damaged item, Physical count correction..."
+                className="border-red-500/30 focus-visible:ring-red-500/20"
+              />
               <div className="bg-red-500/10 border border-red-500/20 text-red-600 dark:text-red-400 p-2.5 rounded-lg text-xs font-medium">
                 Mandatory for internal audit compliance.
               </div>
             </div>
-            <DialogFooter>
-              <Button type="submit" className="w-full" disabled={isAdjusting || !adjustmentProduct}>{isAdjusting ? 'Saving...' : 'Commit Adjustment'}</Button>
+
+            <DialogFooter className="pt-2">
+              <Button type="submit" className="w-full h-10 font-bold" disabled={isAdjusting || !adjustmentProduct || !selectedWarehouseId}>
+                {isAdjusting ? 'Saving...' : 'Commit Adjustment'}
+              </Button>
             </DialogFooter>
           </form>
         </DialogContent>
@@ -1806,14 +2027,19 @@ export function Inventory() {
                       <dt className="text-muted-foreground">Category</dt><dd className="font-medium">{selectedProduct.category || 'Uncategorized'}</dd>
                       <dt className="text-muted-foreground">Preferred Supplier</dt><dd className="font-medium">{selectedProduct.supplier || 'N/A'}</dd>
                       <dt className="text-muted-foreground">Location (Aisle/Bin)</dt><dd className="font-medium">{selectedProduct.locationAisle || selectedProduct.locationBin ? `${selectedProduct.locationAisle || 'N/A'} / ${selectedProduct.locationBin || 'N/A'}` : 'Not Assigned'}</dd>
+                      <dt className="text-muted-foreground">Unit of Measurement</dt><dd className="font-medium">{selectedProduct.unit || (typeof selectedProduct.units === 'string' ? selectedProduct.units : 'pc')}</dd>
                     </dl>
                     <div className="mt-2 flex items-center gap-3 border-y border-border py-3"><span className="font-mono text-sm font-black text-muted-foreground">02</span><Tag className="h-5 w-5" /><h3 className="text-base font-bold uppercase tracking-wider">Pricing (₱)</h3></div>
                     <dl className="grid grid-cols-[minmax(8rem,1fr)_minmax(0,1fr)] gap-x-5 gap-y-3 pt-3 text-sm">
                       <dt className="text-muted-foreground">Base Price / Retail</dt><dd className="font-medium">{selectedProduct.hasVariations ? variantRange(selectedProduct, 'basePrice') : (selectedProduct.basePrice || 0).toLocaleString()}</dd>
-                      <dt className="text-muted-foreground">Cost</dt><dd className="font-medium">{selectedProduct.hasVariations ? variantRange(selectedProduct, 'costPrice') : (selectedProduct.costPrice || 0).toLocaleString()}</dd>
-                      <dt className="text-muted-foreground">Promo Price</dt><dd className="font-medium">{selectedProduct.hasVariations ? variantRange(selectedProduct, 'promoPrice') : selectedProduct.promoPrice != null ? selectedProduct.promoPrice.toLocaleString() : '—'}</dd>
-                      <dt className="text-muted-foreground">Metro Manila Wholesale</dt><dd className="font-medium">{selectedProduct.hasVariations ? variantRange(selectedProduct, 'mmPrice') : (selectedProduct.mmPrice ?? selectedProduct.wholesalePrice ?? 0).toLocaleString()}</dd>
-                      <dt className="text-muted-foreground">Provincial Wholesale</dt><dd className="font-medium">{selectedProduct.hasVariations ? variantRange(selectedProduct, 'provincialPrice') : (selectedProduct.provincialPrice ?? selectedProduct.dealerPrice ?? 0).toLocaleString()}</dd>
+                      <dt className="text-muted-foreground">Cost</dt><dd className="font-medium">{canViewCost ? (selectedProduct.hasVariations ? variantRange(selectedProduct, 'costPrice') : (selectedProduct.costPrice || 0).toLocaleString()) : '—'}</dd>
+                      {canViewWholesale && (
+                        <>
+                          <dt className="text-muted-foreground">Promo Price</dt><dd className="font-medium">{selectedProduct.hasVariations ? variantRange(selectedProduct, 'promoPrice') : selectedProduct.promoPrice != null ? selectedProduct.promoPrice.toLocaleString() : '—'}</dd>
+                          <dt className="text-muted-foreground">Metro Manila Wholesale</dt><dd className="font-medium">{selectedProduct.hasVariations ? variantRange(selectedProduct, 'mmPrice') : (selectedProduct.mmPrice ?? selectedProduct.wholesalePrice ?? 0).toLocaleString()}</dd>
+                          <dt className="text-muted-foreground">Provincial Wholesale</dt><dd className="font-medium">{selectedProduct.hasVariations ? variantRange(selectedProduct, 'provincialPrice') : (selectedProduct.provincialPrice ?? selectedProduct.dealerPrice ?? 0).toLocaleString()}</dd>
+                        </>
+                      )}
                     </dl>
                   </section>
 
