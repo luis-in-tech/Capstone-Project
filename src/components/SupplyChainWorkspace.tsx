@@ -218,7 +218,7 @@ export function SupplyChainWorkspace({ sourceLoading, sourceError, onRetrySource
       direction: order.status === 'cancelled' ? undefined : 'out',
     };
   });
-  const customerOrders: ChainTransaction[] = orderRows.filter(row => row.status === 'completed');
+  const customerOrders: ChainTransaction[] = orderRows.filter(row => !['cancelled', 'escalated'].includes(row.status));
 
   const purchaseRows: ChainTransaction[] = movements.filter(m => m.type === 'external').map(movement => {
     const matchedSupplier = suppliers.find(s => s.id === movement.supplierId || s.name === movement.supplierName || s.name === movement.supplierId);

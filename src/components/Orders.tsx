@@ -24,6 +24,9 @@ import {
   WarningCircleIcon as AlertCircle,
   WarningIcon as AlertTriangle,
   CaretRightIcon as ChevronRight,
+  CaretUpIcon as ChevronUp,
+  CaretDownIcon as ChevronDown,
+  ArrowsDownUpIcon as ArrowUpDown,
   FileTextIcon as FileText,
   EyeIcon as Eye,
   CalendarIcon as Calendar,
@@ -60,6 +63,29 @@ import { compressImage } from '../lib/imageCompressor';
 
 import { ITILIncidentConsole } from './ITILIncidentConsole';
 
+type OrderSortKey = 'orderNumber' | 'clientName' | 'status' | 'deadline' | 'amount';
+type SortDirection = 'asc' | 'desc';
+
+const ORDER_SORT_COLUMNS: Array<{
+  key: OrderSortKey;
+  label: string;
+  align: 'left' | 'center' | 'right';
+  headClass: string;
+}> = [
+  { key: 'orderNumber', label: 'Order ID', align: 'left', headClass: 'min-w-30' },
+  { key: 'clientName', label: 'Client Name', align: 'left', headClass: 'min-w-37.5' },
+  { key: 'status', label: 'Status', align: 'left', headClass: 'min-w-30' },
+  { key: 'deadline', label: 'Deadline', align: 'center', headClass: 'min-w-30 text-center' },
+  { key: 'amount', label: 'Amount', align: 'right', headClass: 'min-w-25 text-right' },
+];
+
+const toTimeMs = (value: any): number => {
+  if (!value) return 0;
+  if (typeof value?.toDate === 'function') return value.toDate().getTime();
+  const parsed = new Date(value).getTime();
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+
 export function Orders() {
   const { profile } = useAuth();
   const { permissions } = useStaffAccess();
@@ -92,6 +118,8 @@ export function Orders() {
   const [isIncidentsDialogOpen, setIsIncidentsDialogOpen] = useState(false);
   const [incidentFilter, setIncidentFilter] = useState<'all' | 'SLA_BREACH' | 'DEFECTIVE_ASSET'>('all');
   const [orderViewMode, setOrderViewMode] = useState<'all' | 'fifo_queue'>('all');
+  const [sortKey, setSortKey] = useState<OrderSortKey | null>(null);
+  const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
   const [customOrderIds, setCustomOrderIds] = useState<string[]>(() => {
     try {
       const stored = localStorage.getItem('activepro_custom_order_ids');
@@ -137,30 +165,63 @@ export function Orders() {
     }
   };
 
+  const toggleSort = (key: OrderSortKey) => {
+    setOrderViewMode('all');
+    if (sortKey === key) {
+      setSortDirection(prev => (prev === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setSortKey(key);
+      setSortDirection('asc');
+    }
+  };
+
   const statusChronologicalOrders = React.useMemo(() => {
     return [...filteredOrders].sort((a, b) => {
       const rankA = statusGroupRank(a.status);
       const rankB = statusGroupRank(b.status);
       if (rankA !== rankB) return rankA - rankB;
-      const timeA = new Date(a.createdAt || 0).getTime();
-      const timeB = new Date(b.createdAt || 0).getTime();
-      return timeB - timeA;
+      return toTimeMs(b.createdAt) - toTimeMs(a.createdAt);
     });
   }, [filteredOrders]);
 
   const fulfillmentStrategy = (localStorage.getItem('activepro.fulfillment_strategy') as 'FIFO'|'LIFO') || 'FIFO';
 
-  // System-wide unified ordering: Combines Canva Status Grouping, In-place Row Stability, and Manual Drag & Drop
+  // System-wide unified ordering: Supports column sorting, Status Grouping, In-place Row Stability, and Manual Drag & Drop
   const displayOrders = React.useMemo(() => {
     if (orderViewMode === 'fifo_queue') {
       return prioritizeOrderQueue(filteredOrders, fulfillmentStrategy);
+    }
+
+    if (sortKey) {
+      const dir = sortDirection === 'asc' ? 1 : -1;
+      return [...filteredOrders].sort((a, b) => {
+        let diff = 0;
+        if (sortKey === 'orderNumber') {
+          diff = (a.orderNumber || '').localeCompare(b.orderNumber || '', undefined, { numeric: true, sensitivity: 'base' }) * dir;
+        } else if (sortKey === 'clientName') {
+          diff = (a.clientName || '').localeCompare(b.clientName || '', undefined, { sensitivity: 'base' }) * dir;
+        } else if (sortKey === 'status') {
+          diff = (statusGroupRank(a.status) - statusGroupRank(b.status)) * dir;
+        } else if (sortKey === 'deadline') {
+          const dA = toTimeMs(a.deliveryDeadline);
+          const dB = toTimeMs(b.deliveryDeadline);
+          if (dA === 0 && dB === 0) diff = 0;
+          else if (dA === 0) return 1;
+          else if (dB === 0) return -1;
+          else diff = (dA - dB) * dir;
+        } else if (sortKey === 'amount') {
+          diff = (Number(a.totalAmount || 0) - Number(b.totalAmount || 0)) * dir;
+        }
+        if (diff !== 0) return diff;
+        return toTimeMs(b.createdAt) - toTimeMs(a.createdAt);
+      });
     }
 
     if (!customOrderIds.length) {
       return statusChronologicalOrders;
     }
 
-    // Preserve custom drag-and-drop / in-place stability
+    // Preserve custom drag-and-drop / in-place stability while placing newly created orders on top
     const orderMap = new Map(filteredOrders.map(o => [o.id, o]));
     const arranged: Order[] = [];
     for (const id of customOrderIds) {
@@ -170,15 +231,15 @@ export function Orders() {
         orderMap.delete(id);
       }
     }
-    // Append any newly added orders using statusChronological order
+    const unarranged: Order[] = [];
     for (const order of statusChronologicalOrders) {
       if (orderMap.has(order.id)) {
-        arranged.push(order);
+        unarranged.push(order);
         orderMap.delete(order.id);
       }
     }
-    return arranged;
-  }, [filteredOrders, customOrderIds, statusChronologicalOrders, orderViewMode, fulfillmentStrategy]);
+    return [...unarranged, ...arranged];
+  }, [filteredOrders, customOrderIds, statusChronologicalOrders, orderViewMode, fulfillmentStrategy, sortKey, sortDirection]);
 
   const handleDragStart = (e: React.DragEvent, id: string) => {
     setDraggedOrderId(id);
@@ -213,6 +274,7 @@ export function Orders() {
     const [moved] = updated.splice(fromIndex, 1);
     updated.splice(toIndex, 0, moved);
 
+    setSortKey(null);
     setCustomOrderIds(updated);
     localStorage.setItem('activepro_custom_order_ids', JSON.stringify(updated));
     setDraggedOrderId(null);
@@ -808,6 +870,13 @@ export function Orders() {
         {profile && canCreate && <OrderEntry key={`${profile.uid}:${orderEntryKey}`} open={isNewOrderOpen} onClose={() => setIsNewOrderOpen(false)} orders={orders} products={products} inventory={inventory} profile={profile} onSaved={(order, items) => {
           saveOrderOverride(order.id, order);
           setOrders(current => [order, ...current.filter(item => item.id !== order.id)]);
+          setSortKey(null);
+          setOrderViewMode('all');
+          if (customOrderIds.length > 0) {
+            const nextIds = [order.id, ...customOrderIds.filter(id => id !== order.id)];
+            setCustomOrderIds(nextIds);
+            localStorage.setItem('activepro_custom_order_ids', JSON.stringify(nextIds));
+          }
           setIsNewOrderOpen(false);
           setOrderEntryKey(value => value + 1);
           setReceiptItems(items);
@@ -1324,12 +1393,23 @@ export function Orders() {
           />
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          {sortKey && orderViewMode === 'all' && (
+            <button
+              type="button"
+              className="text-[11px] font-medium text-muted-foreground hover:text-foreground px-2.5 py-1 rounded-lg border border-border bg-card hover:bg-muted transition-colors shadow-xs"
+              onClick={() => setSortKey(null)}
+              title="Clear column sort and return to newest / status order"
+            >
+              Clear Sort
+            </button>
+          )}
           {customOrderIds.length > 0 && orderViewMode === 'all' && (
             <button
               type="button"
               className="text-[11px] font-medium text-muted-foreground hover:text-foreground px-2.5 py-1 rounded-lg border border-border bg-card hover:bg-muted transition-colors shadow-xs"
               onClick={() => {
                 setCustomOrderIds([]);
+                setSortKey(null);
                 localStorage.removeItem('activepro_custom_order_ids');
                 toast.info('Orders reset to default status grouping.');
               }}
@@ -1370,6 +1450,29 @@ export function Orders() {
 
       {/* Mobile Card View */}
       <div className="lg:hidden space-y-3">
+        <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border bg-card p-2.5">
+          <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground px-1">Sort by</span>
+          <div className="flex flex-wrap gap-1.5 flex-1">
+            {ORDER_SORT_COLUMNS.map(col => {
+              const active = orderViewMode === 'all' && sortKey === col.key;
+              return (
+                <button
+                  key={col.key}
+                  type="button"
+                  onClick={() => toggleSort(col.key)}
+                  className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-xs font-medium transition-colors ${
+                    active
+                      ? 'border-primary/40 bg-primary/10 text-foreground font-semibold'
+                      : 'border-border bg-background text-muted-foreground hover:text-foreground'
+                  }`}
+                >
+                  <span>{col.label}</span>
+                  {active ? (sortDirection === 'asc' ? <ChevronUp className="size-3" /> : <ChevronDown className="size-3" />) : <ArrowUpDown className="size-3 opacity-40" />}
+                </button>
+              );
+            })}
+          </div>
+        </div>
         {displayOrders.map(order => {
           const deadlineDate = typeof order.deliveryDeadline?.toDate === 'function' ? order.deliveryDeadline.toDate() : order.deliveryDeadline ? new Date(order.deliveryDeadline) : null;
           const isOverdue = deadlineDate && deadlineDate < new Date() && !['delivered', 'completed', 'cancelled', 'escalated'].includes(order.status);
@@ -1507,11 +1610,30 @@ export function Orders() {
             <TableHeader className="bg-muted/50">
               <TableRow>
                 <TableHead className="w-9 px-2 text-center"><span className="sr-only">Reorder</span></TableHead>
-                <TableHead className="text-[10px] font-bold uppercase tracking-widest min-w-30">Order ID</TableHead>
-                <TableHead className="text-[10px] font-bold uppercase tracking-widest min-w-37.5">Client Name</TableHead>
-                <TableHead className="text-[10px] font-bold uppercase tracking-widest min-w-30">Status</TableHead>
-                <TableHead className="text-[10px] font-bold uppercase tracking-widest text-center min-w-30">Deadline</TableHead>
-                <TableHead className="text-[10px] font-bold uppercase tracking-widest text-right min-w-25">Amount</TableHead>
+                {ORDER_SORT_COLUMNS.map(col => {
+                  const active = orderViewMode === 'all' && sortKey === col.key;
+                  const justifyClass = col.align === 'right' ? 'justify-end' : col.align === 'center' ? 'justify-center' : 'justify-start';
+                  return (
+                    <TableHead
+                      key={col.key}
+                      aria-sort={active ? (sortDirection === 'asc' ? 'ascending' : 'descending') : 'none'}
+                      className={`text-[10px] font-bold uppercase tracking-widest p-0 ${col.headClass}`}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => toggleSort(col.key)}
+                        className={`flex w-full items-center gap-1 px-2 py-2.5 hover:bg-muted/80 hover:text-foreground transition-colors cursor-pointer ${justifyClass} ${active ? 'text-foreground' : ''}`}
+                      >
+                        <span>{col.label}</span>
+                        {active ? (
+                          sortDirection === 'asc' ? <ChevronUp className="size-3.5 shrink-0" /> : <ChevronDown className="size-3.5 shrink-0" />
+                        ) : (
+                          <ArrowUpDown className="size-3 shrink-0 opacity-40" />
+                        )}
+                      </button>
+                    </TableHead>
+                  );
+                })}
                 <TableHead className="text-[10px] font-bold uppercase tracking-widest text-center min-w-35">Actions</TableHead>
               </TableRow>
             </TableHeader>

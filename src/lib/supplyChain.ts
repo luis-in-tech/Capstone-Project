@@ -36,7 +36,7 @@ export function dateValue(value: unknown): string {
 
 // Payment status alone cannot establish a partially paid balance.
 export function orderBalance(order: Order & { remainingBalance?: number }): number | null {
-  if (order.status === 'cancelled' || order.paymentStatus === 'paid') return 0;
+  if (order.status === 'cancelled' || order.status === 'escalated' || order.paymentStatus === 'paid') return 0;
   if (order.remainingBalance != null && Number.isFinite(Number(order.remainingBalance))) return Math.max(0, Number(order.remainingBalance));
   if (order.amountPaid != null && Number.isFinite(Number(order.amountPaid)) && Number(order.amountPaid) > 0) {
     return Math.max(0, (Number(order.totalAmount) || 0) - Number(order.amountPaid));
@@ -50,7 +50,7 @@ export function isOverdue(row: ChainTransaction, now = Date.now()) {
 }
 
 export function supportsAction(row: ChainTransaction | undefined, action: 'payment' | 'refund') {
-  if (!row || !['Order', 'Purchase'].includes(row.type) || row.status === 'cancelled' || row.draft) return false;
+  if (!row || !['Order', 'Purchase'].includes(row.type) || row.status === 'cancelled' || row.status === 'escalated' || row.draft) return false;
   return action === 'payment' ? row.remaining === null || row.remaining > 0 : (row.amount ?? 0) > 0;
 }
 
