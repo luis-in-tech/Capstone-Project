@@ -13,9 +13,11 @@
  */
 
 import { Router } from 'express';
+import { requireRole } from '../middleware/rbac.middleware';
 import * as transfersCtrl from '../controllers/transfers.controller';
 
 const router = Router();
+router.use(requireRole(['admin', 'cmo', 'secretary']));
 
 router.get('/', transfersCtrl.listTransfers);
 router.get('/audit-logs', transfersCtrl.getAuditLogs);

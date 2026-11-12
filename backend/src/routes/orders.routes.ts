@@ -10,15 +10,17 @@
  */
 
 import { Router } from 'express';
+import { requireRole } from '../middleware/rbac.middleware';
 import * as ordersCtrl from '../controllers/orders.controller';
 
 const router = Router();
+router.use(requireRole(['admin', 'cmo', 'secretary']));
 
 router.post('/', ordersCtrl.createOrder);
 router.get('/', ordersCtrl.listOrders);
+router.get('/customer/:customerName/transactions', ordersCtrl.getCustomerTransactions);
 router.get('/:id', ordersCtrl.getOrderById);
 router.post('/:id/cancel', ordersCtrl.cancelOrder);
-router.get('/customer/:customerName/transactions', ordersCtrl.getCustomerTransactions);
 
 export default router;
 

@@ -12,16 +12,12 @@
  */
 
 import { Request, Response, NextFunction } from 'express';
+import { z } from 'zod';
+import { AppError } from '../middleware/errorHandler';
 import path from 'path';
 import { FRONTEND_ROOT } from '../config/paths';
 import * as fileService from '../services/file.service';
 import * as actionService from '../services/action.service';
-import {
-  FileWritePayload,
-  MkdirPayload,
-  RenamePayload,
-  DeletePayload,
-} from '../types/file.types';
 import { ApiSuccess } from '../types/api.types';
 
 // ─── Helper ───────────────────────────────────────────────────────────────────
@@ -84,7 +80,9 @@ export async function readFile(
         targetPath: result.path,
         success:    true,
         payload:    { sizeBytes: result.sizeBytes },
-      }).catch(() => {}); // Non-critical — don't let logging failure break the read
+      }).catch((logErr) => {
+        console.warn('[files.controller] Failed to log READ action:', logErr);
+      });
     }
 
     ok(res, result, 'File read successfully.');
@@ -98,14 +96,27 @@ export async function readFile(
  * Creates or overwrites a file. Backs up first if the file already exists.
  * Body: { path, content, sessionId? }
  */
+const writePayloadSchema = z.object({
+  content: z.string(),
+  sessionId: z.string().trim().min(1).optional(),
+});
+
+const optionalSessionSchema = z.object({
+  sessionId: z.string().trim().min(1).optional(),
+});
+
 export async function writeFile(
   req: Request,
   res: Response,
   next: NextFunction
 ): Promise<void> {
   try {
+    const parsed = writePayloadSchema.safeParse(req.body);
+    if (!parsed.success) {
+      throw new AppError(400, 'VALIDATION_ERROR', 'File write requires a string "content" field.');
+    }
     const absolutePath = req.safePath!;
-    const { content, sessionId } = req.body as FileWritePayload;
+    const { content, sessionId } = parsed.data;
     const relativePath = toRelative(absolutePath);
 
     const result = await fileService.writeFile(absolutePath, relativePath, content);
@@ -119,7 +130,9 @@ export async function writeFile(
         backupId:   result.backupId,
         success:    true,
         payload:    { sizeBytes: result.sizeBytes, overwrote: result.overwrote },
-      }).catch(() => {});
+      }).catch((logErr) => {
+        console.warn('[files.controller] Failed to log WRITE action:', logErr);
+      });
     }
 
     ok(res, result, result.overwrote ? 'File overwritten (backup created).' : 'File created.', 201);
@@ -139,8 +152,12 @@ export async function makeDirectory(
   next: NextFunction
 ): Promise<void> {
   try {
+    const parsed = optionalSessionSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      throw new AppError(400, 'VALIDATION_ERROR', 'Invalid sessionId.');
+    }
     const absolutePath = req.safePath!;
-    const { sessionId } = req.body as MkdirPayload;
+    const { sessionId } = parsed.data;
     const relativePath = toRelative(absolutePath);
 
     const result = fileService.makeDirectory(absolutePath);
@@ -151,7 +168,9 @@ export async function makeDirectory(
         operation:  'CREATE',
         targetPath: relativePath,
         success:    true,
-      }).catch(() => {});
+      }).catch((logErr) => {
+        console.warn('[files.controller] Failed to log CREATE action:', logErr);
+      });
     }
 
     ok(res, result, 'Directory created.', 201);
@@ -172,9 +191,13 @@ export async function renameEntry(
   next: NextFunction
 ): Promise<void> {
   try {
+    const parsed = optionalSessionSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      throw new AppError(400, 'VALIDATION_ERROR', 'Invalid sessionId.');
+    }
     const absOldPath = req.safePath!;
     const absNewPath = req.safeNewPath!;
-    const { sessionId } = req.body as RenamePayload;
+    const { sessionId } = parsed.data;
     const relOldPath = toRelative(absOldPath);
     const relNewPath = toRelative(absNewPath);
 
@@ -188,7 +211,9 @@ export async function renameEntry(
         oldPath:    relOldPath,
         backupId:   result.backupId,
         success:    true,
-      }).catch(() => {});
+      }).catch((logErr) => {
+        console.warn('[files.controller] Failed to log RENAME action:', logErr);
+      });
     }
 
     ok(res, result, 'Entry renamed successfully.');
@@ -211,9 +236,11 @@ export async function deleteEntry(
   try {
     const absolutePath = req.safePath!;
     // Accept sessionId from query or body
-    const sessionId =
-      (req.query['sessionId'] as string | undefined) ??
-      (req.body as Partial<DeletePayload>)?.sessionId;
+    const rawSessionId =
+      typeof req.query['sessionId'] === 'string'
+        ? req.query['sessionId'].trim() || undefined
+        : optionalSessionSchema.safeParse(req.body ?? {}).data?.sessionId;
+    const sessionId = rawSessionId;
     const relativePath = toRelative(absolutePath);
 
     const result = await fileService.deleteEntry(absolutePath, relativePath);
@@ -225,7 +252,9 @@ export async function deleteEntry(
         targetPath: relativePath,
         backupId:   result.backupId,
         success:    true,
-      }).catch(() => {});
+      }).catch((logErr) => {
+        console.warn('[files.controller] Failed to log DELETE action:', logErr);
+      });
     }
 
     ok(res, result, 'Entry deleted (backup created in .trash/).');

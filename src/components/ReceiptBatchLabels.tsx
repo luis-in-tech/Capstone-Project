@@ -1,4 +1,4 @@
-import { useRef } from 'react';
+import { useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { QRCodeSVG } from 'qrcode.react';
 import { Button } from '@/components/ui/button';
@@ -7,21 +7,45 @@ import { receiptBatchUrl } from '../lib/receiptBatches';
 
 export function ReceiptBatchLabels({ movement, selectedBatch, selectedOnly = false }: { movement: InventoryMovementRecord; selectedBatch?: string | null; selectedOnly?: boolean }) {
   const labels = useRef<HTMLDivElement>(null);
+  const printCleanupRef = useRef<(() => void) | null>(null);
+  useEffect(() => () => { printCleanupRef.current?.(); }, []);
   const batches = movement.items.filter(item => item.batchId && item.batchCode && (!selectedOnly || item.batchId === selectedBatch));
   if (movement.type !== 'external') return null;
   if (!batches.length) return <p className="text-sm text-muted-foreground">No CI Traceability labels were recorded for this receipt.</p>;
 
   function print() {
+    printCleanupRef.current?.();
     const frame = document.createElement('iframe');
+    frame.title = 'CI Traceability print labels';
     frame.style.cssText = 'position:fixed;width:0;height:0;border:0';
     document.body.appendChild(frame);
-    const target = frame.contentDocument!;
+    const target = frame.contentDocument;
+    const win = frame.contentWindow;
+    if (!target || !win) {
+      frame.remove();
+      return;
+    }
     target.open();
     target.write('<!doctype html><html><head><title>CI Traceability QR</title><style>@page{size:70mm 60mm;margin:3mm}body{margin:0;font:12px sans-serif;color:#000;background:#fff}article{break-after:page;text-align:center;box-sizing:border-box}article:last-child{break-after:auto}p{margin:4px 0}svg{width:32mm;height:32mm}h4{margin:4px 0;font-size:13px}</style></head><body></body></html>');
     target.close();
     for (const label of Array.from(labels.current?.children || [])) target.body.appendChild(target.importNode(label, true));
-    frame.contentWindow!.addEventListener('afterprint', () => frame.remove(), { once: true });
-    setTimeout(() => { frame.contentWindow?.focus(); frame.contentWindow?.print(); }, 150);
+    let cleanupTimer = 0;
+    let printTimer = 0;
+    let cleaned = false;
+    const cleanup = () => {
+      if (cleaned) return;
+      cleaned = true;
+      window.clearTimeout(cleanupTimer);
+      window.clearTimeout(printTimer);
+      frame.remove();
+      if (printCleanupRef.current === cleanup) {
+        printCleanupRef.current = null;
+      }
+    };
+    printCleanupRef.current = cleanup;
+    cleanupTimer = window.setTimeout(cleanup, 60_000);
+    win.addEventListener('afterprint', cleanup, { once: true });
+    printTimer = window.setTimeout(() => { win.focus(); win.print(); }, 150);
   }
 
   return <section className="space-y-3"><div className="flex flex-wrap items-center justify-between gap-3"><h3 className="font-semibold">CI Traceability QR</h3><Button variant="outline" onClick={print}>{selectedOnly ? 'Print label' : 'Print labels'}</Button></div>

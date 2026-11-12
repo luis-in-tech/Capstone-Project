@@ -17,7 +17,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { useAuth } from '../hooks/useAuth';
 import { supabase } from '../lib/supabase';
-import { addDoc, collection, db, doc, getDoc, onSnapshot, setDoc, updateDoc } from '../lib/supabaseAdapter';
+import { addDoc, collection, db, deleteDoc, doc, getDocs, isMissingRpcError, onSnapshot, setDoc, updateDoc } from '../lib/supabaseAdapter';
 import { availableStock, newMovementDraft, purchaseTotal, validateMovement, type InventoryMovementRecord, type MovementDraft, type MovementLine } from '../lib/inventoryMovement';
 import type { InventoryItem, Product, Warehouse } from '../types';
 import { Transfers } from './Transfers';
@@ -223,10 +223,6 @@ export function InventoryMovement() {
   const batchId = searchParams.get('batch');
   const { profile } = useAuth();
   const { permissions } = useStaffAccess();
-  const permissionsRef = useRef(permissions);
-  useEffect(() => {
-    permissionsRef.current = permissions;
-  }, [permissions]);
 
   const [products, setProducts] = useState<Product[]>([]);
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
@@ -235,7 +231,22 @@ export function InventoryMovement() {
   const [zones, setZones] = useState<WarehouseZone[]>([]);
   const [zoneAllocations, setZoneAllocations] = useState<ZoneAllocation[]>([]);
   const [zonesReady, setZonesReady] = useState(false);
-  const [movements, setMovements] = useState<InventoryMovementRecord[]>([]);
+  const [rawMovementDocs, setRawMovementDocs] = useState<Array<{ id: string; data: Record<string, unknown> }>>([]);
+  const movements = useMemo(
+    () =>
+      rawMovementDocs
+        .map(d => normalizeMovementRecord(d.id, d.data, products, warehouses, suppliers))
+        .filter(movement =>
+          permitsMovement(permissions.movementView, movement.type)
+          && (
+            hasAdminRole(profile)
+            || permissions.warehouseAccess !== 'selected'
+            || permissions.warehouseIds.includes(movement.destinationWarehouseId)
+            || (movement.sourceWarehouseId ? permissions.warehouseIds.includes(movement.sourceWarehouseId) : false)
+          ),
+        ),
+    [rawMovementDocs, products, warehouses, suppliers, permissions.movementView, permissions.warehouseAccess, permissions.warehouseIds, profile],
+  );
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
   const [referenceErrors, setReferenceErrors] = useState<Record<string, string>>({});
@@ -274,18 +285,21 @@ export function InventoryMovement() {
     setLoading(true);
     setLoadError('');
     const stop = onSnapshot(collection(db, 'inventory_movements'), snap => {
-      setMovements(
-        snap.docs
-          .map((d: { id: string; data: () => Record<string, unknown> }) => normalizeMovementRecord(d.id, d.data(), products, warehouses, suppliers))
-          .filter((movement: InventoryMovementRecord) => permitsMovement(permissionsRef.current.movementView, movement.type))
+      setRawMovementDocs(
+        snap.docs.map((d: { id: string; data: () => Record<string, unknown> }) => ({
+          id: d.id,
+          data: d.data(),
+        })),
       );
       setLoading(false);
       setLoadError('');
     }, () => { setLoading(false); setLoadError('Movement history could not be loaded. Please retry or contact your administrator.'); });
     return stop;
-  }, [reload, permissions.movementView, products, warehouses, suppliers]);
+  }, [reload]);
 
   useEffect(() => {
+    setLoadedReferences([]);
+    setReferenceErrors({});
     const watch = <T,>(table: string, update: (value: T[]) => void) => onSnapshot(collection(db, table), snap => {
       update(snap.docs.map((d: { id: string; data: () => Record<string, unknown> }) => {
         const data = d.data();
@@ -390,7 +404,11 @@ export function InventoryMovement() {
 
   const warehouseName = (id: string) => warehouseOptions.find(w => w.id === id)?.name || warehouses.find(warehouse => warehouse.id === id)?.name || 'Unknown warehouse';
   const supplierName = supplierOptions.find(supplier => supplier.id === draft.supplierId)?.name || suppliers.find(supplier => supplier.id === draft.supplierId)?.name || 'Select a supplier';
-  const activeWarehouses = warehouses.filter(warehouse => warehouse.active !== false);
+  const activeWarehouses = warehouses.filter(
+    warehouse =>
+      warehouse.active !== false
+      && (hasAdminRole(profile) || permissions.warehouseAccess !== 'selected' || permissions.warehouseIds.includes(warehouse.id)),
+  );
 
   const filtered = movements.filter(movement => {
     const haystack = [movement.movementNumber, movement.supplierName, movement.sourceWarehouseName, movement.destinationWarehouseName, movement.invoiceNumber, movement.driverName, movement.vehiclePlate, movement.recordedByName, ...(movement.items || []).flatMap(item => [item.name, item.sku, item.batchCode])].join(' ').toLowerCase();
@@ -414,7 +432,12 @@ export function InventoryMovement() {
       && matchesSupplier
       && (statusFilter === 'all' || movement.status === statusFilter);
   }).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  const matchingProducts = products.filter(product => `${product.name} ${product.sku}`.toLowerCase().includes(productSearch.trim().toLowerCase()));
+  const matchingProducts = products.filter(
+    product =>
+      !product.hasVariations
+      && product.variantEnabled !== false
+      && `${product.name} ${product.sku}`.toLowerCase().includes(productSearch.trim().toLowerCase()),
+  );
   const updateDraft = (patch: Partial<MovementDraft>) => {
     setDraft(prev => ({
       ...prev, ...patch,
@@ -448,6 +471,18 @@ export function InventoryMovement() {
     if (external && (!draft.receivedDate || draft.receivedDate > receiptDateToday())) { setFormError('Enter a received date no later than today.'); setStep('details'); return; }
     const error = validateMovement(draft, inventory);
     if (error) { setFormError(error); setStep('details'); return; }
+    if (!external && zonesReady && draft.items.some(item => item.quantity > sourceStock(item.productId))) {
+      setFormError('Not enough stock in the selected source zone. Choose another zone or update its allocations.');
+      setStep('details');
+      return;
+    }
+    if (permissions.warehouseAccess === 'selected' && !hasAdminRole(profile)) {
+      if (!permissions.warehouseIds.includes(draft.destinationWarehouseId) || (!external && !permissions.warehouseIds.includes(draft.sourceWarehouseId))) {
+        setFormError('You do not have permission for the selected warehouse.');
+        setStep('details');
+        return;
+      }
+    }
     savingRef.current = true; setSaving(true); setFormError('');
     try {
       const preparedItems = draft.items.map(item => {
@@ -472,7 +507,7 @@ export function InventoryMovement() {
         p_movement: movementPayload,
       });
 
-      if (saveError && rpcName === 'confirm_inventory_movement_with_zones') {
+      if (saveError && rpcName === 'confirm_inventory_movement_with_zones' && isMissingRpcError(saveError)) {
         const retry = await supabase.rpc('confirm_inventory_movement', {
           p_request_id: requestId.current,
           p_movement: movementPayload,
@@ -480,6 +515,8 @@ export function InventoryMovement() {
         if (!retry.error) {
           data = retry.data;
           saveError = null;
+        } else {
+          saveError = retry.error;
         }
       }
 
@@ -496,14 +533,14 @@ export function InventoryMovement() {
           status: 'confirmed',
           destinationWarehouseId: draft.destinationWarehouseId,
           destinationWarehouseName: warehouses.find(w => w.id === draft.destinationWarehouseId)?.name || 'Destination Warehouse',
-          sourceWarehouseId: external ? undefined : draft.sourceWarehouseId,
-          sourceWarehouseName: external ? undefined : warehouses.find(w => w.id === draft.sourceWarehouseId)?.name,
+          sourceWarehouseId: external ? null : draft.sourceWarehouseId,
+          sourceWarehouseName: external ? null : (warehouses.find(w => w.id === draft.sourceWarehouseId)?.name ?? null),
           sourceZoneId: external ? undefined : draft.sourceZoneId,
           sourceZoneName: external ? undefined : zones.find(z => z.id === draft.sourceZoneId)?.name,
           destinationZoneId: draft.destinationZoneId,
           destinationZoneName: zones.find(z => z.id === draft.destinationZoneId)?.name,
-          supplierId: external ? draft.supplierId : undefined,
-          supplierName: external ? suppliers.find(s => s.id === draft.supplierId)?.name : undefined,
+          supplierId: external ? draft.supplierId : null,
+          supplierName: external ? (suppliers.find(s => s.id === draft.supplierId)?.name ?? null) : null,
           invoiceNumber: draft.invoiceNumber,
           totalValue: external ? draft.items.reduce((sum, i) => sum + i.quantity * i.unitCost, 0) : 0,
           createdAt: new Date().toISOString(),
@@ -511,16 +548,23 @@ export function InventoryMovement() {
           recordedByName: profile?.displayName || profile?.email || 'User',
           driverName: draft.driverName,
           vehiclePlate: draft.vehiclePlate,
-          expenseId: undefined,
+          expenseId: null,
           notes: draft.notes,
           items: draft.items
         };
       }
-      setMovements(prev => [saved!, ...prev.filter(item => item.id !== saved!.id)]);
+      if (!saved) throw new Error('Unable to record inventory movement.');
+      setRawMovementDocs(prev => [{ id: saved.id, data: saved as unknown as Record<string, unknown> }, ...prev.filter(item => item.id !== saved.id)]);
       setOpen(false); setSelected(saved);
       toast.success(`${saved.movementNumber} confirmed`, { description: external ? 'Inventory received and purchase expense recorded.' : 'Stock moved to the destination warehouse.' });
     } catch (error) {
-      console.warn('Inventory movement RPC error, executing database fallback:', error);
+      if (!isMissingRpcError(error)) {
+        const errMsg = (error as { message?: string })?.message || 'Unable to record inventory movement.';
+        setFormError(errMsg);
+        toast.error('Movement confirmation failed', { description: errMsg });
+        return;
+      }
+      console.warn('Inventory movement RPC not deployed; executing client transaction fallback:', error);
       const preparedItems = draft.items.map(item => {
         const matching = products.find(p => p.id === item.productId || p.sku === item.sku || p.name === item.name);
         const resolvedId = matching?.id || item.productId;
@@ -539,14 +583,14 @@ export function InventoryMovement() {
         status: 'confirmed',
         destinationWarehouseId: draft.destinationWarehouseId,
         destinationWarehouseName: warehouses.find(w => w.id === draft.destinationWarehouseId)?.name || 'Destination Warehouse',
-        sourceWarehouseId: external ? undefined : draft.sourceWarehouseId,
-        sourceWarehouseName: external ? undefined : warehouses.find(w => w.id === draft.sourceWarehouseId)?.name,
+        sourceWarehouseId: external ? null : draft.sourceWarehouseId,
+        sourceWarehouseName: external ? null : (warehouses.find(w => w.id === draft.sourceWarehouseId)?.name ?? null),
         sourceZoneId: external ? undefined : draft.sourceZoneId,
         sourceZoneName: external ? undefined : zones.find(z => z.id === draft.sourceZoneId)?.name,
         destinationZoneId: draft.destinationZoneId,
         destinationZoneName: zones.find(z => z.id === draft.destinationZoneId)?.name,
-        supplierId: external ? draft.supplierId : undefined,
-        supplierName: external ? suppliers.find(s => s.id === draft.supplierId)?.name : undefined,
+        supplierId: external ? draft.supplierId : null,
+        supplierName: external ? (suppliers.find(s => s.id === draft.supplierId)?.name ?? null) : null,
         invoiceNumber: draft.invoiceNumber,
         totalValue: external ? totalVal : 0,
         createdAt: new Date().toISOString(),
@@ -554,26 +598,44 @@ export function InventoryMovement() {
         recordedByName: profile?.displayName || profile?.email || 'User',
         driverName: draft.driverName,
         vehiclePlate: draft.vehiclePlate,
-        expenseId: undefined,
+        expenseId: null,
         notes: draft.notes,
         items: draft.items
       };
 
+      const rollbackActions: Array<() => Promise<void>> = [];
       try {
+        const liveInvSnap = await getDocs(collection(db, 'inventory'));
+        const liveInvRows = liveInvSnap.docs.map((d: any) => ({ id: d.id, ...d.data() } as InventoryItem));
+
+        if (!external && draft.sourceWarehouseId) {
+          for (const item of preparedItems) {
+            const matchingSrc = liveInvRows.filter(
+              i => i.productId === item.productId && i.warehouseId === draft.sourceWarehouseId,
+            );
+            const liveAvail = matchingSrc.reduce((s, r) => s + Math.max(0, Number(r.quantity || 0)), 0);
+            if (matchingSrc.length === 0 || liveAvail < item.quantity) {
+              throw new Error(`Insufficient live stock in source warehouse (requested ${item.quantity}, available ${liveAvail}).`);
+            }
+          }
+        }
+
         let expenseId: string | null = null;
         if (external) {
-          try {
-            const expRes = await addDoc(collection(db, 'expenses'), {
-              category: 'Inventory Purchase',
-              amount: totalVal,
-              description: `${fallbackMovNumber} · ${suppliers.find(s => s.id === draft.supplierId)?.name || 'Supplier'} · Invoice ${draft.invoiceNumber.trim()}`,
-              date: new Date().toISOString(),
-              recordedBy: profile?.uid || 'user',
+          const expRes = await addDoc(collection(db, 'expenses'), {
+            category: 'Inventory Purchase',
+            amount: totalVal,
+            description: `${fallbackMovNumber} · ${suppliers.find(s => s.id === draft.supplierId)?.name || 'Supplier'} · Invoice ${draft.invoiceNumber.trim()}`,
+            date: new Date().toISOString(),
+            recordedBy: profile?.uid || 'user',
+          });
+          expenseId = expRes?.id || null;
+          saved.expenseId = expenseId;
+          if (expenseId) {
+            const expIdToRollback = expenseId;
+            rollbackActions.push(async () => {
+              await deleteDoc(doc(db, 'expenses', expIdToRollback));
             });
-            expenseId = expRes?.id || null;
-            saved.expenseId = expenseId || undefined;
-          } catch (e) {
-            console.warn('Expense record fallback error:', e);
           }
         }
 
@@ -616,144 +678,176 @@ export function InventoryMovement() {
         };
 
         await setDoc(doc(db, 'inventory_movements', saved.id), dbPayload);
+        rollbackActions.push(async () => {
+          await deleteDoc(doc(db, 'inventory_movements', saved.id));
+        });
 
         const now = new Date().toISOString();
-        const rollbackActions: Array<() => Promise<void>> = [];
+        const upsertDestStock = async (productId: string, quantity: number, reason: string) => {
+          const destInv = liveInvRows.find(
+            i => i.productId === productId && i.warehouseId === draft.destinationWarehouseId,
+          );
+          if (destInv) {
+            const prevQty = Number(destInv.quantity || 0);
+            const nextQty = prevQty + quantity;
+            destInv.quantity = nextQty;
+            await updateDoc(doc(db, 'inventory', destInv.id), {
+              quantity: nextQty,
+              lastUpdated: now,
+            });
+            rollbackActions.push(async () => {
+              await updateDoc(doc(db, 'inventory', destInv.id), {
+                quantity: prevQty,
+                lastUpdated: new Date().toISOString(),
+              });
+            });
+          } else {
+            const createdRef = await addDoc(collection(db, 'inventory'), {
+              productId,
+              warehouseId: draft.destinationWarehouseId,
+              quantity,
+              lastUpdated: now,
+            });
+            if (createdRef?.id) {
+              const newId = createdRef.id;
+              liveInvRows.push({
+                id: newId,
+                productId,
+                warehouseId: draft.destinationWarehouseId,
+                quantity,
+                lastUpdated: now,
+              } as InventoryItem);
+              rollbackActions.push(async () => {
+                await deleteDoc(doc(db, 'inventory', newId));
+              });
+            }
+          }
+          const adjRef = await addDoc(collection(db, 'stockAdjustments'), {
+            productId,
+            warehouseId: draft.destinationWarehouseId,
+            adjustmentAmount: quantity,
+            reason,
+            recordedBy: profile?.uid || 'user',
+            timestamp: now,
+          });
+          if (adjRef?.id) {
+            const adjId = adjRef.id;
+            rollbackActions.push(async () => {
+              await deleteDoc(doc(db, 'stockAdjustments', adjId));
+            });
+          }
+        };
 
-        try {
-          for (const item of preparedItems) {
-            if (external) {
-              const existing = inventory.find(i => i.productId === item.productId && i.warehouseId === draft.destinationWarehouseId);
-              if (existing) {
-                let currentQty = existing.quantity;
-                try {
-                  const snap = await getDoc(doc(db, 'inventory', existing.id));
-                  if (snap && snap.exists()) {
-                    const snapQty = Number(snap.data()?.quantity);
-                    if (!Number.isNaN(snapQty)) currentQty = snapQty;
-                  }
-                } catch (readErr) {
-                  console.warn('Could not read live inventory quantity; falling back to local state:', readErr);
-                }
-
-                await updateDoc(doc(db, 'inventory', existing.id), {
-                  quantity: currentQty + item.quantity,
-                  lastUpdated: now
-                });
-              } else {
-                await addDoc(collection(db, 'inventory'), {
-                  productId: item.productId,
-                  warehouseId: draft.destinationWarehouseId,
-                  quantity: item.quantity,
-                  lastUpdated: now
-                });
-              }
-              try {
-                await addDoc(collection(db, 'stockAdjustments'), {
-                  productId: item.productId,
-                  warehouseId: draft.destinationWarehouseId,
-                  adjustmentAmount: item.quantity,
-                  reason: `${fallbackMovNumber} external receipt`,
-                  recordedBy: profile?.uid || 'user',
-                  timestamp: now
-                });
-              } catch (adjErr) {
-                console.warn('Stock adjustment fallback error:', adjErr);
-              }
+        const reconcileZoneAllocation = async (warehouseId: string, zoneId: string, productId: string, delta: number) => {
+          if (!zonesReady || !warehouseId || !zoneId || zoneId === 'unassigned' || delta === 0) return;
+          const { data: existingRow, error: selErr } = await supabase
+            .from('warehouse_zone_allocations')
+            .select('*')
+            .eq('warehouseId', warehouseId)
+            .eq('zoneId', zoneId)
+            .eq('productId', productId)
+            .maybeSingle();
+          if (selErr) throw selErr;
+          if (existingRow) {
+            const prevQty = Number(existingRow.quantity || 0);
+            const nextQty = Math.max(0, prevQty + delta);
+            if (nextQty === 0) {
+              const { error: delErr } = await supabase.from('warehouse_zone_allocations').delete().eq('id', existingRow.id);
+              if (delErr) throw delErr;
+              rollbackActions.push(async () => {
+                const { error: rbErr } = await supabase.from('warehouse_zone_allocations').insert({ warehouseId, zoneId, productId, quantity: prevQty });
+                if (rbErr) throw rbErr;
+              });
             } else {
-              if (draft.sourceWarehouseId) {
-                const sourceInv = inventory.find(i => i.productId === item.productId && i.warehouseId === draft.sourceWarehouseId);
-                if (sourceInv) {
-                  let currentSrcQty = sourceInv.quantity;
-                  try {
-                    const snap = await getDoc(doc(db, 'inventory', sourceInv.id));
-                    if (snap && snap.exists()) {
-                      const snapQty = Number(snap.data()?.quantity);
-                      if (!Number.isNaN(snapQty)) currentSrcQty = snapQty;
-                    }
-                  } catch (readErr) {
-                    console.warn('Could not read live source inventory quantity; falling back to local state:', readErr);
-                  }
-
-                  await updateDoc(doc(db, 'inventory', sourceInv.id), {
-                    quantity: Math.max(0, currentSrcQty - item.quantity),
-                    lastUpdated: now
-                  });
-
-                  rollbackActions.push(async () => {
-                    await updateDoc(doc(db, 'inventory', sourceInv.id), {
-                      quantity: currentSrcQty,
-                      lastUpdated: new Date().toISOString()
-                    });
-                  });
-                }
-                try {
-                  await addDoc(collection(db, 'stockAdjustments'), {
-                    productId: item.productId,
-                    warehouseId: draft.sourceWarehouseId,
-                    adjustmentAmount: -item.quantity,
-                    reason: `${fallbackMovNumber} internal transfer sent`,
-                    recordedBy: profile?.uid || 'user',
-                    timestamp: now
-                  });
-                } catch (adjErr) {
-                  console.warn('Stock adjustment fallback error:', adjErr);
-                }
-              }
-              const destInv = inventory.find(i => i.productId === item.productId && i.warehouseId === draft.destinationWarehouseId);
-              if (destInv) {
-                let currentDestQty = destInv.quantity;
-                try {
-                  const snap = await getDoc(doc(db, 'inventory', destInv.id));
-                  if (snap && snap.exists()) {
-                    const snapQty = Number(snap.data()?.quantity);
-                    if (!Number.isNaN(snapQty)) currentDestQty = snapQty;
-                  }
-                } catch (readErr) {
-                  console.warn('Could not read live destination inventory quantity; falling back to local state:', readErr);
-                }
-
-                await updateDoc(doc(db, 'inventory', destInv.id), {
-                  quantity: currentDestQty + item.quantity,
-                  lastUpdated: now
-                });
-              } else {
-                await addDoc(collection(db, 'inventory'), {
-                  productId: item.productId,
-                  warehouseId: draft.destinationWarehouseId,
-                  quantity: item.quantity,
-                  lastUpdated: now
-                });
-              }
-              try {
-                await addDoc(collection(db, 'stockAdjustments'), {
-                  productId: item.productId,
-                  warehouseId: draft.destinationWarehouseId,
-                  adjustmentAmount: item.quantity,
-                  reason: `${fallbackMovNumber} internal transfer received`,
-                  recordedBy: profile?.uid || 'user',
-                  timestamp: now
-                });
-              } catch (adjErr) {
-                console.warn('Stock adjustment fallback error:', adjErr);
-              }
+              const { error: updErr } = await supabase.from('warehouse_zone_allocations').update({ quantity: nextQty }).eq('id', existingRow.id);
+              if (updErr) throw updErr;
+              rollbackActions.push(async () => {
+                const { error: rbErr } = await supabase.from('warehouse_zone_allocations').update({ quantity: prevQty }).eq('id', existingRow.id);
+                if (rbErr) throw rbErr;
+              });
+            }
+          } else if (delta > 0) {
+            const { data: insRow, error: insErr } = await supabase
+              .from('warehouse_zone_allocations')
+              .insert({ warehouseId, zoneId, productId, quantity: delta })
+              .select('id')
+              .single();
+            if (insErr) throw insErr;
+            if (insRow?.id) {
+              rollbackActions.push(async () => {
+                const { error: rbErr } = await supabase.from('warehouse_zone_allocations').delete().eq('id', insRow.id);
+                if (rbErr) throw rbErr;
+              });
             }
           }
-        } catch (itemErr) {
-          for (const rollback of rollbackActions.reverse()) {
-            try {
-              await rollback();
-            } catch (rbErr) {
-              console.error('Compensation rollback error:', rbErr);
+        };
+
+        for (const item of preparedItems) {
+          if (external) {
+            await upsertDestStock(item.productId, item.quantity, `${fallbackMovNumber} external receipt`);
+            if (draft.destinationZoneId) {
+              await reconcileZoneAllocation(draft.destinationWarehouseId, draft.destinationZoneId, item.productId, item.quantity);
+            }
+          } else {
+            if (draft.sourceWarehouseId) {
+              const matchingSrc = liveInvRows.filter(
+                i => i.productId === item.productId && i.warehouseId === draft.sourceWarehouseId,
+              );
+              let remaining = item.quantity;
+              for (const srcRow of matchingSrc) {
+                if (remaining <= 0) break;
+                const curQty = Number(srcRow.quantity || 0);
+                if (curQty <= 0) continue;
+                const take = Math.min(curQty, remaining);
+                srcRow.quantity = curQty - take;
+                await updateDoc(doc(db, 'inventory', srcRow.id), {
+                  quantity: curQty - take,
+                  lastUpdated: now,
+                });
+                rollbackActions.push(async () => {
+                  await updateDoc(doc(db, 'inventory', srcRow.id), {
+                    quantity: curQty,
+                    lastUpdated: new Date().toISOString(),
+                  });
+                });
+                remaining -= take;
+              }
+              const adjRef = await addDoc(collection(db, 'stockAdjustments'), {
+                productId: item.productId,
+                warehouseId: draft.sourceWarehouseId,
+                adjustmentAmount: -item.quantity,
+                reason: `${fallbackMovNumber} internal transfer sent`,
+                recordedBy: profile?.uid || 'user',
+                timestamp: now,
+              });
+              if (adjRef?.id) {
+                const adjId = adjRef.id;
+                rollbackActions.push(async () => {
+                  await deleteDoc(doc(db, 'stockAdjustments', adjId));
+                });
+              }
+              if (draft.sourceZoneId) {
+                await reconcileZoneAllocation(draft.sourceWarehouseId, draft.sourceZoneId, item.productId, -item.quantity);
+              }
+            }
+            await upsertDestStock(item.productId, item.quantity, `${fallbackMovNumber} internal transfer received`);
+            if (draft.destinationZoneId) {
+              await reconcileZoneAllocation(draft.destinationWarehouseId, draft.destinationZoneId, item.productId, item.quantity);
             }
           }
-          throw itemErr;
         }
 
-        setMovements(prev => [saved, ...prev.filter(item => item.id !== saved.id)]);
+        setRawMovementDocs(prev => [{ id: saved.id, data: saved as unknown as Record<string, unknown> }, ...prev.filter(item => item.id !== saved.id)]);
         setOpen(false); setSelected(saved);
         toast.success(`${saved.movementNumber} confirmed`, { description: external ? 'Inventory received and recorded.' : 'Stock moved.' });
       } catch (dbErr: any) {
+        for (const rollback of [...rollbackActions].reverse()) {
+          try {
+            await rollback();
+          } catch (rbErr) {
+            console.error('Compensation rollback error:', rbErr);
+          }
+        }
         console.error('Database fallback save error:', dbErr);
         const errMsg = dbErr?.message || (error as any)?.message || 'Database save failed. The record could not be persisted to Supabase.';
         setFormError(errMsg);
@@ -773,7 +867,7 @@ export function InventoryMovement() {
       {[
         { label: 'External receipts', value: movements.filter(m => m.type === 'external').length.toLocaleString(), note: 'Supplier purchases received', icon: ArrowDownToLine, style: 'bg-blue-50 text-blue-600 dark:bg-blue-950 dark:text-blue-300' },
         { label: 'Internal transfers', value: movements.filter(m => m.type === 'internal').length.toLocaleString(), note: 'Completed warehouse transfers', icon: ArrowRightLeft, style: 'bg-violet-50 text-violet-600 dark:bg-violet-950 dark:text-violet-300' },
-        { label: 'Total purchase value', value: money(movements.reduce((sum, m) => sum + Number(m.totalValue || 0), 0)), note: 'External receipts · all time', icon: Package, style: 'bg-emerald-50 text-emerald-600 dark:bg-emerald-950 dark:text-emerald-300' },
+        { label: 'Total purchase value', value: money(movements.filter(m => m.type === 'external').reduce((sum, m) => sum + Number(m.totalValue || 0), 0)), note: 'External receipts · all time', icon: Package, style: 'bg-emerald-50 text-emerald-600 dark:bg-emerald-950 dark:text-emerald-300' },
       ].map(stat => <div key={stat.label} className="flex items-start gap-4 rounded-xl border bg-card p-5"><div className={`rounded-xl p-2.5 ${stat.style}`}><stat.icon className="size-5" /></div><div><p className="text-xs font-medium text-muted-foreground">{stat.label}</p><p className="mt-1 text-2xl font-semibold tracking-tight">{loading || loadError ? '—' : stat.value}</p><p className="mt-1 text-xs text-muted-foreground">{stat.note}</p></div></div>)}
     </div>
 
@@ -825,7 +919,7 @@ export function InventoryMovement() {
                     {matchingProducts.length > 40 && <p className="p-2 text-center text-xs text-muted-foreground">Search to narrow down {matchingProducts.length} products.</p>}
                   </div></div>
                   {!external && !draft.sourceWarehouseId && <p className="text-xs text-muted-foreground">Select a source warehouse to see available stock and add products.</p>}
-                  {draft.items.length > 0 ? <div className="space-y-2">{draft.items.map(item => { const stock = sourceStock(item.productId); const insufficient = !external && item.quantity > stock; return <div key={item.productId} className={`rounded-xl border p-3 ${insufficient ? 'border-destructive/40 bg-destructive/5' : 'bg-muted/20'}`}><div className="mb-2 flex items-start justify-between gap-2"><div><p className="text-xs font-semibold">{item.name}</p><p className="text-[11px] text-muted-foreground">{item.sku}</p></div><Button variant="ghost" size="icon-sm" aria-label={`Remove ${item.name}`} onClick={() => updateDraft({ items: draft.items.filter(line => line.productId !== item.productId) })}><Trash2 className="size-3.5 text-muted-foreground" /></Button></div><div className="flex flex-wrap items-end gap-3"><div className="w-24 space-y-1"><Label htmlFor={`qty-${item.productId}`} className="text-[11px]">Quantity</Label><Input id={`qty-${item.productId}`} type="number" min="1" step="1" className="h-8" value={Number.isNaN(item.quantity) ? '' : item.quantity} onChange={event => updateLine(item.productId, { quantity: event.target.valueAsNumber })} /></div>{external ? <><div className="w-28 space-y-1"><Label htmlFor={`cost-${item.productId}`} className="text-[11px]">Unit cost (₱)</Label><Input id={`cost-${item.productId}`} type="number" min="0.01" step="0.01" className="h-8" placeholder="0" value={!item.unitCost || Number.isNaN(item.unitCost) ? '' : item.unitCost} onChange={event => updateLine(item.productId, { unitCost: event.target.value === '' ? 0 : Number(event.target.value) })} /></div><p className="ml-auto pb-1 text-sm font-semibold tabular-nums">{Number.isFinite(purchaseTotal([item])) ? money(purchaseTotal([item])) : '—'}</p></> : <p className={`pb-1 text-xs ${insufficient ? 'text-destructive' : 'text-muted-foreground'}`}>{stock} available{insufficient ? ' · Not enough stock' : ''}</p>}</div></div>; })}</div> : <div className="rounded-xl border border-dashed p-5 text-center text-xs text-muted-foreground">Add products above to build your movement.</div>}
+                  {draft.items.length > 0 ? <div className="space-y-2">{draft.items.map(item => { const stock = sourceStock(item.productId); const insufficient = !external && item.quantity > stock; return <div key={item.productId} className={`rounded-xl border p-3 ${insufficient ? 'border-destructive/40 bg-destructive/5' : 'bg-muted/20'}`}><div className="mb-2 flex items-start justify-between gap-2"><div><p className="text-xs font-semibold">{item.name}</p><p className="text-[11px] text-muted-foreground">{item.sku}</p></div><Button variant="ghost" size="icon-sm" aria-label={`Remove ${item.name}`} onClick={() => updateDraft({ items: draft.items.filter(line => line.productId !== item.productId) })}><Trash2 className="size-3.5 text-muted-foreground" /></Button></div><div className="flex flex-wrap items-end gap-3"><div className="w-24 space-y-1"><Label htmlFor={`qty-${item.productId}`} className="text-[11px]">Quantity</Label><Input id={`qty-${item.productId}`} type="number" min="1" step="1" className="h-8" value={!item.quantity || Number.isNaN(item.quantity) ? '' : item.quantity} onChange={event => { const raw = event.target.value; updateLine(item.productId, { quantity: raw === '' ? 0 : Math.max(0, Math.floor(Number(raw) || 0)) }); }} /></div>{external ? <><div className="w-28 space-y-1"><Label htmlFor={`cost-${item.productId}`} className="text-[11px]">Unit cost (₱)</Label><Input id={`cost-${item.productId}`} type="number" min="0.01" step="0.01" className="h-8" placeholder="0" value={!item.unitCost || Number.isNaN(item.unitCost) ? '' : item.unitCost} onChange={event => { const raw = event.target.value; updateLine(item.productId, { unitCost: raw === '' ? 0 : Math.max(0, Number(raw) || 0) }); }} /></div><p className="ml-auto pb-1 text-sm font-semibold tabular-nums">{Number.isFinite(purchaseTotal([item])) ? money(purchaseTotal([item])) : '—'}</p></> : <p className={`pb-1 text-xs ${insufficient ? 'text-destructive' : 'text-muted-foreground'}`}>{stock} available{insufficient ? ' · Not enough stock' : ''}</p>}</div></div>; })}</div> : <div className="rounded-xl border border-dashed p-5 text-center text-xs text-muted-foreground">Add products above to build your movement.</div>}
                 </section>
                 <div className="space-y-2"><Label htmlFor="movement-notes" className="text-xs font-semibold">Notes <span className="font-normal text-muted-foreground">(optional)</span></Label><textarea id="movement-notes" rows={3} className="w-full resize-y rounded-lg border bg-background p-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring" placeholder="Add any details about this movement…" value={draft.notes} onChange={event => updateDraft({ notes: event.target.value })} /></div>
               </div>

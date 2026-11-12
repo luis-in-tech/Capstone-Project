@@ -1,11 +1,10 @@
 import { PageHeading } from './PageHeading';
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   TruckIcon as Truck,
   TrendUpIcon as TrendingUp,
   MapPinIcon as MapPin,
   CheckCircleIcon as CheckCircle2,
-  ClockIcon as Clock,
   NavigationArrowIcon as Navigation,
   ArrowsClockwiseIcon as RefreshCw,
   StackIcon as Boxes,
@@ -18,17 +17,18 @@ import {
   FileTextIcon as FileText,
   CoinsIcon as Coins
 } from '@phosphor-icons/react';
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
-import { db, collection, onSnapshot, query, orderBy, addDoc, updateDoc, doc, serverTimestamp } from '../lib/supabaseAdapter';
+import { db, collection, onSnapshot, query, orderBy, addDoc, updateDoc, deleteDoc, getDocs, getDoc, doc, serverTimestamp } from '../lib/supabaseAdapter';
 import { Order, InventoryItem, Warehouse, Product } from '../types';
 import { useAuth } from '../hooks/useAuth';
+import { useStaffAccess } from '../hooks/useStaffAccess';
+import { hasAdminRole, permitsMovement } from '../lib/staffPermissions';
 import {
   calculateOptimalLogisticsRoutes,
   DEFAULT_DEPOT,
@@ -87,6 +87,8 @@ const DEFAULT_TRAFFIC_INCIDENTS: TrafficIncident[] = [
 
 export function LogisticsOptimizer() {
   const { profile } = useAuth();
+  const { permissions } = useStaffAccess();
+  const actionLockRef = useRef(false);
 
   // Active module tab
   const [activeTab, setActiveTab] = useState<'consolidation' | 'load_balancing' | 'traffic_rerouting'>('consolidation');
@@ -102,6 +104,27 @@ export function LogisticsOptimizer() {
   const [dbProducts, setDbProducts] = useState<Product[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
 
+  const allowedWarehouseIds = useMemo(
+    () => (!hasAdminRole(profile) && permissions.warehouseAccess === 'selected' ? new Set(permissions.warehouseIds) : null),
+    [profile, permissions.warehouseAccess, permissions.warehouseIds],
+  );
+  const scopedWarehouses = useMemo(
+    () => (allowedWarehouseIds ? dbWarehouses.filter(w => allowedWarehouseIds.has(w.id)) : dbWarehouses),
+    [dbWarehouses, allowedWarehouseIds],
+  );
+  const canDispatchOrders =
+    hasAdminRole(profile) ||
+    (permissions.orders === 'create' && permitsMovement(permissions.movementCreate, 'external'));
+  const canRebalanceWarehouses =
+    hasAdminRole(profile) ||
+    (permitsMovement(permissions.movementCreate, 'internal') && permissions.inventory === 'adjust');
+  const getRouteDispatchKey = (route: OptimizedRoute) => {
+    const rootOrderIds = [...new Set(
+      route.stops.map(s => (s.order.id || '').replace(/-part\d+$/, '')).filter(Boolean),
+    )].sort();
+    return rootOrderIds.length > 0 ? `${route.routeId}::${rootOrderIds.join(',')}` : route.routeId;
+  };
+
   // Dispatched consolidated truck state (persisted to dispatch_trips & localStorage)
   const [dispatchedTrucks, setDispatchedTrucks] = useState<Record<string, { truckId: string; plate: string; driver: string; timestamp: string }>>(() => {
     if (typeof window === 'undefined') return {};
@@ -114,7 +137,8 @@ export function LogisticsOptimizer() {
   });
 
   // Fleet vehicles from Supabase
-  const [fleetVehicles, setFleetVehicles] = useState<{ id: string; plate: string; name: string; status: string }[]>([]);
+  const [fleetVehicles, setFleetVehicles] = useState<{ id: string; plate: string; name: string; status: string; driver?: string; assigned_driver?: string }[]>([]);
+  const [reloadNonce, setReloadNonce] = useState(0);
 
   // Triggered transfer protocols (persisted across page refreshes)
   const [triggeredProtocols, setTriggeredProtocols] = useState<string[]>(() => {
@@ -133,69 +157,65 @@ export function LogisticsOptimizer() {
   // ── Database Subscriptions ────────────────────────────────────────────────
   useEffect(() => {
     const unsubOrders = onSnapshot(query(collection(db, 'orders'), orderBy('createdAt', 'desc')), (snap) => {
-      setDbOrders(snap.docs.map(d => ({ id: d.id, ...d.data() } as Order)));
+      setDbOrders(snap.docs.map((d: any) => ({ id: d.id, ...d.data() } as Order)));
     }, () => {});
 
     const unsubWarehouses = onSnapshot(collection(db, 'warehouses'), (snap) => {
-      setDbWarehouses(snap.docs.map(d => ({ id: d.id, ...d.data() } as Warehouse)));
+      setDbWarehouses(snap.docs.map((d: any) => ({ id: d.id, ...d.data() } as Warehouse)));
     }, () => {});
 
     const unsubInventory = onSnapshot(collection(db, 'inventory'), (snap) => {
-      setDbInventory(snap.docs.map(d => ({ id: d.id, ...d.data() } as InventoryItem)));
+      setDbInventory(snap.docs.map((d: any) => ({ id: d.id, ...d.data() } as InventoryItem)));
     }, () => {});
 
     const unsubProducts = onSnapshot(collection(db, 'products'), (snap) => {
-      setDbProducts(snap.docs.map(d => ({ id: d.id, ...d.data() } as Product)));
+      setDbProducts(snap.docs.map((d: any) => ({ id: d.id, ...d.data() } as Product)));
     }, () => {});
 
     // Fleet vehicles (Supabase Realtime)
     const unsubFleet = onSnapshot(collection(db, 'fleet_vehicles'), (snap) => {
-      setFleetVehicles(snap.docs.map((d: { id: string; data: () => Record<string, unknown> }) => ({ id: d.id, ...d.data() } as { id: string; plate: string; name: string; status: string })));
+      setFleetVehicles(snap.docs.map((d: { id: string; data: () => Record<string, unknown> }) => ({ id: d.id, ...d.data() } as { id: string; plate: string; name: string; status: string; driver?: string; assigned_driver?: string })));
     }, () => {});
 
-    // Subscriptions to dispatch_trips to keep dispatched routes synchronized
+    // Subscriptions to dispatch_trips to keep active dispatched routes synchronized
     const unsubDispatch = onSnapshot(collection(db, 'dispatch_trips'), (snap) => {
-      const trips = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-      setDispatchedTrucks(prev => {
-        const next = { ...prev };
-        for (const trip of trips) {
-          const key = (trip.route_id as string) || (trip.region as string);
-          if (key && (trip.status === 'in_transit' || trip.status === 'dispatched' || !trip.status)) {
-            next[key] = {
-              truckId: (trip.vehicle_name as string) || (trip.truckId as string) || 'Dispatched Truck',
-              plate: (trip.plate as string) || 'NCB-2024',
-              driver: (trip.driver as string) || 'Assigned Driver',
-              timestamp: trip.dispatched_at ? new Date(trip.dispatched_at as string).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Today'
-            };
-          }
+      const trips = snap.docs.map((d: any) => ({ id: d.id, ...d.data() }));
+      const next: Record<string, { truckId: string; plate: string; driver: string; timestamp: string }> = {};
+      for (const trip of trips) {
+        const key = (trip.route_id as string) || (trip.region as string);
+        if (key && (trip.status === 'in_transit' || trip.status === 'dispatched' || !trip.status)) {
+          next[key] = {
+            truckId: (trip.vehicle_name as string) || (trip.truckId as string) || 'Dispatched Truck',
+            plate: (trip.plate as string) || 'NCB-2024',
+            driver: (trip.driver as string) || 'Assigned Driver',
+            timestamp: trip.dispatched_at ? new Date(trip.dispatched_at as string).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Today'
+          };
         }
-        if (typeof window !== 'undefined') {
-          try {
-            localStorage.setItem('activepro_optimizer_dispatched_trucks', JSON.stringify(next));
-          } catch {}
-        }
-        return next;
-      });
+      }
+      setDispatchedTrucks(next);
+      if (typeof window !== 'undefined') {
+        try {
+          localStorage.setItem('activepro_optimizer_dispatched_trucks', JSON.stringify(next));
+        } catch {}
+      }
     }, () => {});
 
-    // Subscriptions to transfers to keep completed/pending rebalance protocols persistent
+    // Subscriptions to transfers to keep active pending/in-transit rebalance protocols persistent
     const unsubTransfers = onSnapshot(collection(db, 'transfers'), (snap) => {
-      const transferList = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-      setTriggeredProtocols(prev => {
-        const set = new Set(prev);
-        for (const t of transferList) {
-          if (t.productId && t.destinationWarehouseId) {
-            set.add(`${t.productId}-${t.destinationWarehouseId}`);
-          }
+      const transferList = snap.docs.map((d: any) => ({ id: d.id, ...d.data() }));
+      const activeSet = new Set<string>();
+      for (const t of transferList) {
+        if ((t.status === 'pending' || t.status === 'in_transit') && t.productId && t.destinationWarehouseId) {
+          activeSet.add(`${t.productId}-${t.destinationWarehouseId}`);
         }
-        const arr = Array.from(set);
-        if (typeof window !== 'undefined') {
-          try {
-            localStorage.setItem('activepro_optimizer_triggered_transfers', JSON.stringify(arr));
-          } catch {}
-        }
-        return arr;
-      });
+      }
+      const arr = Array.from(activeSet);
+      setTriggeredProtocols(arr);
+      if (typeof window !== 'undefined') {
+        try {
+          localStorage.setItem('activepro_optimizer_triggered_transfers', JSON.stringify(arr));
+        } catch {}
+      }
     }, () => {});
 
     // Traffic incidents (Supabase Realtime — newest first)
@@ -258,7 +278,7 @@ export function LogisticsOptimizer() {
       unsubTransfers();
       unsubTraffic();
     };
-  }, []);
+  }, [reloadNonce]);
 
   // Field incident form state
   const [selectedIncidentType, setSelectedIncidentType] = useState<'accident' | 'closure' | 'congestion'>('accident');
@@ -281,19 +301,55 @@ export function LogisticsOptimizer() {
   }, [effectivePendingOrders]);
 
   const handleDispatchConsolidatedTruck = async (routeId: string, truckName: string, orderCount: number, route?: OptimizedRoute) => {
+    const dispatchKey = route ? getRouteDispatchKey(route) : routeId;
+    if (!canDispatchOrders) {
+      toast.error('You do not have permission to dispatch orders.');
+      return;
+    }
+    if (actionLockRef.current || isProcessing || dispatchedTrucks[dispatchKey]) return;
+    actionLockRef.current = true;
     setIsProcessing(true);
+    let createdTripId: string | null = null;
+    const createdTripOrderIds: string[] = [];
+    const revertedOrders: Array<{ id: string; status: Order['status']; statusHistory: Order['statusHistory'] }> = [];
+
     try {
+      const liveOrderStates = new Map<string, { status: Order['status']; statusHistory: Order['statusHistory'] }>();
+      if (route?.stops?.length) {
+        const uniqueRootIds = [...new Set(
+          route.stops
+            .map(s => (s.order.id || '').replace(/-part\d+$/, ''))
+            .filter(id => Boolean(id) && !id.startsWith('demo-')),
+        )];
+        for (const rootOrderId of uniqueRootIds) {
+          const liveSnap = await getDoc(doc(db, 'orders', rootOrderId));
+          if (!liveSnap.exists()) {
+            throw new Error(`Order ${rootOrderId} no longer exists.`);
+          }
+          const liveData = liveSnap.data() as Partial<Order>;
+          if (liveData.status !== 'pending') {
+            throw new Error(
+              `Order ${liveData.orderNumber || rootOrderId} is already "${String(liveData.status || 'updated').replaceAll('_', ' ')}" and cannot be dispatched.`,
+            );
+          }
+          liveOrderStates.set(rootOrderId, {
+            status: liveData.status,
+            statusHistory: Array.isArray(liveData.statusHistory) ? [...liveData.statusHistory] : [],
+          });
+        }
+      }
+
       // Find a matching available fleet vehicle, or fall back to the first available
       const matched = fleetVehicles.find(v => v.name === truckName && v.status === 'available')
         ?? fleetVehicles.find(v => v.status === 'available');
 
-      const plate = matched?.plate ?? `NCB-${Math.floor(1000 + Math.random() * 9000)}`;
-      const driver = truckName.includes('Van') ? 'Rogelio Mendoza' : 'Danilo Santos';
+      const plate = matched?.plate || `NCB-${Math.floor(1000 + Math.random() * 9000)}`;
+      const driver = matched?.driver || matched?.assigned_driver || profile?.displayName || (truckName.includes('Van') ? 'Rogelio Mendoza' : 'Danilo Santos');
       const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
       // 1. Persist dispatch trip to Supabase
       const tripRef = await addDoc(collection(db, 'dispatch_trips'), {
-        route_id: routeId,
+        route_id: dispatchKey,
         vehicle_id: matched?.id ?? null,
         vehicle_name: truckName,
         plate,
@@ -305,9 +361,11 @@ export function LogisticsOptimizer() {
         dispatched_at: serverTimestamp(),
         dispatched_by: profile?.displayName ?? profile?.email ?? 'Dispatcher',
       });
+      createdTripId = tripRef.id;
 
       // 2. Persist each stop as a trip_order row and transition associated orders to 'out_for_delivery'
       if (route?.stops?.length) {
+        const seenOrderIds = new Set<string>();
         for (let i = 0; i < route.stops.length; i++) {
           const stop = route.stops[i];
           // Strip synthetic split suffix (e.g. "ord_123-part1" -> "ord_123") to prevent 404/FK errors
@@ -315,7 +373,7 @@ export function LogisticsOptimizer() {
           const rootOrderId = rawOrderId.replace(/-part\d+$/, '');
           const isRealOrder = Boolean(rootOrderId && !rootOrderId.startsWith('demo-'));
 
-          await addDoc(collection(db, 'trip_orders'), {
+          const tripOrderRef = await addDoc(collection(db, 'trip_orders'), {
             trip_id: tripRef.id,
             order_id: isRealOrder ? rootOrderId : null,
             order_number: stop.order.orderNumber,
@@ -325,32 +383,38 @@ export function LogisticsOptimizer() {
             units: stop.units,
             created_at: serverTimestamp(),
           });
+          if (tripOrderRef?.id) createdTripOrderIds.push(tripOrderRef.id);
 
-          if (isRealOrder) {
-            try {
-              const currentHistory = Array.isArray(stop.order.statusHistory) ? [...stop.order.statusHistory] : [];
-              if (currentHistory.at(-1)?.status !== stop.order.status && stop.order.status) {
-                currentHistory.push({
-                  status: stop.order.status,
-                  changedBy: profile?.displayName || profile?.email || profile?.uid || 'System',
-                  timestamp: new Date().toISOString(),
-                });
-              }
-              currentHistory.push({
-                status: 'out_for_delivery',
-                changedBy: profile?.displayName || profile?.email || profile?.uid || 'Optimizer Dispatcher',
+          if (isRealOrder && !seenOrderIds.has(rootOrderId)) {
+            seenOrderIds.add(rootOrderId);
+            const liveState = liveOrderStates.get(rootOrderId);
+            const currentStatus = liveState?.status ?? stop.order.status;
+            const currentHistory = liveState?.statusHistory ? [...liveState.statusHistory] : (Array.isArray(stop.order.statusHistory) ? [...stop.order.statusHistory] : []);
+            const nextHistory = [...currentHistory];
+            if (nextHistory.at(-1)?.status !== currentStatus && currentStatus) {
+              nextHistory.push({
+                status: currentStatus,
+                changedBy: profile?.displayName || profile?.email || profile?.uid || 'System',
                 timestamp: new Date().toISOString(),
-                note: `Dispatched on Route ${routeId} via vehicle ${truckName} (${plate})`
               });
-
-              await updateDoc(doc(db, 'orders', rootOrderId), {
-                status: 'out_for_delivery',
-                statusHistory: currentHistory,
-                updatedAt: serverTimestamp(),
-              });
-            } catch (ordErr) {
-              console.warn('Could not update order status to out_for_delivery:', ordErr);
             }
+            nextHistory.push({
+              status: 'out_for_delivery',
+              changedBy: profile?.displayName || profile?.email || profile?.uid || 'Optimizer Dispatcher',
+              timestamp: new Date().toISOString(),
+              note: `Dispatched on Route ${routeId} via vehicle ${truckName} (${plate})`
+            });
+
+            revertedOrders.push({
+              id: rootOrderId,
+              status: currentStatus,
+              statusHistory: currentHistory,
+            });
+            await updateDoc(doc(db, 'orders', rootOrderId), {
+              status: 'out_for_delivery',
+              statusHistory: nextHistory,
+              updatedAt: serverTimestamp(),
+            });
           }
         }
       }
@@ -358,7 +422,7 @@ export function LogisticsOptimizer() {
       // 3. Update local UI state and persist to localStorage
       const dispatchRecord = { truckId: truckName, plate, driver, timestamp: now };
       setDispatchedTrucks(prev => {
-        const next = { ...prev, [routeId]: dispatchRecord };
+        const next = { ...prev, [dispatchKey]: dispatchRecord };
         if (typeof window !== 'undefined') {
           try {
             localStorage.setItem('activepro_optimizer_dispatched_trucks', JSON.stringify(next));
@@ -372,26 +436,32 @@ export function LogisticsOptimizer() {
         icon: <Truck className="w-5 h-5 text-emerald-500" />
       });
     } catch (err: any) {
+      for (const prevOrd of [...revertedOrders].reverse()) {
+        await updateDoc(doc(db, 'orders', prevOrd.id), {
+          status: prevOrd.status,
+          statusHistory: prevOrd.statusHistory,
+          updatedAt: serverTimestamp(),
+        }).catch(() => {});
+      }
+      for (const tripOrderId of [...createdTripOrderIds].reverse()) {
+        await deleteDoc(doc(db, 'trip_orders', tripOrderId)).catch(() => {});
+      }
+      if (createdTripId) {
+        await deleteDoc(doc(db, 'dispatch_trips', createdTripId)).catch(() => {});
+      }
       console.error('Dispatch recording error:', err);
       toast.error('Dispatch Failed', {
         description: err?.message || 'Could not record dispatch trip to database. Please check your connection and try again.',
       });
     } finally {
       setIsProcessing(false);
+      actionLockRef.current = false;
     }
   };
 
   // ══════════════════════════════════════════════════════════════════════════
   // MODULE 2: AUTOMATED INVENTORY LOAD BALANCING
   // ══════════════════════════════════════════════════════════════════════════
-  const activeWarehousesList = useMemo(() => {
-    if (dbWarehouses.length >= 2) return dbWarehouses;
-    return [
-      { id: 'wh-main', name: 'Valenzuela Main Hub', location: 'Hub 1' },
-      { id: 'wh-sub', name: 'Cavite Branch Hub', location: 'Hub 2' }
-    ];
-  }, [dbWarehouses]);
-
   const inventoryImbalances = useMemo(() => {
     const list: {
       productId: string;
@@ -403,26 +473,26 @@ export function LogisticsOptimizer() {
       simpleExplanation: string;
     }[] = [];
 
-    // Check real inventory if available
-    if (dbWarehouses.length >= 2 && dbInventory.length > 0 && dbProducts.length > 0) {
+    if (scopedWarehouses.length >= 2 && dbInventory.length > 0 && dbProducts.length > 0) {
       const invByProduct = new Map<string, typeof dbInventory>();
       for (const item of dbInventory) {
+        if (allowedWarehouseIds && !allowedWarehouseIds.has(item.warehouseId)) continue;
         const existing = invByProduct.get(item.productId);
         if (existing) existing.push(item);
         else invByProduct.set(item.productId, [item]);
       }
 
       for (const prod of dbProducts) {
+        if (prod.hasVariations || prod.variantEnabled === false) continue;
         const stocks = invByProduct.get(prod.id) || [];
         const depleted = stocks.find(s => s.quantity === 0);
         const surplus = stocks.find(s => s.quantity >= 30);
         if (depleted && surplus && depleted.warehouseId !== surplus.warehouseId) {
           const alertId = `${prod.id}-${depleted.warehouseId}`;
-          // If this imbalance protocol was already confirmed and transferred, do not repeat alert
           if (triggeredProtocols.includes(alertId)) continue;
 
-          const depWh = dbWarehouses.find(w => w.id === depleted.warehouseId);
-          const surWh = dbWarehouses.find(w => w.id === surplus.warehouseId);
+          const depWh = scopedWarehouses.find(w => w.id === depleted.warehouseId);
+          const surWh = scopedWarehouses.find(w => w.id === surplus.warehouseId);
           if (depWh && surWh) {
             const transferQty = Math.floor(surplus.quantity / 2);
             list.push({
@@ -439,35 +509,24 @@ export function LogisticsOptimizer() {
       }
     }
 
-    // Default realistic imbalance if no live warehouse zero-stock condition is detected
-    if (list.length === 0 && triggeredProtocols.length === 0) {
-      const simDepletedWh = activeWarehousesList[1]?.id || 'wh-sub';
-      const simAlertKey = `sim-prod-1-${simDepletedWh}`;
-      if (!triggeredProtocols.includes(simAlertKey)) {
-        list.push({
-          productId: 'sim-prod-1',
-          productName: 'Shimano Deore XT M8100 Groupset',
-          productSku: 'SHI-M8100',
-          depletedWarehouse: {
-            id: simDepletedWh,
-            name: activeWarehousesList[1]?.name || 'Cavite Branch Hub',
-            currentStock: 0
-          },
-          surplusWarehouse: {
-            id: activeWarehousesList[0]?.id || 'wh-main',
-            name: activeWarehousesList[0]?.name || 'Valenzuela Main Hub',
-            currentStock: 140
-          },
-          recommendedTransferQty: 50,
-          simpleExplanation: 'Cavite branch hub ran out of stock (0 items), while Valenzuela main hub has 140 items. Moving 50 items balances both locations before the next delivery cycle.'
-        });
-      }
-    }
-
     return list;
-  }, [activeWarehousesList, dbWarehouses, dbInventory, dbProducts, triggeredProtocols]);
+  }, [scopedWarehouses, dbInventory, dbProducts, triggeredProtocols, allowedWarehouseIds]);
 
   const handleTriggerStockTransferProtocol = async (imbalance: typeof inventoryImbalances[0]) => {
+    if (!canRebalanceWarehouses) {
+      toast.error('You do not have permission to execute warehouse stock transfers.');
+      return;
+    }
+    if (
+      allowedWarehouseIds &&
+      (!allowedWarehouseIds.has(imbalance.surplusWarehouse.id) ||
+        !allowedWarehouseIds.has(imbalance.depletedWarehouse.id))
+    ) {
+      toast.error('You do not have access to one of the warehouses for this transfer.');
+      return;
+    }
+    if (actionLockRef.current || isProcessing) return;
+    actionLockRef.current = true;
     setIsProcessing(true);
     const protocolId = `${imbalance.productId}-${imbalance.depletedWarehouse.id}`;
 
@@ -478,36 +537,65 @@ export function LogisticsOptimizer() {
       return;
     }
 
-    try {
-      // 1. Locate source and destination inventory records in dbInventory
-      const sourceInv = dbInventory.find(i => i.productId === imbalance.productId && i.warehouseId === imbalance.surplusWarehouse.id);
-      const destInv = dbInventory.find(i => i.productId === imbalance.productId && i.warehouseId === imbalance.depletedWarehouse.id);
+    const modifiedInventory: Array<{ id: string; prevQty: number }> = [];
+    let createdDestInvId: string | null = null;
+    let createdTransferId: string | null = null;
+    const createdAdjIds: string[] = [];
 
-      // 2. Deduct transferred stock from surplus warehouse in inventory table
-      if (sourceInv) {
-        await updateDoc(doc(db, 'inventory', sourceInv.id), {
-          quantity: Math.max(0, sourceInv.quantity - qty),
+    try {
+      // 1. Validate live source and destination inventory rows from database
+      const liveInvSnap = await getDocs(collection(db, 'inventory'));
+      const liveInventory = liveInvSnap.docs.map((d: any) => ({ ...(d.data() as InventoryItem), id: d.id }));
+      const sourceRows = liveInventory.filter(
+        i => i.productId === imbalance.productId && i.warehouseId === imbalance.surplusWarehouse.id
+      );
+      const totalAvailable = sourceRows.reduce((sum, r) => sum + Number(r.quantity || 0), 0);
+      if (sourceRows.length === 0 || totalAvailable < qty) {
+        throw new Error(
+          `Insufficient live stock in ${imbalance.surplusWarehouse.name}: ${totalAvailable} available, ${qty} required.`
+        );
+      }
+
+      const destRows = liveInventory.filter(
+        i => i.productId === imbalance.productId && i.warehouseId === imbalance.depletedWarehouse.id
+      );
+
+      // 2. Deduct transferred stock from surplus warehouse rows in inventory table
+      let remaining = qty;
+      for (const row of sourceRows) {
+        if (remaining <= 0) break;
+        const curQty = Number(row.quantity || 0);
+        if (curQty <= 0) continue;
+        const take = Math.min(curQty, remaining);
+        modifiedInventory.push({ id: row.id, prevQty: curQty });
+        await updateDoc(doc(db, 'inventory', row.id), {
+          quantity: curQty - take,
           lastUpdated: serverTimestamp()
         });
+        remaining -= take;
       }
 
       // 3. Add transferred stock to depleted warehouse in inventory table
-      if (destInv) {
+      if (destRows.length > 0) {
+        const destInv = destRows[0];
+        const prevDestQty = Number(destInv.quantity || 0);
+        modifiedInventory.push({ id: destInv.id, prevQty: prevDestQty });
         await updateDoc(doc(db, 'inventory', destInv.id), {
-          quantity: destInv.quantity + qty,
+          quantity: prevDestQty + qty,
           lastUpdated: serverTimestamp()
         });
       } else {
-        await addDoc(collection(db, 'inventory'), {
+        const createdDestRef = await addDoc(collection(db, 'inventory'), {
           productId: imbalance.productId,
           warehouseId: imbalance.depletedWarehouse.id,
           quantity: qty,
           lastUpdated: serverTimestamp()
         });
+        createdDestInvId = createdDestRef?.id || null;
       }
 
       // 4. Record the completed transfer in the transfers collection
-      await addDoc(collection(db, 'transfers'), {
+      const transferRef = await addDoc(collection(db, 'transfers'), {
         sourceWarehouseId: imbalance.surplusWarehouse.id,
         destinationWarehouseId: imbalance.depletedWarehouse.id,
         productId: imbalance.productId,
@@ -518,30 +606,30 @@ export function LogisticsOptimizer() {
         createdAt: serverTimestamp(),
         notes: `Automated rebalance of ${qty} units from ${imbalance.surplusWarehouse.name} to ${imbalance.depletedWarehouse.name}`
       });
+      createdTransferId = transferRef?.id || null;
 
       // 5. Record stock adjustments audit log
-      try {
-        await addDoc(collection(db, 'stockAdjustments'), {
-          productId: imbalance.productId,
-          warehouseId: imbalance.surplusWarehouse.id,
-          adjustmentAmount: -qty,
-          reason: `Rebalance transfer out to ${imbalance.depletedWarehouse.name}`,
-          recordedBy: profile?.displayName || 'Automated Load Balancer',
-          timestamp: serverTimestamp()
-        });
-        await addDoc(collection(db, 'stockAdjustments'), {
-          productId: imbalance.productId,
-          warehouseId: imbalance.depletedWarehouse.id,
-          adjustmentAmount: qty,
-          reason: `Rebalance transfer in from ${imbalance.surplusWarehouse.name}`,
-          recordedBy: profile?.displayName || 'Automated Load Balancer',
-          timestamp: serverTimestamp()
-        });
-      } catch (logErr) {
-        console.warn('Could not record stockAdjustments:', logErr);
-      }
+      const adjOutRef = await addDoc(collection(db, 'stockAdjustments'), {
+        productId: imbalance.productId,
+        warehouseId: imbalance.surplusWarehouse.id,
+        adjustmentAmount: -qty,
+        reason: `Rebalance transfer out to ${imbalance.depletedWarehouse.name}`,
+        recordedBy: profile?.displayName || 'Automated Load Balancer',
+        timestamp: serverTimestamp()
+      });
+      if (adjOutRef?.id) createdAdjIds.push(adjOutRef.id);
 
-      // 6. Update persistent triggered protocols so alert never reappears on reload
+      const adjInRef = await addDoc(collection(db, 'stockAdjustments'), {
+        productId: imbalance.productId,
+        warehouseId: imbalance.depletedWarehouse.id,
+        adjustmentAmount: qty,
+        reason: `Rebalance transfer in from ${imbalance.surplusWarehouse.name}`,
+        recordedBy: profile?.displayName || 'Automated Load Balancer',
+        timestamp: serverTimestamp()
+      });
+      if (adjInRef?.id) createdAdjIds.push(adjInRef.id);
+
+      // 6. Mark protocol handled in local state
       setTriggeredProtocols(prev => {
         const next = [...new Set([...prev, protocolId])];
         if (typeof window !== 'undefined') {
@@ -557,12 +645,28 @@ export function LogisticsOptimizer() {
         icon: <Boxes className="w-5 h-5 text-emerald-500" />
       });
     } catch (err: any) {
+      for (const adjId of [...createdAdjIds].reverse()) {
+        await deleteDoc(doc(db, 'stockAdjustments', adjId)).catch(() => {});
+      }
+      if (createdTransferId) {
+        await deleteDoc(doc(db, 'transfers', createdTransferId)).catch(() => {});
+      }
+      if (createdDestInvId) {
+        await deleteDoc(doc(db, 'inventory', createdDestInvId)).catch(() => {});
+      }
+      for (const prevInv of [...modifiedInventory].reverse()) {
+        await updateDoc(doc(db, 'inventory', prevInv.id), {
+          quantity: prevInv.prevQty,
+          lastUpdated: serverTimestamp()
+        }).catch(() => {});
+      }
       console.error('Failed to execute transfer:', err);
       toast.error('Rebalance Transfer Failed', {
         description: err?.message || 'Could not update inventory in database. No stock was transferred.',
       });
     } finally {
       setIsProcessing(false);
+      actionLockRef.current = false;
     }
   };
 
@@ -635,14 +739,16 @@ export function LogisticsOptimizer() {
       }
     } catch {}
 
-    // 2. Update status in database / Supabase
-    try {
-      await updateDoc(doc(db, 'traffic_incidents', incidentId), {
-        status: 'rerouted',
-        rerouted_at: serverTimestamp()
-      });
-    } catch (err) {
-      console.warn('Could not update traffic incident in remote database:', err);
+    // 2. Update status in database / Supabase (skip synthetic default or fallback local incidents)
+    if (!incidentId.startsWith('inc-')) {
+      try {
+        await updateDoc(doc(db, 'traffic_incidents', incidentId), {
+          status: 'rerouted',
+          rerouted_at: serverTimestamp()
+        });
+      } catch (err) {
+        console.warn('Could not update traffic incident in remote database:', err);
+      }
     }
 
     // 3. Update local state immediately
@@ -660,7 +766,15 @@ export function LogisticsOptimizer() {
       <header className="space-y-4">
         <div className="flex flex-col items-start justify-between gap-4 sm:flex-row">
           <PageHeading title="Logistics Optimizer" subtitle="Plan deliveries, balance stock, and manage detours." />
-          <Button onClick={() => toast.success('Routes and warehouse stock balances re-calculated!')} className="h-9 shrink-0 gap-2 rounded-lg bg-[#1A2332] px-3 text-sm font-semibold text-white hover:bg-[#1A2332]/90">
+          <Button
+            onClick={() => {
+              setSelectedRouteId(null);
+              setSelectedStockAlert(null);
+              setReloadNonce(n => n + 1);
+              toast.success('Routes and warehouse stock balances refreshed from live database.');
+            }}
+            className="h-9 shrink-0 gap-2 rounded-lg bg-primary px-3 text-sm font-semibold text-primary-foreground hover:bg-primary/90"
+          >
             <RefreshCw className="h-4 w-4" />Re-optimize routes
           </Button>
         </div>
@@ -682,8 +796,25 @@ export function LogisticsOptimizer() {
             <div className="rounded-lg bg-primary/10 p-2 text-primary"><Coins aria-hidden="true" className="h-4 w-4" /></div>
           </CardHeader>
           <CardContent>
-            <div className="flex flex-wrap items-baseline gap-2"><p className="text-2xl font-black tracking-tight text-emerald-600">₱{optimizationResult.summary.totalSavingsPhp.toLocaleString()}</p><span className="text-[10px] font-medium text-muted-foreground">vs. baseline</span></div>
-            <p className="mt-1 flex items-center gap-1 text-[10px] font-medium text-muted-foreground"><TrendingUp aria-hidden="true" className="h-3 w-3 shrink-0 -scale-y-100 text-emerald-600" />{optimizationResult.summary.overallDistanceReductionPercent}% less travel distance</p>
+            <div className="flex flex-wrap items-baseline gap-2">
+              {optimizationResult.summary.totalSavingsPhp < 0 ? (
+                <>
+                  <p className="text-2xl font-black tracking-tight text-amber-600 dark:text-amber-400">+₱{Math.abs(optimizationResult.summary.totalSavingsPhp).toLocaleString()}</p>
+                  <span className="text-[10px] font-medium text-muted-foreground">above baseline</span>
+                </>
+              ) : (
+                <>
+                  <p className="text-2xl font-black tracking-tight text-emerald-600 dark:text-emerald-400">₱{optimizationResult.summary.totalSavingsPhp.toLocaleString()}</p>
+                  <span className="text-[10px] font-medium text-muted-foreground">vs. baseline</span>
+                </>
+              )}
+            </div>
+            <p className="mt-1 flex items-center gap-1 text-[10px] font-medium text-muted-foreground">
+              <TrendingUp aria-hidden="true" className={cn("h-3 w-3 shrink-0", optimizationResult.summary.overallDistanceReductionPercent < 0 ? "text-amber-600" : "-scale-y-100 text-emerald-600")} />
+              {optimizationResult.summary.overallDistanceReductionPercent < 0
+                ? `${Math.abs(optimizationResult.summary.overallDistanceReductionPercent)}% more travel distance`
+                : `${optimizationResult.summary.overallDistanceReductionPercent}% less travel distance`}
+            </p>
           </CardContent>
         </Card>
         <Card className="border-border bg-card shadow-sm">
@@ -749,10 +880,12 @@ export function LogisticsOptimizer() {
                         <div className="min-w-0 flex-1">
                           <div className="flex flex-wrap items-center justify-between gap-2">
                             <span className="font-semibold">{route.region}</span>
-                            <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-medium text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300">{dispatchedTrucks[route.routeId] ? 'Dispatched' : 'Ready'}</span>
+                            <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-medium text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300">{dispatchedTrucks[getRouteDispatchKey(route)] ? 'Dispatched' : 'Ready'}</span>
                           </div>
                           <p className="mt-1 text-xs text-muted-foreground">{route.stops.length} deliveries · {route.vehicle.name}</p>
-                          <p className="mt-2 text-sm font-semibold text-emerald-700 dark:text-emerald-400">Save ₱{route.savingsPhp.toLocaleString()}</p>
+                          <p className={cn("mt-2 text-sm font-semibold", route.savingsPhp < 0 ? "text-amber-700 dark:text-amber-400" : "text-emerald-700 dark:text-emerald-400")}>
+                            {route.savingsPhp < 0 ? `+₱${Math.abs(route.savingsPhp).toLocaleString()} vs baseline` : `Save ₱${route.savingsPhp.toLocaleString()}`}
+                          </p>
                         </div>
                         <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
                       </button>
@@ -770,7 +903,7 @@ export function LogisticsOptimizer() {
             {(() => {
               const route = optimizationResult.routes.find(r => r.routeId === selectedRouteId) ?? optimizationResult.routes[0];
               if (!route) return <div className="rounded-xl border border-dashed border-border p-10 text-center text-muted-foreground">No delivery plans available.</div>;
-              return <RoutePlanDetails key={route.routeId} route={route} dispatchInfo={dispatchedTrucks[route.routeId]} isProcessing={isProcessing} onDispatch={() => handleDispatchConsolidatedTruck(route.routeId, route.vehicle.name, route.stops.length, route)} />;
+              return <RoutePlanDetails key={getRouteDispatchKey(route)} route={route} dispatchInfo={dispatchedTrucks[getRouteDispatchKey(route)]} isProcessing={isProcessing} canDispatch={canDispatchOrders} onDispatch={() => handleDispatchConsolidatedTruck(route.routeId, route.vehicle.name, route.stops.length, route)} />;
             })()}
           </div>
         </TabsContent>
@@ -900,7 +1033,7 @@ export function LogisticsOptimizer() {
                     {isTriggered ? (
                       <p role="status" className="flex items-center gap-2 text-sm font-medium text-emerald-700 dark:text-emerald-400"><CheckCircle2 className="h-4 w-4 shrink-0" />Transfer scheduled</p>
                     ) : (
-                      <Button disabled={isProcessing} onClick={() => handleTriggerStockTransferProtocol(item)} className="h-10 shrink-0 gap-3 rounded-lg bg-[#1A2332] px-5 text-xs text-white hover:bg-[#1A2332]/90">
+                      <Button disabled={isProcessing || !canRebalanceWarehouses} onClick={() => handleTriggerStockTransferProtocol(item)} className="h-10 shrink-0 gap-3 rounded-lg bg-primary px-5 text-xs text-primary-foreground hover:bg-primary/90">
                         {isProcessing ? 'Confirming transfer...' : `Confirm & Transfer ${item.recommendedTransferQty} units`}<ArrowRight className="h-4 w-4" />
                       </Button>
                     )}
@@ -993,8 +1126,8 @@ export function LogisticsOptimizer() {
                   </div>
                 </div>
 
-                <Button type="submit" className="h-11 w-full gap-2 rounded-lg bg-[#1A2332] px-3 text-sm text-white hover:bg-[#1A2332]/90">
-                  <AlertCircle className="h-4 w-4 shrink-0 text-amber-400" />Report incident & find bypass
+                <Button type="submit" className="h-11 w-full gap-2 rounded-lg bg-primary px-3 text-sm text-primary-foreground hover:bg-primary/90">
+                  <AlertCircle className="h-4 w-4 shrink-0 text-amber-400 dark:text-primary-foreground" />Report incident & find bypass
                 </Button>
               </form>
               </details>
@@ -1060,7 +1193,7 @@ export function LogisticsOptimizer() {
                   </p>
                   <footer className="mt-4 flex flex-col gap-3 border-t border-border pt-4 sm:flex-row sm:items-center sm:justify-between">
                     <p className="text-xs text-muted-foreground">For drivers on this route</p>
-                    {!sent && <Button onClick={() => handlePushAlternativeRoute(inc.id)} className="h-11 gap-3 rounded-lg bg-[#1A2332] px-5 text-sm text-white hover:bg-[#1A2332]/90"><Navigation className="h-4 w-4" />Send detour to drivers</Button>}
+                    {!sent && <Button onClick={() => handlePushAlternativeRoute(inc.id)} className="h-11 gap-3 rounded-lg bg-primary px-5 text-sm text-primary-foreground hover:bg-primary/90"><Navigation className="h-4 w-4" />Send detour to drivers</Button>}
                   </footer>
                 </section>
               );
@@ -1073,10 +1206,11 @@ export function LogisticsOptimizer() {
 }
 
 
-function RoutePlanDetails({ route, dispatchInfo, isProcessing, onDispatch }: {
+function RoutePlanDetails({ route, dispatchInfo, isProcessing, canDispatch, onDispatch }: {
   route: OptimizedRoute;
   dispatchInfo?: { truckId: string; plate: string; driver: string; timestamp: string };
   isProcessing: boolean;
+  canDispatch: boolean;
   onDispatch: () => void;
 }) {
   const [showAllStops, setShowAllStops] = useState(false);
@@ -1166,7 +1300,9 @@ function RoutePlanDetails({ route, dispatchInfo, isProcessing, onDispatch }: {
         <details className="group/section rounded-lg border border-border">
           <summary className={summaryClass}>
             <Coins className="h-5 w-5 shrink-0" /> Cost breakdown
-            <span className="ml-auto text-xs font-medium text-emerald-700 dark:text-emerald-400">₱{route.savingsPhp.toLocaleString()} savings</span>
+            <span className={cn("ml-auto text-xs font-medium", route.savingsPhp < 0 ? "text-amber-700 dark:text-amber-400" : "text-emerald-700 dark:text-emerald-400")}>
+              {route.savingsPhp < 0 ? `+₱${Math.abs(route.savingsPhp).toLocaleString()} vs baseline` : `₱${route.savingsPhp.toLocaleString()} savings`}
+            </span>
             <ChevronDown className="h-4 w-4 shrink-0 group-open/section:rotate-180" />
           </summary>
           <dl className="space-y-3 border-t border-border p-4 text-sm">
@@ -1186,7 +1322,7 @@ function RoutePlanDetails({ route, dispatchInfo, isProcessing, onDispatch }: {
         ) : (
           <>
             <p className="text-xs text-muted-foreground">Check the plan before dispatching.</p>
-            <Button disabled={isProcessing} onClick={onDispatch} className="h-11 gap-3 rounded-lg bg-[#1A2332] px-5 text-white hover:bg-[#1A2332]/90">
+            <Button disabled={isProcessing || !canDispatch} onClick={onDispatch} className="h-11 gap-3 rounded-lg bg-primary px-5 text-primary-foreground hover:bg-primary/90">
               {isProcessing ? 'Dispatching…' : 'Dispatch route'} <ArrowRight className="h-4 w-4" />
             </Button>
           </>

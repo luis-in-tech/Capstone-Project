@@ -81,12 +81,20 @@ function ChartContainer({
   )
 }
 
+const SAFE_CSS_TOKEN = /^[a-zA-Z0-9_-]+$/
+const UNSAFE_CSS_VALUE = /[{}<>;"'\\`\n\r]/
+
+function sanitizeCssToken(value: string): string {
+  return SAFE_CSS_TOKEN.test(value) ? value : value.replace(/[^a-zA-Z0-9_-]/g, "")
+}
+
 const ChartStyle = ({ id, config }: { id: string; config: ChartConfig }) => {
+  const safeId = sanitizeCssToken(id)
   const colorConfig = Object.entries(config).filter(
-    ([, config]) => config.theme ?? config.color
+    ([, itemConfig]) => itemConfig.theme ?? itemConfig.color
   )
 
-  if (!colorConfig.length) {
+  if (!safeId || !colorConfig.length) {
     return null
   }
 
@@ -96,14 +104,19 @@ const ChartStyle = ({ id, config }: { id: string; config: ChartConfig }) => {
         __html: Object.entries(THEMES)
           .map(
             ([theme, prefix]) => `
-${prefix} [data-chart=${id}] {
+${prefix} [data-chart="${safeId}"] {
 ${colorConfig
   .map(([key, itemConfig]) => {
+    const safeKey = sanitizeCssToken(key)
     const color =
       itemConfig.theme?.[theme as keyof typeof itemConfig.theme] ??
       itemConfig.color
-    return color ? `  --color-${key}: ${color};` : null
+    if (!safeKey || !color || UNSAFE_CSS_VALUE.test(color)) {
+      return null
+    }
+    return `  --color-${safeKey}: ${color};`
   })
+  .filter(Boolean)
   .join("\n")}
 }
 `
@@ -319,7 +332,7 @@ function ChartLegendContent({
                   }}
                 />
               )}
-              {itemConfig?.label}
+              {itemConfig?.label ?? item.value}
             </div>
           )
         })}

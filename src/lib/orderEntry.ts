@@ -74,8 +74,15 @@ export type ReceiptItem = OrderItem & {
 };
 const phMoneyFormatter = new Intl.NumberFormat("en-PH", { style: "currency", currency: "PHP" });
 export const money = (value: number) => phMoneyFormatter.format(value);
-export const roundMoney = (value: number) =>
-  Math.round((value + Number.EPSILON) * 100) / 100;
+export const roundMoney = (value: number) => {
+  if (!Number.isFinite(value)) return value;
+  const sign = value < 0 ? -1 : 1;
+  const shifted = Number(`${Math.abs(value)}e2`);
+  const absRounded = Number.isFinite(shifted)
+    ? Math.round(shifted) / 100
+    : Math.round(Math.abs(value) * 100) / 100;
+  return sign * absRounded || 0;
+};
 export function productPrices(product: Product): PriceSnapshot {
   return {
     regular: product.basePrice ?? null,
@@ -134,16 +141,19 @@ export function existingCustomers(
   const customers = new Map<string, ExistingCustomer>();
 
   for (const order of orders) {
-    const key = order.clientName?.trim().toLowerCase();
+    const cleanName = order.clientName?.trim();
+    const key = cleanName?.toLowerCase();
     if (key && !customers.has(key)) {
+      const cleanAddress = order.receiptDetails?.address?.trim() || "";
+      const cleanTerms = order.receiptDetails?.paymentTerms?.trim();
       const item: ExistingCustomer = {
         id: order.clientId,
-        name: order.clientName,
-        address: order.receiptDetails?.address || "",
+        name: cleanName,
+        address: cleanAddress,
         region: order.deliveryRegion,
       };
-      if (order.receiptDetails?.paymentTerms) {
-        item.terms = order.receiptDetails.paymentTerms;
+      if (cleanTerms) {
+        item.terms = cleanTerms;
       }
       customers.set(key, item);
     }

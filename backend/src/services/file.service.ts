@@ -22,8 +22,8 @@
 
 import fs from 'fs';
 import path from 'path';
-import { FRONTEND_ROOT } from '../config/paths';
-import { backupFile } from './backup.service';
+import { FRONTEND_ROOT, isSubPath } from '../config/paths';
+import { backupFile, discardBackup } from './backup.service';
 import {
   FileNode,
   FileReadResult,
@@ -50,11 +50,14 @@ const MIME_HINTS: Record<string, string> = {
 };
 
 function getMimeHint(ext: string): string {
-  return MIME_HINTS[ext.toLowerCase()] ?? 'application/octet-stream';
+  const key = ext.toLowerCase();
+  return Object.prototype.hasOwnProperty.call(MIME_HINTS, key) ? MIME_HINTS[key] : 'application/octet-stream';
 }
 
 // ─── Directory to skip when building the tree ────────────────────────────────
 const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', '.trash']);
+const MAX_TREE_DEPTH = 15;
+const MAX_READ_BYTES = 10 * 1024 * 1024; // 10 MB read safety limit
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -74,10 +77,14 @@ function toRelative(absolutePath: string): string {
  *
  * @param dirPath - Absolute path of the directory to scan.
  */
-function buildTree(dirPath: string): FileNode {
-  const stat = fs.statSync(dirPath);
+function buildTree(dirPath: string, depth = 0): FileNode {
+  const stat = fs.lstatSync(dirPath);
   const name = path.basename(dirPath);
   const relative = toRelative(dirPath);
+
+  if (stat.isSymbolicLink()) {
+    throw new AppError(400, 'SYMLINK_SKIPPED', `Symbolic links are skipped: "${relative}"`);
+  }
 
   if (stat.isFile()) {
     const ext = path.extname(name).replace('.', '');
@@ -91,15 +98,19 @@ function buildTree(dirPath: string): FileNode {
     };
   }
 
+  if (depth >= MAX_TREE_DEPTH) {
+    return { name, path: relative, type: 'directory', children: [] };
+  }
+
   // It's a directory — recurse into children
   const entries = fs.readdirSync(dirPath, { withFileTypes: true });
   const children: FileNode[] = [];
 
   for (const entry of entries) {
-    if (SKIP_DIRS.has(entry.name)) continue; // skip noisy dirs
+    if (SKIP_DIRS.has(entry.name) || entry.isSymbolicLink()) continue; // skip noisy dirs and symlinks
 
     try {
-      children.push(buildTree(path.join(dirPath, entry.name)));
+      children.push(buildTree(path.join(dirPath, entry.name), depth + 1));
     } catch {
       // Skip files we can't read (permissions, broken symlinks, etc.)
     }
@@ -133,17 +144,42 @@ export function getDirectoryTree(): DirectoryTree {
  * @throws AppError 404 if the file does not exist.
  * @throws AppError 400 if the path is a directory.
  */
+function inspectExistingLstat(absolutePath: string): fs.Stats | null {
+  try {
+    return fs.lstatSync(absolutePath);
+  } catch (err: any) {
+    if (err && err.code === 'ENOENT') return null;
+    throw err;
+  }
+}
+
 export function readFile(absolutePath: string): FileReadResult {
-  if (!fs.existsSync(absolutePath)) {
+  const stat = inspectExistingLstat(absolutePath);
+  if (!stat) {
     throw new AppError(404, 'NOT_FOUND', `File not found: "${toRelative(absolutePath)}"`);
   }
-
-  const stat = fs.statSync(absolutePath);
+  if (stat.isSymbolicLink()) {
+    throw new AppError(403, 'SYMLINK_FORBIDDEN', `Symbolic links cannot be read: "${toRelative(absolutePath)}"`);
+  }
   if (stat.isDirectory()) {
     throw new AppError(400, 'IS_DIRECTORY', `The path "${toRelative(absolutePath)}" is a directory, not a file.`);
   }
+  if (!stat.isFile()) {
+    throw new AppError(400, 'UNSUPPORTED_FILE_TYPE', `The path "${toRelative(absolutePath)}" is not a regular file.`);
+  }
+  if (stat.size > MAX_READ_BYTES) {
+    throw new AppError(413, 'FILE_TOO_LARGE', `File exceeds 10 MB read limit (${stat.size} bytes).`);
+  }
 
-  const content = fs.readFileSync(absolutePath, 'utf-8');
+  const raw = fs.readFileSync(absolutePath);
+  if (raw.includes(0)) {
+    throw new AppError(
+      415,
+      'BINARY_FILE',
+      `File "${toRelative(absolutePath)}" appears to be a binary file and cannot be read as UTF-8 text.`
+    );
+  }
+  const content = raw.toString('utf-8');
   const name = path.basename(absolutePath);
   const ext = path.extname(name).replace('.', '');
 
@@ -171,7 +207,15 @@ export async function writeFile(
   relativePath: string,
   content: string
 ): Promise<FileWriteResult> {
-  const existed = fs.existsSync(absolutePath);
+  const existingStat = inspectExistingLstat(absolutePath);
+  if (existingStat?.isSymbolicLink()) {
+    throw new AppError(403, 'SYMLINK_FORBIDDEN', `Symbolic links cannot be overwritten: "${relativePath}"`);
+  }
+  if (existingStat?.isDirectory()) {
+    throw new AppError(400, 'IS_DIRECTORY', `Cannot overwrite directory "${relativePath}" with a file.`);
+  }
+
+  const existed = existingStat !== null;
   let backupId: string | undefined;
 
   if (existed) {
@@ -180,12 +224,19 @@ export async function writeFile(
     backupId = backup.id;
   }
 
-  // Ensure parent directory exists
-  fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
+  try {
+    // Ensure parent directory exists
+    fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
 
-  // Write the file
-  fs.writeFileSync(absolutePath, content, 'utf-8');
-  const stat = fs.statSync(absolutePath);
+    // Write the file
+    fs.writeFileSync(absolutePath, content, 'utf-8');
+  } catch (err) {
+    if (backupId) {
+      await discardBackup(backupId).catch(() => {});
+    }
+    throw err;
+  }
+  const stat = fs.lstatSync(absolutePath);
 
   return {
     path:       relativePath,
@@ -203,7 +254,11 @@ export async function writeFile(
  * @throws AppError 409 if the directory already exists.
  */
 export function makeDirectory(absolutePath: string): MkdirResult {
-  if (fs.existsSync(absolutePath)) {
+  const existingStat = inspectExistingLstat(absolutePath);
+  if (existingStat) {
+    if (existingStat.isSymbolicLink()) {
+      throw new AppError(403, 'SYMLINK_FORBIDDEN', `Path "${toRelative(absolutePath)}" is a symbolic link.`);
+    }
     throw new AppError(409, 'ALREADY_EXISTS', `Directory already exists: "${toRelative(absolutePath)}"`);
   }
 
@@ -230,19 +285,39 @@ export async function renameEntry(
   relOldPath: string,
   relNewPath: string
 ): Promise<RenameResult> {
-  if (!fs.existsSync(absOldPath)) {
+  const oldStat = inspectExistingLstat(absOldPath);
+  if (!oldStat) {
     throw new AppError(404, 'NOT_FOUND', `Source not found: "${relOldPath}"`);
   }
-  if (fs.existsSync(absNewPath)) {
+  if (oldStat.isSymbolicLink()) {
+    throw new AppError(403, 'SYMLINK_FORBIDDEN', `Symbolic links cannot be renamed: "${relOldPath}"`);
+  }
+
+  const normOld = process.platform === 'win32' ? path.resolve(absOldPath).toLowerCase() : path.resolve(absOldPath);
+  const normNew = process.platform === 'win32' ? path.resolve(absNewPath).toLowerCase() : path.resolve(absNewPath);
+  if (normOld === normNew) {
+    throw new AppError(400, 'INVALID_RENAME', `Source and destination paths are identical: "${relOldPath}"`);
+  }
+  if (oldStat.isDirectory() && isSubPath(absOldPath, absNewPath)) {
+    throw new AppError(400, 'INVALID_RENAME', `Cannot move directory "${relOldPath}" inside itself ("${relNewPath}").`);
+  }
+
+  const existingDest = inspectExistingLstat(absNewPath);
+  if (existingDest) {
     throw new AppError(409, 'ALREADY_EXISTS', `Destination already exists: "${relNewPath}"`);
   }
 
   // ⚠️  SAFETY: Back up source before rename
   const backup = await backupFile(absOldPath, relOldPath, 'RENAME');
 
-  // Ensure the destination parent directory exists
-  fs.mkdirSync(path.dirname(absNewPath), { recursive: true });
-  fs.renameSync(absOldPath, absNewPath);
+  try {
+    // Ensure the destination parent directory exists
+    fs.mkdirSync(path.dirname(absNewPath), { recursive: true });
+    fs.renameSync(absOldPath, absNewPath);
+  } catch (err) {
+    await discardBackup(backup.id).catch(() => {});
+    throw err;
+  }
 
   return {
     oldPath:    relOldPath,
@@ -263,19 +338,27 @@ export async function deleteEntry(
   absolutePath: string,
   relativePath: string
 ): Promise<DeleteResult> {
-  if (!fs.existsSync(absolutePath)) {
+  const stat = inspectExistingLstat(absolutePath);
+  if (!stat) {
     throw new AppError(404, 'NOT_FOUND', `Path not found: "${relativePath}"`);
+  }
+  if (stat.isSymbolicLink()) {
+    throw new AppError(403, 'SYMLINK_FORBIDDEN', `Symbolic links cannot be deleted through workspace API: "${relativePath}"`);
   }
 
   // ⚠️  SAFETY: Back up BEFORE deleting — no delete without a receipt
   const backup = await backupFile(absolutePath, relativePath, 'DELETE');
 
-  // Remove file or recursively remove directory
-  const stat = fs.statSync(absolutePath);
-  if (stat.isDirectory()) {
-    fs.rmSync(absolutePath, { recursive: true, force: true });
-  } else {
-    fs.unlinkSync(absolutePath);
+  try {
+    // Remove file or recursively remove directory
+    if (stat.isDirectory()) {
+      fs.rmSync(absolutePath, { recursive: true, force: true });
+    } else {
+      fs.unlinkSync(absolutePath);
+    }
+  } catch (err) {
+    await discardBackup(backup.id).catch(() => {});
+    throw err;
   }
 
   return {

@@ -9,13 +9,28 @@ import {
   listQuarantineTickets,
   exportSupplierReturnsCsv,
 } from './itil.service';
+import { createOrder } from './orders.service';
 
 describe('ITIL Service Management (FR-06 & FR-11)', () => {
-  it('evaluates SLA fulfillment without breaking on active orders', async () => {
+  it('evaluates SLA fulfillment across active statuses and ignores delivered/cancelled orders', async () => {
+    const overdue = await createOrder({
+      clientName: 'SLA Test Client',
+      address: '100 Taft Ave, Manila',
+      deliveryRegion: 'Metro Manila',
+      paymentTerms: 'COD',
+      items: [{ productId: 'prod-sla', warehouseId: 'wh-a', sku: 'SLA-1', name: 'Rotor', quantity: 1, unitPrice: 500 }],
+    });
+    (overdue.order as { status: string }).status = 'out_for_delivery';
+    overdue.order.deliveryDeadline = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
+
     const report = await evaluateSlaIncidents();
     expect(report).toBeDefined();
     expect(Array.isArray(report.incidents)).toBe(true);
-    expect(typeof report.breachCount).toBe('number');
+    expect(report.incidents.some((inc) => inc.orderId === overdue.order.id)).toBe(true);
+
+    overdue.order.status = 'delivered';
+    const refreshed = await evaluateSlaIncidents();
+    expect(refreshed.incidents.some((inc) => inc.orderId === overdue.order.id)).toBe(false);
   });
 
   it('creates an ITIL exception ticket for defective items and logs to quarantine', async () => {

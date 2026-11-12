@@ -21,8 +21,11 @@
       ]
     },
     "allowImportingTsExtensions": true,
-    "noEmit": true
+    "noEmit": true,
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true
   },
-  "include": ["src/**/*"],
+  "include": ["src/**/*", "components/**/*", "lib/**/*"],
   "exclude": ["backend", "node_modules", "dist"]
 }

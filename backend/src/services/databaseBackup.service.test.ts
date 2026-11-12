@@ -3,6 +3,9 @@
  * @description Unit tests for Database Automated Backups to CSV service (FR-18 & NFR-07).
  */
 
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
 import {
   escapeCsvField,
   buildCsv,
@@ -12,6 +15,22 @@ import {
 } from './databaseBackup.service';
 
 describe('Database CSV Backup Service (FR-18 & NFR-07)', () => {
+  let tempBackupsDir: string;
+  const previousBackupsDir = process.env['BACKUPS_DIR'];
+
+  beforeAll(() => {
+    tempBackupsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-db-backups-'));
+    process.env['BACKUPS_DIR'] = tempBackupsDir;
+  });
+
+  afterAll(() => {
+    if (previousBackupsDir === undefined) {
+      delete process.env['BACKUPS_DIR'];
+    } else {
+      process.env['BACKUPS_DIR'] = previousBackupsDir;
+    }
+    fs.rmSync(tempBackupsDir, { recursive: true, force: true });
+  });
   it('escapes fields per RFC 4180 and protects against formula injection', () => {
     expect(escapeCsvField('Standard Text')).toBe('"Standard Text"');
     expect(escapeCsvField('Text with "quotes"')).toBe('"Text with ""quotes"""');

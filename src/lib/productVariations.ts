@@ -23,13 +23,31 @@ export function generateVariants(attributes: VariationAttribute[], previous: Var
   if (attributeError(attributes)) return previous;
   const combinations = attributes.reduce<Record<string, string>[]>((rows, a) => rows.flatMap(row => a.values.map(value => ({ ...row, [a.name]: value }))), [{}]);
   const existing = new Map(previous.map(v => [combinationKey(v.values), v]));
-  const valueKey = (values: Record<string, string>) => JSON.stringify(Object.values(values).map(v => v.toLowerCase()));
+  const valueKey = (values: Record<string, string>) =>
+    JSON.stringify(Object.values(values).map(v => v.toLowerCase()).sort((a, b) => a.localeCompare(b)));
+  const usedSkus = new Set<string>(
+    combinations
+      .map(values => existing.get(combinationKey(values)) || previous.find(v => valueKey(v.values) === valueKey(values)))
+      .map(v => v?.sku?.trim().toLowerCase())
+      .filter((s): s is string => !!s)
+  );
   const generated = combinations.map((values, i) => {
     // Renaming an attribute must not create a new stock identity for the same values.
     const old = existing.get(combinationKey(values)) || previous.find(v => valueKey(v.values) === valueKey(values));
-    if (old) return { ...old, values };
+    if (old && (old.sku.trim() || !sku)) return { ...old, values };
     const suffix = Object.values(values).join('-').replace(/[^a-zA-Z0-9-]/g, '').toUpperCase() || String(i + 1);
-    return { id: crypto.randomUUID(), values, sku: sku ? `${sku}-${suffix}` : '', enabled: true, ...Object.fromEntries(variantFields.map(([key]) => [key, key === 'promoPrice' ? '' : '0'])) } as VariantDraft;
+    let nextSku = '';
+    if (sku) {
+      const base = `${sku}-${suffix}`;
+      nextSku = base;
+      let counter = 2;
+      while (usedSkus.has(nextSku.toLowerCase())) {
+        nextSku = `${base}-${counter++}`;
+      }
+      usedSkus.add(nextSku.toLowerCase());
+    }
+    if (old) return { ...old, values, sku: nextSku };
+    return { id: crypto.randomUUID(), values, sku: nextSku, enabled: true, ...Object.fromEntries(variantFields.map(([key]) => [key, key === 'promoPrice' ? '' : '0'])) } as VariantDraft;
   });
   const ids = new Set(generated.map(v => v.id));
   // Retain identities and edits when an attribute/value is removed. Never delete stock history.
@@ -54,9 +72,10 @@ export function validateVariations(draft: VariationDraft, parentSku: string, pro
     if (!(v.sku || '').trim() || used.has((v.sku || '').trim().toLowerCase())) return `Variant SKU must be unique: ${v.sku || Object.values(v.values).join(' / ')}.`;
     used.add((v.sku || '').trim().toLowerCase());
     for (const [key, label] of variantFields) {
-      if (key === 'promoPrice' && v[key] === '') continue;
-      const value = Number(v[key]);
-      if (v[key] === '' || !Number.isFinite(value) || value < 0 || ((key === 'minStockLevel' || key === 'reorderPoint') && !Number.isInteger(value))) return `${label} must be a non-negative ${key === 'minStockLevel' || key === 'reorderPoint' ? 'whole number' : 'number'} for ${v.sku}.`;
+      const raw = String(v[key] ?? '').trim();
+      if (key === 'promoPrice' && raw === '') continue;
+      const value = Number(raw);
+      if (raw === '' || !Number.isFinite(value) || value < 0 || ((key === 'minStockLevel' || key === 'reorderPoint') && !Number.isInteger(value))) return `${label} must be a non-negative ${key === 'minStockLevel' || key === 'reorderPoint' ? 'whole number' : 'number'} for ${v.sku}.`;
     }
   }
   return '';

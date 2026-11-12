@@ -59,19 +59,29 @@ export function resolvePermissions(profile: UserProfile | null, delegation?: Sta
     financials: profile?.role === 'secretary' ? 'expense_only' : 'none',
   };
 }
-export function canVisit(path: string, permissions: StaffPermissions) {
+export function canVisit(path: string, permissions: StaffPermissions): boolean {
   if (path === '/orders') return permissions.orders !== 'none';
   if (path === '/transfers') return permissions.movementView !== 'none';
   if (path === '/supply-chain') return getSupplyChainViews(permissions.supplyChain).length > 0;
-  if (path === '/finance') return permissions.financials && permissions.financials !== 'none';
+  if (path === '/finance') return Boolean(permissions.financials && permissions.financials !== 'none');
   return true;
 }
 
-// Compare module and warehouse permissions. Admins have unrestricted access.
+const priceAccessRank: PriceAccess[] = ['main_only', 'selling_no_cost', 'all'];
+const financialsAccessRank: FinancialsAccess[] = ['none', 'expense_only', 'full'];
+
+// Compare module, scope, and warehouse permissions. Admins have unrestricted access.
 export function permissionsWithin(permissions: StaffPermissions, limits: StaffPermissions) {
+  const permPrice = priceAccessRank.indexOf(permissions.priceAccess || 'all');
+  const limitPrice = priceAccessRank.indexOf(limits.priceAccess || 'all');
+  const permFin = financialsAccessRank.indexOf(permissions.financials || 'none');
+  const limitFin = financialsAccessRank.indexOf(limits.financials || 'none');
+
   return (permissions.inventory !== 'adjust' || limits.inventory === 'adjust')
     && (permissions.pricelist !== 'edit' || limits.pricelist === 'edit')
     && ['none', 'view', 'create'].indexOf(permissions.orders) <= ['none', 'view', 'create'].indexOf(limits.orders)
+    && permPrice <= limitPrice
+    && permFin <= limitFin
     && ['external', 'internal'].every(type => (!permitsMovement(permissions.movementView, type) || permitsMovement(limits.movementView, type)) && (!permitsMovement(permissions.movementCreate, type) || permitsMovement(limits.movementCreate, type)))
     && getSupplyChainViews(permissions.supplyChain).every(view => getSupplyChainViews(limits.supplyChain).includes(view))
     && (limits.warehouseAccess === 'all' || (permissions.warehouseAccess === 'selected' && permissions.warehouseIds.every(id => limits.warehouseIds.includes(id))));

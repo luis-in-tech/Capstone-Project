@@ -3,7 +3,7 @@ import { supabase } from './supabase';
 export const db = {};
 export const storage = supabase.storage;
 
-export function collection(db: any, path: string, ...rest: string[]) {
+export function collection(_db: any, path: string, ...rest: string[]) {
   let fullPath = path;
   if (rest.length > 0) {
     fullPath = [path, ...rest].join('/');
@@ -57,9 +57,22 @@ export function doc(dbOrCol: any, pathOrId?: string, ...rest: string[]) {
     };
   }
 
-  // If pathOrId is provided and rest contains the ID (e.g. doc(db, 'orders', '123'))
-  if (rest.length > 0) {
-    return { path: pathOrId, id: rest[0] };
+  // If pathOrId is provided and rest contains path segments / ID (e.g. doc(db, 'orders', '123') or 5-arg subcollection)
+  if (rest.length > 0 && pathOrId) {
+    const segments = [pathOrId, ...rest].join('/').split('/').filter(Boolean);
+    if (segments.length === 2) {
+      return { path: segments[0], id: segments[1] };
+    }
+    if (segments.length === 4 && segments[0] === 'orders' && segments[2] === 'items') {
+      return {
+        path: 'order_items',
+        id: segments[3],
+        parentField: 'orderId',
+        parentId: segments[1],
+        isSubcollection: true
+      };
+    }
+    throw new Error(`Unsupported doc() path segments: ${segments.join('/')}`);
   }
 
   // If path contains the ID (e.g. doc(db, 'orders/123'))
@@ -87,176 +100,81 @@ export function doc(dbOrCol: any, pathOrId?: string, ...rest: string[]) {
 }
 
 // ── Local Persistence & Cross-Tab Synchronization ────────────────────────────
-// Default P&L historical data for Jan-Mar 2025
-export const DEFAULT_PL_EXPENSE_CATEGORIES = [
-  { id: '00000000-0000-4000-c000-000000000001', name: 'Cost of Goods Sold', description: 'Direct material costs and supplier manufacturing costs', isActive: true },
-  { id: '00000000-0000-4000-c000-000000000002', name: 'Freight and Shipping Costs', description: 'Outbound and inbound shipping freight adjustments', isActive: true },
-  { id: '00000000-0000-4000-c000-000000000003', name: 'Office Supplies', description: 'Office and administrative consumables', isActive: true },
-  { id: '00000000-0000-4000-c000-000000000004', name: 'Travel Expense', description: 'Field logistics, fleet transport, and travel expenditure', isActive: true },
-  { id: '00000000-0000-4000-c000-000000000005', name: 'Utilities', description: 'Electricity, water, and facility operational utilities', isActive: true },
-  { id: '00000000-0000-4000-c000-000000000006', name: 'Ask My Accountant', description: 'Professional auditing, CPA, and bookkeeping fees', isActive: true },
-  { id: '00000000-0000-4000-c000-000000000007', name: 'OTHER EXPENSE', description: 'Miscellaneous general and administrative expenditures', isActive: true },
-  { id: '00000000-0000-4000-c000-000000000008', name: 'Discounts & Allowances', description: 'Volume trade discounts and sales reductions', isActive: true },
-];
+function safeParseJson<T>(raw: string | null, fallback: T): T {
+  if (!raw) return fallback;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return fallback;
+  }
+}
 
-export const DEFAULT_PL_ORDERS = [
-  {
-    id: '00000000-2025-0100-0000-000000000001',
-    orderNumber: 'ORD-2025-01-PL',
-    agentId: 'system',
-    clientId: 'cli_pl_jan25',
-    clientName: 'Commercial Operations (Jan 2025 P&L)',
-    status: 'completed',
-    totalAmount: 8118370.93,
-    paymentStatus: 'paid',
-    deliveryRegion: 'Metro Manila',
-    createdAt: '2025-01-31T23:59:59.000Z',
-    updatedAt: '2025-01-31T23:59:59.000Z',
-  },
-  {
-    id: '00000000-2025-0200-0000-000000000002',
-    orderNumber: 'ORD-2025-02-PL',
-    agentId: 'system',
-    clientId: 'cli_pl_feb25',
-    clientName: 'Commercial Operations (Feb 2025 P&L)',
-    status: 'completed',
-    totalAmount: 7073596.25,
-    paymentStatus: 'paid',
-    deliveryRegion: 'Metro Manila',
-    createdAt: '2025-02-28T23:59:59.000Z',
-    updatedAt: '2025-02-28T23:59:59.000Z',
-  },
-  {
-    id: '00000000-2025-0300-0000-000000000003',
-    orderNumber: 'ORD-2025-03-PL',
-    agentId: 'system',
-    clientId: 'cli_pl_mar25',
-    clientName: 'Commercial Operations (Mar 2025 P&L)',
-    status: 'completed',
-    totalAmount: 6310386.22,
-    paymentStatus: 'paid',
-    deliveryRegion: 'Metro Manila',
-    createdAt: '2025-03-31T23:59:59.000Z',
-    updatedAt: '2025-03-31T23:59:59.000Z',
-  },
-];
-
-export const DEFAULT_PL_EXPENSES = [
-  // Jan 2025
-  { id: '00000000-2025-0100-e000-000000000001', category: 'Cost of Goods Sold', amount: 5904520.17, description: 'Jan 2025 Direct Cost of Goods Sold', date: '2025-01-31T20:00:00.000Z', recordedBy: 'accountant', orderId: '00000000-2025-0100-0000-000000000001' },
-  { id: '00000000-2025-0100-e000-000000000002', category: 'Freight and Shipping Costs', amount: -405.00, description: 'Jan 2025 Freight and Shipping Cost Adjustment', date: '2025-01-31T20:10:00.000Z', recordedBy: 'accountant', orderId: '00000000-2025-0100-0000-000000000001' },
-  { id: '00000000-2025-0100-e000-000000000003', category: 'Office Supplies', amount: -230.00, description: 'Jan 2025 Office Supplies Credit Adjustment', date: '2025-01-31T20:20:00.000Z', recordedBy: 'accountant' },
-  { id: '00000000-2025-0100-e000-000000000004', category: 'Travel Expense', amount: 2500.00, description: 'Jan 2025 Operational Travel Expense', date: '2025-01-31T20:30:00.000Z', recordedBy: 'accountant' },
-  { id: '00000000-2025-0100-e000-000000000005', category: 'Utilities', amount: 0.00, description: 'Jan 2025 Facility Utilities', date: '2025-01-31T20:40:00.000Z', recordedBy: 'accountant' },
-  { id: '00000000-2025-0100-e000-000000000006', category: 'Ask My Accountant', amount: -2515.17, description: 'Jan 2025 CPA & Accountant Reconciled Credit', date: '2025-01-31T20:50:00.000Z', recordedBy: 'accountant' },
-  { id: '00000000-2025-0100-e000-000000000007', category: 'OTHER EXPENSE', amount: 12670.27, description: 'Jan 2025 General Operational & Other Expense', date: '2025-01-31T21:00:00.000Z', recordedBy: 'accountant' },
-
-  // Feb 2025
-  { id: '00000000-2025-0200-e000-000000000001', category: 'Cost of Goods Sold', amount: 6100297.72, description: 'Feb 2025 Direct Cost of Goods Sold', date: '2025-02-28T20:00:00.000Z', recordedBy: 'accountant', orderId: '00000000-2025-0200-0000-000000000002' },
-  { id: '00000000-2025-0200-e000-000000000002', category: 'Freight and Shipping Costs', amount: -185.00, description: 'Feb 2025 Freight and Shipping Cost Adjustment', date: '2025-02-28T20:10:00.000Z', recordedBy: 'accountant', orderId: '00000000-2025-0200-0000-000000000002' },
-  { id: '00000000-2025-0200-e000-000000000003', category: 'Office Supplies', amount: -345.00, description: 'Feb 2025 Office Supplies Credit Adjustment', date: '2025-02-28T20:20:00.000Z', recordedBy: 'accountant' },
-  { id: '00000000-2025-0200-e000-000000000004', category: 'Travel Expense', amount: 9000.00, description: 'Feb 2025 Operational Travel & Logistics Expense', date: '2025-02-28T20:30:00.000Z', recordedBy: 'accountant' },
-  { id: '00000000-2025-0200-e000-000000000005', category: 'Utilities', amount: 0.00, description: 'Feb 2025 Facility Utilities', date: '2025-02-28T20:40:00.000Z', recordedBy: 'accountant' },
-  { id: '00000000-2025-0200-e000-000000000006', category: 'Ask My Accountant', amount: -13735.76, description: 'Feb 2025 Accountant Audit Adjustments (Credit)', date: '2025-02-28T20:50:00.000Z', recordedBy: 'accountant' },
-  { id: '00000000-2025-0200-e000-000000000007', category: 'OTHER EXPENSE', amount: 4000.00, description: 'Feb 2025 General Operational & Other Expense', date: '2025-02-28T21:00:00.000Z', recordedBy: 'accountant' },
-
-  // Mar 2025
-  { id: '00000000-2025-0300-e000-000000000001', category: 'Cost of Goods Sold', amount: 5082247.40, description: 'Mar 2025 Direct Cost of Goods Sold', date: '2025-03-31T20:00:00.000Z', recordedBy: 'accountant', orderId: '00000000-2025-0300-0000-000000000003' },
-  { id: '00000000-2025-0300-e000-000000000002', category: 'Freight and Shipping Costs', amount: -640.00, description: 'Mar 2025 Freight and Shipping Cost Adjustment', date: '2025-03-31T20:10:00.000Z', recordedBy: 'accountant', orderId: '00000000-2025-0300-0000-000000000003' },
-  { id: '00000000-2025-0300-e000-000000000003', category: 'Office Supplies', amount: -690.00, description: 'Mar 2025 Office Supplies Credit Adjustment', date: '2025-03-31T20:20:00.000Z', recordedBy: 'accountant' },
-  { id: '00000000-2025-0300-e000-000000000004', category: 'Travel Expense', amount: 3000.00, description: 'Mar 2025 Operational Travel Expense', date: '2025-03-31T20:30:00.000Z', recordedBy: 'accountant' },
-  { id: '00000000-2025-0300-e000-000000000005', category: 'Utilities', amount: 0.00, description: 'Mar 2025 Facility Utilities', date: '2025-03-31T20:40:00.000Z', recordedBy: 'accountant' },
-  { id: '00000000-2025-0300-e000-000000000006', category: 'Ask My Accountant', amount: -2611.22, description: 'Mar 2025 Accountant Reconciliation Credit', date: '2025-03-31T20:50:00.000Z', recordedBy: 'accountant' },
-  { id: '00000000-2025-0300-e000-000000000007', category: 'OTHER EXPENSE', amount: 25710.23, description: 'Mar 2025 General Operational & Other Expense', date: '2025-03-31T21:00:00.000Z', recordedBy: 'accountant' },
-];
-
-function getLocalCollection(path: string): any[] {
+export function getLocalCollection(path: string): any[] {
   if (typeof window === 'undefined' || !window.localStorage) return [];
   try {
-    const raw = localStorage.getItem(`activepro_db_${path}`);
-    const items = raw ? JSON.parse(raw) : [];
+    const parsed = safeParseJson<unknown>(localStorage.getItem(`activepro_db_${path}`), []);
+    const items: any[] = Array.isArray(parsed) ? [...parsed] : [];
 
-    // Pre-populate with default P&L historical records if empty or missing
-    if (path === 'expenses') {
-      for (const defExp of DEFAULT_PL_EXPENSES) {
-        if (!items.some((i: any) => (i.id || i.uid) === defExp.id)) {
-          items.push(defExp);
-        }
-      }
-    } else if (path === 'expenseCategories') {
-      for (const defCat of DEFAULT_PL_EXPENSE_CATEGORIES) {
-        if (!items.some((i: any) => (i.id || i.uid) === defCat.id || i.name === defCat.name)) {
-          items.push(defCat);
-        }
-      }
-    } else if (path === 'orders') {
-      for (const defOrd of DEFAULT_PL_ORDERS) {
-        if (!items.some((i: any) => (i.id || i.uid) === defOrd.id)) {
-          items.push(defOrd);
-        }
-      }
-
-      // Also merge any existing activepro_order_overrides if path === 'orders'
+    if (path === 'orders') {
       const overridesRaw = localStorage.getItem('activepro_order_overrides');
-      if (overridesRaw) {
-        const overrides = JSON.parse(overridesRaw);
+      const overrides = safeParseJson<unknown>(overridesRaw, null);
+      if (typeof overrides === 'object' && overrides !== null && !Array.isArray(overrides)) {
         for (const [id, orderData] of Object.entries(overrides)) {
-          if (!items.some((i: any) => (i.id || i.uid) === id)) {
-            items.push({ id, ...(orderData as any) });
+          if (typeof orderData !== 'object' || orderData === null || Array.isArray(orderData)) continue;
+          const idx = items.findIndex((i: any) => i && (i.id || i.uid) === id);
+          if (idx >= 0) {
+            items[idx] = { ...items[idx], ...orderData, id };
+          } else {
+            items.push({ id, ...orderData });
           }
         }
       }
     }
-    return Array.isArray(items) ? items : [];
+    return items;
   } catch {
     return [];
   }
 }
 
-function saveLocalCollection(path: string, items: any[]) {
+function saveLocalCollection(path: string, items: any[], notify = true) {
   if (typeof window === 'undefined' || !window.localStorage) return;
   try {
     localStorage.setItem(`activepro_db_${path}`, JSON.stringify(items));
-    window.dispatchEvent(new CustomEvent('activepro_db_changed', { detail: { path } }));
+    if (notify) {
+      window.dispatchEvent(new CustomEvent('activepro_db_changed', { detail: { path } }));
+    }
   } catch (e) {
     console.warn(`Failed to save local collection ${path}:`, e);
   }
 }
 
-function saveLocalDoc(path: string, docData: any) {
+export function saveLocalDoc(path: string, docData: any, notify = true) {
   const items = getLocalCollection(path);
-  const id = docData.id || docData.uid;
-  const idx = items.findIndex((i: any) => (i.id || i.uid) === id);
+  const safeItems = Array.isArray(items) ? items : [];
+  const id = docData?.id || docData?.uid;
+  const idx = id ? safeItems.findIndex((i: any) => i && (i.id || i.uid) === id) : -1;
   if (idx >= 0) {
-    items[idx] = { ...items[idx], ...docData };
+    safeItems[idx] = { ...safeItems[idx], ...docData };
   } else {
-    items.unshift(docData);
+    safeItems.unshift(docData);
   }
-  saveLocalCollection(path, items);
-
-  if (path === 'orders' && id && typeof window !== 'undefined' && window.localStorage) {
-    try {
-      const raw = localStorage.getItem('activepro_order_overrides');
-      const overrides = raw ? JSON.parse(raw) : {};
-      overrides[id] = { ...(overrides[id] || {}), ...docData };
-      localStorage.setItem('activepro_order_overrides', JSON.stringify(overrides));
-    } catch {}
-  }
+  saveLocalCollection(path, safeItems, notify);
 }
 
-function deleteLocalDoc(path: string, docId: string) {
+export function deleteLocalDoc(path: string, docId: string) {
   const items = getLocalCollection(path);
-  const filtered = items.filter((i: any) => (i.id || i.uid) !== docId);
+  const safeItems = Array.isArray(items) ? items : [];
+  const filtered = safeItems.filter((i: any) => i && (i.id || i.uid) !== docId);
   saveLocalCollection(path, filtered);
 
   if (path === 'orders' && typeof window !== 'undefined' && window.localStorage) {
     try {
-      const raw = localStorage.getItem('activepro_order_overrides');
-      if (raw) {
-        const overrides = JSON.parse(raw);
-        if (overrides[docId]) {
-          delete overrides[docId];
-          localStorage.setItem('activepro_order_overrides', JSON.stringify(overrides));
+      const overrides = safeParseJson<unknown>(localStorage.getItem('activepro_order_overrides'), null);
+      if (typeof overrides === 'object' && overrides !== null && !Array.isArray(overrides)) {
+        const record = overrides as Record<string, unknown>;
+        if (docId in record) {
+          delete record[docId];
+          localStorage.setItem('activepro_order_overrides', JSON.stringify(record));
         }
       }
     } catch {}
@@ -267,77 +185,122 @@ export function serverTimestamp() {
   return new Date().toISOString();
 }
 
-export async function getDocs(q: any) {
-  let remoteData: any[] = [];
+const MAX_PGRST204_RETRIES = 5;
+let channelSeq = 0;
+
+function isUidKeyedTable(path: string) {
+  return path === 'users' || path === 'profiles';
+}
+
+const MISSING_RPC_CODES = new Set(['PGRST202', '42883', '42P01', 'PGRST205']);
+
+export function isMissingRpcError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const err = error as { code?: unknown; message?: unknown; status?: unknown };
+  const code = typeof err.code === 'string' ? err.code : '';
+  if (MISSING_RPC_CODES.has(code)) return true;
+  const msg = typeof err.message === 'string' ? err.message.toLowerCase() : '';
+  return (
+    (msg.includes('could not find the function') && msg.includes('schema cache')) ||
+    (msg.includes('function') && msg.includes('does not exist'))
+  );
+}
+
+export function clearLocalCaches() {
+  if (typeof window === 'undefined' || !window.localStorage) return;
   try {
-    let builder: any = supabase.from(q.path).select('*');
-    if (q.isSubcollection && q.parentField && q.parentId) {
-      builder = builder.eq(q.parentField, q.parentId);
-    }
-    if (q.ops) {
-      for (const op of q.ops) {
-        if (op.type === 'where') {
-          if (op.op === '==') builder = builder.eq(op.field, op.value);
-          if (op.op === '!=') builder = builder.neq(op.field, op.value);
-          if (op.op === '>') builder = builder.gt(op.field, op.value);
-          if (op.op === '>=') builder = builder.gte(op.field, op.value);
-          if (op.op === '<') builder = builder.lt(op.field, op.value);
-          if (op.op === '<=') builder = builder.lte(op.field, op.value);
-          if (op.op === 'in') builder = builder.in(op.field, op.value);
-          if (op.op === 'array-contains') builder = builder.contains(op.field, [op.value]);
-        }
-        if (op.type === 'orderBy') {
-          builder = builder.order(op.field, { ascending: op.dir === 'asc' });
-        }
-        if (op.type === 'limit') {
-          builder = builder.limit(op.n);
-        }
+    const keysToRemove: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith('activepro_')) {
+        keysToRemove.push(key);
       }
     }
-    const { data, error } = await builder;
-    if (!error && Array.isArray(data)) {
-      remoteData = data;
+    for (const key of keysToRemove) {
+      localStorage.removeItem(key);
     }
-  } catch (err) {
-    console.warn(`Supabase fetch failed for ${q.path}, utilizing local persistent records:`, err);
+  } catch {
+    // Ignore storage access failures during logout cleanup
   }
+}
 
-  // Merge remote data with local persistent cache (server data authoritative)
-  const localItems = getLocalCollection(q.path);
-  const mergedMap = new Map<string, any>();
-
-  for (const item of localItems) {
-    const id = item.id || item.uid;
-    if (id) mergedMap.set(id, item);
-  }
-
-  for (const item of remoteData) {
-    const id = item.id || item.uid;
-    if (id) {
-      const existing = mergedMap.get(id);
-      mergedMap.set(id, existing ? { ...existing, ...item } : item);
+function clearOrderOverride(docId?: string) {
+  if (!docId || typeof window === 'undefined' || !window.localStorage) return;
+  try {
+    const overrides = safeParseJson<unknown>(localStorage.getItem('activepro_order_overrides'), null);
+    if (typeof overrides === 'object' && overrides !== null && !Array.isArray(overrides)) {
+      const record = overrides as Record<string, unknown>;
+      if (docId in record) {
+        delete record[docId];
+        localStorage.setItem('activepro_order_overrides', JSON.stringify(record));
+      }
     }
+  } catch {}
+}
+
+async function executeWithMissingColumnRetry<T extends { error: any }>(
+  initialPayload: Record<string, any>,
+  tablePath: string,
+  opLabel: string,
+  runner: (payload: Record<string, any>) => Promise<T>,
+): Promise<{ result: T; sanitized: Record<string, any> }> {
+  let sanitized = { ...initialPayload };
+  const stripped = new Set<string>();
+  let result = await runner(sanitized);
+
+  for (let attempt = 0; attempt < MAX_PGRST204_RETRIES; attempt++) {
+    if (!result.error || result.error.code !== 'PGRST204') break;
+    const match = result.error.message?.match(/Could not find the '([^']+)' column/i);
+    const missingCol = match?.[1];
+    if (!missingCol || !(missingCol in sanitized) || stripped.has(missingCol)) break;
+
+    stripped.add(missingCol);
+    const next = { ...sanitized };
+    delete next[missingCol];
+    if (Object.keys(next).length === 0) break;
+
+    sanitized = next;
+    console.warn(`Supabase ${opLabel} retry without unmigrated column '${missingCol}' for ${tablePath}`);
+    result = await runner(sanitized);
   }
 
-  let finalData = Array.from(mergedMap.values());
+  return { result, sanitized };
+}
 
-  // Filter if subcollection
+export async function getDocs(q: any) {
+  let builder: any = supabase.from(q.path).select('*');
   if (q.isSubcollection && q.parentField && q.parentId) {
-    finalData = finalData.filter((item: any) => item[q.parentField] === q.parentId);
+    builder = builder.eq(q.parentField, q.parentId);
   }
-
-  // Apply in-memory where ops
   if (q.ops) {
     for (const op of q.ops) {
       if (op.type === 'where') {
-        if (op.op === '==') finalData = finalData.filter((item: any) => item[op.field] === op.value);
-        if (op.op === '!=') finalData = finalData.filter((item: any) => item[op.field] !== op.value);
-        if (op.op === '>') finalData = finalData.filter((item: any) => item[op.field] > op.value);
-        if (op.op === '>=') finalData = finalData.filter((item: any) => item[op.field] >= op.value);
-        if (op.op === '<') finalData = finalData.filter((item: any) => item[op.field] < op.value);
-        if (op.op === '<=') finalData = finalData.filter((item: any) => item[op.field] <= op.value);
+        if (op.op === '==') builder = builder.eq(op.field, op.value);
+        if (op.op === '!=') builder = builder.neq(op.field, op.value);
+        if (op.op === '>') builder = builder.gt(op.field, op.value);
+        if (op.op === '>=') builder = builder.gte(op.field, op.value);
+        if (op.op === '<') builder = builder.lt(op.field, op.value);
+        if (op.op === '<=') builder = builder.lte(op.field, op.value);
+        if (op.op === 'in') builder = builder.in(op.field, op.value);
+        if (op.op === 'array-contains') builder = builder.contains(op.field, [op.value]);
+      }
+      if (op.type === 'orderBy') {
+        builder = builder.order(op.field, { ascending: op.dir === 'asc' });
+      }
+      if (op.type === 'limit') {
+        builder = builder.limit(op.n);
       }
     }
+  }
+
+  const { data, error } = await builder;
+  if (error) {
+    throw error;
+  }
+
+  const finalData = Array.isArray(data) ? data : [];
+  if (!q.isSubcollection && (!q.ops || q.ops.length === 0)) {
+    saveLocalCollection(q.path, finalData, false);
   }
 
   return {
@@ -364,7 +327,13 @@ export function onSnapshot(q: any, callback: (snap: any) => void, errorCb?: (e: 
       const snap = await getDocs(q);
       if (!isUnmounted) callback(snap);
     } catch (e) {
-      if (!isUnmounted && errorCb) errorCb(e);
+      if (!isUnmounted) {
+        if (errorCb) {
+          errorCb(e);
+        } else {
+          console.warn(`Supabase onSnapshot error for ${q.path}:`, e);
+        }
+      }
     } finally {
       isFetching = false;
       if (hasPendingFetch && !isUnmounted) {
@@ -382,12 +351,19 @@ export function onSnapshot(q: any, callback: (snap: any) => void, errorCb?: (e: 
     }
   };
 
+  const expectedStorageKey = `activepro_db_${q.path}`;
+  const handleStorageChange = (e: StorageEvent) => {
+    if (!e.key || e.key === expectedStorageKey || (q.path === 'orders' && e.key === 'activepro_order_overrides')) {
+      fetchAndNotify();
+    }
+  };
+
   if (typeof window !== 'undefined') {
     window.addEventListener('activepro_db_changed', handleLocalChange);
-    window.addEventListener('storage', fetchAndNotify);
+    window.addEventListener('storage', handleStorageChange);
   }
 
-  const channel = supabase.channel(`public:${q.path}_${Date.now()}`)
+  const channel = supabase.channel(`public:${q.path}_${++channelSeq}_${Date.now()}`)
     .on('postgres_changes', { event: '*', schema: 'public', table: q.path }, () => {
       fetchAndNotify();
     })
@@ -397,10 +373,19 @@ export function onSnapshot(q: any, callback: (snap: any) => void, errorCb?: (e: 
     isUnmounted = true;
     if (typeof window !== 'undefined') {
       window.removeEventListener('activepro_db_changed', handleLocalChange);
-      window.removeEventListener('storage', fetchAndNotify);
+      window.removeEventListener('storage', handleStorageChange);
     }
     supabase.removeChannel(channel);
   };
+}
+
+interface ArrayUnionOp {
+  __op: 'arrayUnion';
+  elements: any[];
+}
+
+function isArrayUnionOp(val: unknown): val is ArrayUnionOp {
+  return typeof val === 'object' && val !== null && (val as ArrayUnionOp).__op === 'arrayUnion' && Array.isArray((val as ArrayUnionOp).elements);
 }
 
 export async function addDoc(col: any, data: any) {
@@ -413,85 +398,105 @@ export async function addDoc(col: any, data: any) {
       : {})
   };
 
-  // 1. Immediately persist locally so records never disappear
-  saveLocalDoc(col.path, payload);
-
-  // 2. Sync to Supabase in background
   try {
-    let { data: res, error } = await supabase.from(col.path).insert([payload]).select().single();
-    if (error && error.code === 'PGRST204') {
-      const match = error.message?.match(/Could not find the '([^']+)' column/i);
-      if (match && match[1] && match[1] in payload) {
-        const sanitized = { ...payload };
-        delete sanitized[match[1]];
-        console.warn(`Supabase addDoc retry without unmigrated column '${match[1]}' for ${col.path}`);
-        const retryRes = await supabase.from(col.path).insert([sanitized]).select().single();
-        res = retryRes.data;
-        error = retryRes.error;
-      }
-    }
+    const { result, sanitized } = await executeWithMissingColumnRetry(
+      payload,
+      col.path,
+      'addDoc',
+      async (candidate) => await supabase.from(col.path).insert([candidate]).select().single(),
+    );
+    const { data: res, error } = result as { data: any; error: any };
     if (error) {
-      console.warn(`Supabase addDoc write failed for ${col.path}:`, error);
       throw error;
     }
-    if (res?.id) {
-      payload.id = res.id;
-      saveLocalDoc(col.path, payload);
-      return { id: res.id };
-    }
+
+    const confirmed = res ? { ...sanitized, ...res } : sanitized;
+    saveLocalDoc(col.path, confirmed, true);
+    if (col.path === 'orders') clearOrderOverride(confirmed.id);
+    return { id: confirmed.id };
   } catch (err) {
-    console.warn(`Supabase addDoc write failed for ${col.path}, stored locally:`, err);
+    console.warn(`Supabase addDoc write failed for ${col.path}:`, err);
     throw err;
   }
-
-  return { id: payload.id };
 }
 
 export async function updateDoc(docRef: any, data: any) {
-  saveLocalDoc(docRef.path, { id: docRef.id, ...data });
-
   try {
-    let { error } = await supabase.from(docRef.path).update(data).eq('id', docRef.id);
-    if (error && error.code === 'PGRST204') {
-      const match = error.message?.match(/Could not find the '([^']+)' column/i);
-      if (match && match[1] && match[1] in data) {
-        const sanitized = { ...data };
-        delete sanitized[match[1]];
-        console.warn(`Supabase updateDoc retry without unmigrated column '${match[1]}' for ${docRef.path}`);
-        const retryRes = await supabase.from(docRef.path).update(sanitized).eq('id', docRef.id);
-        error = retryRes.error;
-      }
-    }
-    if (error) {
-      // Only fallback to 'uid' on tables specifically defined with a uid column (users, profiles)
-      if (docRef.path === 'users' || docRef.path === 'profiles') {
-        const { error: err2 } = await supabase.from(docRef.path).update(data).eq('uid', docRef.id);
-        if (err2) {
-          console.warn(`Supabase updateDoc fallback for ${docRef.path}:`, err2);
-          throw err2;
+    let resolvedData = { ...data };
+    const unionEntries = Object.entries(resolvedData).filter(([, v]) => isArrayUnionOp(v));
+    if (unionEntries.length > 0) {
+      const existingSnap = await getDoc(docRef);
+      const existingRow = existingSnap.data() || {};
+      for (const [key, op] of unionEntries) {
+        const unionOp = op as ArrayUnionOp;
+        const current = Array.isArray(existingRow[key]) ? existingRow[key] : [];
+        const merged = [...current];
+        for (const el of unionOp.elements) {
+          const exists = merged.some((cur) => JSON.stringify(cur) === JSON.stringify(el));
+          if (!exists) merged.push(el);
         }
-      } else {
-        throw error;
+        resolvedData[key] = merged;
       }
     }
+
+    const { result, sanitized } = await executeWithMissingColumnRetry(
+      resolvedData,
+      docRef.path,
+      'updateDoc',
+      async (candidate) => await supabase.from(docRef.path).update(candidate).eq('id', docRef.id).select(),
+    );
+    const error = result.error;
+    const updatedRows = Array.isArray((result as { data?: unknown }).data) ? (result as { data: unknown[] }).data : [];
+
+    if (error || updatedRows.length === 0) {
+      if (isUidKeyedTable(docRef.path)) {
+        const { result: uidResult, sanitized: uidSanitized } = await executeWithMissingColumnRetry(
+          resolvedData,
+          docRef.path,
+          'updateDoc(uid)',
+          async (candidate) => await supabase.from(docRef.path).update(candidate).eq('uid', docRef.id).select(),
+        );
+        const uidRows = Array.isArray((uidResult as { data?: unknown }).data) ? (uidResult as { data: unknown[] }).data : [];
+        if (uidResult.error) {
+          throw uidResult.error;
+        }
+        if (uidRows.length === 0) {
+          throw new Error(`No matching record updated in ${docRef.path} (not found or access denied).`);
+        }
+        saveLocalDoc(docRef.path, { id: docRef.id, ...uidSanitized }, true);
+        return;
+      }
+      if (error) throw error;
+      throw new Error(`No matching record updated in ${docRef.path} (not found or access denied).`);
+    }
+
+    saveLocalDoc(docRef.path, { id: docRef.id, ...sanitized }, true);
+    if (docRef.path === 'orders') clearOrderOverride(docRef.id);
   } catch (err) {
-    console.warn(`Supabase updateDoc error on ${docRef.path}, preserved locally:`, err);
+    console.warn(`Supabase updateDoc error on ${docRef.path}:`, err);
     throw err;
   }
 }
 
 export async function deleteDoc(docRef: any) {
-  deleteLocalDoc(docRef.path, docRef.id);
-
   try {
-    const { error } = await supabase.from(docRef.path).delete().eq('id', docRef.id);
-    if (error) {
-      const { error: err2 } = await supabase.from(docRef.path).delete().eq('uid', docRef.id);
-      if (err2) {
-        console.warn(`Supabase deleteDoc fallback for ${docRef.path}:`, err2);
-        throw err2;
+    const { data, error } = await supabase.from(docRef.path).delete().eq('id', docRef.id).select();
+    const deletedRows = Array.isArray(data) ? data : [];
+    if (error || deletedRows.length === 0) {
+      if (isUidKeyedTable(docRef.path)) {
+        const { data: data2, error: err2 } = await supabase.from(docRef.path).delete().eq('uid', docRef.id).select();
+        if (err2) {
+          throw err2;
+        }
+        if (!Array.isArray(data2) || data2.length === 0) {
+          throw new Error(`No matching record deleted in ${docRef.path} (not found or access denied).`);
+        }
+      } else {
+        if (error) throw error;
+        throw new Error(`No matching record deleted in ${docRef.path} (not found or access denied).`);
       }
     }
+    deleteLocalDoc(docRef.path, docRef.id);
   } catch (err) {
     console.warn(`Supabase deleteDoc error on ${docRef.path}:`, err);
     throw err;
@@ -499,29 +504,28 @@ export async function deleteDoc(docRef: any) {
 }
 
 export async function getDoc(docRef: any) {
-  // Check local store first
-  const localItems = getLocalCollection(docRef.path);
-  const localMatch = localItems.find((i: any) => (i.id || i.uid) === docRef.id);
-
-  let data = localMatch || null;
-  try {
-    let { data: remoteData, error } = await supabase.from(docRef.path).select('*').eq('id', docRef.id).maybeSingle();
-    if (error || !remoteData) {
+  let { data: remoteData, error } = await supabase.from(docRef.path).select('*').eq('id', docRef.id).maybeSingle();
+  if (error) {
+    if (isUidKeyedTable(docRef.path)) {
       const { data: uidData, error: uidError } = await supabase.from(docRef.path).select('*').eq('uid', docRef.id).maybeSingle();
-      if (!uidError && uidData) {
-        remoteData = uidData;
-      }
+      if (uidError) throw uidError;
+      remoteData = uidData;
+    } else {
+      throw error;
     }
-    if (remoteData) {
-      data = localMatch ? { ...localMatch, ...remoteData } : remoteData;
-    }
-  } catch (err) {
-    console.warn(`Supabase getDoc failed for ${docRef.path}/${docRef.id}, using local:`, err);
+  } else if (!remoteData && isUidKeyedTable(docRef.path)) {
+    const { data: uidData, error: uidError } = await supabase.from(docRef.path).select('*').eq('uid', docRef.id).maybeSingle();
+    if (uidError) throw uidError;
+    remoteData = uidData;
+  }
+
+  if (remoteData) {
+    saveLocalDoc(docRef.path, remoteData, false);
   }
 
   return {
-    exists: () => !!data,
-    data: () => data
+    exists: () => !!remoteData,
+    data: () => remoteData || null
   };
 }
 
@@ -534,57 +538,39 @@ export async function setDoc(docRef: any, data: any) {
       : {})
   };
 
-  // 1. Immediately persist locally so records never disappear
-  saveLocalDoc(docRef.path, payload);
-
-  // 2. Sync to Supabase in background
   try {
-    const { error } = await supabase.from(docRef.path).upsert([payload]);
-    if (error) {
-      console.warn(`Supabase setDoc failed for ${docRef.path}, stored locally:`, error);
-      throw error;
+    const { result, sanitized } = await executeWithMissingColumnRetry(
+      payload,
+      docRef.path,
+      'setDoc',
+      async (candidate) => await supabase.from(docRef.path).upsert([candidate]),
+    );
+    if (result.error) {
+      throw result.error;
     }
+    saveLocalDoc(docRef.path, sanitized, true);
+    if (docRef.path === 'orders') clearOrderOverride(sanitized.id);
   } catch (err) {
-    console.warn(`Supabase setDoc exception for ${docRef.path}, stored locally:`, err);
+    console.warn(`Supabase setDoc error on ${docRef.path}:`, err);
     throw err;
   }
 }
 
-export function ref(storage: any, path: string) { 
-  return { path }; 
+export function ref(_storage: any, path: string) {
+  return { path };
 }
 
-export async function uploadBytes(ref: any, file: File) {
-  const { data, error } = await supabase.storage.from('activepro_assets').upload(ref.path, file, { upsert: true });
+export async function uploadBytes(fileRef: any, file: File) {
+  const { error } = await supabase.storage.from('activepro_assets').upload(fileRef.path, file, { upsert: true });
   if (error) throw error;
-  return { ref };
+  return { ref: fileRef };
 }
 
-export async function getDownloadURL(ref: any) {
-  const { data } = supabase.storage.from('activepro_assets').getPublicUrl(ref.path);
+export async function getDownloadURL(fileRef: any) {
+  const { data } = supabase.storage.from('activepro_assets').getPublicUrl(fileRef.path);
   return data.publicUrl;
 }
 
-export function writeBatch(db: any) {
-  const operations: any[] = [];
-  return {
-    set: (ref: any, data: any) => operations.push({ type: 'set', ref, data }),
-    update: (ref: any, data: any) => operations.push({ type: 'update', ref, data }),
-    delete: (ref: any) => operations.push({ type: 'delete', ref }),
-    commit: async () => {
-      // Execute sequentially as a fallback for batch
-      for (const op of operations) {
-        if (op.type === 'set') await setDoc(op.ref, op.data);
-        if (op.type === 'update') await updateDoc(op.ref, op.data);
-        if (op.type === 'delete') await deleteDoc(op.ref);
-      }
-    }
-  };
-}
-
-export function arrayUnion(...elements: any[]) {
-  // In Supabase, appending to a JSONB array or Postgres array needs a different approach.
-  // For the sake of the adapter, we will return a special object that could be handled if needed,
-  // but usually it's just passed as data.
-  return elements;
+export function arrayUnion(...elements: any[]): ArrayUnionOp {
+  return { __op: 'arrayUnion', elements };
 }

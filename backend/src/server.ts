@@ -46,13 +46,13 @@ import helmet from 'helmet';
 
 // ── Config & Utilities ────────────────────────────────────────────────────────
 import { env }           from './config/env';
-import { ensureTrashDir, FRONTEND_ROOT, BACKEND_ROOT } from './config/paths';
+import { ensureTrashDir, FRONTEND_ROOT } from './config/paths';
 import prisma            from './db/prisma.client';
 
 // ── Middleware ────────────────────────────────────────────────────────────────
 import { requestLogger } from './middleware/requestLogger';
 import { errorHandler }  from './middleware/errorHandler';
-import { extractUserRole, financeGuard } from './middleware/rbac.middleware';
+import { extractUserRole, financeGuard, requireRole } from './middleware/rbac.middleware';
 
 // ── Routes ────────────────────────────────────────────────────────────────────
 import filesRoutes     from './routes/files.routes';
@@ -94,9 +94,20 @@ async function bootstrap(): Promise<void> {
    * Origins come from CORS_ORIGINS env var (comma-separated).
    */
   app.use(cors({
-    origin:      env.CORS_ORIGINS,
+    origin: (origin, callback) => {
+      if (!origin) {
+        callback(null, true);
+        return;
+      }
+      if (origin === 'null') {
+        callback(null, false);
+        return;
+      }
+      // Reject wildcard '*' when credentials: true to avoid permissive origin reflection
+      callback(null, env.CORS_ORIGINS.some((allowed) => allowed !== '*' && allowed === origin));
+    },
     methods:     ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'x-user-role'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'x-user-role', 'x-api-key', 'x-api-secret'],
     credentials: true,
   }));
 
@@ -119,8 +130,6 @@ async function bootstrap(): Promise<void> {
       status:          'ok',
       service:         'anti-gravity-backend',
       version:         '1.0.0',
-      frontendRoot:    FRONTEND_ROOT,
-      backendRoot:     BACKEND_ROOT,
       timestamp:       new Date().toISOString(),
       environment:     env.NODE_ENV,
     });
@@ -128,16 +137,16 @@ async function bootstrap(): Promise<void> {
 
   // ── API Routes ──────────────────────────────────────────────────────────────
 
-  app.use('/api/v1/files',     filesRoutes);
-  app.use('/api/v1/agent',     agentRoutes);
-  app.use('/api/v1/restore',   restoreRoutes);
-  app.use('/api/v1/transfers', transfersRoutes);
-  app.use('/api/v1/logistics', logisticsRoutes);
-  app.use('/api/v1/orders',    ordersRoutes);
+  app.use('/api/v1/files',     requireRole(['admin', 'cmo']), filesRoutes);
+  app.use('/api/v1/agent',     requireRole(['admin', 'cmo']), agentRoutes);
+  app.use('/api/v1/restore',   requireRole(['admin', 'cmo']), restoreRoutes);
+  app.use('/api/v1/transfers', requireRole(['admin', 'cmo', 'secretary']), transfersRoutes);
+  app.use('/api/v1/logistics', requireRole(['admin', 'cmo', 'secretary']), logisticsRoutes);
+  app.use('/api/v1/orders',    requireRole(['admin', 'cmo', 'secretary']), ordersRoutes);
   app.use('/api/v1/pnl',       financeGuard, pnlRoutes);
-  app.use('/api/v1/returns',   returnsRoutes);
-  app.use('/api/v1/backups',   backupRoutes);
-  app.use('/api/v1/itil',      itilRoutes);
+  app.use('/api/v1/returns',   requireRole(['admin', 'cmo', 'secretary']), returnsRoutes);
+  app.use('/api/v1/backups',   requireRole(['admin', 'cmo']), backupRoutes);
+  app.use('/api/v1/itil',      requireRole(['admin', 'cmo', 'secretary']), itilRoutes);
 
 
   // ── 404 Handler — for any unmatched route ───────────────────────────────────
@@ -169,6 +178,7 @@ async function bootstrap(): Promise<void> {
 
   const { wss, startWatcher } = createFsWatcher(httpServer);
   attachPnLBroadcaster(wss);
+  let watcher: { close: () => Promise<void> } | null = null;
 
   // ── Database Connection Check ───────────────────────────────────────────────
 
@@ -194,18 +204,35 @@ async function bootstrap(): Promise<void> {
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
 
     // Start watching AFTER the server is bound (avoids race conditions)
-    startWatcher();
+    watcher = startWatcher();
   });
 
   // ── Graceful Shutdown ───────────────────────────────────────────────────────
 
+  let isShuttingDown = false;
   const shutdown = async (signal: string) => {
+    if (isShuttingDown) return;
+    isShuttingDown = true;
     console.log(`\n[${signal}] Shutting down gracefully…`);
+
+    const forceTimer = setTimeout(() => {
+      console.error('Shutdown timed out after 5000ms; forcing exit.');
+      process.exit(1);
+    }, 5000);
+    forceTimer.unref();
+
+    if (watcher) {
+      await watcher.close().catch(() => {});
+    }
+    wss.clients.forEach((client) => client.terminate());
+    wss.close();
     httpServer.close(async () => {
-      await prisma.$disconnect();
+      clearTimeout(forceTimer);
+      await prisma.$disconnect().catch(() => {});
       console.log('✅  DB connection closed. Bye!');
       process.exit(0);
     });
+    httpServer.closeAllConnections?.();
   };
 
   process.on('SIGINT',  () => shutdown('SIGINT'));

@@ -1,15 +1,10 @@
-import React, { useState } from 'react';
+import { useRef, useState } from 'react';
 import {
-  WarningIcon as AlertTriangle,
   DownloadIcon as Download,
   PlusIcon as Plus,
-  ArrowsClockwiseIcon as RefreshCw,
-  PackageIcon as Package,
   TruckIcon as Truck,
   CheckCircleIcon as CheckCircle2,
   XCircleIcon as XCircle,
-  PrinterIcon as Printer,
-  CalendarIcon as Calendar,
 } from '@phosphor-icons/react';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Button } from '@/components/ui/button';
@@ -20,98 +15,152 @@ import {
   updateDefectiveTicketStatus,
   exportDefectiveProductsReportCSV,
 } from '../lib/itilService';
-import { db, doc, getDoc, updateDoc, collection, addDoc, serverTimestamp } from '../lib/supabaseAdapter';
+import { db, doc, getDoc, getDocs, updateDoc, deleteDoc, collection, addDoc, serverTimestamp } from '../lib/supabaseAdapter';
+import { hasAdminRole } from '../lib/staffPermissions';
+import { ConfirmDialog } from './ConfirmDialog';
 import { toast } from 'sonner';
 
 interface QuarantineLedgerProps {
   tickets: DefectiveStockTicket[];
   inventory: InventoryItem[];
   profile?: UserProfile | null;
+  canAdjustStock?: boolean;
+  allowedWarehouseIds?: string[] | null;
   onOpenLogModal: () => void;
   onRefresh: () => void;
 }
 
 export function QuarantineLedger({
   tickets,
-  inventory,
+  inventory: _inventory,
   profile,
+  canAdjustStock,
+  allowedWarehouseIds,
   onOpenLogModal,
   onRefresh,
 }: QuarantineLedgerProps) {
+  const canAdjust = canAdjustStock ?? hasAdminRole(profile ?? null);
+  const scopedTickets = allowedWarehouseIds
+    ? tickets.filter((t) => allowedWarehouseIds.includes(t.warehouseId))
+    : tickets;
   const [filter, setFilter] = useState<'all' | 'QUARANTINED' | 'RETURN_IN_PROGRESS' | 'REPLACED' | 'WRITTEN_OFF'>('all');
+  const [writeOffTarget, setWriteOffTarget] = useState<DefectiveStockTicket | null>(null);
+  const [processingId, setProcessingId] = useState<string | null>(null);
+  const processingTicketsRef = useRef<Set<string>>(new Set());
 
-  const filteredTickets = tickets.filter((t) => (filter === 'all' ? true : t.status === filter));
+  const filteredTickets = scopedTickets.filter((t) => (filter === 'all' ? true : t.status === filter));
 
-  const totalQuarantinedUnits = tickets
+  const totalQuarantinedUnits = scopedTickets
     .filter((t) => t.status === 'QUARANTINED')
     .reduce((sum, t) => sum + t.quantity, 0);
 
-  const totalInReturnUnits = tickets
+  const totalInReturnUnits = scopedTickets
     .filter((t) => t.status === 'RETURN_IN_PROGRESS')
     .reduce((sum, t) => sum + t.quantity, 0);
 
-  const totalReplacedUnits = tickets
+  const totalReplacedUnits = scopedTickets
     .filter((t) => t.status === 'REPLACED')
     .reduce((sum, t) => sum + t.quantity, 0);
 
   const handleStatusChange = async (ticket: DefectiveStockTicket, newStatus: DefectiveStockTicket['status']) => {
-    try {
-      await updateDefectiveTicketStatus(ticket.id, newStatus);
+    if (!canAdjust) {
+      toast.error('You do not have permission to modify quarantine or inventory status.');
+      return;
+    }
+    if (allowedWarehouseIds && !allowedWarehouseIds.includes(ticket.warehouseId)) {
+      toast.error('This ticket belongs to a warehouse outside your assigned scope.');
+      return;
+    }
+    if (newStatus === ticket.status) return;
+    if (ticket.status === 'REPLACED' || ticket.status === 'WRITTEN_OFF') {
+      toast.error('This ticket has already been finalized.');
+      return;
+    }
+    if (processingTicketsRef.current.has(ticket.id)) return;
+    processingTicketsRef.current.add(ticket.id);
+    setProcessingId(ticket.id);
 
-      // If supplier replacement arrived: restock items back into inventory!
-      if (newStatus === 'REPLACED') {
-        let item = inventory.find(
-          (i) => i.productId === ticket.productId && i.warehouseId === ticket.warehouseId
-        );
-        if (item?.id) {
-          try {
-            const freshSnap = await getDoc(doc(db, 'inventory', item.id));
-            if (freshSnap?.exists()) {
-              item = { ...item, ...(freshSnap.data() as InventoryItem) };
-            }
-          } catch (fetchErr) {
-            console.warn('Could not refetch latest inventory for replacement restock:', fetchErr);
-          }
+    const modifiedInventory: Array<{ id: string; prevQuantity: number; prevQuarantine: number }> = [];
+    let createdAdjustmentId: string | null = null;
+    let ticketStatusUpdatedTo: DefectiveStockTicket['status'] | null = null;
+    const prevTicketStatus = ticket.status;
+
+    try {
+      const ticketSnap = await getDoc(doc(db, 'defective_tickets', ticket.id));
+      if (!ticketSnap?.exists()) {
+        throw new Error('Defective ticket record not found in database.');
+      }
+      const liveStatus = (ticketSnap.data() as any)?.status;
+      if (liveStatus === 'REPLACED' || liveStatus === 'WRITTEN_OFF') {
+        throw new Error('This ticket has already been finalized.');
+      }
+
+      if (newStatus === 'REPLACED' || newStatus === 'WRITTEN_OFF') {
+        const liveInvSnap = await getDocs(collection(db, 'inventory'));
+        const matchingRows = liveInvSnap.docs
+          .map((d: any) => ({ ...(d.data() as InventoryItem), id: d.id }))
+          .filter((i: InventoryItem) => i.productId === ticket.productId && i.warehouseId === ticket.warehouseId);
+
+        if (matchingRows.length === 0) {
+          throw new Error(`No inventory record found for ${ticket.productName} in ${ticket.warehouseName || ticket.warehouseId}.`);
         }
-        if (item) {
-          const newQty = item.quantity + ticket.quantity;
-          const newQuarantine = Math.max(0, (item.quarantineQuantity || 0) - ticket.quantity);
-          await updateDoc(doc(db, 'inventory', item.id), {
-            quantity: newQty,
-            quarantineQuantity: newQuarantine,
+
+        const totalQuarantine = matchingRows.reduce((sum: number, row: InventoryItem) => sum + Number(row.quarantineQuantity || 0), 0);
+        if (totalQuarantine < ticket.quantity) {
+          throw new Error(`Insufficient quarantined stock (${totalQuarantine}) to settle ${ticket.quantity} unit(s).`);
+        }
+
+        // Transition ticket status first so concurrent finalization or ticket permission failures reject before mutating stock
+        const updatedTicket = await updateDefectiveTicketStatus(ticket.id, newStatus);
+        if (!updatedTicket) {
+          throw new Error('Defective ticket record not found.');
+        }
+        ticketStatusUpdatedTo = newStatus;
+
+        let remainingQuarantine = ticket.quantity;
+        let restockedApplied = false;
+        for (const row of matchingRows) {
+          const prevQuantity = Number(row.quantity || 0);
+          const prevQuarantine = Number(row.quarantineQuantity || 0);
+          const deductQuarantine = Math.min(prevQuarantine, remainingQuarantine);
+          if (deductQuarantine === 0) continue;
+
+          const addAvailable = newStatus === 'REPLACED' && !restockedApplied ? ticket.quantity : 0;
+          if (addAvailable > 0) restockedApplied = true;
+
+          modifiedInventory.push({ id: row.id, prevQuantity, prevQuarantine });
+          await updateDoc(doc(db, 'inventory', row.id), {
+            quantity: prevQuantity + addAvailable,
+            quarantineQuantity: prevQuarantine - deductQuarantine,
             lastUpdated: serverTimestamp(),
           });
+          remainingQuarantine -= deductQuarantine;
+          if (remainingQuarantine <= 0) break;
         }
-        toast.success(`Replacement confirmed: ${ticket.quantity} units restocked to available inventory.`);
-      } else if (newStatus === 'WRITTEN_OFF') {
-        let item = inventory.find(
-          (i) => i.productId === ticket.productId && i.warehouseId === ticket.warehouseId
-        );
-        if (item?.id) {
-          try {
-            const freshSnap = await getDoc(doc(db, 'inventory', item.id));
-            if (freshSnap?.exists()) {
-              item = { ...item, ...(freshSnap.data() as InventoryItem) };
-            }
-          } catch (fetchErr) {
-            console.warn('Could not refetch latest inventory for write-off:', fetchErr);
-          }
-        }
-        if (item) {
-          const newQuarantine = Math.max(0, (item.quarantineQuantity || 0) - ticket.quantity);
-          await updateDoc(doc(db, 'inventory', item.id), {
-            quarantineQuantity: newQuarantine,
-            lastUpdated: serverTimestamp(),
-          });
-        }
-        await addDoc(collection(db, 'stockAdjustments'), {
+
+        const adjRef = await addDoc(collection(db, 'stockAdjustments'), {
           productId: ticket.productId,
           warehouseId: ticket.warehouseId,
-          adjustmentAmount: -ticket.quantity,
-          reason: `Quarantine Write-Off: Defective Ticket ${ticket.ticketNumber || ticket.id}`,
+          adjustmentAmount: newStatus === 'REPLACED' ? ticket.quantity : -ticket.quantity,
+          reason:
+            newStatus === 'REPLACED'
+              ? `Quarantine Restocked: Replacement Ticket ${ticket.ticketNumber || ticket.id}`
+              : `Quarantine Write-Off: Defective Ticket ${ticket.ticketNumber || ticket.id}`,
           recordedBy: profile?.uid || 'system',
-          createdAt: serverTimestamp(),
+          timestamp: serverTimestamp(),
         });
+        createdAdjustmentId = adjRef?.id || null;
+      } else {
+        const updatedTicket = await updateDefectiveTicketStatus(ticket.id, newStatus);
+        if (!updatedTicket) {
+          throw new Error('Defective ticket record not found.');
+        }
+        ticketStatusUpdatedTo = newStatus;
+      }
+
+      if (newStatus === 'REPLACED') {
+        toast.success(`Replacement confirmed: ${ticket.quantity} units restocked to available inventory.`);
+      } else if (newStatus === 'WRITTEN_OFF') {
         toast.success(`Asset written off: removed from quarantine.`);
       } else {
         toast.success(`Ticket ${ticket.ticketNumber} status updated to ${newStatus.replace('_', ' ')}.`);
@@ -119,8 +168,28 @@ export function QuarantineLedger({
 
       onRefresh();
     } catch (err: any) {
+      for (const prev of [...modifiedInventory].reverse()) {
+        await updateDoc(doc(db, 'inventory', prev.id), {
+          quantity: prev.prevQuantity,
+          quarantineQuantity: prev.prevQuarantine,
+          lastUpdated: serverTimestamp(),
+        }).catch((rbErr) => console.error('Failed to rollback quarantine inventory:', rbErr));
+      }
+      if (createdAdjustmentId) {
+        await deleteDoc(doc(db, 'stockAdjustments', createdAdjustmentId)).catch((rbErr) =>
+          console.error('Failed to rollback stock adjustment:', rbErr)
+        );
+      }
+      if (ticketStatusUpdatedTo) {
+        await updateDefectiveTicketStatus(ticket.id, prevTicketStatus).catch((rbErr) =>
+          console.error('Failed to rollback defective ticket status:', rbErr)
+        );
+      }
       console.error('Failed to process defective stock status change:', err);
       toast.error('Could not update defective ticket: ' + (err?.message || 'Database error'));
+    } finally {
+      processingTicketsRef.current.delete(ticket.id);
+      setProcessingId(current => (current === ticket.id ? null : current));
     }
   };
 
@@ -155,21 +224,23 @@ export function QuarantineLedger({
             type="button"
             variant="outline"
             className="text-xs font-semibold gap-1.5"
-            onClick={() => exportDefectiveProductsReportCSV(tickets)}
-            disabled={!tickets.length}
+            onClick={() => exportDefectiveProductsReportCSV(scopedTickets)}
+            disabled={!scopedTickets.length}
           >
             <Download className="size-3.5" />
             Export Defective Report (CSV)
           </Button>
 
-          <Button
-            type="button"
-            className="bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold gap-1.5 shadow-sm"
-            onClick={onOpenLogModal}
-          >
-            <Plus className="size-4" />
-            Log Damaged Stock
-          </Button>
+          {canAdjust && (
+            <Button
+              type="button"
+              className="bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold gap-1.5 shadow-sm"
+              onClick={onOpenLogModal}
+            >
+              <Plus className="size-4" />
+              Log Damaged Stock
+            </Button>
+          )}
         </div>
       </div>
 
@@ -196,7 +267,7 @@ export function QuarantineLedger({
         <Card className="rounded-xl border shadow-sm">
           <CardContent className="p-4">
             <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Total Tickets Logged</p>
-            <p className="text-2xl font-black mt-1">{tickets.length}</p>
+            <p className="text-2xl font-black mt-1">{scopedTickets.length}</p>
           </CardContent>
         </Card>
       </div>
@@ -209,7 +280,7 @@ export function QuarantineLedger({
           className="text-xs h-7"
           onClick={() => setFilter('all')}
         >
-          All Tickets ({tickets.length})
+          All Tickets ({scopedTickets.length})
         </Button>
         <Button
           size="sm"
@@ -217,7 +288,7 @@ export function QuarantineLedger({
           className="text-xs h-7"
           onClick={() => setFilter('QUARANTINED')}
         >
-          Quarantined ({tickets.filter((t) => t.status === 'QUARANTINED').length})
+          Quarantined ({scopedTickets.filter((t) => t.status === 'QUARANTINED').length})
         </Button>
         <Button
           size="sm"
@@ -225,7 +296,7 @@ export function QuarantineLedger({
           className="text-xs h-7"
           onClick={() => setFilter('RETURN_IN_PROGRESS')}
         >
-          Return in Progress ({tickets.filter((t) => t.status === 'RETURN_IN_PROGRESS').length})
+          Return in Progress ({scopedTickets.filter((t) => t.status === 'RETURN_IN_PROGRESS').length})
         </Button>
         <Button
           size="sm"
@@ -233,7 +304,15 @@ export function QuarantineLedger({
           className="text-xs h-7"
           onClick={() => setFilter('REPLACED')}
         >
-          Replaced & Restocked ({tickets.filter((t) => t.status === 'REPLACED').length})
+          Replaced & Restocked ({scopedTickets.filter((t) => t.status === 'REPLACED').length})
+        </Button>
+        <Button
+          size="sm"
+          variant={filter === 'WRITTEN_OFF' ? 'default' : 'ghost'}
+          className="text-xs h-7"
+          onClick={() => setFilter('WRITTEN_OFF')}
+        >
+          Written Off ({scopedTickets.filter((t) => t.status === 'WRITTEN_OFF').length})
         </Button>
       </div>
 
@@ -288,11 +367,14 @@ export function QuarantineLedger({
                     {getStatusBadge(ticket.status)}
                   </TableCell>
                   <TableCell className="text-right">
+                    {canAdjust && (
                     <div className="flex items-center justify-end gap-1">
                       {ticket.status === 'QUARANTINED' && (
                         <Button
+                          type="button"
                           size="sm"
                           variant="outline"
+                          disabled={processingId === ticket.id}
                           className="text-xs h-7 gap-1"
                           onClick={() => handleStatusChange(ticket, 'RETURN_IN_PROGRESS')}
                           title="Mark as shipped back to supplier"
@@ -303,9 +385,11 @@ export function QuarantineLedger({
                       )}
                       {ticket.status === 'RETURN_IN_PROGRESS' && (
                         <Button
+                          type="button"
                           size="sm"
                           variant="outline"
-                          className="text-xs h-7 text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50 gap-1 font-semibold"
+                          disabled={processingId === ticket.id}
+                          className="text-xs h-7 text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50 dark:hover:bg-emerald-950 gap-1 font-semibold"
                           onClick={() => handleStatusChange(ticket, 'REPLACED')}
                           title="Supplier sent replacement, restock into warehouse inventory"
                         >
@@ -315,20 +399,20 @@ export function QuarantineLedger({
                       )}
                       {ticket.status !== 'WRITTEN_OFF' && ticket.status !== 'REPLACED' && (
                         <Button
+                          type="button"
                           size="sm"
                           variant="ghost"
+                          disabled={processingId === ticket.id}
                           className="text-xs h-7 text-zinc-400 hover:text-zinc-600"
-                          onClick={() => {
-                            if (window.confirm(`Write off ticket ${ticket.ticketNumber}? This will permanently remove stock from quarantine.`)) {
-                              handleStatusChange(ticket, 'WRITTEN_OFF');
-                            }
-                          }}
+                          onClick={() => setWriteOffTarget(ticket)}
                           title="Write off asset"
+                          aria-label={`Write off ticket ${ticket.ticketNumber}`}
                         >
                           <XCircle className="size-3" />
                         </Button>
                       )}
                     </div>
+                    )}
                   </TableCell>
                 </TableRow>
               ))}
@@ -343,6 +427,18 @@ export function QuarantineLedger({
           </Table>
         </div>
       </div>
+
+      <ConfirmDialog
+        open={!!writeOffTarget}
+        title="Write off quarantined stock"
+        description={`Write off ticket ${writeOffTarget?.ticketNumber ?? ''}? This will permanently remove stock from quarantine.`}
+        confirmLabel="Write off"
+        destructive
+        onOpenChange={(open) => { if (!open) setWriteOffTarget(null); }}
+        onConfirm={async () => {
+          if (writeOffTarget) await handleStatusChange(writeOffTarget, 'WRITTEN_OFF');
+        }}
+      />
     </div>
   );
 }

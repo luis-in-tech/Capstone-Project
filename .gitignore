@@ -93,7 +93,6 @@ IS Capstone Project (BA_SM) Guidelines  as of  January 25, 2021.md
 QA_Lead_Defense_Cheat_Sheet.html
 UAT_Evaluation_Form_and_Guide.html
 test-assets/bmx_bdf_540.jpg
-.gitignore
 test-assets/bmx_superstar_1017.jpg
 test-assets/bmx_the_cars_spoke_type.jpg
 test-assets/frozen_yx102.jpg
@@ -117,18 +116,16 @@ test-assets/UAT Questions (Cristine).md
 test-assets/Active Pro - Delivery Receipt ORD-76EB35B7.pdf
 test-assets/BEIDOUFU 004 SINGLE SPEED DISC BRAKE.jpg
 test-assets/BMX BEIDOUFU 586 SINGLE SPEED DISC BRAKE.jpg
-.gitignore
 test-assets/BMX GI WITH SIDE CAR.jpg
 test-assets/BMX GTI.jpg
-.gitignore
 test-assets/BMX SUPREME V-BRAKE.webp
 test-assets/FROZEN YX102.jpg
-.gitignore
 test-assets/BMX TACTICAL V-BRAKE (CKD).jpg
-.gitignore
 test-assets/LADIES BIKE XD05 - XDD05 - XD06.webp
 test-assets/LADIES VENICE AD701 (2in1).jpg
 test-assets/MINI MTB CROSTA 7SPD 315.jpg
 Active Pro QA Reports Tracker screenshot.jpg
 Capstone 2 3ISC-Group 1 Documents.pdf
 GitHub Desktop test branch where.jpg
+.vite-layout-check/
+backend/backups/

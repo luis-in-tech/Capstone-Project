@@ -1,16 +1,13 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Link, useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import {
   PackageIcon as Package,
   WarehouseIcon as Warehouse,
   ChartBarIcon as BarChart3,
-  RocketIcon as Rocket,
-  ArrowRightIcon as ArrowRight,
   ArrowLeftIcon as ArrowLeft,
   CheckCircleIcon as CheckCircle2,
   CaretRightIcon as ChevronRight,
-  ShieldCheckIcon as ShieldCheck,
   TruckIcon as Truck
 } from '@phosphor-icons/react';
 import { Button } from '@/components/ui/button';
@@ -103,33 +100,36 @@ export const Onboarding = () => {
 
             <div className="grid grid-cols-1 gap-4 mb-12">
                <div className="bg-white p-4 rounded-2xl border border-zinc-200 flex items-center gap-4 text-left">
-                  <CheckCircle2 className="w-5 h-5 text-emerald-500" />
-                  <span className="text-[10px] font-black uppercase tracking-widest text-zinc-500">Ready for Enterprise Integration</span>
+                  <CheckCircle2 className="w-5 h-5 text-emerald-600" />
+                  <span className="text-[10px] font-black uppercase tracking-widest text-zinc-700">Ready for Enterprise Integration</span>
                </div>
             </div>
           </motion.div>
         </AnimatePresence>
 
-        <div className="fixed bottom-12 left-0 w-full px-6">
+        <div className="fixed bottom-12 left-0 w-full px-6 z-10">
           <div className="max-w-xl mx-auto flex items-center justify-between">
-            <Button 
+            <Button
+                type="button"
                 variant="ghost" 
                 onClick={handleBack}
-                className="text-xs font-black uppercase tracking-widest gap-2 text-zinc-400 hover:text-zinc-900"
+                className="text-xs font-black uppercase tracking-widest gap-2 text-zinc-700 hover:text-zinc-900 hover:bg-zinc-200/70"
             >
               <ArrowLeft className="w-4 h-4" /> {currentStep === 0 ? 'Exit' : 'Back'}
             </Button>
 
-            <div className="flex gap-2">
-              {STEPS.map((_, i) => (
+            <div className="flex gap-2" aria-label="Onboarding progress">
+              {STEPS.map((s, i) => (
                 <div 
-                  key={i} 
-                  className={`w-1.5 h-1.5 rounded-full transition-colors ${i === currentStep ? 'bg-zinc-900' : 'bg-zinc-200'}`}
+                  key={s.id} 
+                  aria-current={i === currentStep ? 'step' : undefined}
+                  className={`w-1.5 h-1.5 rounded-full transition-colors ${i === currentStep ? 'bg-zinc-900' : 'bg-zinc-300'}`}
                 />
               ))}
             </div>
 
-            <Button 
+            <Button
+                type="button"
                 onClick={handleNext}
                 className="bg-zinc-900 text-white text-xs font-black uppercase tracking-widest px-8 h-12 rounded-xl group"
             >
@@ -141,7 +141,7 @@ export const Onboarding = () => {
       </div>
 
       {/* Decorative Branding */}
-      <div className="fixed bottom-8 left-1/2 -translate-x-1/2 pointer-events-none opacity-10">
+      <div aria-hidden="true" className="fixed bottom-2 left-1/2 -translate-x-1/2 pointer-events-none opacity-5 -z-10">
         <span className="text-8xl font-black tracking-[1em] text-zinc-900 select-none">ACTIVE PRO</span>
       </div>
     </div>

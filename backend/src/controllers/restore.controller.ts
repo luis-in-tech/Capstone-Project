@@ -9,6 +9,8 @@
  */
 
 import { Request, Response, NextFunction } from 'express';
+import { z } from 'zod';
+import { AppError } from '../middleware/errorHandler';
 import * as backupService from '../services/backup.service';
 import * as actionService from '../services/action.service';
 import { ApiSuccess } from '../types/api.types';
@@ -54,14 +56,26 @@ function toDto(entry: {
  * Lists all backup entries in the database (newest first), paginated.
  * Query: ?page=1&pageSize=20
  */
+const listBackupsQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(100).default(20),
+});
+
+const restoreBodySchema = z.object({
+  sessionId: z.string().trim().min(1).optional(),
+});
+
 export async function listBackups(
   req: Request,
   res: Response,
   next: NextFunction
 ): Promise<void> {
   try {
-    const page     = Math.max(1, parseInt(req.query['page']     as string ?? '1',  10));
-    const pageSize = Math.min(100, parseInt(req.query['pageSize'] as string ?? '20', 10));
+    const parsedQuery = listBackupsQuerySchema.safeParse(req.query);
+    if (!parsedQuery.success) {
+      throw new AppError(400, 'VALIDATION_ERROR', 'Invalid pagination query parameters.');
+    }
+    const { page, pageSize } = parsedQuery.data;
 
     const { entries, total } = await backupService.listBackups(page, pageSize);
 
@@ -90,8 +104,16 @@ export async function restoreBackup(
   next: NextFunction
 ): Promise<void> {
   try {
-    const id = req.params['id'] as string;
-    const sessionId = (req.body as { sessionId?: string })?.sessionId;
+    const rawId = req.params['id'];
+    const id = typeof rawId === 'string' ? rawId.trim() : '';
+    if (!id) {
+      throw new AppError(400, 'VALIDATION_ERROR', 'Backup ID is required.');
+    }
+    const bodyParsed = restoreBodySchema.safeParse(req.body ?? {});
+    if (!bodyParsed.success) {
+      throw new AppError(400, 'VALIDATION_ERROR', 'Invalid restore payload.');
+    }
+    const { sessionId } = bodyParsed.data;
 
     const updated = await backupService.restoreBackup(id);
 
@@ -110,7 +132,9 @@ export async function restoreBackup(
         backupId:   updated.id,
         success:    true,
         payload:    { backupPath: updated.backupPath },
-      }).catch(() => {});
+      }).catch((logErr) => {
+        console.warn('[restore.controller] Failed to log RESTORE action:', logErr);
+      });
     }
 
     ok(res, result, `File restored to "${updated.originalPath}".`);

@@ -25,6 +25,13 @@ function Calendar({
 }) {
   const defaultClassNames = getDefaultClassNames()
 
+  const DayButtonComponent = React.useCallback(
+    (dayButtonProps: React.ComponentProps<typeof DayButton>) => (
+      <CalendarDayButton locale={locale} {...dayButtonProps} />
+    ),
+    [locale]
+  )
+
   return (
     <DayPicker
       showOutsideDays={showOutsideDays}
@@ -85,7 +92,7 @@ function Calendar({
             : "flex items-center gap-1 rounded-(--cell-radius) text-sm [&>svg]:size-3.5 [&>svg]:text-muted-foreground",
           defaultClassNames.caption_label
         ),
-        table: "w-full border-collapse",
+        month_grid: "w-full border-collapse",
         weekdays: cn("flex", defaultClassNames.weekdays),
         weekday: cn(
           "flex-1 rounded-(--cell-radius) text-[0.8rem] font-normal text-muted-foreground select-none",
@@ -159,9 +166,7 @@ function Calendar({
             <ChevronDownIcon className={cn("size-4", className)} {...props} />
           )
         },
-        DayButton: ({ ...props }) => (
-          <CalendarDayButton locale={locale} {...props} />
-        ),
+        DayButton: DayButtonComponent,
         WeekNumber: ({ children, ...props }) => {
           return (
             <td {...props}>
@@ -194,6 +199,7 @@ function CalendarDayButton({
 
   return (
     <Button
+      ref={ref}
       variant="ghost"
       size="icon"
       data-day={day.date.toLocaleDateString(locale?.code)}

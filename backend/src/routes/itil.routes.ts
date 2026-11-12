@@ -10,9 +10,11 @@
  */
 
 import { Router } from 'express';
+import { requireRole } from '../middleware/rbac.middleware';
 import * as itilCtrl from '../controllers/itil.controller';
 
 const router = Router();
+router.use(requireRole(['admin', 'cmo', 'secretary']));
 
 router.get('/sla-incidents', itilCtrl.getSlaIncidents);
 router.post('/quarantine', itilCtrl.createQuarantineTicket);

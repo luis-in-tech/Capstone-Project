@@ -47,7 +47,14 @@ export function WarehouseFloorplan({ warehouseId, storageKey, zones, canEdit, co
         let value: unknown = result.data?.layout || initial;
         const fallback = !!result.error && ['PGRST205', '42P01'].includes(result.error.code);
         if (result.error && !fallback) throw result.error;
-        if (fallback) value = JSON.parse(localStorage.getItem(`${storageKey}:floorplan`) || 'null') || initial;
+        if (fallback) {
+          try {
+            const raw = window.localStorage.getItem(`${storageKey}:floorplan`);
+            value = (raw ? JSON.parse(raw) : null) || initial;
+          } catch {
+            value = initial;
+          }
+        }
         if (!validPlan(value)) throw new Error('The saved floorplan is unreadable. It has not been overwritten.');
         setPlan(value); saved.current = value; setLocal(fallback);
       } catch (e) { if (active) setError((e as Error).message); }
@@ -62,9 +69,19 @@ export function WarehouseFloorplan({ warehouseId, storageKey, zones, canEdit, co
     if (!editable) return;
     setSaving(true);
     const next = { ...plan, boxes: Object.fromEntries(zones.map((z, i) => [z.id, boxFor(plan, z, i)])) };
+    if (!validPlan(next)) {
+      toast.error('Floorplan layout is invalid and cannot be saved.');
+      setSaving(false);
+      return;
+    }
     try {
-      if (local) localStorage.setItem(`${storageKey}:floorplan`, JSON.stringify(next));
-      else {
+      if (local) {
+        try {
+          window.localStorage.setItem(`${storageKey}:floorplan`, JSON.stringify(next));
+        } catch {
+          throw new Error('Browser storage is full or unavailable.');
+        }
+      } else {
         const result = await supabase.from('warehouse_floorplans').upsert({ warehouseId, layout: next }, { onConflict: 'warehouseId' });
         if (result.error) throw result.error;
       }
@@ -80,7 +97,7 @@ export function WarehouseFloorplan({ warehouseId, storageKey, zones, canEdit, co
   }
   function move(e: PointerEvent) {
     const d = drag.current; const bounds = canvas.current?.getBoundingClientRect();
-    if (!editable || !d || !bounds || d.pointer !== e.pointerId) return;
+    if (!editable || !d || !bounds || bounds.width <= 0 || bounds.height <= 0 || d.pointer !== e.pointerId) return;
     const dx = (e.clientX - d.x) / bounds.width * 100; const dy = (e.clientY - d.y) / bounds.height * 100;
     if (d.door) {
       const offset = clamp(d.door.offset + (['top', 'bottom'].includes(d.door.edge) ? dx : dy), 6, 94);

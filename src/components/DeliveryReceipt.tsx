@@ -1,4 +1,4 @@
-import React, { useRef } from "react";
+import { useEffect, useRef } from "react";
 import { PrinterIcon as Printer } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import {
@@ -42,6 +42,16 @@ const printStyles = `
   @media print { body { margin: 0; } .dr-page { padding: 0; margin: 0; break-after: page; } .dr-page:last-child { break-after: auto; } .dr-footer, .dr-totals, .dr-page tr { break-inside: avoid; } }
 `;
 
+const safeReceiptPhotoUrl = (rawUrl?: string): string | null => {
+  if (!rawUrl) return null;
+  try {
+    const parsed = new URL(rawUrl.trim());
+    return parsed.protocol === "https:" ? parsed.toString() : null;
+  } catch {
+    return null;
+  }
+};
+
 export function DeliveryReceipt({
   order,
   items,
@@ -52,20 +62,25 @@ export function DeliveryReceipt({
   onClose: () => void;
 }) {
   const content = useRef<HTMLDivElement>(null);
+  const printCleanupRef = useRef<(() => void) | null>(null);
+  useEffect(() => () => { printCleanupRef.current?.(); }, []);
   if (!order) return null;
   type Row = { item: ReceiptItem; number: number } | { discount: GroupDiscountResult };
   const rows: Row[] = items.flatMap((item, position) => [
     { item, number: position + 1 } as Row,
-    ...(order.receiptDetails?.groupDiscounts || []).filter(d => d.afterPosition === position).map(discount => ({ discount })),
+    ...(order.receiptDetails?.groupDiscounts || []).filter((d: GroupDiscountResult) => d.afterPosition === position).map((discount: GroupDiscountResult) => ({ discount })),
   ]);
   const pages = receiptPages(rows);
   const details = order.receiptDetails;
-  const date = order.createdAt?.toDate
+  const rawDate = order.createdAt?.toDate
     ? order.createdAt.toDate()
     : new Date(order.createdAt);
+  const date = rawDate instanceof Date && !Number.isNaN(rawDate.getTime()) ? rawDate : null;
+  const safePhotoUrl = safeReceiptPhotoUrl(order.photoValidationUrl);
   const subtotal =
     details?.subtotal ?? items.reduce((sum, item) => sum + item.subtotal, 0);
   const print = () => {
+    printCleanupRef.current?.();
     // Clone only the receipt into an isolated document so app dialogs never appear in print.
     const frame = document.createElement("iframe");
     frame.title = "Delivery receipt print document";
@@ -81,10 +96,25 @@ export function DeliveryReceipt({
     doc.head.appendChild(style);
     doc.title = `Delivery Receipt ${order.orderNumber}`;
     doc.body.appendChild(content.current.cloneNode(true));
-    frame.contentWindow.addEventListener("afterprint", () => frame.remove(), {
+    let cleanupTimer = 0;
+    let printTimer = 0;
+    let cleaned = false;
+    const cleanup = () => {
+      if (cleaned) return;
+      cleaned = true;
+      window.clearTimeout(cleanupTimer);
+      window.clearTimeout(printTimer);
+      frame.remove();
+      if (printCleanupRef.current === cleanup) {
+        printCleanupRef.current = null;
+      }
+    };
+    printCleanupRef.current = cleanup;
+    cleanupTimer = window.setTimeout(cleanup, 60_000);
+    frame.contentWindow.addEventListener("afterprint", cleanup, {
       once: true,
     });
-    window.setTimeout(() => {
+    printTimer = window.setTimeout(() => {
       frame.contentWindow?.focus();
       frame.contentWindow?.print();
     }, 250);
@@ -131,7 +161,7 @@ export function DeliveryReceipt({
                     <b>Customer Name:</b> {order.clientName}
                   </div>
                   <div>
-                    <b>Date:</b> {date.toLocaleDateString("en-PH")}
+                    <b>Date:</b> {date ? date.toLocaleDateString("en-PH") : "—"}
                   </div>
                   <div>
                     <b>Address:</b> {details?.address || "—"}
@@ -240,10 +270,10 @@ export function DeliveryReceipt({
                             ______________________________________________________________________
                           </p>
                         </div>
-                        {order.photoValidationUrl && (
+                        {safePhotoUrl && (
                           <div style={{ width: "120px", textAlign: "center" }}>
                             <p style={{ margin: "0 0 5px", fontSize: "10px", fontWeight: "bold" }}>Dispatch Photo</p>
-                            <img src={order.photoValidationUrl} alt="Validation" style={{ width: "100%", height: "80px", objectFit: "cover", border: "1px solid #94a3b8" }} />
+                            <img src={safePhotoUrl} alt="Validation" style={{ width: "100%", height: "80px", objectFit: "cover", border: "1px solid #94a3b8" }} />
                           </div>
                         )}
                       </div>

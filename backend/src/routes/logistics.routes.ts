@@ -13,9 +13,11 @@
  */
 
 import { Router } from 'express';
+import { requireRole } from '../middleware/rbac.middleware';
 import * as logisticsCtrl from '../controllers/logistics.controller';
 
 const router = Router();
+router.use(requireRole(['admin', 'cmo', 'secretary']));
 
 router.post('/optimize', logisticsCtrl.optimizeRoutes);
 router.post('/dispatch-trip', logisticsCtrl.dispatchTrip);

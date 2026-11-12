@@ -20,6 +20,7 @@ const money = (value: number) => new Intl.NumberFormat('en-PH', { style: 'curren
 
 export function CategoryWorkspace({ products, inventory, warehouses, suppliers, loading, error, onRetry }: Props) {
   const { profile } = useAuth();
+  const isAdmin = hasAdminRole(profile);
   const [records, setRecords] = useState<Category[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [loadError, setLoadError] = useState(false);
@@ -37,7 +38,7 @@ export function CategoryWorkspace({ products, inventory, warehouses, suppliers, 
   useEffect(() => {
     setLoaded(false); setLoadError(false);
     return onSnapshot(collection(db, 'productCategories'), snap => {
-      setRecords(snap.docs.map(d => ({ id: d.id, ...d.data() } as Category)));
+      setRecords(snap.docs.map((d: any) => ({ id: d.id, ...d.data() } as Category)));
       setLoaded(true); setLoadError(false);
     }, () => { setLoaded(true); setLoadError(true); });
   }, [reload]);
@@ -62,10 +63,12 @@ export function CategoryWorkspace({ products, inventory, warehouses, suppliers, 
   const valuation = categoryProducts.reduce((sum, product) => sum + units(product) * (product.costPrice ?? 0), 0);
   const supplierName = (product: Product) => suppliers.find(supplier => supplier.id === product.supplierId)?.name || product.supplier || 'N/A';
   const supplierNames = [...new Set(categoryProducts.map(supplierName))].filter(name => name !== 'N/A' && name.trim()).sort();
+  const supplierSearchTerm = productSearch.trim().toLowerCase();
   const filteredProducts = categoryProducts.filter(product =>
-    [product.sku, product.name].some(value => value.toLowerCase().includes(productSearch.toLowerCase())));
+    [product.sku, product.name, supplierName(product)].some(value => (value || '').toLowerCase().includes(supplierSearchTerm)));
 
   const startEdit = (category?: Category) => {
+    if (!isAdmin) return;
     setOriginalName(category?.name || ''); setActionError('');
     setEditor(category ? { ...category } : { id: '', name: '', code: '', description: '', active: true });
   };
@@ -77,34 +80,41 @@ export function CategoryWorkspace({ products, inventory, warehouses, suppliers, 
   };
   const save = async (event: FormEvent) => {
     event.preventDefault();
-    if (!editor || busy || unavailable) return;
+    if (!isAdmin || !editor || busy || unavailable) return;
     const name = editor.name.trim(), code = editor.code?.trim().toUpperCase();
     if (!name || !code) { setActionError('Category name and code are required.'); return; }
     if (categories.some(category => category.name !== originalName && (category.name.toLowerCase() === name.toLowerCase() || (category.code && category.code.toUpperCase() === code)))) {
       setActionError('A category with that name or code already exists.'); return;
     }
     setBusy(true); setActionError('');
+    let createdLegacyId = '';
     try {
       // Materialize legacy categories first so database rename protection can update assignments atomically.
       let id = editor.id;
       if (!id && originalName && name !== originalName) {
         const created = await addDoc(collection(db, 'productCategories'), { name: originalName, createdAt: serverTimestamp() });
         id = created.id;
+        createdLegacyId = created.id;
       }
       await persist({ ...editor, id, name, code });
       setSelectedName(name); setEditor(null); toast.success('Category saved');
-    } catch (err) { setActionError(err instanceof Error ? err.message : (err as { message?: string })?.message || 'Could not save category.'); }
+    } catch (err) {
+      if (createdLegacyId) {
+        await deleteDoc(doc(db, 'productCategories', createdLegacyId)).catch(() => {});
+      }
+      setActionError(err instanceof Error ? err.message : (err as { message?: string })?.message || 'Could not save category.');
+    }
     finally { setBusy(false); }
   };
   const archive = async () => {
-    if (!current || unavailable || busy) return;
+    if (!isAdmin || !current || unavailable || busy) return;
     setBusy(true);
     try { await persist({ ...current, active: current.active === false }); toast.success(current.active === false ? 'Category activated' : 'Category archived'); }
     catch { toast.error('Could not change category status.'); }
     finally { setBusy(false); }
   };
   const remove = async () => {
-    if (!removing || unavailable || busy) return;
+    if (!isAdmin || !removing || unavailable || busy) return;
     if (products.some(product => (product.category || 'Uncategorized') === removing.name)) { setActionError('Reassign all products before deleting this category.'); return; }
     setBusy(true); setActionError('');
     try {
@@ -118,14 +128,14 @@ export function CategoryWorkspace({ products, inventory, warehouses, suppliers, 
     {(error || loadError) && <div role="alert" className="flex items-center justify-between rounded-xl border border-destructive/30 p-4 text-sm"><span>Category records could not load. Totals and actions are unavailable.</span><Button variant="outline" onClick={() => { setReload(value => value + 1); onRetry(); }}>Retry</Button></div>}
     <div className="grid items-start gap-5 xl:grid-cols-[280px_minmax(0,1fr)]">
       <aside className="rounded-2xl border bg-card shadow-sm">
-        <div className="space-y-3 border-b p-4"><div className="flex items-center justify-between"><h2 className="font-semibold">Categories</h2><Button size="sm" disabled={unavailable || busy} onClick={() => startEdit()}><Plus className="size-4" />Add Category</Button></div><SearchBar aria-label="Search categories by name or code" placeholder="Search name or code…" value={search} onValueChange={setSearch} /></div>
+        <div className="space-y-3 border-b p-4"><div className="flex items-center justify-between"><h2 className="font-semibold">Categories</h2>{isAdmin && <Button size="sm" disabled={unavailable || busy} onClick={() => startEdit()}><Plus className="size-4" />Add Category</Button>}</div><SearchBar aria-label="Search categories by name or code" placeholder="Search name or code…" value={search} onValueChange={setSearch} /></div>
         <div className="max-h-160 overflow-y-auto p-2">
-          {categories.filter(category => [category.name, category.code || ''].some(value => value.toLowerCase().includes(search.toLowerCase()))).map(category => <button type="button" key={category.id || category.name} aria-pressed={current?.name === category.name} onClick={() => { setSelectedName(category.name); setProductSearch(''); setSection('products'); }} className={`mb-1 w-full rounded-xl border p-3 text-left ${current?.name === category.name ? 'border-primary/40 bg-primary/10' : 'border-transparent hover:bg-muted/60'}`}><span className="block font-semibold">{category.name}</span><span className="block text-xs text-muted-foreground">{category.code || 'No code'} · {category.active === false ? 'Inactive' : 'Active'} · {products.filter(product => (product.category || 'Uncategorized') === category.name).length} products</span></button>)}
-          {!categories.some(category => [category.name, category.code || ''].some(value => value.toLowerCase().includes(search.toLowerCase()))) && <p className="p-6 text-center text-sm text-muted-foreground">{loading || !loaded ? 'Loading categories…' : 'No categories found.'}</p>}
+          {categories.filter(category => [category.name, category.code || ''].some(value => value.toLowerCase().includes(search.trim().toLowerCase()))).map(category => <button type="button" key={category.id || category.name} aria-pressed={current?.name === category.name} onClick={() => { setSelectedName(category.name); setProductSearch(''); setSection('products'); }} className={`mb-1 w-full rounded-xl border p-3 text-left ${current?.name === category.name ? 'border-primary/40 bg-primary/10' : 'border-transparent hover:bg-muted/60'}`}><span className="block font-semibold">{category.name}</span><span className="block text-xs text-muted-foreground">{category.code || 'No code'} · {category.active === false ? 'Inactive' : 'Active'} · {products.filter(product => (product.category || 'Uncategorized') === category.name).length} products</span></button>)}
+          {!categories.some(category => [category.name, category.code || ''].some(value => value.toLowerCase().includes(search.trim().toLowerCase()))) && <p className="p-6 text-center text-sm text-muted-foreground">{loading || !loaded ? 'Loading categories…' : 'No categories found.'}</p>}
         </div>
       </aside>
       {current ? <div className="min-w-0 space-y-5">
-        <section className="rounded-2xl border bg-card p-5 shadow-sm"><div className="flex flex-wrap justify-between gap-3"><div><Badge variant="secondary">{current.active === false ? 'Inactive' : 'Active'}</Badge><h2 className="mt-2 text-xl font-bold">{current.name}</h2><p className="text-sm text-muted-foreground">{current.code || 'No category code'}</p></div><div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" disabled={unavailable || busy} onClick={() => startEdit(current)}><Pencil className="size-4" />Edit</Button><Button size="sm" variant="outline" disabled={unavailable || busy} onClick={archive}><Archive className="size-4" />{current.active === false ? 'Activate' : 'Archive'}</Button><Button size="sm" variant="ghost" disabled={unavailable || busy || !current.id} onClick={() => { setRemoving(current); setActionError(''); }}><Trash2 className="size-4" />Delete</Button></div></div><p className="mt-4 text-sm text-muted-foreground">{current.description || 'No description provided.'}</p></section>
+        <section className="rounded-2xl border bg-card p-5 shadow-sm"><div className="flex flex-wrap justify-between gap-3"><div><Badge variant="secondary">{current.active === false ? 'Inactive' : 'Active'}</Badge><h2 className="mt-2 text-xl font-bold">{current.name}</h2><p className="text-sm text-muted-foreground">{current.code || 'No category code'}</p></div>{isAdmin && <div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" disabled={unavailable || busy} onClick={() => startEdit(current)}><Pencil className="size-4" />Edit</Button><Button size="sm" variant="outline" disabled={unavailable || busy} onClick={archive}><Archive className="size-4" />{current.active === false ? 'Activate' : 'Archive'}</Button><Button size="sm" variant="ghost" disabled={unavailable || busy || !current.id} onClick={() => { setRemoving(current); setActionError(''); }}><Trash2 className="size-4" />Delete</Button></div>}</div><p className="mt-4 text-sm text-muted-foreground">{current.description || 'No description provided.'}</p></section>
         <div className={`grid gap-3 sm:grid-cols-2 ${hasAdminRole(profile) ? '2xl:grid-cols-4' : '2xl:grid-cols-3'}`}>
           <Summary label="Products" value={unavailable ? '—' : categoryProducts.length.toLocaleString()} />
           <Summary label="Units in stock" value={unavailable ? '—' : stock.reduce((sum, item) => sum + item.quantity, 0).toLocaleString()} />

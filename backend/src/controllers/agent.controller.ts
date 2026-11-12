@@ -13,14 +13,11 @@
  */
 
 import { Request, Response, NextFunction } from 'express';
+import { z } from 'zod';
+import { AppError } from '../middleware/errorHandler';
 import * as actionService from '../services/action.service';
 import * as fileService from '../services/file.service';
 import { ApiSuccess } from '../types/api.types';
-import {
-  CreateSessionPayload,
-  UpdateSessionPayload,
-  CreateSnapshotPayload,
-} from '../types/agent.types';
 
 // ─── Helper ───────────────────────────────────────────────────────────────────
 
@@ -58,15 +55,31 @@ export async function listSessions(
  * Creates a new agent session.
  * Body: { name, notes?, frontendRootPath? }
  */
+const createSessionSchema = z.object({
+  name: z.string().trim().min(1),
+  notes: z.string().optional(),
+  frontendRootPath: z.string().trim().min(1).optional(),
+});
+
+const updateSessionSchema = z.object({
+  name: z.string().trim().min(1).optional(),
+  status: z.enum(['ACTIVE', 'PAUSED', 'TERMINATED']).optional(),
+  notes: z.string().optional(),
+});
+
+const listActionsQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(200).default(50),
+});
+
 export async function createSession(
   req: Request,
   res: Response,
   next: NextFunction
 ): Promise<void> {
   try {
-    const { name, notes, frontendRootPath } = req.body as CreateSessionPayload;
-
-    if (!name || typeof name !== 'string' || name.trim().length === 0) {
+    const parsed = createSessionSchema.safeParse(req.body);
+    if (!parsed.success) {
       res.status(400).json({
         success: false,
         error: { code: 'VALIDATION_ERROR', message: '"name" is required.' },
@@ -75,7 +88,8 @@ export async function createSession(
       return;
     }
 
-    const session = await actionService.createSession({ name: name.trim(), notes, frontendRootPath });
+    const { name, notes } = parsed.data;
+    const session = await actionService.createSession({ name, notes });
     ok(res, session, 'Agent session created.', 201);
   } catch (err) {
     next(err);
@@ -92,7 +106,9 @@ export async function getSession(
   next: NextFunction
 ): Promise<void> {
   try {
-    const session = await actionService.getSession(req.params['id'] as string);
+    const id = typeof req.params['id'] === 'string' ? req.params['id'].trim() : '';
+    if (!id) throw new AppError(400, 'VALIDATION_ERROR', 'Session ID is required.');
+    const session = await actionService.getSession(id);
     ok(res, session);
   } catch (err) {
     next(err);
@@ -110,12 +126,13 @@ export async function updateSession(
   next: NextFunction
 ): Promise<void> {
   try {
-    const { name, status, notes } = req.body as UpdateSessionPayload;
-    const session = await actionService.updateSession(req.params['id'] as string, {
-      name,
-      status: status as any,
-      notes,
-    });
+    const id = typeof req.params['id'] === 'string' ? req.params['id'].trim() : '';
+    if (!id) throw new AppError(400, 'VALIDATION_ERROR', 'Session ID is required.');
+    const parsed = updateSessionSchema.safeParse(req.body);
+    if (!parsed.success) {
+      throw new AppError(400, 'VALIDATION_ERROR', 'Invalid session update payload.');
+    }
+    const session = await actionService.updateSession(id, parsed.data);
     ok(res, session, 'Session updated.');
   } catch (err) {
     next(err);
@@ -133,9 +150,14 @@ export async function listActions(
   next: NextFunction
 ): Promise<void> {
   try {
-    const page     = Math.max(1, parseInt(req.query['page']     as string ?? '1',  10));
-    const pageSize = Math.min(200, parseInt(req.query['pageSize'] as string ?? '50', 10));
-    const { actions, total } = await actionService.listActions(req.params['id'] as string, page, pageSize);
+    const id = typeof req.params['id'] === 'string' ? req.params['id'].trim() : '';
+    if (!id) throw new AppError(400, 'VALIDATION_ERROR', 'Session ID is required.');
+    const parsedQuery = listActionsQuerySchema.safeParse(req.query);
+    if (!parsedQuery.success) {
+      throw new AppError(400, 'VALIDATION_ERROR', 'Invalid pagination query parameters.');
+    }
+    const { page, pageSize } = parsedQuery.data;
+    const { actions, total } = await actionService.listActions(id, page, pageSize);
 
     ok(res, {
       items: actions,
@@ -162,9 +184,11 @@ export async function createSnapshot(
   next: NextFunction
 ): Promise<void> {
   try {
-    const { label } = req.body as CreateSnapshotPayload;
+    const id = typeof req.params['id'] === 'string' ? req.params['id'].trim() : '';
+    if (!id) throw new AppError(400, 'VALIDATION_ERROR', 'Session ID is required.');
+    const parsed = z.object({ label: z.string().trim().min(1) }).safeParse(req.body);
 
-    if (!label || typeof label !== 'string' || label.trim().length === 0) {
+    if (!parsed.success) {
       res.status(400).json({
         success: false,
         error: { code: 'VALIDATION_ERROR', message: '"label" is required.' },
@@ -177,19 +201,21 @@ export async function createSnapshot(
     const { tree } = fileService.getDirectoryTree();
 
     const snapshot = await actionService.createSnapshot(
-      req.params['id'] as string,
-      label.trim(),
+      id,
+      parsed.data.label,
       tree as object
     );
 
     // Log the snapshot as an action
     await actionService.logAction({
-      sessionId:  req.params['id'] as string,
+      sessionId:  id,
       operation:  'SNAPSHOT',
       targetPath: '.',
       success:    true,
       payload:    { label: snapshot.label, snapshotId: snapshot.id },
-    }).catch(() => {});
+    }).catch((logErr) => {
+      console.warn('[agent.controller] Failed to log SNAPSHOT action:', logErr);
+    });
 
     ok(res, snapshot, 'Workspace snapshot created.', 201);
   } catch (err) {

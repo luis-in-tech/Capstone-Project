@@ -1,10 +1,11 @@
 import { PageHeading } from './PageHeading';
+import { ConfirmDialog } from './ConfirmDialog';
 import React, { useState, useEffect } from 'react';
 import { db } from '../lib/supabaseAdapter';
-import { collection, onSnapshot, addDoc, query, orderBy, serverTimestamp, updateDoc, doc } from '../lib/supabaseAdapter';
+import { collection, onSnapshot, addDoc, deleteDoc, query, orderBy, serverTimestamp, updateDoc, doc, getDocs, where } from '../lib/supabaseAdapter';
+import { escapeCsvCell, escapeHtml } from '../lib/exportUtils';
 import { Expense, Order, ExpenseCategory } from '../types';
 import { handleSupabaseError, OperationType } from '../lib/supabaseErrorHandler';
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -18,13 +19,11 @@ import {
   WalletIcon as Wallet,
   PlusIcon as Plus,
   ArrowUpRightIcon as ArrowUpRight,
-  ArrowDownRightIcon as ArrowDownRight,
   FileTextIcon as FileText,
   ChartPieIcon as PieChartIcon,
   ChartBarIcon as BarChartIcon,
   GearIcon as Settings,
   PencilSimpleIcon as Edit2,
-  ArchiveIcon as Archive,
   ArrowsCounterClockwiseIcon as RefreshCcw,
   TrashIcon as Trash2,
   CaretUpIcon as ChevronUp,
@@ -34,8 +33,6 @@ import {
   CalendarIcon as Calendar,
   FileXlsIcon as FileSpreadsheet,
   PrinterIcon as Printer,
-  PulseIcon as Activity,
-  StackIcon as Layers,
   UploadSimpleIcon as Upload,
   FileArrowUpIcon as FileUp,
   CheckCircleIcon as CheckCircle2,
@@ -44,11 +41,12 @@ import {
   CheckIcon as Check,
   MagnifyingGlassIcon as SearchIcon
 } from '@phosphor-icons/react';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, PieChart, Pie, Cell, LineChart, Line } from 'recharts';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, LineChart, Line } from 'recharts';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import { useAuth } from '../hooks/useAuth';
 import { useStaffAccess } from '../hooks/useStaffAccess';
+import { hasAdminRole } from '../lib/staffPermissions';
 import { toast } from 'sonner';
 
 export interface PLRow {
@@ -116,6 +114,39 @@ export const formatCurrency = (val: number | undefined) => {
   const isNegative = val < 0;
   const absVal = Math.abs(val).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   return isNegative ? `-₱${absVal}` : `₱${absVal}`;
+};
+
+const isOutflowExpense = (e: Expense) => (e as any).type !== 'income';
+
+const isDirectCogsCategory = (cat?: string) => {
+  const c = (cat || '').toLowerCase();
+  return c.includes('cost of goods') || c.includes('cogs') || c.includes('raw material') || c.includes('inventory purchase');
+};
+
+const isFreightCategory = (cat?: string) => {
+  const c = (cat || '').toLowerCase();
+  return !isDirectCogsCategory(c) && (c.includes('freight') || c.includes('shipping'));
+};
+
+const isCogsOrFreightCategory = (cat?: string) => isDirectCogsCategory(cat) || isFreightCategory(cat);
+
+const formatLocalDateKey = (d: Date) => {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+};
+
+const parseFormDateInput = (raw: string): Date | null => {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  const ymd = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (ymd) {
+    const dt = new Date(Number(ymd[1]), Number(ymd[2]) - 1, Number(ymd[3]));
+    return isNaN(dt.getTime()) ? null : dt;
+  }
+  const dt = new Date(trimmed);
+  return isNaN(dt.getTime()) ? null : dt;
 };
 
 // Helper: Generates realistic paced daily progression for audited financial baseline quarters
@@ -207,68 +238,58 @@ const CustomTrajectoryTooltip = ({ active, payload, label }: any) => {
 
 // ── Financial CSV Import Parser & Modal ───────────────────────────────────────
 function parseCSV(text: string): { headers: string[]; rows: Record<string, string>[] } {
-  const lines: string[] = [];
-  let currentLine = '';
+  const input = text.replace(/^\uFEFF/, '');
+  const records: string[][] = [];
+  let row: string[] = [];
+  let field = '';
   let insideQuote = false;
 
-  for (let i = 0; i < text.length; i++) {
-    const char = text[i];
-    const nextChar = text[i + 1];
+  for (let i = 0; i < input.length; i++) {
+    const char = input[i];
+    const nextChar = input[i + 1];
 
-    if (char === '"') {
-      if (insideQuote && nextChar === '"') {
-        currentLine += '"';
-        i++;
+    if (insideQuote) {
+      if (char === '"') {
+        if (nextChar === '"') {
+          field += '"';
+          i++;
+        } else {
+          insideQuote = false;
+        }
       } else {
-        insideQuote = !insideQuote;
+        field += char;
       }
-    } else if ((char === '\r' || char === '\n') && !insideQuote) {
+    } else if (char === '"') {
+      insideQuote = true;
+    } else if (char === ',') {
+      row.push(field.trim());
+      field = '';
+    } else if (char === '\r' || char === '\n') {
       if (char === '\r' && nextChar === '\n') i++;
-      if (currentLine.trim()) lines.push(currentLine);
-      currentLine = '';
+      row.push(field.trim());
+      if (row.some(cell => cell !== '')) records.push(row);
+      row = [];
+      field = '';
     } else {
-      currentLine += char;
+      field += char;
     }
   }
-  if (currentLine.trim()) lines.push(currentLine);
-  if (lines.length < 2) return { headers: [], rows: [] };
 
-  const parseLine = (line: string): string[] => {
-    const entries: string[] = [];
-    let entry = '';
-    let inQ = false;
-    for (let j = 0; j < line.length; j++) {
-      const c = line[j];
-      const nc = line[j + 1];
-      if (c === '"') {
-        if (inQ && nc === '"') {
-          entry += '"';
-          j++;
-        } else {
-          inQ = !inQ;
-        }
-      } else if (c === ',' && !inQ) {
-        entries.push(entry.trim());
-        entry = '';
-      } else {
-        entry += c;
-      }
-    }
-    entries.push(entry.trim());
-    return entries;
-  };
+  row.push(field.trim());
+  if (row.some(cell => cell !== '')) records.push(row);
+  if (records.length < 2) return { headers: [], rows: [] };
 
-  const headers = parseLine(lines[0]).map(h => h.trim().replace(/^["']|["']$/g, ''));
+  const headers = records[0].map(h => h.trim().replace(/^["']|["']$/g, ''));
   const rows: Record<string, string>[] = [];
 
-  for (let k = 1; k < lines.length; k++) {
-    const values = parseLine(lines[k]);
+  for (let k = 1; k < records.length; k++) {
+    const values = records[k];
     if (values.every(v => !v)) continue;
-    const row: Record<string, string> = {};
+    const item: Record<string, string> = {};
     headers.forEach((h, idx) => {
-      row[h] = values[idx] || '';
+      item[h] = values[idx] || '';
     });
-    rows.push(row);
+    rows.push(item);
   }
 
   return { headers, rows };
@@ -285,16 +306,40 @@ function cleanAmount(raw: any): number {
   return isNegative ? -Math.abs(num) : num;
 }
 
-function cleanDate(raw: any): string {
-  if (!raw) return new Date().toISOString();
-  const d = new Date(raw);
-  if (!isNaN(d.getTime())) return d.toISOString();
-  const parts = String(raw).split(/[/\-.]/);
-  if (parts.length === 3 && parts[0].length === 4) {
-    const parsed = new Date(`${parts[0]}-${parts[1]}-${parts[2]}`);
-    if (!isNaN(parsed.getTime())) return parsed.toISOString();
+function cleanDate(raw: any): string | null {
+  if (!raw) return null;
+  const trimmed = String(raw).trim();
+  if (!trimmed) return null;
+
+  const ymd = trimmed.match(/^(\d{4})[/\-.](\d{1,2})[/\-.](\d{1,2})(?:[T\s].*)?$/);
+  if (ymd) {
+    const year = Number(ymd[1]);
+    const month = Number(ymd[2]);
+    const day = Number(ymd[3]);
+    const dt = new Date(year, month - 1, day);
+    if (year >= 1900 && dt.getFullYear() === year && dt.getMonth() === month - 1 && dt.getDate() === day) {
+      return formatLocalDateKey(dt);
+    }
+    return null;
   }
-  return new Date().toISOString();
+
+  const mdy = trimmed.match(/^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{4})$/);
+  if (mdy) {
+    const month = Number(mdy[1]);
+    const day = Number(mdy[2]);
+    const year = Number(mdy[3]);
+    const dt = new Date(year, month - 1, day);
+    if (year >= 1900 && dt.getFullYear() === year && dt.getMonth() === month - 1 && dt.getDate() === day) {
+      return formatLocalDateKey(dt);
+    }
+    return null;
+  }
+
+  const parsed = new Date(trimmed);
+  if (!isNaN(parsed.getTime()) && parsed.getFullYear() >= 1900) {
+    return formatLocalDateKey(parsed);
+  }
+  return null;
 }
 
 function downloadSampleCSV(type: 'expenses' | 'sales') {
@@ -318,7 +363,7 @@ function downloadSampleCSV(type: 'expenses' | 'sales') {
 2025-03-10,Invoice,INV-2025-005,Quezon City Cycle World,1420000.00,Paid`;
   }
 
-  const blob = new Blob([content], { type: 'text/csv;charset=utf-8;' });
+  const blob = new Blob(['\uFEFF' + content], { type: 'text/csv;charset=utf-8;' });
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.setAttribute('href', url);
@@ -326,15 +371,17 @@ function downloadSampleCSV(type: 'expenses' | 'sales') {
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 interface FinancialImportModalProps {
   isOpen: boolean;
   onClose: () => void;
   categories: ExpenseCategory[];
+  canImportOrders?: boolean;
 }
 
-function FinancialImportModal({ isOpen, onClose, categories }: FinancialImportModalProps) {
+function FinancialImportModal({ isOpen, onClose, categories, canImportOrders = true }: FinancialImportModalProps) {
   const [file, setFile] = useState<File | null>(null);
   const [importType, setImportType] = useState<'auto' | 'expenses' | 'orders'>('auto');
   const [parsedRows, setParsedRows] = useState<any[]>([]);
@@ -344,6 +391,7 @@ function FinancialImportModal({ isOpen, onClose, categories }: FinancialImportMo
 
   const resetState = () => {
     setFile(null);
+    setImportType(canImportOrders ? 'auto' : 'expenses');
     setParsedRows([]);
     setError(null);
     setIsProcessing(false);
@@ -378,22 +426,28 @@ function FinancialImportModal({ isOpen, onClose, categories }: FinancialImportMo
     }
 
     const lowerHeaders = headers.map(h => h.toLowerCase());
-    const isSales = lowerHeaders.some(h => h.includes('customer') || h.includes('invoice') || h.includes('client') || h.includes('sale'));
+    const isSales = canImportOrders && lowerHeaders.some(h => h.includes('customer') || h.includes('invoice') || h.includes('client') || h.includes('sale'));
     const detected = isSales ? 'orders' : 'expenses';
     setDetectedType(detected);
 
-    const effective = forcedType === 'auto' ? detected : forcedType;
+    const effective = !canImportOrders
+      ? 'expenses'
+      : (forcedType === 'auto' ? detected : forcedType);
 
     const findKey = (row: Record<string, string>, regex: RegExp) => {
       const k = Object.keys(row).find(key => regex.test(key));
       return k ? row[k] : '';
     };
 
+    let invalidDateCount = 0;
     const mapped = rows.map((r, idx) => {
-      const rawDate = findKey(r, /date|trans.*date|posting/i) || new Date().toISOString();
-      const rawAmount = findKey(r, /amount|total|debit|credit|net|gross|val/i) || '0';
-      const amount = cleanAmount(rawAmount);
+      const rawDate = findKey(r, /date|trans.*date|posting/i);
+      const amount = cleanAmount(findKey(r, /amount|total|debit|credit|net|gross|val/i) || '0');
       const date = cleanDate(rawDate);
+      if (!date) {
+        invalidDateCount++;
+        return null;
+      }
 
       if (effective === 'expenses') {
         const category = findKey(r, /category|account|classification|item/i) || 'Cost of Goods Sold';
@@ -419,23 +473,34 @@ function FinancialImportModal({ isOpen, onClose, categories }: FinancialImportMo
           type: 'order',
         };
       }
-    }).filter(r => r.amount !== 0);
+    }).filter((r): r is NonNullable<typeof r> => r !== null && r.amount !== 0);
 
     if (mapped.length === 0) {
-      setError('Could not extract valid financial amounts from the CSV. Please check column headers.');
+      setError(
+        invalidDateCount > 0
+          ? `Found ${invalidDateCount} row(s) with invalid or missing dates, and no valid financial records.`
+          : 'Could not extract valid financial amounts from the CSV. Please check column headers.'
+      );
+      setParsedRows([]);
     } else {
       setParsedRows(mapped);
-      setError(null);
+      setError(invalidDateCount > 0 ? `Skipped ${invalidDateCount} row(s) with invalid or missing dates.` : null);
     }
   };
 
   const handleImportSubmit = async () => {
-    if (!parsedRows.length) return;
+    if (!parsedRows.length || isProcessing) return;
     setIsProcessing(true);
     setError(null);
 
+    const createdCategoryIds: string[] = [];
+    const createdExpenseIds: string[] = [];
+    const createdOrderIds: string[] = [];
+
     try {
-      const effective = importType === 'auto' ? detectedType : importType;
+      const effective = !canImportOrders
+        ? 'expenses'
+        : (importType === 'auto' ? detectedType : importType);
       const existingCats = new Set(categories.map(c => c.name.toLowerCase()));
 
       // Pre-provision missing categories in one pass before processing expenses
@@ -446,12 +511,13 @@ function FinancialImportModal({ isOpen, onClose, categories }: FinancialImportMo
 
         for (const newCat of uniqueNewCats) {
           try {
-            await addDoc(collection(db, 'expenseCategories'), {
+            const catRef = await addDoc(collection(db, 'expenseCategories'), {
               name: newCat,
               description: 'Auto-provisioned from financial CSV import',
               isActive: true,
               createdAt: serverTimestamp(),
             });
+            if (catRef?.id) createdCategoryIds.push(catRef.id);
             existingCats.add(newCat!.toLowerCase());
           } catch (catErr) {
             console.warn('Could not auto-create category:', catErr);
@@ -459,7 +525,7 @@ function FinancialImportModal({ isOpen, onClose, categories }: FinancialImportMo
         }
       }
 
-      // Process rows in parallel chunks of 10 for faster throughput and UI responsiveness
+      // Process rows in parallel chunks of 10 with full rollback tracking on failure
       const CHUNK_SIZE = 10;
       let importedCount = 0;
       for (let i = 0; i < parsedRows.length; i += CHUNK_SIZE) {
@@ -467,16 +533,17 @@ function FinancialImportModal({ isOpen, onClose, categories }: FinancialImportMo
         await Promise.all(chunk.map(async (row, cIdx) => {
           const globalIdx = i + cIdx;
           if (effective === 'expenses') {
-            await addDoc(collection(db, 'expenses'), {
+            const expRef = await addDoc(collection(db, 'expenses'), {
               category: row.category || 'Cost of Goods Sold',
               amount: row.amount,
               description: row.description,
               date: row.date,
+              type: 'expense',
               recordedBy: 'csv_import',
             });
+            if (expRef?.id) createdExpenseIds.push(expRef.id);
           } else {
-            // Orders / Sales
-            await addDoc(collection(db, 'orders'), {
+            const ordRef = await addDoc(collection(db, 'orders'), {
               orderNumber: row.orderNumber,
               clientName: row.clientName,
               clientId: `cli_imp_${Date.now()}_${globalIdx}`,
@@ -488,6 +555,7 @@ function FinancialImportModal({ isOpen, onClose, categories }: FinancialImportMo
               createdAt: row.date,
               updatedAt: row.date,
             });
+            if (ordRef?.id) createdOrderIds.push(ordRef.id);
           }
           importedCount++;
         }));
@@ -497,19 +565,31 @@ function FinancialImportModal({ isOpen, onClose, categories }: FinancialImportMo
       resetState();
       onClose();
     } catch (err: any) {
+      for (const ordId of [...createdOrderIds].reverse()) {
+        try { await deleteDoc(doc(db, 'orders', ordId)); } catch {}
+      }
+      for (const expId of [...createdExpenseIds].reverse()) {
+        try { await deleteDoc(doc(db, 'expenses', expId)); } catch {}
+      }
+      for (const catId of [...createdCategoryIds].reverse()) {
+        try { await deleteDoc(doc(db, 'expenseCategories', catId)); } catch {}
+      }
       console.error('CSV import error:', err);
-      setError(err.message || 'Failed to write records to Supabase');
+      setError((err?.message || 'Failed to write records to Supabase') + ' — partial import rolled back.');
     } finally {
       setIsProcessing(false);
     }
   };
 
-  const totalSum = parsedRows.reduce((sum, r) => sum + Math.abs(r.amount || 0), 0);
+  const effectiveType = !canImportOrders ? 'expenses' : (importType === 'auto' ? detectedType : importType);
+  const totalSum = parsedRows.reduce((sum, r) => sum + (effectiveType === 'expenses' ? (r.amount || 0) : Math.abs(r.amount || 0)), 0);
 
   return (
     <Dialog open={isOpen} onOpenChange={(open) => {
-      if (!open) resetState();
-      onClose();
+      if (!open && !isProcessing) {
+        resetState();
+        onClose();
+      }
     }}>
       <DialogContent className="sm:max-w-180 max-h-[90vh] flex flex-col p-5 rounded-sm border border-border shadow-md">
         <DialogHeader className="pb-3 border-b border-border">
@@ -563,10 +643,11 @@ function FinancialImportModal({ isOpen, onClose, categories }: FinancialImportMo
           <div className="flex items-center justify-between text-xs">
             <span className="font-bold text-muted-foreground text-[11px] uppercase tracking-wider">Data Classification:</span>
             <div className="flex items-center gap-1 bg-muted p-1 rounded-lg border border-border text-[10px]">
-              {(['auto', 'expenses', 'orders'] as const).map(t => (
+              {(canImportOrders ? (['auto', 'expenses', 'orders'] as const) : (['expenses'] as const)).map(t => (
                 <button
                   key={t}
                   type="button"
+                  disabled={isProcessing}
                   onClick={() => {
                     setImportType(t);
                     if (file) {
@@ -575,8 +656,8 @@ function FinancialImportModal({ isOpen, onClose, categories }: FinancialImportMo
                       reader.readAsText(file);
                     }
                   }}
-                  className={`px-3 py-1 rounded font-bold uppercase transition-all ${importType === t
-                    ? 'bg-[#1A2332] text-white shadow-xs'
+                  className={`px-3 py-1 rounded font-bold uppercase transition-all ${importType === t || (!canImportOrders && t === 'expenses')
+                    ? 'bg-primary text-primary-foreground shadow-xs'
                     : 'text-muted-foreground hover:text-foreground'
                     }`}
                 >
@@ -632,10 +713,10 @@ function FinancialImportModal({ isOpen, onClose, categories }: FinancialImportMo
                     <TableRow>
                       <TableHead className="text-[10px] py-2 font-bold uppercase">Date</TableHead>
                       <TableHead className="text-[10px] py-2 font-bold uppercase">
-                        {detectedType === 'expenses' ? 'Category' : 'Customer'}
+                        {effectiveType === 'expenses' ? 'Category' : 'Customer'}
                       </TableHead>
                       <TableHead className="text-[10px] py-2 font-bold uppercase">
-                        {detectedType === 'expenses' ? 'Description' : 'Invoice #'}
+                        {effectiveType === 'expenses' ? 'Description' : 'Invoice #'}
                       </TableHead>
                       <TableHead className="text-[10px] py-2 font-bold uppercase text-right">Amount</TableHead>
                     </TableRow>
@@ -706,7 +787,7 @@ function FinancialImportModal({ isOpen, onClose, categories }: FinancialImportMo
           <Button
             type="button"
             size="sm"
-            className="bg-[#1A2332] text-white hover:bg-[#1A2332]/90 font-bold gap-2 px-4"
+            className="bg-primary text-primary-foreground hover:bg-primary/90 font-bold gap-2 px-4"
             onClick={handleImportSubmit}
             disabled={!parsedRows.length || isProcessing}
           >
@@ -729,7 +810,9 @@ function FinancialImportModal({ isOpen, onClose, categories }: FinancialImportMo
 export function Finance() {
   const { profile } = useAuth();
   const access = useStaffAccess();
-  const isExpenseOnly = profile?.role !== 'admin' && access.permissions.financials === 'expense_only';
+  const isAdmin = hasAdminRole(profile);
+  const hasFinancialAccess = isAdmin || (!access.loading && !access.revoked && !access.error && access.permissions.financials !== undefined && access.permissions.financials !== 'none');
+  const isExpenseOnly = !isAdmin && access.permissions.financials === 'expense_only';
   const [selectedPeriod, setSelectedPeriod] = useState<'2025' | '2026' | 'all'>('2025');
   const [activeLedgerTab, setActiveLedgerTab] = useState<'statement' | 'ledger'>(() => isExpenseOnly ? 'ledger' : 'statement');
 
@@ -751,6 +834,13 @@ export function Finance() {
   const [editingExpense, setEditingExpense] = useState<Expense | null>(null);
   const [isEditExpenseOpen, setIsEditExpenseOpen] = useState(false);
   const [isCSVImportOpen, setIsCSVImportOpen] = useState(false);
+  const [confirmDialog, setConfirmDialog] = useState<{
+    title: string;
+    description: string;
+    confirmLabel: string;
+    destructive?: boolean;
+    onConfirm: () => Promise<void>;
+  } | null>(null);
 
   // Order selection & search in Record Entry modal
   const [selectedExpenseOrderId, setSelectedExpenseOrderId] = useState<string>('none');
@@ -819,23 +909,35 @@ export function Finance() {
 
   const uncollectedReceivables = React.useMemo(() => {
     return orders
-      .filter(o => o.paymentStatus === 'unpaid' || o.paymentStatus === 'partially_paid')
-      .reduce((sum, o) => sum + ((o.totalAmount || 0) - ((o as any).amountPaid || 0)), 0);
+      .filter(o => o.status !== 'cancelled' && (o.paymentStatus === 'unpaid' || o.paymentStatus === 'partially_paid'))
+      .reduce((sum, o) => sum + Math.max(0, (o.totalAmount || 0) - ((o as any).amountPaid || 0)), 0);
   }, [orders]);
 
   useEffect(() => {
+    if (!hasFinancialAccess) {
+      setExpenses([]);
+      setOrders([]);
+      setCategories([]);
+      return;
+    }
+
     const unsubExpenses = onSnapshot(query(collection(db, 'expenses'), orderBy('date', 'desc')), (snap) => {
-      setExpenses(snap.docs.map(d => ({ id: d.id, ...d.data() } as Expense)));
+      setExpenses(snap.docs.map((d: any) => ({ id: d.id, ...d.data() } as Expense)));
     }, (error) => {
       handleSupabaseError(error, OperationType.GET, 'expenses');
     });
-    const unsubOrders = onSnapshot(collection(db, 'orders'), (snap) => {
-      setOrders(snap.docs.map(d => ({ id: d.id, ...d.data() } as Order)));
-    }, (error) => {
-      handleSupabaseError(error, OperationType.GET, 'orders');
-    });
+    const unsubOrders = isExpenseOnly
+      ? () => {}
+      : onSnapshot(collection(db, 'orders'), (snap) => {
+          setOrders(snap.docs.map((d: any) => ({ id: d.id, ...d.data() } as Order)));
+        }, (error) => {
+          handleSupabaseError(error, OperationType.GET, 'orders');
+        });
+    if (isExpenseOnly) {
+      setOrders([]);
+    }
     const unsubCategories = onSnapshot(query(collection(db, 'expenseCategories'), orderBy('createdAt', 'asc')), (snap) => {
-      setCategories(snap.docs.map(d => ({ id: d.id, ...d.data() } as ExpenseCategory)));
+      setCategories(snap.docs.map((d: any) => ({ id: d.id, ...d.data() } as ExpenseCategory)));
     }, (error) => {
       handleSupabaseError(error, OperationType.GET, 'expenseCategories');
     });
@@ -845,13 +947,20 @@ export function Finance() {
       unsubOrders();
       unsubCategories();
     };
-  }, []);
+  }, [hasFinancialAccess, isExpenseOnly]);
 
   const parseDate = (d: any): Date | null => {
     if (!d) return null;
-    if (typeof d?.toDate === 'function') return d.toDate();
+    if (typeof d?.toDate === 'function') {
+      const dt = d.toDate();
+      return dt instanceof Date && !isNaN(dt.getTime()) ? dt : null;
+    }
     if (d instanceof Date) return isNaN(d.getTime()) ? null : d;
-    if (typeof d === 'string' || typeof d === 'number') {
+    if (typeof d === 'string') {
+      const parsed = parseFormDateInput(d);
+      return parsed && !isNaN(parsed.getTime()) ? parsed : null;
+    }
+    if (typeof d === 'number') {
       const parsed = new Date(d);
       return isNaN(parsed.getTime()) ? null : parsed;
     }
@@ -874,203 +983,304 @@ export function Finance() {
     });
   }, [expenses, selectedPeriod]);
 
+  const hasLive2025 = React.useMemo(() => {
+    const hasRev2025 = orders.some(o => ['delivered', 'completed'].includes(o.status) && parseDate(o.createdAt)?.getFullYear() === 2025);
+    const hasExp2025 = expenses.some(e => isOutflowExpense(e) && parseDate(e.date)?.getFullYear() === 2025);
+    return hasRev2025 || hasExp2025;
+  }, [orders, expenses]);
+
   // 100% Dynamic Financial Health KPIs (Computed directly from live Supabase collections)
   const displayRevenue = React.useMemo(() => {
     const ordersRev = filteredOrders
       .filter(o => ['delivered', 'completed'].includes(o.status))
       .reduce((sum, o) => sum + (o.totalAmount || 0), 0);
-    // If Supabase has order records for this period, compute dynamically
-    if (ordersRev > 0) return ordersRev;
-    // Fallback baseline only if database has zero records and 2025 audited period is selected
-    if (selectedPeriod === '2025') return 21502353.40;
-    return 0;
-  }, [filteredOrders, selectedPeriod]);
+    if (selectedPeriod === '2025' && !hasLive2025) return 21502353.40;
+    if (selectedPeriod === 'all' && !hasLive2025) return ordersRev + 21502353.40;
+    return ordersRev;
+  }, [filteredOrders, selectedPeriod, hasLive2025]);
 
   const displayExpenses = React.useMemo(() => {
-    const totalExp = filteredExpenses.filter(e => (e as any).type !== 'income').reduce((sum, e) => sum + (e.amount || 0), 0);
-    // If Supabase has expense records for this period, compute dynamically
-    if (totalExp > 0) return totalExp;
-    // Fallback baseline only if database has zero records and 2025 audited period is selected
-    if (selectedPeriod === '2025') return 17122588.64;
-    return 0;
-  }, [filteredExpenses, selectedPeriod]);
+    const totalExp = filteredExpenses.filter(isOutflowExpense).reduce((sum, e) => sum + (e.amount || 0), 0);
+    if (selectedPeriod === '2025' && !hasLive2025) return 17122588.64;
+    if (selectedPeriod === 'all' && !hasLive2025) return totalExp + 17122588.64;
+    return totalExp;
+  }, [filteredExpenses, selectedPeriod, hasLive2025]);
 
   const displayGrossProfit = React.useMemo(() => {
     const directCogs = filteredExpenses
-      .filter(e => {
-        const cat = (e.category || '').toLowerCase();
-        return cat.includes('cost of goods') || cat.includes('freight') || cat.includes('cogs');
-      })
+      .filter(e => isOutflowExpense(e) && isCogsOrFreightCategory(e.category))
       .reduce((sum, e) => sum + (e.amount || 0), 0);
 
-    if (displayRevenue > 0 || directCogs > 0) {
-      return displayRevenue - directCogs;
-    }
-    if (selectedPeriod === '2025') return 4416518.11;
-    return 0;
-  }, [displayRevenue, filteredExpenses, selectedPeriod]);
+    if (selectedPeriod === '2025' && !hasLive2025) return 4416518.11;
+    if (selectedPeriod === 'all' && !hasLive2025) return displayRevenue - (directCogs + 17085835.29);
+    return displayRevenue - directCogs;
+  }, [displayRevenue, filteredExpenses, selectedPeriod, hasLive2025]);
 
   const displayNetProfit = React.useMemo(() => {
-    if (displayRevenue > 0 || displayExpenses > 0) {
-      return displayRevenue - displayExpenses;
-    }
-    if (selectedPeriod === '2025') return 4379764.76;
-    return 0;
-  }, [displayRevenue, displayExpenses, selectedPeriod]);
+    if (selectedPeriod === '2025' && !hasLive2025) return 4379764.76;
+    return displayRevenue - displayExpenses;
+  }, [displayRevenue, displayExpenses, selectedPeriod, hasLive2025]);
 
   const grossMargin = displayRevenue > 0 ? ((displayGrossProfit / displayRevenue) * 100).toFixed(2) : '0.00';
   const netMargin = displayRevenue > 0 ? ((displayNetProfit / displayRevenue) * 100).toFixed(2) : '0.00';
 
   // Process data for the performance chart with Granularity support
   const chartData = React.useMemo(() => {
+    const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+    const calcYearTotals = (year: number) => {
+      const rev = orders
+        .filter(o => ['delivered', 'completed'].includes(o.status) && parseDate(o.createdAt)?.getFullYear() === year)
+        .reduce((sum, o) => sum + (o.totalAmount || 0), 0);
+      const exp = expenses
+        .filter(e => isOutflowExpense(e) && parseDate(e.date)?.getFullYear() === year)
+        .reduce((sum, e) => sum + (e.amount || 0), 0);
+      return { Revenue: rev, Expenses: exp, Net: rev - exp };
+    };
+
+    const calcQuarters = (year: number, shortYear: string) =>
+      ['Q1', 'Q2', 'Q3', 'Q4'].map((q, qIdx) => {
+        const rev = orders
+          .filter(o => {
+            if (!['delivered', 'completed'].includes(o.status)) return false;
+            const d = parseDate(o.createdAt);
+            return d && d.getFullYear() === year && Math.floor(d.getMonth() / 3) === qIdx;
+          })
+          .reduce((sum, o) => sum + (o.totalAmount || 0), 0);
+        const exp = expenses
+          .filter(e => {
+            if (!isOutflowExpense(e)) return false;
+            const d = parseDate(e.date);
+            return d && d.getFullYear() === year && Math.floor(d.getMonth() / 3) === qIdx;
+          })
+          .reduce((sum, e) => sum + (e.amount || 0), 0);
+        return { name: `${q} ${shortYear}`, Revenue: rev, Expenses: exp, Net: rev - exp };
+      });
+
+    const calcMonths = (year: number, shortYear: string) =>
+      monthNames.map((mName, mIdx) => {
+        const rev = orders
+          .filter(o => {
+            if (!['delivered', 'completed'].includes(o.status)) return false;
+            const d = parseDate(o.createdAt);
+            return d && d.getFullYear() === year && d.getMonth() === mIdx;
+          })
+          .reduce((sum, o) => sum + (o.totalAmount || 0), 0);
+        const exp = expenses
+          .filter(e => {
+            if (!isOutflowExpense(e)) return false;
+            const d = parseDate(e.date);
+            return d && d.getFullYear() === year && d.getMonth() === mIdx;
+          })
+          .reduce((sum, e) => sum + (e.amount || 0), 0);
+        return { name: `${mName} ${shortYear}`, Revenue: rev, Expenses: exp, Net: rev - exp };
+      });
+
+    const audited2025Monthly = [
+      { name: 'Jan 25', Revenue: 8118370.93, Expenses: 5916540.27, Net: 2201830.66 },
+      { name: 'Feb 25', Revenue: 7073596.25, Expenses: 6099031.96, Net: 974564.29 },
+      { name: 'Mar 25', Revenue: 6310386.22, Expenses: 5107016.41, Net: 1203369.81 },
+    ];
+
     // 1. ANNUAL GRANULARITY
     if (chartGranularity === 'annual') {
       if (selectedPeriod === '2025') {
+        if (hasLive2025) {
+          return [{ name: 'FY 2025 (Live Ops)', ...calcYearTotals(2025) }];
+        }
         return [
           { name: 'FY 2025 (Q1 Audited)', Revenue: 21502353.40, Expenses: 17122588.64, Net: 4379764.76 }
         ];
       }
       if (selectedPeriod === '2026') {
-        const rev2026 = filteredOrders
-          .filter(o => ['delivered', 'completed'].includes(o.status))
-          .reduce((sum, o) => sum + (o.totalAmount || 0), 0);
-        const exp2026 = filteredExpenses.reduce((sum, e) => sum + (e.amount || 0), 0);
-        return [
-          { name: 'FY 2026 (Live Ops)', Revenue: rev2026, Expenses: exp2026, Net: rev2026 - exp2026 }
-        ];
+        return [{ name: 'FY 2026 (Live Ops)', ...calcYearTotals(2026) }];
       }
-      // 'all' periods: Compare 2025 vs 2026
-      const rev2026 = orders
-        .filter(o => {
-          if (!['delivered', 'completed'].includes(o.status)) return false;
-          const d = parseDate(o.createdAt);
-          return d && d.getFullYear() === 2026;
-        })
-        .reduce((sum, o) => sum + (o.totalAmount || 0), 0);
-      const exp2026 = expenses
-        .filter(e => {
-          const d = parseDate(e.date);
-          return d && d.getFullYear() === 2026;
-        })
-        .reduce((sum, e) => sum + (e.amount || 0), 0);
+      const fy2025 = hasLive2025
+        ? { name: 'FY 2025 (Live Ops)', ...calcYearTotals(2025) }
+        : { name: 'FY 2025 (Audited)', Revenue: 21502353.40, Expenses: 17122588.64, Net: 4379764.76 };
       return [
-        { name: 'FY 2025 (Audited)', Revenue: 21502353.40, Expenses: 17122588.64, Net: 4379764.76 },
-        { name: 'FY 2026 (Live Ops)', Revenue: rev2026, Expenses: exp2026, Net: rev2026 - exp2026 },
+        fy2025,
+        { name: 'FY 2026 (Live Ops)', ...calcYearTotals(2026) },
       ];
     }
 
     // 2. QUARTERLY GRANULARITY
     if (chartGranularity === 'quarterly') {
       if (selectedPeriod === '2025') {
+        if (hasLive2025) return calcQuarters(2025, '25');
         return [
           { name: 'Q1 2025', Revenue: 21502353.40, Expenses: 17122588.64, Net: 4379764.76 }
         ];
       }
       if (selectedPeriod === '2026') {
-        const qNames = ['Q1 26', 'Q2 26', 'Q3 26', 'Q4 26'];
-        return qNames.map((name, qIdx) => {
-          const qOrders = orders.filter(o => {
-            if (!['delivered', 'completed'].includes(o.status)) return false;
-            const d = parseDate(o.createdAt);
-            return d && d.getFullYear() === 2026 && Math.floor(d.getMonth() / 3) === qIdx;
-          });
-          const qExpenses = expenses.filter(e => {
-            const d = parseDate(e.date);
-            return d && d.getFullYear() === 2026 && Math.floor(d.getMonth() / 3) === qIdx;
-          });
-          const rev = qOrders.reduce((sum, o) => sum + (o.totalAmount || 0), 0);
-          const exp = qExpenses.reduce((sum, e) => sum + (e.amount || 0), 0);
-          return { name, Revenue: rev, Expenses: exp, Net: rev - exp };
-        });
+        return calcQuarters(2026, '26');
       }
-      // 'all' periods: Q1 2025 Audited + 2026 Quarters
-      const q2026 = ['Q1 26', 'Q2 26', 'Q3 26', 'Q4 26'].map((name, qIdx) => {
-        const qOrders = orders.filter(o => {
-          if (!['delivered', 'completed'].includes(o.status)) return false;
-          const d = parseDate(o.createdAt);
-          return d && d.getFullYear() === 2026 && Math.floor(d.getMonth() / 3) === qIdx;
-        });
-        const qExpenses = expenses.filter(e => {
-          const d = parseDate(e.date);
-          return d && d.getFullYear() === 2026 && Math.floor(d.getMonth() / 3) === qIdx;
-        });
-        const rev = qOrders.reduce((sum, o) => sum + (o.totalAmount || 0), 0);
-        const exp = qExpenses.reduce((sum, e) => sum + (e.amount || 0), 0);
-        return { name, Revenue: rev, Expenses: exp, Net: rev - exp };
-      });
-      return [
-        { name: 'Q1 25 (Audited)', Revenue: 21502353.40, Expenses: 17122588.64, Net: 4379764.76 },
-        ...q2026
-      ];
+      const q2025 = hasLive2025
+        ? calcQuarters(2025, '25')
+        : [{ name: 'Q1 25 (Audited)', Revenue: 21502353.40, Expenses: 17122588.64, Net: 4379764.76 }];
+      return [...q2025, ...calcQuarters(2026, '26')];
     }
 
     // 3. MONTHLY GRANULARITY (Default)
     if (selectedPeriod === '2025') {
-      return [
-        { name: 'Jan 25', Revenue: 8118370.93, Expenses: 5916540.27, Net: 2201830.66 },
-        { name: 'Feb 25', Revenue: 7073596.25, Expenses: 6099031.96, Net: 974564.29 },
-        { name: 'Mar 25', Revenue: 6310386.22, Expenses: 5107016.41, Net: 1203369.81 },
-      ];
+      return hasLive2025 ? calcMonths(2025, '25') : audited2025Monthly;
     }
-
     if (selectedPeriod === '2026') {
-      const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-      return monthNames.map((mName, mIdx) => {
-        const monthOrders = orders.filter(o => {
-          if (!['delivered', 'completed'].includes(o.status)) return false;
-          const d = parseDate(o.createdAt);
-          return d && d.getFullYear() === 2026 && d.getMonth() === mIdx;
-        });
-        const monthExpenses = expenses.filter(e => {
-          const d = parseDate(e.date);
-          return d && d.getFullYear() === 2026 && d.getMonth() === mIdx;
-        });
-        const rev = monthOrders.reduce((sum, o) => sum + (o.totalAmount || 0), 0);
-        const exp = monthExpenses.reduce((sum, e) => sum + (e.amount || 0), 0);
+      return calcMonths(2026, '26');
+    }
+    const m2025 = hasLive2025 ? calcMonths(2025, '25') : audited2025Monthly;
+    return [...m2025, ...calcMonths(2026, '26')];
+  }, [chartGranularity, selectedPeriod, orders, expenses, hasLive2025]);
+
+  // Financial Trajectory Chart Data — Daily, Weekly, and Monthly Granularity with Date Hovering
+  const chartData12Months = React.useMemo(() => {
+    const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+    const buildMonthlyPoints = (year: number, shortYear: string, trimLeadingZeros = true) => {
+      const allMonths = monthNames.map((mName, mIdx) => {
+        const rev = orders
+          .filter(o => {
+            if (!['delivered', 'completed'].includes(o.status)) return false;
+            const d = parseDate(o.createdAt);
+            return d && d.getFullYear() === year && d.getMonth() === mIdx;
+          })
+          .reduce((sum, o) => sum + (o.totalAmount || 0), 0);
+        const exp = expenses
+          .filter(e => {
+            if (!isOutflowExpense(e)) return false;
+            const d = parseDate(e.date);
+            return d && d.getFullYear() === year && d.getMonth() === mIdx;
+          })
+          .reduce((sum, e) => sum + (e.amount || 0), 0);
         return {
-          name: `${mName} 26`,
+          name: `${mName} ${shortYear}`,
+          fullDate: `${mName} ${year} (Monthly Aggregate)`,
           Revenue: rev,
           Expenses: exp,
           Net: rev - exp,
         };
       });
-    }
 
-    // 'all' periods: Q1 2025 Audited + 2026 months
-    const m2025 = [
-      { name: 'Jan 25', Revenue: 8118370.93, Expenses: 5916540.27, Net: 2201830.66 },
-      { name: 'Feb 25', Revenue: 7073596.25, Expenses: 6099031.96, Net: 974564.29 },
-      { name: 'Mar 25', Revenue: 6310386.22, Expenses: 5107016.41, Net: 1203369.81 },
-    ];
-    const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-    const m2026 = monthNames.map((mName, mIdx) => {
-      const monthOrders = orders.filter(o => {
-        if (!['delivered', 'completed'].includes(o.status)) return false;
+      if (!trimLeadingZeros) return allMonths;
+      const firstActiveIdx = allMonths.findIndex(d => d.Revenue > 0 || d.Expenses > 0);
+      const lastActiveIdx = allMonths.map(d => d.Revenue > 0 || d.Expenses > 0).lastIndexOf(true);
+      if (firstActiveIdx === -1) return [];
+      const startIdx = Math.max(0, firstActiveIdx - 1);
+      return allMonths.slice(startIdx, lastActiveIdx + 1);
+    };
+
+    const buildWeeklyPoints = (year: number) => {
+      const weeksMap: Record<string, { rev: number; exp: number; label: string; fullDate: string }> = {};
+
+      orders.filter(o => ['delivered', 'completed'].includes(o.status)).forEach(o => {
         const d = parseDate(o.createdAt);
-        return d && d.getFullYear() === 2026 && d.getMonth() === mIdx;
+        if (!d || d.getFullYear() !== year) return;
+        const mIdx = d.getMonth();
+        const month = monthNames[mIdx];
+        const weekNum = Math.ceil(d.getDate() / 7);
+        const key = `${String(mIdx + 1).padStart(2, '0')}-W${weekNum}`;
+        if (!weeksMap[key]) {
+          weeksMap[key] = { rev: 0, exp: 0, label: `${month} W${weekNum}`, fullDate: `${month} Week ${weekNum}, ${year}` };
+        }
+        weeksMap[key].rev += o.totalAmount || 0;
       });
-      const monthExpenses = expenses.filter(e => {
-        const d = parseDate(e.date);
-        return d && d.getFullYear() === 2026 && d.getMonth() === mIdx;
-      });
-      const rev = monthOrders.reduce((sum, o) => sum + (o.totalAmount || 0), 0);
-      const exp = monthExpenses.reduce((sum, e) => sum + (e.amount || 0), 0);
-      return {
-        name: `${mName} 26`,
-        Revenue: rev,
-        Expenses: exp,
-        Net: rev - exp,
-      };
-    });
-    return [...m2025, ...m2026];
-  }, [chartGranularity, selectedPeriod, orders, expenses, filteredOrders, filteredExpenses]);
 
-  // Financial Trajectory Chart Data — Daily, Weekly, and Monthly Granularity with Date Hovering
-  const chartData12Months = React.useMemo(() => {
+      expenses.filter(isOutflowExpense).forEach(e => {
+        const d = parseDate(e.date);
+        if (!d || d.getFullYear() !== year) return;
+        const mIdx = d.getMonth();
+        const month = monthNames[mIdx];
+        const weekNum = Math.ceil(d.getDate() / 7);
+        const key = `${String(mIdx + 1).padStart(2, '0')}-W${weekNum}`;
+        if (!weeksMap[key]) {
+          weeksMap[key] = { rev: 0, exp: 0, label: `${month} W${weekNum}`, fullDate: `${month} Week ${weekNum}, ${year}` };
+        }
+        weeksMap[key].exp += e.amount || 0;
+      });
+
+      const sortedKeys = Object.keys(weeksMap).sort();
+      return sortedKeys.map(k => ({
+        name: weeksMap[k].label,
+        fullDate: weeksMap[k].fullDate,
+        Revenue: weeksMap[k].rev,
+        Expenses: weeksMap[k].exp,
+        Net: weeksMap[k].rev - weeksMap[k].exp,
+      }));
+    };
+
+    const buildDailyPoints = (year: number) => {
+      const yearOrderDates = orders
+        .filter(o => ['delivered', 'completed'].includes(o.status))
+        .map(o => parseDate(o.createdAt))
+        .filter((d): d is Date => Boolean(d && d.getFullYear() === year));
+      const yearExpenseDates = expenses
+        .filter(isOutflowExpense)
+        .map(e => parseDate(e.date))
+        .filter((d): d is Date => Boolean(d && d.getFullYear() === year));
+
+      const allDates = [...yearOrderDates, ...yearExpenseDates];
+      const now = new Date();
+      const latestDate = allDates.length > 0
+        ? new Date(Math.max(...allDates.map(d => d.getTime())))
+        : null;
+      const targetMonth = latestDate
+        ? latestDate.getMonth()
+        : (now.getFullYear() === year ? now.getMonth() : 0);
+
+      const daysInTargetMonth = new Date(year, targetMonth + 1, 0).getDate();
+      const monthShort = monthNames[targetMonth];
+      const daysMap: Record<string, { rev: number; exp: number; fullDate: string; name: string }> = {};
+
+      for (let d = 1; d <= daysInTargetMonth; d++) {
+        const key = formatLocalDateKey(new Date(year, targetMonth, d));
+        daysMap[key] = {
+          name: `${monthShort} ${d}`,
+          fullDate: `${monthShort} ${d}, ${year}`,
+          rev: 0,
+          exp: 0,
+        };
+      }
+
+      orders.filter(o => ['delivered', 'completed'].includes(o.status)).forEach(o => {
+        const d = parseDate(o.createdAt);
+        if (!d) return;
+        const key = formatLocalDateKey(d);
+        if (daysMap[key]) daysMap[key].rev += o.totalAmount || 0;
+      });
+
+      expenses.filter(isOutflowExpense).forEach(e => {
+        const d = parseDate(e.date);
+        if (!d) return;
+        const key = formatLocalDateKey(d);
+        if (daysMap[key]) daysMap[key].exp += e.amount || 0;
+      });
+
+      const dayPoints = Object.keys(daysMap).sort().map(k => ({
+        name: daysMap[k].name,
+        fullDate: daysMap[k].fullDate,
+        Revenue: daysMap[k].rev,
+        Expenses: daysMap[k].exp,
+        Net: daysMap[k].rev - daysMap[k].exp,
+      }));
+
+      const lastActiveDayIdx = dayPoints.map(p => p.Revenue > 0 || p.Expenses > 0).lastIndexOf(true);
+      const isCurrentYearMonth = now.getFullYear() === year && now.getMonth() === targetMonth;
+      const cutoff = isCurrentYearMonth
+        ? Math.max(lastActiveDayIdx + 1, now.getDate())
+        : (lastActiveDayIdx >= 0 ? lastActiveDayIdx + 1 : daysInTargetMonth);
+      return dayPoints.slice(0, Math.min(daysInTargetMonth, Math.max(1, cutoff)));
+    };
+
     // ══════════════════════════════════════════════════════════════
-    // FY 2025 (Q1 Audited Baseline)
+    // FY 2025 (Live if present, else Q1 Audited Baseline)
     // ══════════════════════════════════════════════════════════════
     if (selectedPeriod === '2025') {
+      if (hasLive2025) {
+        if (trajectoryGranularity === 'monthly') return buildMonthlyPoints(2025, '25');
+        if (trajectoryGranularity === 'weekly') return buildWeeklyPoints(2025);
+        return buildDailyPoints(2025);
+      }
+
       if (trajectoryGranularity === 'monthly') {
         return [
           { name: 'Jan 25', fullDate: 'Jan 31, 2025 (Month-End Audit Close)', Revenue: 8118370.93, Expenses: 5916540.27, Net: 2201830.66 },
@@ -1103,9 +1313,6 @@ export function Finance() {
         }));
       }
 
-      // DAILY GRANULARITY FOR 2025:
-      // Generates daily timeline points for all 90 days of Q1 2025 (Jan 1 to Mar 31).
-      // Feb 26, Feb 27, Feb 28 are distinct data points!
       const janDays = generatePacedDays(2025, 0, 8118370.93, 5916540.27);
       const febDays = generatePacedDays(2025, 1, 7073596.25, 6099031.96);
       const marDays = generatePacedDays(2025, 2, 6310386.22, 5107016.41);
@@ -1116,144 +1323,9 @@ export function Finance() {
     // FY 2026 (Live Operations)
     // ══════════════════════════════════════════════════════════════
     if (selectedPeriod === '2026') {
-      if (trajectoryGranularity === 'monthly') {
-        const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-        const allMonths = monthNames.map((mName, mIdx) => {
-          const monthOrders = orders.filter(o => {
-            if (!['delivered', 'completed'].includes(o.status)) return false;
-            const d = parseDate(o.createdAt);
-            return d && d.getFullYear() === 2026 && d.getMonth() === mIdx;
-          });
-          const monthExpenses = expenses.filter(e => {
-            const d = parseDate(e.date);
-            return d && d.getFullYear() === 2026 && d.getMonth() === mIdx;
-          });
-          const rev = monthOrders.reduce((sum, o) => sum + (o.totalAmount || 0), 0);
-          const exp = monthExpenses.reduce((sum, e) => sum + (e.amount || 0), 0);
-          return {
-            name: `${mName} 26`,
-            fullDate: `${mName} 2026 (Monthly Aggregate)`,
-            Revenue: rev,
-            Expenses: exp,
-            Net: rev - exp,
-          };
-        });
-
-        // Trim leading zeroes to eliminate the 9-month flatline (pointed out by orange arrows in Screenshot 3!)
-        const firstActiveIdx = allMonths.findIndex(d => d.Revenue > 0 || d.Expenses > 0);
-        const lastActiveIdx = allMonths.map(d => d.Revenue > 0 || d.Expenses > 0).lastIndexOf(true);
-
-        if (firstActiveIdx === -1) {
-          return allMonths.slice(0, 3);
-        }
-
-        // Include 1 baseline month prior if available for visual context, and slice up to last active month
-        const startIdx = Math.max(0, firstActiveIdx - 1);
-        return allMonths.slice(startIdx, lastActiveIdx + 1);
-      }
-
-      if (trajectoryGranularity === 'weekly') {
-        const weeksMap: Record<string, { rev: number; exp: number; label: string; fullDate: string }> = {};
-
-        filteredOrders.filter(o => ['delivered', 'completed'].includes(o.status)).forEach(o => {
-          const d = parseDate(o.createdAt);
-          if (!d) return;
-          const month = d.toLocaleString('default', { month: 'short' });
-          const weekNum = Math.ceil(d.getDate() / 7);
-          const key = `${month}-W${weekNum}`;
-          if (!weeksMap[key]) {
-            weeksMap[key] = {
-              rev: 0,
-              exp: 0,
-              label: `${month} W${weekNum}`,
-              fullDate: `${month} Week ${weekNum}, 2026`,
-            };
-          }
-          weeksMap[key].rev += o.totalAmount || 0;
-        });
-
-        filteredExpenses.forEach(e => {
-          const d = parseDate(e.date);
-          if (!d) return;
-          const month = d.toLocaleString('default', { month: 'short' });
-          const weekNum = Math.ceil(d.getDate() / 7);
-          const key = `${month}-W${weekNum}`;
-          if (!weeksMap[key]) {
-            weeksMap[key] = {
-              rev: 0,
-              exp: 0,
-              label: `${month} W${weekNum}`,
-              fullDate: `${month} Week ${weekNum}, 2026`,
-            };
-          }
-          weeksMap[key].exp += e.amount || 0;
-        });
-
-        const sortedKeys = Object.keys(weeksMap).sort();
-        if (sortedKeys.length === 0) {
-          return [
-            { name: 'Oct W1', fullDate: 'Oct 01–07, 2026', Revenue: 0, Expenses: 0, Net: 0 },
-            { name: 'Oct W2', fullDate: 'Oct 08–14, 2026', Revenue: 0, Expenses: 0, Net: 0 },
-            { name: 'Oct W3', fullDate: 'Oct 15–21, 2026', Revenue: 0, Expenses: 0, Net: 0 },
-            { name: 'Oct W4', fullDate: 'Oct 22–31, 2026', Revenue: 0, Expenses: 0, Net: 0 },
-          ];
-        }
-
-        return sortedKeys.map(k => ({
-          name: weeksMap[k].label,
-          fullDate: weeksMap[k].fullDate,
-          Revenue: weeksMap[k].rev,
-          Expenses: weeksMap[k].exp,
-          Net: weeksMap[k].rev - weeksMap[k].exp,
-        }));
-      }
-
-      // DAILY GRANULARITY FOR 2026:
-      const daysMap: Record<string, { rev: number; exp: number; fullDate: string; name: string }> = {};
-      const currentYear = 2026;
-      const targetMonth = 9; // October
-      const daysInTargetMonth = new Date(currentYear, targetMonth + 1, 0).getDate();
-      const monthShort = 'Oct';
-
-      for (let d = 1; d <= daysInTargetMonth; d++) {
-        const dStr = d < 10 ? `0${d}` : `${d}`;
-        const key = `2026-10-${dStr}`;
-        daysMap[key] = {
-          name: `${monthShort} ${d}`,
-          fullDate: `${monthShort} ${d}, 2026`,
-          rev: 0,
-          exp: 0,
-        };
-      }
-
-      filteredOrders.filter(o => ['delivered', 'completed'].includes(o.status)).forEach(o => {
-        const d = parseDate(o.createdAt);
-        if (!d) return;
-        const key = d.toISOString().split('T')[0];
-        if (daysMap[key]) {
-          daysMap[key].rev += o.totalAmount || 0;
-        }
-      });
-
-      filteredExpenses.forEach(e => {
-        const d = parseDate(e.date);
-        if (!d) return;
-        const key = d.toISOString().split('T')[0];
-        if (daysMap[key]) {
-          daysMap[key].exp += e.amount || 0;
-        }
-      });
-
-      const dayPoints = Object.keys(daysMap).sort().map(k => ({
-        name: daysMap[k].name,
-        fullDate: daysMap[k].fullDate,
-        Revenue: daysMap[k].rev,
-        Expenses: daysMap[k].exp,
-        Net: daysMap[k].rev - daysMap[k].exp,
-      }));
-
-      const currentDay = Math.min(daysInTargetMonth, Math.max(15, (new Date()).getDate()));
-      return dayPoints.slice(0, currentDay);
+      if (trajectoryGranularity === 'monthly') return buildMonthlyPoints(2026, '26');
+      if (trajectoryGranularity === 'weekly') return buildWeeklyPoints(2026);
+      return buildDailyPoints(2026);
     }
 
     // ══════════════════════════════════════════════════════════════
@@ -1264,36 +1336,30 @@ export function Finance() {
       { name: 'Feb 25', fullDate: 'Feb 28, 2025 (Audited Close)', Revenue: 7073596.25, Expenses: 6099031.96, Net: 974564.29 },
       { name: 'Mar 25', fullDate: 'Mar 31, 2025 (Audited Close)', Revenue: 6310386.22, Expenses: 5107016.41, Net: 1203369.81 },
     ];
-    const live2026 = [
-      { name: 'Oct 26', fullDate: 'Oct 2026 (Live Ops)', Revenue: 0, Expenses: 1973725.00, Net: -1973725.00 },
-    ];
-    return [...audited2025, ...live2026];
-  }, [selectedPeriod, trajectoryGranularity, orders, expenses, filteredOrders, filteredExpenses]);
-
-  const currentMonthDate = new Date();
-  const currentMonthName = currentMonthDate.toLocaleString('default', { month: 'short' });
-  const currentMonthYear = currentMonthDate.getFullYear();
+    const pts2025 = hasLive2025 ? buildMonthlyPoints(2025, '25') : audited2025;
+    const active2026 = buildMonthlyPoints(2026, '26').filter(m => m.Revenue > 0 || m.Expenses > 0);
+    return [...pts2025, ...active2026];
+  }, [selectedPeriod, trajectoryGranularity, orders, expenses, hasLive2025]);
 
   const pieData = React.useMemo(() => {
-    const isCogsCategory = (cat: string) => ['Cost of Goods Sold', 'COGS', 'Inventory Purchase', 'Raw Materials'].some(
-      c => (cat || '').toLowerCase().includes(c.toLowerCase())
-    );
+    const outflowExpenses = filteredExpenses.filter(isOutflowExpense);
 
-    // 1. Dynamic aggregation from Supabase filteredExpenses!
-    if (filteredExpenses.length > 0) {
-      const hasOpexExpenses = filteredExpenses.some(e => !isCogsCategory(e.category));
+    // 1. Dynamic aggregation from Supabase outflow expenses!
+    if (outflowExpenses.length > 0) {
+      const hasOpexExpenses = outflowExpenses.some(e => !isCogsOrFreightCategory(e.category));
       const effectiveScope = (expenseScope === 'opex' && !hasOpexExpenses)
         ? 'all'
         : expenseScope;
 
       const categoryTotals: Record<string, number> = {};
-      filteredExpenses.forEach(e => {
+      outflowExpenses.forEach(e => {
         const cat = e.category || 'Other';
-        if (effectiveScope === 'opex' && isCogsCategory(cat)) return;
-        categoryTotals[cat] = (categoryTotals[cat] || 0) + Math.abs(e.amount || 0);
+        if (effectiveScope === 'opex' && isCogsOrFreightCategory(cat)) return;
+        categoryTotals[cat] = (categoryTotals[cat] || 0) + (e.amount || 0);
       });
 
       return Object.entries(categoryTotals)
+        .filter(([, value]) => value > 0)
         .map(([name, value]) => {
           const cat = categories.find(c => c.name === name);
           return {
@@ -1306,14 +1372,14 @@ export function Finance() {
     }
 
     // 2. Baseline fallback only if database has zero records for FY 2025
-    if (selectedPeriod === '2025') {
+    if (selectedPeriod === '2025' && !hasLive2025) {
       const full2025List = [
         { name: 'Cost of Goods Sold', value: 17087065.29, isActive: true, isCogs: true },
         { name: 'OTHER EXPENSE', value: 42380.50, isActive: true, isCogs: false },
         { name: 'Ask My Accountant', value: 18862.15, isActive: true, isCogs: false },
         { name: 'Travel Expense', value: 14500.00, isActive: true, isCogs: false },
         { name: 'Office Supplies', value: 1265.00, isActive: true, isCogs: false },
-        { name: 'Freight and Shipping Costs', value: 1230.00, isActive: true, isCogs: false },
+        { name: 'Freight and Shipping Costs', value: 1230.00, isActive: true, isCogs: true },
       ];
 
       const scoped = expenseScope === 'opex'
@@ -1324,11 +1390,123 @@ export function Finance() {
     }
 
     return [];
-  }, [selectedPeriod, expenseScope, filteredExpenses, categories]);
+  }, [selectedPeriod, expenseScope, filteredExpenses, categories, hasLive2025]);
 
   // Active Profit & Loss Table Dataset (Audited Q1 2025 vs Live FY 2026 vs Consolidated All Time)
   const activePLData = React.useMemo(() => {
+    const buildQuarterlyPL = (year: number, subtitle: string) => {
+      const colHeaders = [`Q1 ${year}`, `Q2 ${year}`, `Q3 ${year}`, `Q4 ${year}`, `Total FY ${year}`, '% of Income'];
+
+      const qOrders = [0, 1, 2, 3].map(qIdx =>
+        orders.filter(o => {
+          if (!['delivered', 'completed'].includes(o.status)) return false;
+          const d = parseDate(o.createdAt);
+          return d && d.getFullYear() === year && Math.floor(d.getMonth() / 3) === qIdx;
+        })
+      );
+
+      const qExpenses = [0, 1, 2, 3].map(qIdx =>
+        expenses.filter(e => {
+          if (!isOutflowExpense(e)) return false;
+          const d = parseDate(e.date);
+          return d && d.getFullYear() === year && Math.floor(d.getMonth() / 3) === qIdx;
+        })
+      );
+
+      const salesCols = qOrders.map(qList => qList.reduce((s, o) => s + (o.totalAmount || 0), 0));
+      const totalIncomeCols = [...salesCols];
+      const totalIncomeSum = totalIncomeCols.reduce((s, v) => s + v, 0);
+
+      const calcPct = (val: number) => {
+        if (totalIncomeSum <= 0) return '0.00%';
+        return ((val / totalIncomeSum) * 100).toFixed(2) + '%';
+      };
+
+      const cogsCols = qExpenses.map(qList =>
+        qList.filter(e => isDirectCogsCategory(e.category)).reduce((s, e) => s + (e.amount || 0), 0)
+      );
+      const freightCols = qExpenses.map(qList =>
+        qList.filter(e => isFreightCategory(e.category)).reduce((s, e) => s + (e.amount || 0), 0)
+      );
+      const totalCogsCols = [0, 1, 2, 3].map(i => cogsCols[i] + freightCols[i]);
+      const totalCogsSum = totalCogsCols.reduce((s, v) => s + v, 0);
+
+      const grossProfitCols = [0, 1, 2, 3].map(i => totalIncomeCols[i] - totalCogsCols[i]);
+      const grossProfitSum = grossProfitCols.reduce((s, v) => s + v, 0);
+
+      const opexCategoryNames = Array.from(new Set(
+        expenses
+          .filter(e => {
+            if (!isOutflowExpense(e)) return false;
+            const d = parseDate(e.date);
+            return d && d.getFullYear() === year && !isCogsOrFreightCategory(e.category);
+          })
+          .map(e => e.category || 'General Expense')
+      ));
+
+      const standardOpex = ['Office Supplies', 'Travel Expense', 'Utilities', 'OTHER EXPENSE'];
+      standardOpex.forEach(sc => {
+        if (!opexCategoryNames.some(existing => existing.toLowerCase() === sc.toLowerCase())) {
+          opexCategoryNames.push(sc);
+        }
+      });
+
+      const opexRows: TablePLRow[] = opexCategoryNames.map(catName => {
+        const cols = qExpenses.map(qList =>
+          qList.filter(e => (e.category || 'General Expense').toLowerCase() === catName.toLowerCase()).reduce((s, e) => s + (e.amount || 0), 0)
+        );
+        const total = cols.reduce((s, v) => s + v, 0);
+        return {
+          name: catName,
+          cols,
+          total,
+          pct: calcPct(total),
+          indent: true,
+        };
+      });
+
+      const totalOpexCols = [0, 1, 2, 3].map(i =>
+        opexRows.reduce((sum, r) => sum + (r.cols[i] || 0), 0)
+      );
+      const totalOpexSum = totalOpexCols.reduce((s, v) => s + v, 0);
+
+      const netOrdinaryCols = [0, 1, 2, 3].map(i => grossProfitCols[i] - totalOpexCols[i]);
+      const netOrdinarySum = netOrdinaryCols.reduce((s, v) => s + v, 0);
+
+      const netIncomeCols = [...netOrdinaryCols];
+      const netIncomeSum = netOrdinarySum;
+
+      const rows: TablePLRow[] = [
+        { section: 'Ordinary Income/Expense', isHeader: true, cols: [] },
+        { section: 'Income', isSubheader: true, cols: [] },
+        { name: 'Sales (Orders Fulfilled)', cols: salesCols, total: totalIncomeSum, pct: totalIncomeSum > 0 ? '100.00%' : '0.00%', indent: true },
+        { name: 'Total Income', cols: totalIncomeCols, total: totalIncomeSum, pct: totalIncomeSum > 0 ? '100.00%' : '0.00%', isTotal: true, highlight: 'emerald' },
+        { section: 'Cost of Goods Sold', isSubheader: true, cols: [] },
+        { name: 'Direct Cost of Goods Sold', cols: cogsCols, total: cogsCols.reduce((s, v) => s + v, 0), pct: calcPct(cogsCols.reduce((s, v) => s + v, 0)), indent: true },
+        { name: 'Freight and Shipping Costs', cols: freightCols, total: freightCols.reduce((s, v) => s + v, 0), pct: calcPct(freightCols.reduce((s, v) => s + v, 0)), indent: true },
+        { name: 'Total COGS', cols: totalCogsCols, total: totalCogsSum, pct: calcPct(totalCogsSum), isTotal: true, highlight: 'rose' },
+        { name: 'Gross Profit', cols: grossProfitCols, total: grossProfitSum, pct: calcPct(grossProfitSum), isGrandTotal: true, highlight: 'emerald' },
+        { section: 'Operating Expenses', isSubheader: true, cols: [] },
+        ...opexRows,
+        { name: 'Total Operating Expenses', cols: totalOpexCols, total: totalOpexSum, pct: calcPct(totalOpexSum), isTotal: true, highlight: 'rose' },
+        { name: 'Net Ordinary Income', cols: netOrdinaryCols, total: netOrdinarySum, pct: calcPct(netOrdinarySum), isGrandTotal: true },
+        { name: 'Net Income', cols: netIncomeCols, total: netIncomeSum, pct: calcPct(netIncomeSum), isFinalNetIncome: true, highlight: 'gold' },
+      ];
+
+      return {
+        title: 'Active Pro B2B Supplies — Live Profit and Loss Statement',
+        subtitle,
+        badgeText: 'Live Operational',
+        badgeVariant: 'live' as const,
+        colHeaders,
+        rows,
+      };
+    };
+
     if (selectedPeriod === '2025') {
+      if (hasLive2025) {
+        return buildQuarterlyPL(2025, 'FY 2025 Real-Time Ledger (Dynamically aggregated from live orders & expenses)');
+      }
       const colHeaders = ['Jan 25', 'Feb 25', 'Mar 25', 'Total Q1 2025', '% of Income'];
       const rows: TablePLRow[] = PL_STATEMENT_ROWS.map(r => ({
         ...r,
@@ -1347,199 +1525,89 @@ export function Finance() {
     }
 
     if (selectedPeriod === '2026') {
-      const colHeaders = ['Q1 2026', 'Q2 2026', 'Q3 2026', 'Q4 2026', 'Total FY 2026', '% of Income'];
-
-      // Calculate quarters 0..3 for 2026
-      const qOrders = [0, 1, 2, 3].map(qIdx =>
-        orders.filter(o => {
-          if (!['delivered', 'completed'].includes(o.status)) return false;
-          const d = parseDate(o.createdAt);
-          return d && d.getFullYear() === 2026 && Math.floor(d.getMonth() / 3) === qIdx;
-        })
-      );
-
-      const qExpenses = [0, 1, 2, 3].map(qIdx =>
-        expenses.filter(e => {
-          const d = parseDate(e.date);
-          return d && d.getFullYear() === 2026 && Math.floor(d.getMonth() / 3) === qIdx;
-        })
-      );
-
-      // Revenue: Sales
-      const salesCols = qOrders.map(qList => qList.reduce((s, o) => s + (o.totalAmount || 0), 0));
-      const totalIncomeCols = [...salesCols];
-      const totalIncomeSum = totalIncomeCols.reduce((s, v) => s + v, 0);
-
-      const calcPct = (val: number) => {
-        if (totalIncomeSum <= 0) return '0.00%';
-        return ((val / totalIncomeSum) * 100).toFixed(2) + '%';
-      };
-
-      // Helper classification
-      const isCogs = (cat: string) => {
-        const c = (cat || '').toLowerCase();
-        return c.includes('cost of goods') || c.includes('cogs') || c.includes('raw material') || c.includes('inventory purchase');
-      };
-      const isFreight = (cat: string) => {
-        const c = (cat || '').toLowerCase();
-        return c.includes('freight') || c.includes('shipping');
-      };
-
-      const cogsCols = qExpenses.map(qList =>
-        qList.filter(e => isCogs(e.category)).reduce((s, e) => s + (e.amount || 0), 0)
-      );
-      const freightCols = qExpenses.map(qList =>
-        qList.filter(e => isFreight(e.category)).reduce((s, e) => s + (e.amount || 0), 0)
-      );
-      const totalCogsCols = [0, 1, 2, 3].map(i => cogsCols[i] + freightCols[i]);
-      const totalCogsSum = totalCogsCols.reduce((s, v) => s + v, 0);
-
-      // Gross Profit
-      const grossProfitCols = [0, 1, 2, 3].map(i => totalIncomeCols[i] - totalCogsCols[i]);
-      const grossProfitSum = grossProfitCols.reduce((s, v) => s + v, 0);
-
-      // OPEX categories
-      const opexCategoryNames = Array.from(new Set(
-        expenses
-          .filter(e => {
-            const d = parseDate(e.date);
-            return d && d.getFullYear() === 2026 && !isCogs(e.category) && !isFreight(e.category);
-          })
-          .map(e => e.category || 'General Expense')
-      ));
-
-      const standardOpex = ['Office Supplies', 'Travel Expense', 'Utilities', 'OTHER EXPENSE'];
-      standardOpex.forEach(sc => {
-        if (!opexCategoryNames.some(existing => existing.toLowerCase() === sc.toLowerCase())) {
-          opexCategoryNames.push(sc);
-        }
-      });
-
-      const opexRows: TablePLRow[] = opexCategoryNames.map(catName => {
-        const cols = qExpenses.map(qList =>
-          qList.filter(e => (e.category || '').toLowerCase() === catName.toLowerCase()).reduce((s, e) => s + (e.amount || 0), 0)
-        );
-        const total = cols.reduce((s, v) => s + v, 0);
-        return {
-          name: catName,
-          cols,
-          total,
-          pct: calcPct(total),
-          indent: true,
-        };
-      });
-
-      const totalOpexCols = [0, 1, 2, 3].map(i =>
-        opexRows.reduce((sum, r) => sum + (r.cols[i] || 0), 0)
-      );
-      const totalOpexSum = totalOpexCols.reduce((s, v) => s + v, 0);
-
-      // Net Ordinary Income
-      const netOrdinaryCols = [0, 1, 2, 3].map(i => grossProfitCols[i] - totalOpexCols[i]);
-      const netOrdinarySum = netOrdinaryCols.reduce((s, v) => s + v, 0);
-
-      // Final Net Income
-      const netIncomeCols = [...netOrdinaryCols];
-      const netIncomeSum = netOrdinarySum;
-
-      const rows: TablePLRow[] = [
-        { section: 'Ordinary Income/Expense', isHeader: true, cols: [] },
-        { section: 'Income', isSubheader: true, cols: [] },
-        { name: 'Sales (Orders Fulfilled)', cols: salesCols, total: totalIncomeSum, pct: totalIncomeSum > 0 ? '100.00%' : '0.00%', indent: true },
-        { name: 'Total Income', cols: totalIncomeCols, total: totalIncomeSum, pct: '100.00%', isTotal: true, highlight: 'emerald' },
-        { section: 'Cost of Goods Sold', isSubheader: true, cols: [] },
-        { name: 'Direct Cost of Goods Sold', cols: cogsCols, total: cogsCols.reduce((s, v) => s + v, 0), pct: calcPct(cogsCols.reduce((s, v) => s + v, 0)), indent: true },
-        { name: 'Freight and Shipping Costs', cols: freightCols, total: freightCols.reduce((s, v) => s + v, 0), pct: calcPct(freightCols.reduce((s, v) => s + v, 0)), indent: true },
-        { name: 'Total COGS', cols: totalCogsCols, total: totalCogsSum, pct: calcPct(totalCogsSum), isTotal: true, highlight: 'rose' },
-        { name: 'Gross Profit', cols: grossProfitCols, total: grossProfitSum, pct: calcPct(grossProfitSum), isGrandTotal: true, highlight: 'emerald' },
-        { section: 'Operating Expenses', isSubheader: true, cols: [] },
-        ...opexRows,
-        { name: 'Total Operating Expenses', cols: totalOpexCols, total: totalOpexSum, pct: calcPct(totalOpexSum), isTotal: true, highlight: 'rose' },
-        { name: 'Net Ordinary Income', cols: netOrdinaryCols, total: netOrdinarySum, pct: calcPct(netOrdinarySum), isGrandTotal: true },
-        { name: 'Net Income', cols: netIncomeCols, total: netIncomeSum, pct: calcPct(netIncomeSum), isFinalNetIncome: true, highlight: 'gold' },
-      ];
-
-      return {
-        title: 'Active Pro B2B Supplies — Live Profit and Loss Statement',
-        subtitle: 'FY 2026 Real-Time Ledger (Dynamically aggregated from live orders & expenses)',
-        badgeText: 'Live Operational',
-        badgeVariant: 'live' as const,
-        colHeaders,
-        rows,
-      };
+      return buildQuarterlyPL(2026, 'FY 2026 Real-Time Ledger (Dynamically aggregated from live orders & expenses)');
     }
 
     // ALL PERIODS (Multi-Year Consolidated)
-    const colHeaders = ['FY 2025 (Audited)', 'FY 2026 (Live Ops)', 'Consolidated Total', '% of Income'];
-    const rev2025 = 21502353.40;
-    const cogs2025 = 17085835.29;
-    const gp2025 = 4416518.11;
-    const opex2025 = 13235.00 + 23518.35;
-    const net2025 = 4379764.76;
-
-    const rev2026 = orders
-      .filter(o => ['delivered', 'completed'].includes(o.status) && parseDate(o.createdAt)?.getFullYear() === 2026)
-      .reduce((s, o) => s + (o.totalAmount || 0), 0);
-    const exp2026List = expenses.filter(e => parseDate(e.date)?.getFullYear() === 2026);
-    const isCogsAll = (cat: string) => {
-      const c = (cat || '').toLowerCase();
-      return c.includes('cost of goods') || c.includes('cogs') || c.includes('raw material') || c.includes('inventory purchase') || c.includes('freight') || c.includes('shipping');
+    const calcYearBreakdown = (year: number) => {
+      const rev = orders
+        .filter(o => ['delivered', 'completed'].includes(o.status) && parseDate(o.createdAt)?.getFullYear() === year)
+        .reduce((s, o) => s + (o.totalAmount || 0), 0);
+      const yearOutflows = expenses.filter(e => isOutflowExpense(e) && parseDate(e.date)?.getFullYear() === year);
+      const cogs = yearOutflows.filter(e => isCogsOrFreightCategory(e.category)).reduce((s, e) => s + (e.amount || 0), 0);
+      const gp = rev - cogs;
+      const opex = yearOutflows.filter(e => !isCogsOrFreightCategory(e.category)).reduce((s, e) => s + (e.amount || 0), 0);
+      const net = gp - opex;
+      return { rev, cogs, gp, opex, net };
     };
-    const cogs2026 = exp2026List.filter(e => isCogsAll(e.category)).reduce((s, e) => s + (e.amount || 0), 0);
-    const gp2026 = rev2026 - cogs2026;
-    const opex2026 = exp2026List.filter(e => !isCogsAll(e.category)).reduce((s, e) => s + (e.amount || 0), 0);
-    const net2026 = gp2026 - opex2026;
 
-    const totalIncomeConsolidated = rev2025 + rev2026;
+    const colHeaders = [
+      hasLive2025 ? 'FY 2025 (Live Ops)' : 'FY 2025 (Audited)',
+      'FY 2026 (Live Ops)',
+      'Consolidated Total',
+      '% of Income',
+    ];
+    const fy2025 = hasLive2025
+      ? calcYearBreakdown(2025)
+      : { rev: 21502353.40, cogs: 17085835.29, gp: 4416518.11, opex: 13235.00 + 23518.35, net: 4379764.76 };
+    const fy2026 = calcYearBreakdown(2026);
+
+    const totalIncomeConsolidated = fy2025.rev + fy2026.rev;
     const calcPct = (v: number) => totalIncomeConsolidated > 0 ? ((v / totalIncomeConsolidated) * 100).toFixed(2) + '%' : '0.00%';
 
     const rows: TablePLRow[] = [
       { section: 'Ordinary Income/Expense', isHeader: true, cols: [] },
       { section: 'Income', isSubheader: true, cols: [] },
-      { name: 'Sales & Delivery Revenue', cols: [rev2025, rev2026], total: totalIncomeConsolidated, pct: '100.00%', indent: true },
-      { name: 'Total Income', cols: [rev2025, rev2026], total: totalIncomeConsolidated, pct: '100.00%', isTotal: true, highlight: 'emerald' },
+      { name: 'Sales & Delivery Revenue', cols: [fy2025.rev, fy2026.rev], total: totalIncomeConsolidated, pct: totalIncomeConsolidated > 0 ? '100.00%' : '0.00%', indent: true },
+      { name: 'Total Income', cols: [fy2025.rev, fy2026.rev], total: totalIncomeConsolidated, pct: totalIncomeConsolidated > 0 ? '100.00%' : '0.00%', isTotal: true, highlight: 'emerald' },
       { section: 'Cost of Goods Sold', isSubheader: true, cols: [] },
-      { name: 'Direct COGS & Freight', cols: [cogs2025, cogs2026], total: cogs2025 + cogs2026, pct: calcPct(cogs2025 + cogs2026), indent: true },
-      { name: 'Total COGS', cols: [cogs2025, cogs2026], total: cogs2025 + cogs2026, pct: calcPct(cogs2025 + cogs2026), isTotal: true, highlight: 'rose' },
-      { name: 'Gross Profit', cols: [gp2025, gp2026], total: gp2025 + gp2026, pct: calcPct(gp2025 + gp2026), isGrandTotal: true, highlight: 'emerald' },
+      { name: 'Direct COGS & Freight', cols: [fy2025.cogs, fy2026.cogs], total: fy2025.cogs + fy2026.cogs, pct: calcPct(fy2025.cogs + fy2026.cogs), indent: true },
+      { name: 'Total COGS', cols: [fy2025.cogs, fy2026.cogs], total: fy2025.cogs + fy2026.cogs, pct: calcPct(fy2025.cogs + fy2026.cogs), isTotal: true, highlight: 'rose' },
+      { name: 'Gross Profit', cols: [fy2025.gp, fy2026.gp], total: fy2025.gp + fy2026.gp, pct: calcPct(fy2025.gp + fy2026.gp), isGrandTotal: true, highlight: 'emerald' },
       { section: 'Operating Expenses', isSubheader: true, cols: [] },
-      { name: 'Total Operating & Administrative Expenses', cols: [opex2025, opex2026], total: opex2025 + opex2026, pct: calcPct(opex2025 + opex2026), indent: true },
-      { name: 'Total OPEX', cols: [opex2025, opex2026], total: opex2025 + opex2026, pct: calcPct(opex2025 + opex2026), isTotal: true, highlight: 'rose' },
-      { name: 'Net Income', cols: [net2025, net2026], total: net2025 + net2026, pct: calcPct(net2025 + net2026), isFinalNetIncome: true, highlight: 'gold' },
+      { name: 'Total Operating & Administrative Expenses', cols: [fy2025.opex, fy2026.opex], total: fy2025.opex + fy2026.opex, pct: calcPct(fy2025.opex + fy2026.opex), indent: true },
+      { name: 'Total OPEX', cols: [fy2025.opex, fy2026.opex], total: fy2025.opex + fy2026.opex, pct: calcPct(fy2025.opex + fy2026.opex), isTotal: true, highlight: 'rose' },
+      { name: 'Net Income', cols: [fy2025.net, fy2026.net], total: fy2025.net + fy2026.net, pct: calcPct(fy2025.net + fy2026.net), isFinalNetIncome: true, highlight: 'gold' },
     ];
 
     return {
       title: 'Active Pro B2B Supplies — Consolidated Profit and Loss Statement',
-      subtitle: 'Multi-Year Accounting Summary (FY 2025 Audited Baseline + FY 2026 Live Ops)',
+      subtitle: hasLive2025
+        ? 'Multi-Year Accounting Summary (FY 2025 Live Records + FY 2026 Live Ops)'
+        : 'Multi-Year Accounting Summary (FY 2025 Audited Baseline + FY 2026 Live Ops)',
       badgeText: 'Multi-Year Consolidated',
       badgeVariant: 'consolidated' as const,
       colHeaders,
       rows,
     };
-  }, [selectedPeriod, orders, expenses]);
+  }, [selectedPeriod, orders, expenses, hasLive2025]);
 
   const exportPLStatementCSV = () => {
-    const headerLine = `"${activePLData.title}"`;
-    const subheaderLine = `"${activePLData.subtitle}"`;
-    const colHeaderLine = `"${['Account / Line Item', ...activePLData.colHeaders].join('","')}"`;
+    if (isExpenseOnly) {
+      toast.error('Profit & Loss export requires full financial access.');
+      return;
+    }
+    const headerLine = escapeCsvCell(activePLData.title);
+    const subheaderLine = escapeCsvCell(activePLData.subtitle);
+    const colHeaderLine = ['Account / Line Item', ...activePLData.colHeaders].map(h => escapeCsvCell(h)).join(',');
 
     const rowLines = activePLData.rows.map(row => {
       if (row.isHeader || row.isSubheader) {
-        return `"${row.section}","${activePLData.colHeaders.map(() => '').join('","')}"`;
+        return [escapeCsvCell(row.section), ...activePLData.colHeaders.map(() => '""')].join(',');
       }
-      const colValues = (row.cols || []).map(val => val !== undefined ? val.toFixed(2) : '0.00');
-      const totalVal = row.total !== undefined ? row.total.toFixed(2) : '0.00';
-      const pctVal = `"${row.pct || '0.00%'}"`;
-      return `"${row.name}",${colValues.join(',')},${totalVal},${pctVal}`;
+      const colValues = (row.cols || []).map(val => val !== undefined && Number.isFinite(val) ? escapeCsvCell(val.toFixed(2)) : escapeCsvCell('0.00'));
+      const totalVal = row.total !== undefined && Number.isFinite(row.total) ? escapeCsvCell(row.total.toFixed(2)) : escapeCsvCell('0.00');
+      const pctVal = escapeCsvCell(row.pct || '0.00%');
+      return [escapeCsvCell(row.name), ...colValues, totalVal, pctVal].join(',');
     });
 
-    const csvContent = [headerLine, subheaderLine, '""', colHeaderLine, ...rowLines].join('\n');
+    const csvContent = '\uFEFF' + [headerLine, subheaderLine, '""', colHeaderLine, ...rowLines].join('\n');
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
     const filename = selectedPeriod === '2025'
-      ? 'ActivePro_ProfitAndLoss_Q1_2025_Audited.csv'
+      ? (hasLive2025 ? 'ActivePro_ProfitAndLoss_FY_2025_Live.csv' : 'ActivePro_ProfitAndLoss_Q1_2025_Audited.csv')
       : selectedPeriod === '2026'
         ? 'ActivePro_ProfitAndLoss_FY_2026_Live.csv'
         : 'ActivePro_ProfitAndLoss_Consolidated.csv';
@@ -1547,7 +1615,7 @@ export function Finance() {
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
-    URL.revokeObjectURL(url);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
     toast.success(`Exported ${activePLData.title} to CSV`);
   };
 
@@ -1568,20 +1636,33 @@ export function Finance() {
     e.preventDefault();
     const formData = new FormData(e.currentTarget);
     const orderId = formData.get('orderId') as string;
+    const category = String(formData.get('category') || '').trim();
+    const description = String(formData.get('description') || '').trim();
     const amount = Number(formData.get('amount'));
 
-    if (isNaN(amount) || amount <= 0) {
-      toast.error('Amount must be greater than ₱0.00');
+    if (!category) {
+      toast.error('Please select an expense category');
       return;
     }
 
-    const dateVal = formData.get('date') as string;
+    if (!Number.isFinite(amount) || amount <= 0) {
+      toast.error('Amount must be a finite value greater than ₱0.00');
+      return;
+    }
+
+    const dateVal = String(formData.get('date') || '').trim();
+    const parsedDate = dateVal ? parseFormDateInput(dateVal) : null;
+    if (dateVal && !parsedDate) {
+      toast.error('Please provide a valid expense date');
+      return;
+    }
 
     const newExpense = {
-      category: formData.get('category'),
-      description: formData.get('description'),
+      category,
+      description,
       amount,
-      date: dateVal ? new Date(dateVal) : serverTimestamp(),
+      type: 'expense',
+      date: parsedDate || serverTimestamp(),
       recordedBy: profile?.uid,
       ...(orderId && orderId !== 'none' ? { orderId } : {})
     };
@@ -1601,20 +1682,32 @@ export function Finance() {
 
     const formData = new FormData(e.currentTarget);
     const orderId = formData.get('orderId') as string;
+    const category = String(formData.get('category') || '').trim();
+    const description = String(formData.get('description') || '').trim();
     const amount = Number(formData.get('amount'));
 
-    if (isNaN(amount) || amount <= 0) {
-      toast.error('Amount must be greater than ₱0.00');
+    if (!category) {
+      toast.error('Please select an expense category');
       return;
     }
 
-    const dateVal = formData.get('date') as string;
+    if (!Number.isFinite(amount) || amount <= 0) {
+      toast.error('Amount must be a finite value greater than ₱0.00');
+      return;
+    }
+
+    const dateVal = String(formData.get('date') || '').trim();
+    const parsedDate = dateVal ? parseFormDateInput(dateVal) : null;
+    if (dateVal && !parsedDate) {
+      toast.error('Please provide a valid expense date');
+      return;
+    }
 
     const updatedExpense = {
-      category: formData.get('category'),
-      description: formData.get('description'),
+      category,
+      description,
       amount,
-      date: dateVal ? new Date(dateVal) : editingExpense.date,
+      date: parsedDate || editingExpense.date,
       ...(orderId && orderId !== 'none' ? { orderId } : { orderId: null })
     };
 
@@ -1628,24 +1721,35 @@ export function Finance() {
     }
   };
 
-  const handleDeleteExpense = async (id: string) => {
-    if (!confirm('Are you sure you want to delete this expense record? This action is permanent.')) return;
-    try {
-      // For deletion we reach for a lower-level UI but here we just use native confirm for safety
-      const { deleteDoc } = await import('../lib/supabaseAdapter');
-      await deleteDoc(doc(db, 'expenses', id));
-      toast.success('Expense record deleted');
-    } catch (err) {
-      handleSupabaseError(err, OperationType.DELETE, `expenses/${id}`);
-    }
+  const handleDeleteExpense = (id: string) => {
+    setConfirmDialog({
+      title: 'Delete expense record',
+      description: 'Are you sure you want to delete this expense record? This action is permanent.',
+      confirmLabel: 'Delete expense',
+      destructive: true,
+      onConfirm: async () => {
+        try {
+          await deleteDoc(doc(db, 'expenses', id));
+          toast.success('Expense record deleted');
+        } catch (err) {
+          handleSupabaseError(err, OperationType.DELETE, `expenses/${id}`);
+        }
+      },
+    });
   };
 
   const handleAddCategory = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const formData = new FormData(e.currentTarget);
-    const name = formData.get('name') as string;
+    const name = String(formData.get('name') || '').trim();
+    const description = String(formData.get('description') || '').trim();
 
-    if (categories.some(c => c.name.toLowerCase() === name.toLowerCase())) {
+    if (!name) {
+      toast.error('Category name is required');
+      return;
+    }
+
+    if (categories.some(c => c.name.trim().toLowerCase() === name.toLowerCase())) {
       toast.error('Category with this name already exists');
       return;
     }
@@ -1653,7 +1757,7 @@ export function Finance() {
     const isActive = formData.get('status') === 'active';
     const newCategory = {
       name,
-      description: formData.get('description'),
+      description,
       isActive,
       createdAt: serverTimestamp()
     };
@@ -1667,18 +1771,24 @@ export function Finance() {
     }
   };
 
-  const toggleCategoryStatus = async (category: ExpenseCategory) => {
+  const toggleCategoryStatus = (category: ExpenseCategory) => {
     const action = category.isActive ? 'archive' : 'activate';
-    if (!confirm(`Are you sure you want to ${action} the "${category.name}" category?`)) return;
-
-    try {
-      await updateDoc(doc(db, 'expenseCategories', category.id), {
-        isActive: !category.isActive
-      });
-      toast.success(`Category ${category.isActive ? 'archived' : 'activated'} successfully`);
-    } catch (err) {
-      handleSupabaseError(err, OperationType.UPDATE, `expenseCategories/${category.id}`);
-    }
+    setConfirmDialog({
+      title: `${action === 'archive' ? 'Archive' : 'Activate'} expense category`,
+      description: `Are you sure you want to ${action} the "${category.name}" category?`,
+      confirmLabel: action === 'archive' ? 'Archive category' : 'Activate category',
+      destructive: category.isActive,
+      onConfirm: async () => {
+        try {
+          await updateDoc(doc(db, 'expenseCategories', category.id), {
+            isActive: !category.isActive
+          });
+          toast.success(`Category ${category.isActive ? 'archived' : 'activated'} successfully`);
+        } catch (err) {
+          handleSupabaseError(err, OperationType.UPDATE, `expenseCategories/${category.id}`);
+        }
+      },
+    });
   };
 
   const handleEditCategory = async (e: React.FormEvent<HTMLFormElement>) => {
@@ -1686,23 +1796,57 @@ export function Finance() {
     if (!editingCategory) return;
 
     const formData = new FormData(e.currentTarget);
-    const name = formData.get('name') as string;
-    const description = formData.get('description') as string;
+    const name = String(formData.get('name') || '').trim();
+    const description = String(formData.get('description') || '').trim();
 
-    if (categories.some(c => c.id !== editingCategory.id && c.name.toLowerCase() === name.toLowerCase())) {
+    if (!name) {
+      toast.error('Category name is required');
+      return;
+    }
+
+    if (categories.some(c => c.id !== editingCategory.id && c.name.trim().toLowerCase() === name.toLowerCase())) {
       toast.error('Another category with this name already exists');
       return;
     }
 
+    const previousName = editingCategory.name;
+    const previousDescription = editingCategory.description || '';
+    const updatedExpenseIds: string[] = [];
+    let categoryUpdated = false;
     try {
       await updateDoc(doc(db, 'expenseCategories', editingCategory.id), {
         name,
         description
       });
+      categoryUpdated = true;
+      if (previousName && previousName !== name) {
+        const snap = await getDocs(query(collection(db, 'expenses'), where('category', '==', previousName)));
+        for (const expDoc of snap.docs) {
+          await updateDoc(doc(db, 'expenses', expDoc.id), { category: name });
+          updatedExpenseIds.push(expDoc.id);
+        }
+      }
       setIsEditCategoryOpen(false);
       setEditingCategory(null);
       toast.success('Category updated successfully');
     } catch (err) {
+      for (const expId of updatedExpenseIds) {
+        try {
+          await updateDoc(doc(db, 'expenses', expId), { category: previousName });
+        } catch {
+          // best effort rollback
+        }
+      }
+      if (categoryUpdated) {
+        try {
+          await updateDoc(doc(db, 'expenseCategories', editingCategory.id), {
+            name: previousName,
+            description: previousDescription,
+          });
+        } catch {
+          // best effort rollback
+        }
+      }
       handleSupabaseError(err, OperationType.UPDATE, `expenseCategories/${editingCategory.id}`);
     }
   };
@@ -1743,6 +1887,21 @@ export function Finance() {
     return 0;
   });
 
+  if (!isAdmin && (access.revoked || access.error || !access.permissions.financials || access.permissions.financials === 'none')) {
+    return (
+      <div role="alert" className="rounded-xl border p-8 text-center space-y-2">
+        <h1 className="text-lg font-semibold">Financial access restricted</h1>
+        <p className="text-sm text-muted-foreground">
+          {access.error
+            ? 'Unable to verify your permissions. Please reload the page.'
+            : access.revoked
+              ? 'Your delegated access has been deactivated.'
+              : 'You do not have permission to view financial statements or expense ledgers.'}
+        </p>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
       {/* Enterprise Utility Toolbar */}
@@ -1761,7 +1920,7 @@ export function Finance() {
                 variant={selectedPeriod === '2025' ? 'default' : 'ghost'}
                 size="sm"
                 className={`h-6.5 px-2.5 text-[9px] font-black uppercase tracking-wider rounded-sm transition-all ${selectedPeriod === '2025'
-                    ? 'bg-[#1A2332] text-white shadow-none'
+                    ? 'bg-primary text-primary-foreground shadow-none'
                     : 'text-muted-foreground hover:text-foreground hover:bg-muted'
                   }`}
                 onClick={() => setSelectedPeriod('2025')}
@@ -1772,7 +1931,7 @@ export function Finance() {
                 variant={selectedPeriod === '2026' ? 'default' : 'ghost'}
                 size="sm"
                 className={`h-6.5 px-2.5 text-[9px] font-black uppercase tracking-wider rounded-sm transition-all ${selectedPeriod === '2026'
-                    ? 'bg-[#1A2332] text-white shadow-none'
+                    ? 'bg-primary text-primary-foreground shadow-none'
                     : 'text-muted-foreground hover:text-foreground hover:bg-muted'
                   }`}
                 onClick={() => setSelectedPeriod('2026')}
@@ -1783,7 +1942,7 @@ export function Finance() {
                 variant={selectedPeriod === 'all' ? 'default' : 'ghost'}
                 size="sm"
                 className={`h-6.5 px-2.5 text-[9px] font-black uppercase tracking-wider rounded-sm transition-all ${selectedPeriod === 'all'
-                    ? 'bg-[#1A2332] text-white shadow-none'
+                    ? 'bg-primary text-primary-foreground shadow-none'
                     : 'text-muted-foreground hover:text-foreground hover:bg-muted'
                   }`}
                 onClick={() => setSelectedPeriod('all')}
@@ -1902,7 +2061,7 @@ export function Finance() {
                   variant={chartGranularity === gran ? 'default' : 'ghost'}
                   size="sm"
                   className={`h-6 px-2 text-[9px] font-black uppercase tracking-wider rounded-sm transition-all ${chartGranularity === gran
-                      ? 'bg-[#1A2332] text-white shadow-none'
+                      ? 'bg-primary text-primary-foreground shadow-none'
                       : 'text-muted-foreground hover:text-foreground hover:bg-muted'
                     }`}
                   onClick={() => setChartGranularity(gran)}
@@ -1955,7 +2114,7 @@ export function Finance() {
                   fontSize: '11px',
                   fontWeight: 'bold'
                 }}
-                formatter={(value: number) => [`₱${value.toLocaleString()}`, '']}
+                formatter={(value) => [`₱${Number(value ?? 0).toLocaleString()}`, '']}
               />
               <Bar
                 dataKey="Revenue"
@@ -2001,7 +2160,7 @@ export function Finance() {
                   variant={trajectoryGranularity === gran ? 'default' : 'ghost'}
                   size="sm"
                   className={`h-6 px-2 text-[9px] font-black uppercase tracking-wider rounded-sm transition-all ${trajectoryGranularity === gran
-                      ? 'bg-[#1A2332] text-white shadow-none'
+                      ? 'bg-primary text-primary-foreground shadow-none'
                       : 'text-muted-foreground hover:text-foreground hover:bg-muted'
                     }`}
                   onClick={() => setTrajectoryGranularity(gran)}
@@ -2080,7 +2239,7 @@ export function Finance() {
                   variant={activeLedgerTab === 'statement' ? 'default' : 'ghost'}
                   size="sm"
                   className={`h-7 gap-1.5 px-3 text-[10px] font-black uppercase tracking-wider rounded-sm transition-all ${activeLedgerTab === 'statement'
-                      ? 'bg-[#1A2332] text-white shadow-none'
+                      ? 'bg-primary text-primary-foreground shadow-none'
                       : 'text-muted-foreground hover:text-foreground'
                     }`}
                   onClick={() => setActiveLedgerTab('statement')}
@@ -2097,7 +2256,7 @@ export function Finance() {
                 variant={activeLedgerTab === 'ledger' ? 'default' : 'ghost'}
                 size="sm"
                 className={`h-7 gap-1.5 px-3 text-[10px] font-black uppercase tracking-wider rounded-sm transition-all ${activeLedgerTab === 'ledger'
-                    ? 'bg-[#1A2332] text-white shadow-none'
+                    ? 'bg-primary text-primary-foreground shadow-none'
                     : 'text-muted-foreground hover:text-foreground'
                   }`}
                 onClick={() => setActiveLedgerTab('ledger')}
@@ -2144,43 +2303,14 @@ export function Finance() {
                       <div className="flex-1 overflow-y-auto py-3 space-y-4">
                         <div className="flex items-center justify-between">
                           <h4 className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Inventory of Categories</h4>
-                          <Dialog open={isAddCategoryOpen} onOpenChange={setIsAddCategoryOpen}>
-                            <DialogTrigger render={
-                              <Button size="sm" className="h-6.5 gap-1.5 px-2.5 text-[9px] font-bold uppercase rounded-sm bg-[#1A2332] text-white hover:bg-[#1A2332]/90 shadow-none">
-                                <Plus className="w-3 h-3" /> Create New
-                              </Button>
-                            } />
-                            <DialogContent className="rounded-sm border border-border shadow-lg p-5 max-w-sm">
-                              <DialogHeader className="pb-2 border-b border-border">
-                                <DialogTitle className="text-sm font-black uppercase tracking-wider">Add Expense Category</DialogTitle>
-                              </DialogHeader>
-                              <form onSubmit={handleAddCategory} className="space-y-3 pt-2 font-sans">
-                                <div className="space-y-1">
-                                  <Label htmlFor="name" className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Category Name</Label>
-                                  <Input id="name" name="name" required placeholder="e.g., Marketing, Logistics..." className="h-8 rounded-sm text-xs border-border" />
-                                </div>
-                                <div className="space-y-1">
-                                  <Label htmlFor="desc" className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Description (Optional)</Label>
-                                  <Input id="desc" name="description" placeholder="Brief purpose..." className="h-8 rounded-sm text-xs border-border" />
-                                </div>
-                                <div className="space-y-1">
-                                  <Label htmlFor="status" className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Initial Status</Label>
-                                  <Select name="status" defaultValue="active">
-                                    <SelectTrigger id="status" className="h-8 rounded-sm text-xs border-border">
-                                      <SelectValue placeholder="Select status" />
-                                    </SelectTrigger>
-                                    <SelectContent className="rounded-sm">
-                                      <SelectItem value="active" className="text-xs font-semibold">Active</SelectItem>
-                                      <SelectItem value="archived" className="text-xs font-semibold">Archived</SelectItem>
-                                    </SelectContent>
-                                  </Select>
-                                </div>
-                                <DialogFooter className="pt-2">
-                                  <Button type="submit" className="w-full h-8 rounded-sm bg-[#1A2332] text-white hover:bg-[#1A2332]/90 font-bold uppercase tracking-wider text-xs">Save Category</Button>
-                                </DialogFooter>
-                              </form>
-                            </DialogContent>
-                          </Dialog>
+                          <Button
+                            type="button"
+                            size="sm"
+                            onClick={() => setIsAddCategoryOpen(true)}
+                            className="h-6.5 gap-1.5 px-2.5 text-[9px] font-bold uppercase rounded-sm bg-primary text-primary-foreground hover:bg-primary/90 shadow-none"
+                          >
+                            <Plus className="w-3 h-3" /> Create New
+                          </Button>
                         </div>
 
                         <div className="border rounded-sm overflow-hidden bg-card border-border shadow-none">
@@ -2254,33 +2384,67 @@ export function Finance() {
                             </TableBody>
                           </Table>
                         </div>
-
-                        <Dialog open={isEditCategoryOpen} onOpenChange={(open) => {
-                          setIsEditCategoryOpen(open);
-                          if (!open) setEditingCategory(null);
-                        }}>
-                          <DialogContent className="rounded-sm border border-border shadow-lg p-5 max-w-sm">
-                            <DialogHeader className="pb-2 border-b border-border">
-                              <DialogTitle className="text-sm font-black uppercase tracking-wider">Edit Category</DialogTitle>
-                            </DialogHeader>
-                            {editingCategory && (
-                              <form onSubmit={handleEditCategory} className="space-y-3 pt-2 font-sans">
-                                <div className="space-y-1">
-                                  <Label htmlFor="edit-name" className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Category Name</Label>
-                                  <Input id="edit-name" name="name" defaultValue={editingCategory.name} required className="h-8 rounded-sm text-xs border-border" />
-                                </div>
-                                <div className="space-y-1">
-                                  <Label htmlFor="edit-desc" className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Description (Optional)</Label>
-                                  <Input id="edit-desc" name="description" defaultValue={editingCategory.description} className="h-8 rounded-sm text-xs border-border" />
-                                </div>
-                                <DialogFooter className="pt-2">
-                                  <Button type="submit" className="w-full h-8 rounded-sm bg-[#1A2332] text-white hover:bg-[#1A2332]/90 font-bold uppercase tracking-wider text-xs">Update Classification</Button>
-                                </DialogFooter>
-                              </form>
-                            )}
-                          </DialogContent>
-                        </Dialog>
                       </div>
+                    </DialogContent>
+                  </Dialog>
+
+                  {/* Category creation and edit dialogs rendered as siblings so modals never nest */}
+                  <Dialog open={isAddCategoryOpen} onOpenChange={setIsAddCategoryOpen}>
+                    <DialogContent className="rounded-sm border border-border shadow-lg p-5 max-w-sm">
+                      <DialogHeader className="pb-2 border-b border-border">
+                        <DialogTitle className="text-sm font-black uppercase tracking-wider">Add Expense Category</DialogTitle>
+                      </DialogHeader>
+                      <form onSubmit={handleAddCategory} className="space-y-3 pt-2 font-sans">
+                        <div className="space-y-1">
+                          <Label htmlFor="name" className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Category Name</Label>
+                          <Input id="name" name="name" required placeholder="e.g., Marketing, Logistics..." className="h-8 rounded-sm text-xs border-border" />
+                        </div>
+                        <div className="space-y-1">
+                          <Label htmlFor="desc" className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Description (Optional)</Label>
+                          <Input id="desc" name="description" placeholder="Brief purpose..." className="h-8 rounded-sm text-xs border-border" />
+                        </div>
+                        <div className="space-y-1">
+                          <Label htmlFor="status" className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Initial Status</Label>
+                          <Select name="status" defaultValue="active">
+                            <SelectTrigger id="status" className="h-8 rounded-sm text-xs border-border">
+                              <SelectValue placeholder="Select status" />
+                            </SelectTrigger>
+                            <SelectContent className="rounded-sm">
+                              <SelectItem value="active" className="text-xs font-semibold">Active</SelectItem>
+                              <SelectItem value="archived" className="text-xs font-semibold">Archived</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <DialogFooter className="pt-2">
+                          <Button type="submit" className="w-full h-8 rounded-sm bg-primary text-primary-foreground hover:bg-primary/90 font-bold uppercase tracking-wider text-xs">Save Category</Button>
+                        </DialogFooter>
+                      </form>
+                    </DialogContent>
+                  </Dialog>
+
+                  <Dialog open={isEditCategoryOpen} onOpenChange={(open) => {
+                    setIsEditCategoryOpen(open);
+                    if (!open) setEditingCategory(null);
+                  }}>
+                    <DialogContent className="rounded-sm border border-border shadow-lg p-5 max-w-sm">
+                      <DialogHeader className="pb-2 border-b border-border">
+                        <DialogTitle className="text-sm font-black uppercase tracking-wider">Edit Category</DialogTitle>
+                      </DialogHeader>
+                      {editingCategory && (
+                        <form onSubmit={handleEditCategory} className="space-y-3 pt-2 font-sans">
+                          <div className="space-y-1">
+                            <Label htmlFor="edit-name" className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Category Name</Label>
+                            <Input id="edit-name" name="name" defaultValue={editingCategory.name} required className="h-8 rounded-sm text-xs border-border" />
+                          </div>
+                          <div className="space-y-1">
+                            <Label htmlFor="edit-desc" className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Description (Optional)</Label>
+                            <Input id="edit-desc" name="description" defaultValue={editingCategory.description} className="h-8 rounded-sm text-xs border-border" />
+                          </div>
+                          <DialogFooter className="pt-2">
+                            <Button type="submit" className="w-full h-8 rounded-sm bg-primary text-primary-foreground hover:bg-primary/90 font-bold uppercase tracking-wider text-xs">Update Classification</Button>
+                          </DialogFooter>
+                        </form>
+                      )}
                     </DialogContent>
                   </Dialog>
 
@@ -2295,7 +2459,7 @@ export function Finance() {
 
                   <Dialog open={isAddExpenseOpen} onOpenChange={setIsAddExpenseOpen}>
                     <DialogTrigger render={
-                      <Button className="h-7 gap-1.5 px-2.5 bg-[#1A2332] text-white rounded-sm inline-flex items-center justify-center text-[9px] font-black uppercase tracking-wider transition-all hover:bg-[#1A2332]/90 shadow-none">
+                      <Button className="h-7 gap-1.5 px-2.5 bg-primary text-primary-foreground rounded-sm inline-flex items-center justify-center text-[9px] font-black uppercase tracking-wider transition-all hover:bg-primary/90 shadow-none">
                         <Plus className="w-3 h-3" /> Record Entry
                       </Button>
                     } />
@@ -2324,7 +2488,7 @@ export function Finance() {
                           </div>
                           <div className="space-y-1">
                             <Label htmlFor="expense-date" className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Expense Date</Label>
-                            <Input id="expense-date" name="date" type="date" defaultValue={new Date().toISOString().split('T')[0]} required className="rounded-sm border-border h-8 text-xs font-mono" />
+                            <Input id="expense-date" name="date" type="date" defaultValue={formatLocalDateKey(new Date())} required className="rounded-sm border-border h-8 text-xs font-mono" />
                           </div>
                         </div>
 
@@ -2422,7 +2586,7 @@ export function Finance() {
                         </div>
 
                         <DialogFooter className="pt-2">
-                          <Button type="submit" className="w-full h-8 bg-[#1A2332] text-white font-bold uppercase tracking-wider text-xs rounded-sm hover:bg-[#1A2332]/90 shadow-none" disabled={activeCategories.length === 0}>
+                          <Button type="submit" className="w-full h-8 bg-primary text-primary-foreground font-bold uppercase tracking-wider text-xs rounded-sm hover:bg-primary/90 shadow-none" disabled={activeCategories.length === 0}>
                             Post to Ledger <ArrowUpRight className="w-3.5 h-3.5 ml-1.5" />
                           </Button>
                         </DialogFooter>
@@ -2464,7 +2628,7 @@ export function Finance() {
                     </span>
                   )}
                   <div className="flex items-center gap-1.5 shrink-0">
-                    <Select value={selectedPeriod} onValueChange={(v: '2025' | '2026' | 'all') => setSelectedPeriod(v)}>
+                    <Select value={selectedPeriod} onValueChange={(v) => { if (v === '2025' || v === '2026' || v === 'all') setSelectedPeriod(v); }}>
                       <SelectTrigger className="h-7 text-[9px] uppercase font-bold tracking-wider px-2.5 rounded-sm border-border">
                         <SelectValue placeholder="Period">
                           {selectedPeriod === '2025' ? '2025' : selectedPeriod === '2026' ? '2026' : 'ALL'}
@@ -2495,7 +2659,11 @@ export function Finance() {
                         frame.style.cssText = 'position:fixed;width:0;height:0;border:0;';
                         document.body.appendChild(frame);
                         const doc = frame.contentDocument;
-                        if (!doc || !frame.contentWindow) return;
+                        const win = frame.contentWindow;
+                        if (!doc || !win) {
+                          frame.remove();
+                          return;
+                        }
                         doc.head.innerHTML = `
                           <style>
                             @page { size: A4 portrait; margin: 15mm; }
@@ -2508,15 +2676,18 @@ export function Finance() {
                             td.text-right, th.text-right { text-align: right; }
                             .font-bold { font-weight: bold; }
                             .font-black { font-weight: 900; }
-                            .pl-12 { padding-left: 2rem !important; }
-                            .pl-8 { padding-left: 1rem !important; }
+                            .pl-10 { padding-left: 2rem !important; }
+                            .pl-6 { padding-left: 1rem !important; }
+                            .pl-4 { padding-left: 0.5rem !important; }
                             @media print { body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
                           </style>
                         `;
-                        doc.body.innerHTML = `<div><h4>${activePLData.title}</h4><p>${activePLData.subtitle}</p>${printContents}</div>`;
-                        frame.contentWindow.focus();
-                        frame.contentWindow.print();
-                        setTimeout(() => frame.remove(), 250);
+                        doc.body.innerHTML = `<div><h4>${escapeHtml(activePLData.title)}</h4><p>${escapeHtml(activePLData.subtitle)}</p>${printContents}</div>`;
+                        const cleanup = () => { if (frame.isConnected) frame.remove(); };
+                        win.addEventListener('afterprint', cleanup, { once: true });
+                        win.focus();
+                        win.print();
+                        setTimeout(cleanup, 1500);
                       }
                     }}
                   >
@@ -2633,18 +2804,20 @@ export function Finance() {
                           )}
                           <p className="text-xs font-semibold text-foreground truncate">{e.description}</p>
                         </div>
-                        <span className="shrink-0 text-sm font-black text-red-600">-₱{e.amount.toLocaleString()}</span>
+                        <span className={`shrink-0 text-sm font-black ${(e as any).type === 'income' || e.amount < 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                          {(e as any).type === 'income' || e.amount < 0 ? '+' : '-'}₱{Math.abs(e.amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </span>
                       </div>
                       <div className="flex items-center justify-between border-t border-border pt-2">
                         <span className="text-[10px] text-muted-foreground font-medium">
                           {parseDate(e.date)?.toLocaleDateString() ?? 'N/A'}
                         </span>
                         <div className="flex gap-1">
-                          <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-foreground hover:bg-muted"
+                          <Button variant="ghost" size="icon" aria-label={`Edit expense ${e.description || e.category}`} className="h-7 w-7 text-muted-foreground hover:text-foreground hover:bg-muted"
                             onClick={() => { setEditingExpense(e); setIsEditExpenseOpen(true); }}>
                             <Edit2 className="w-3.5 h-3.5" />
                           </Button>
-                          <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-red-500 hover:bg-red-500/10"
+                          <Button variant="ghost" size="icon" aria-label={`Delete expense ${e.description || e.category}`} className="h-7 w-7 text-muted-foreground hover:text-red-500 hover:bg-red-500/10"
                             onClick={() => handleDeleteExpense(e.id)}>
                             <Trash2 className="w-3.5 h-3.5" />
                           </Button>
@@ -2653,7 +2826,7 @@ export function Finance() {
                     </div>
                   );
                 })}
-                {expenses.length === 0 && (
+                {sortedExpenses.length === 0 && (
                   <div className="text-center py-8 text-zinc-400 text-xs italic">No expense records found.</div>
                 )}
               </div>
@@ -2665,36 +2838,36 @@ export function Finance() {
                     <TableHeader className="bg-neutral-100 dark:bg-neutral-900 border-b border-neutral-300 dark:border-neutral-700">
                       <TableRow>
                         <TableHead
-                          className="text-[10px] font-black uppercase tracking-widest text-neutral-600 dark:text-neutral-400 py-2 px-3 cursor-pointer hover:bg-neutral-200/50 dark:hover:bg-neutral-800 transition-colors min-w-22.5"
-                          onClick={() => toggleSort('date')}
+                          aria-sort={sortKey === 'date' ? (sortDirection === 'asc' ? 'ascending' : 'descending') : 'none'}
+                          className="text-[10px] font-black uppercase tracking-widest text-neutral-600 dark:text-neutral-400 py-2 px-3 hover:bg-neutral-200/50 dark:hover:bg-neutral-800 transition-colors min-w-22.5"
                         >
-                          <div className="flex items-center gap-1">
+                          <button type="button" onClick={() => toggleSort('date')} className="flex w-full items-center gap-1 text-left uppercase tracking-widest cursor-pointer">
                             Date {sortKey === 'date' ? (sortDirection === 'asc' ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />) : <ArrowUpDown className="w-2.5 h-2.5 opacity-40" />}
-                          </div>
+                          </button>
                         </TableHead>
                         <TableHead
-                          className="text-[10px] font-black uppercase tracking-widest text-neutral-600 dark:text-neutral-400 py-2 px-3 cursor-pointer hover:bg-neutral-200/50 dark:hover:bg-neutral-800 transition-colors min-w-30"
-                          onClick={() => toggleSort('category')}
+                          aria-sort={sortKey === 'category' ? (sortDirection === 'asc' ? 'ascending' : 'descending') : 'none'}
+                          className="text-[10px] font-black uppercase tracking-widest text-neutral-600 dark:text-neutral-400 py-2 px-3 hover:bg-neutral-200/50 dark:hover:bg-neutral-800 transition-colors min-w-30"
                         >
-                          <div className="flex items-center gap-1">
+                          <button type="button" onClick={() => toggleSort('category')} className="flex w-full items-center gap-1 text-left uppercase tracking-widest cursor-pointer">
                             Category {sortKey === 'category' ? (sortDirection === 'asc' ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />) : <ArrowUpDown className="w-2.5 h-2.5 opacity-40" />}
-                          </div>
+                          </button>
                         </TableHead>
                         <TableHead
-                          className="text-[10px] font-black uppercase tracking-widest text-neutral-600 dark:text-neutral-400 py-2 px-3 cursor-pointer hover:bg-neutral-200/50 dark:hover:bg-neutral-800 transition-colors min-w-50"
-                          onClick={() => toggleSort('orderId')}
+                          aria-sort={sortKey === 'orderId' ? (sortDirection === 'asc' ? 'ascending' : 'descending') : 'none'}
+                          className="text-[10px] font-black uppercase tracking-widest text-neutral-600 dark:text-neutral-400 py-2 px-3 hover:bg-neutral-200/50 dark:hover:bg-neutral-800 transition-colors min-w-50"
                         >
-                          <div className="flex items-center gap-1">
+                          <button type="button" onClick={() => toggleSort('orderId')} className="flex w-full items-center gap-1 text-left uppercase tracking-widest cursor-pointer">
                             Order / Description {sortKey === 'orderId' ? (sortDirection === 'asc' ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />) : <ArrowUpDown className="w-2.5 h-2.5 opacity-40" />}
-                          </div>
+                          </button>
                         </TableHead>
                         <TableHead
-                          className="text-[10px] font-black uppercase tracking-widest text-neutral-600 dark:text-neutral-400 py-2 px-3 text-right cursor-pointer hover:bg-neutral-200/50 dark:hover:bg-neutral-800 transition-colors min-w-25"
-                          onClick={() => toggleSort('amount')}
+                          aria-sort={sortKey === 'amount' ? (sortDirection === 'asc' ? 'ascending' : 'descending') : 'none'}
+                          className="text-[10px] font-black uppercase tracking-widest text-neutral-600 dark:text-neutral-400 py-2 px-3 text-right hover:bg-neutral-200/50 dark:hover:bg-neutral-800 transition-colors min-w-25"
                         >
-                          <div className="flex items-center justify-end gap-1">
+                          <button type="button" onClick={() => toggleSort('amount')} className="flex w-full items-center justify-end gap-1 uppercase tracking-widest cursor-pointer">
                             Amount {sortKey === 'amount' ? (sortDirection === 'asc' ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />) : <ArrowUpDown className="w-2.5 h-2.5 opacity-40" />}
-                          </div>
+                          </button>
                         </TableHead>
                         <TableHead className="text-[10px] font-black uppercase tracking-widest text-neutral-600 dark:text-neutral-400 py-2 px-3 text-right min-w-20">Actions</TableHead>
                       </TableRow>
@@ -2722,14 +2895,15 @@ export function Finance() {
                                 <span className="truncate">{e.description}</span>
                               </div>
                             </TableCell>
-                            <TableCell className="text-right font-black font-mono tabular-nums text-xs text-red-600 dark:text-red-400 py-1.5 px-3">
-                              -₱{e.amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            <TableCell className={`text-right font-black font-mono tabular-nums text-xs py-1.5 px-3 ${(e as any).type === 'income' || e.amount < 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}`}>
+                              {(e as any).type === 'income' || e.amount < 0 ? '+' : '-'}₱{Math.abs(e.amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                             </TableCell>
                             <TableCell className="text-right py-1.5 px-3">
                               <div className="flex justify-end gap-1">
                                 <Button
                                   variant="ghost"
                                   size="icon"
+                                  aria-label={`Edit expense ${e.description || e.category}`}
                                   className="h-6 w-6 rounded-sm text-muted-foreground hover:text-foreground hover:bg-muted"
                                   onClick={() => {
                                     setEditingExpense(e);
@@ -2741,6 +2915,7 @@ export function Finance() {
                                 <Button
                                   variant="ghost"
                                   size="icon"
+                                  aria-label={`Delete expense ${e.description || e.category}`}
                                   className="h-6 w-6 rounded-sm text-muted-foreground hover:text-red-500 hover:bg-red-500/10"
                                   onClick={() => handleDeleteExpense(e.id)}
                                 >
@@ -2772,7 +2947,7 @@ export function Finance() {
                 <DialogDescription className="text-xs text-muted-foreground">Modify existing financial expenditure data.</DialogDescription>
               </DialogHeader>
               {editingExpense && (
-                <form onSubmit={handleUpdateExpense} className="space-y-3.5 pt-3 font-sans">
+                <form key={editingExpense.id} onSubmit={handleUpdateExpense} className="space-y-3.5 pt-3 font-sans">
                   <div className="space-y-1">
                     <Label htmlFor="edit-expense-category" className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Category</Label>
                     <Select name="category" defaultValue={editingExpense.category}>
@@ -2799,14 +2974,7 @@ export function Finance() {
                       id="edit-expense-date"
                       name="date"
                       type="date"
-                      defaultValue={
-                        editingExpense.date
-                          ? (typeof editingExpense.date.toDate === 'function'
-                            ? editingExpense.date.toDate()
-                            : new Date(editingExpense.date as any)
-                          ).toISOString().split('T')[0]
-                          : new Date().toISOString().split('T')[0]
-                      }
+                      defaultValue={formatLocalDateKey(parseDate(editingExpense.date) || new Date())}
                       required
                       className="rounded-sm border-border h-8 text-xs font-mono"
                     />
@@ -2898,7 +3066,7 @@ export function Finance() {
                     </Popover>
                   </div>
                   <DialogFooter className="pt-2">
-                    <Button type="submit" className="w-full h-8 bg-[#1A2332] text-white font-bold uppercase tracking-wider text-xs rounded-sm hover:bg-[#1A2332]/90 shadow-none">Save Changes</Button>
+                    <Button type="submit" className="w-full h-8 bg-primary text-primary-foreground font-bold uppercase tracking-wider text-xs rounded-sm hover:bg-primary/90 shadow-none">Save Changes</Button>
                   </DialogFooter>
                 </form>
               )}
@@ -2921,7 +3089,7 @@ export function Finance() {
                     type="button"
                     onClick={() => setExpenseScope('opex')}
                     className={`px-2 py-0.5 rounded-xs font-bold transition-all ${expenseScope === 'opex'
-                      ? 'bg-[#1A2332] text-white shadow-none'
+                      ? 'bg-primary text-primary-foreground shadow-none'
                       : 'text-muted-foreground hover:text-foreground'
                       }`}
                     title="Operating Expenses (Excludes COGS to reveal operational spend)"
@@ -2932,7 +3100,7 @@ export function Finance() {
                     type="button"
                     onClick={() => setExpenseScope('all')}
                     className={`px-2 py-0.5 rounded-xs font-bold transition-all ${expenseScope === 'all'
-                      ? 'bg-[#1A2332] text-white shadow-none'
+                      ? 'bg-primary text-primary-foreground shadow-none'
                       : 'text-muted-foreground hover:text-foreground'
                       }`}
                     title="All Spend (Macro view including Cost of Goods Sold)"
@@ -2962,11 +3130,11 @@ export function Finance() {
                         animationDuration={800}
                         animationEasing="ease-in-out"
                       >
-                        {pieData.map((entry, index) => (
+                        {pieData.map((_, index) => (
                           <Cell
                             key={`cell-${index}`}
                             fill={PIE_COLORS[index % PIE_COLORS.length]}
-                            stroke="hsl(var(--card))"
+                            stroke="var(--card)"
                             strokeWidth={2}
                           />
                         ))}
@@ -2980,10 +3148,11 @@ export function Finance() {
                           fontSize: '11px',
                           fontWeight: 'bold',
                         }}
-                        formatter={(value: number, name: string) => {
+                        formatter={(value, name) => {
+                          const numericVal = Number(value ?? 0);
                           const total = pieData.reduce((acc, curr) => acc + curr.value, 0);
-                          const percent = total > 0 ? ((value / total) * 100).toFixed(1) : '0.0';
-                          return [`₱${value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (${percent}%)`, name];
+                          const percent = total > 0 ? ((numericVal / total) * 100).toFixed(1) : '0.0';
+                          return [`₱${numericVal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (${percent}%)`, String(name ?? '')];
                         }}
                       />
                     </PieChart>
@@ -3047,23 +3216,37 @@ export function Finance() {
             </div>
           </div>
 
-          <div className="border border-[#243044] bg-[#1A2332] text-white rounded-sm overflow-hidden shadow-none">
-            <div className="p-3.5 space-y-1.5">
-              <h4 className="text-[9px] font-black uppercase tracking-[0.2em] text-[#fdd001]">Official Report Generator</h4>
-              <p className="text-xs text-slate-300 leading-normal">
-                Export audited and live Profit & Loss statements for external CPA, executive, and regulatory audit review.
-              </p>
+          {!isExpenseOnly && (
+            <div className="border border-[#243044] bg-[#1A2332] text-white rounded-sm overflow-hidden shadow-none">
+              <div className="p-3.5 space-y-1.5">
+                <h4 className="text-[9px] font-black uppercase tracking-[0.2em] text-[#fdd001]">Official Report Generator</h4>
+                <p className="text-xs text-slate-300 leading-normal">
+                  Export audited and live Profit &amp; Loss statements for external CPA, executive, and regulatory audit review.
+                </p>
+              </div>
+              <Button className="w-full rounded-none h-9 bg-white text-[#1A2332] hover:bg-slate-100 font-bold uppercase tracking-wider text-[10px] gap-2 border-t border-[#243044]" onClick={exportPLStatementCSV}>
+                <Download className="w-3.5 h-3.5 text-emerald-600" />
+                Generate Monthly P&amp;L (CSV)
+              </Button>
             </div>
-            <Button className="w-full rounded-none h-9 bg-white text-[#1A2332] hover:bg-slate-100 font-bold uppercase tracking-wider text-[10px] gap-2 border-t border-[#243044]" onClick={exportPLStatementCSV}>
-              <Download className="w-3.5 h-3.5 text-emerald-600" />
-              Generate Monthly P&L (CSV)
-            </Button>
-          </div>
+          )}
           {/* Financial CSV Importer Dialog */}
           <FinancialImportModal
             isOpen={isCSVImportOpen}
             onClose={() => setIsCSVImportOpen(false)}
             categories={categories}
+            canImportOrders={!isExpenseOnly}
+          />
+          <ConfirmDialog
+            open={!!confirmDialog}
+            title={confirmDialog?.title ?? ''}
+            description={confirmDialog?.description ?? ''}
+            confirmLabel={confirmDialog?.confirmLabel ?? 'Confirm'}
+            destructive={confirmDialog?.destructive}
+            onOpenChange={(open) => { if (!open) setConfirmDialog(null); }}
+            onConfirm={async () => {
+              if (confirmDialog) await confirmDialog.onConfirm();
+            }}
           />
         </div>
       </div>

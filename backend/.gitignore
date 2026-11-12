@@ -12,6 +12,7 @@ dist/
 
 # Auto-managed backup/trash directory
 .trash/
+backups/
 
 # Logs
 *.log

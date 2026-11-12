@@ -16,6 +16,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { CheckIcon as Check, DownloadIcon as Download, EyeIcon as Eye, FileTextIcon as FileText, SpinnerGapIcon as Loader2, PencilIcon as Pencil, PlusIcon as Plus, ScanIcon as ScanLine, TrashIcon as Trash2 } from '@phosphor-icons/react';
 import { useAuth } from '../hooks/useAuth';
+import { hasAdminRole } from '../lib/staffPermissions';
+import { ConfirmDialog } from './ConfirmDialog';
 import { toast } from 'sonner';
 
 // ---------------------------------------------------------------------------
@@ -79,7 +81,7 @@ async function compressImageForOcr(file: File, maxDimension = 2400, quality = 0.
   });
 }
 
-async function scanPricelistImage(file: File, startingSkuNumber = 1, existingProducts: Product[] = []): Promise<PricelistItem[]> {
+async function scanPricelistImage(file: File, startingSkuNumber = 1, existingProducts: Product[] = [], signal?: AbortSignal): Promise<PricelistItem[]> {
   if (!GEMINI_API_KEY || GEMINI_API_KEY.includes('MY_')) {
     throw new Error('Missing Gemini API Key in .env. Please update VITE_GEMINI_API_KEY in your .env file.');
   }
@@ -122,8 +124,11 @@ Return ONLY a valid JSON array matching this schema:
   let lastError = '';
 
   for (const { ver, model } of CANDIDATE_VISION_MODELS) {
+    if (signal?.aborted) {
+      throw new DOMException('Scan aborted', 'AbortError');
+    }
     try {
-      const url = `https://generativelanguage.googleapis.com/${ver}/models/${model}:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`;
+      const url = `https://generativelanguage.googleapis.com/${ver}/models/${model}:generateContent`;
       const res = await fetch(url, {
         method: 'POST',
         headers: {
@@ -131,6 +136,7 @@ Return ONLY a valid JSON array matching this schema:
           'x-goog-api-key': GEMINI_API_KEY,
         },
         body: JSON.stringify(body),
+        signal,
       });
 
       if (res.ok) {
@@ -143,6 +149,9 @@ Return ONLY a valid JSON array matching this schema:
       lastError = errBody?.error?.message || `HTTP ${res.status}`;
       continue;
     } catch (fetchErr: any) {
+      if (fetchErr?.name === 'AbortError' || signal?.aborted) {
+        throw fetchErr;
+      }
       lastError = fetchErr.message || 'Network error';
       continue;
     }
@@ -198,11 +207,13 @@ Return ONLY a valid JSON array matching this schema:
   }
 
   const parsePriceNum = (v: unknown): number => {
-    if (typeof v === 'number') return isNaN(v) ? 0 : v;
+    if (typeof v === 'number') return Number.isFinite(v) ? Math.max(0, v) : 0;
     if (v === null || v === undefined) return 0;
-    const str = String(v).replace(/[^0-9.]/g, '');
+    const raw = String(v).trim();
+    if (raw.startsWith('-')) return 0;
+    const str = raw.replace(/[^0-9.]/g, '');
     const num = parseFloat(str);
-    return isNaN(num) ? 0 : num;
+    return Number.isFinite(num) ? Math.max(0, num) : 0;
   };
 
   return itemsArray.map((item, i) => {
@@ -259,7 +270,11 @@ function getNextSkuSequence(products: Product[], saved: SavedPricelist[], pendin
 const KEY = 'activepro.savedPricelists';
 const typeLabel = (type: PriceType) => type === 'metroManila' ? 'Metro Manila' : type === 'provincial' ? 'Provincial' : type === 'promo' ? 'Promo' : 'Regular';
 const schemeLabel = (type: PriceType) => `${typeLabel(type)} Price`;
-const dateLabel = (value?: string) => value ? new Date(value).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }) : 'emdash';
+const dateLabel = (value?: string) => {
+  if (!value) return '—';
+  const d = new Date(value);
+  return isNaN(d.getTime()) ? '—' : d.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+};
 const listType = (p: SavedPricelist) => { const types = [...new Set(p.items.map(i => i.priceType))]; return types.length === 1 ? typeLabel(types[0]) : 'Mixed'; };
 const escapeHtml = (value: unknown) => String(value ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
 function readSaved(): SavedPricelist[] { try { const data = JSON.parse(localStorage.getItem(KEY) || '[]'); return Array.isArray(data) ? data.map((p: SavedPricelist & { exportedAt?: string; products?: Product[] }) => ({ ...p, createdAt: p.createdAt || p.exportedAt || new Date().toISOString(), items: p.items || (p.products || []).map(x => ({ productId: x.id, sku: x.sku, name: x.name, category: x.category, priceType: 'base', price: Number(x.basePrice || 0) })) })) : []; } catch { return []; } }
@@ -272,21 +287,35 @@ export function Pricelist() {
   const { permissions } = useStaffAccess();
   const [products, setProducts] = useState<Product[]>([]), [warehouses, setWarehouses] = useState<Warehouse[]>([]), [inventory, setInventory] = useState<Array<{ productId: string; quantity: number }>>([]), [saved, setSaved] = useState<SavedPricelist[]>(readSaved), [loading, setLoading] = useState(true);
   const [search, setSearch] = useState(''), [dateFilter, setDateFilter] = useState('all'), [typeFilter, setTypeFilter] = useState('all'), [pdfFilter, setPdfFilter] = useState('all');
-  const [from, setFrom] = useState(''), [to, setTo] = useState(''), [viewId, setViewId] = useState(''), [renameId, setRenameId] = useState(''), [rename, setRename] = useState('');
+  const [from, setFrom] = useState(''), [to, setTo] = useState(''), [viewId, setViewId] = useState('');
   const [createOpen, setCreateOpen] = useState(false);
   const [editing, setEditing] = useState<SavedPricelist | undefined>();
   const [selectedPdfId, setSelectedPdfId] = useState('');
+  const [pricelistToDelete, setPricelistToDelete] = useState<SavedPricelist | null>(null);
 
   // Image scan state
   const scanInputRef = useRef<HTMLInputElement>(null);
   const appendScanInputRef = useRef<HTMLInputElement>(null);
+  const scanAbortRef = useRef<AbortController | null>(null);
   const [scanning, setScanning] = useState(false);
   const [scanItems, setScanItems] = useState<PricelistItem[] | null>(null);
   const [scanName, setScanName] = useState('');
   const [scanPreviewUrl, setScanPreviewUrl] = useState('');
 
+  useEffect(() => {
+    return () => {
+      if (scanPreviewUrl) URL.revokeObjectURL(scanPreviewUrl);
+    };
+  }, [scanPreviewUrl]);
+
+  useEffect(() => {
+    return () => {
+      scanAbortRef.current?.abort();
+    };
+  }, []);
+
   const canEdit = permissions.pricelist === 'edit';
-  const priceAccess = profile?.role === 'admin' ? 'all' : (permissions.priceAccess || 'all');
+  const priceAccess = hasAdminRole(profile) ? 'all' : (permissions.priceAccess || 'all');
   const canViewWholesale = priceAccess === 'all' || priceAccess === 'selling_no_cost';
 
   const [syncing, setSyncing] = useState(false);
@@ -314,9 +343,9 @@ export function Pricelist() {
         setSaved(prev => {
           const map = new Map<string, SavedPricelist>();
           prev.forEach(item => map.set(item.id, item));
-          dbLists.forEach(item => map.set(item.id, item));
+          dbLists.forEach((item: SavedPricelist) => map.set(item.id, item));
           const merged = Array.from(map.values()).sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
-          localStorage.setItem(KEY, JSON.stringify(merged));
+          try { localStorage.setItem(KEY, JSON.stringify(merged)); } catch {}
           return merged;
         });
       }
@@ -342,42 +371,62 @@ export function Pricelist() {
 
   const save = (next: SavedPricelist[]) => {
     setSaved(next);
-    localStorage.setItem(KEY, JSON.stringify(next));
-    try {
-      for (const item of next) {
-        setDoc(doc(db, 'pricelists', item.id), item).catch(() => {});
-      }
-    } catch {}
+    try { localStorage.setItem(KEY, JSON.stringify(next)); } catch {}
+    Promise.all(next.map(item => setDoc(doc(db, 'pricelists', item.id), item))).catch((err) => {
+      console.error('Failed to sync pricelist changes to server:', err);
+      toast.error('Could not sync pricelist changes to the server.');
+    });
   };
-  const filtered = useMemo(() => { const now = new Date(), today = new Date(now.getFullYear(), now.getMonth(), now.getDate()), week = new Date(today), month = new Date(now.getFullYear(), now.getMonth(), 1); week.setDate(today.getDate() - today.getDay()); return saved.filter(p => { const d = new Date(p.createdAt); const dateOk = dateFilter === 'all' || (dateFilter === 'today' && d >= today) || (dateFilter === 'week' && d >= week) || (dateFilter === 'month' && d >= month) || (dateFilter === 'custom' && (!from || d >= new Date(from + 'T00:00:00')) && (!to || d <= new Date(to + 'T23:59:59'))); return p.name.toLowerCase().includes(search.toLowerCase()) && dateOk && (typeFilter === 'all' || listType(p) === typeFilter) && (pdfFilter === 'all' || (pdfFilter === 'exported' && !!p.lastPdfGeneratedAt) || (pdfFilter === 'never' && !p.lastPdfGeneratedAt)); }).sort((a, b) => b.createdAt.localeCompare(a.createdAt)); }, [saved, search, dateFilter, typeFilter, pdfFilter, from, to]);
+  const filtered = useMemo(() => {
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const week = new Date(today);
+    const month = new Date(now.getFullYear(), now.getMonth(), 1);
+    week.setDate(today.getDate() - today.getDay());
+    return saved.filter(p => {
+      const d = p.createdAt ? new Date(p.createdAt) : new Date(NaN);
+      const validDate = !isNaN(d.getTime());
+      const dateOk = dateFilter === 'all' || (validDate && (
+        (dateFilter === 'today' && d >= today) ||
+        (dateFilter === 'week' && d >= week) ||
+        (dateFilter === 'month' && d >= month) ||
+        (dateFilter === 'custom' && (!from || d >= new Date(from + 'T00:00:00')) && (!to || d <= new Date(to + 'T23:59:59')))
+      ));
+      return p.name.toLowerCase().includes(search.toLowerCase()) && dateOk && (typeFilter === 'all' || listType(p) === typeFilter) && (pdfFilter === 'all' || (pdfFilter === 'exported' && !!p.lastPdfGeneratedAt) || (pdfFilter === 'never' && !p.lastPdfGeneratedAt));
+    }).sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+  }, [saved, search, dateFilter, typeFilter, pdfFilter, from, to]);
   const view = saved.find(p => p.id === viewId);
   const closeCreate = () => { setCreateOpen(false); setEditing(undefined); };
   const saveBuilder = async (list: SavedPricelist, draft: boolean) => {
     await setDoc(doc(db, 'pricelists', list.id), JSON.parse(JSON.stringify(list)));
     setSaved(previous => {
       const next = [list, ...previous.filter(p => p.id !== list.id)];
-      localStorage.setItem(KEY, JSON.stringify(next));
+      try { localStorage.setItem(KEY, JSON.stringify(next)); } catch {}
       return next;
     });
     closeCreate();
     toast.success(draft ? 'Pricelist saved as draft' : 'Pricelist saved');
   };
-  const generatePdf = (target = view, recordExport = true) => {
+  const generatePdf = (target = view, recordExport = canEdit) => {
     if (!target) return;
     let tableRows = '';
     for (const { name: cat, items } of sectionsFor(target)) {
       tableRows += `<tr style="background-color: #f1f5f9; font-weight: bold;"><td colspan="3" style="padding: 10px 12px; font-size: 14px; border: 1px solid #cbd5e1; color: #0f172a; text-transform: uppercase; letter-spacing: 0.5px;">${escapeHtml(cat)}</td></tr>`;
       for (const i of items) {
+        const priceCell = canViewWholesale || i.priceType === 'base'
+          ? `₱${i.price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+          : '— (Restricted)';
         tableRows += `<tr>
           <td style="padding: 8px 12px; border: 1px solid #e2e8f0; font-family: monospace; font-size: 12px;">${escapeHtml(i.sku)}</td>
           <td style="padding: 8px 12px; border: 1px solid #e2e8f0; font-weight: 600;">${escapeHtml(i.name)}</td>
-          <td style="padding: 8px 12px; border: 1px solid #e2e8f0; text-align: right; font-weight: bold; color: #0f172a;">₱${i.price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+          <td style="padding: 8px 12px; border: 1px solid #e2e8f0; text-align: right; font-weight: bold; color: #0f172a;">${priceCell}</td>
         </tr>`;
       }
     }
 
     const w = window.open('', '_blank');
     if (!w) return toast.error('Allow pop-ups to preview this pricelist PDF');
+    w.opener = null;
     w.document.write(`<!DOCTYPE html><html><head><title>${escapeHtml(target.name)}</title><style>
       body{font-family:'Segoe UI',Roboto,sans-serif;padding:32px;color:#1e293b;max-width:960px;margin:0 auto}
       h1{margin-bottom:4px;font-size:24px;color:#0f172a}
@@ -417,10 +466,23 @@ export function Pricelist() {
       </script>
     </body></html>`);
     w.document.close();
-    if (recordExport) save(saved.map(p => p.id === target.id ? { ...p, lastPdfGeneratedAt: new Date().toISOString() } : p));
+    if (recordExport && canEdit) save(saved.map(p => p.id === target.id ? { ...p, lastPdfGeneratedAt: new Date().toISOString() } : p));
   };
-  const doRename = () => { if (!rename.trim()) return; save(saved.map(p => p.id === renameId ? { ...p, name: rename.trim(), updatedAt: new Date().toISOString() } : p)); setRenameId(''); toast.success('Pricelist renamed'); };
-  const remove = (p: SavedPricelist) => { if (window.confirm(`Delete "${p.name}"? This action cannot be undone.`)) { save(saved.filter(x => x.id !== p.id)); deleteDoc(doc(db, 'pricelists', p.id)).catch(() => {}); toast.success('Pricelist deleted'); } };
+  const executeRemove = async (p: SavedPricelist) => {
+    try {
+      await deleteDoc(doc(db, 'pricelists', p.id));
+      const next = saved.filter(x => x.id !== p.id);
+      setSaved(next);
+      try { localStorage.setItem(KEY, JSON.stringify(next)); } catch {}
+      toast.success('Pricelist deleted');
+    } catch (err) {
+      console.error('Failed to delete pricelist:', err);
+      toast.error('Could not delete pricelist. Check your permissions and try again.');
+    }
+  };
+  const remove = (p: SavedPricelist) => {
+    setPricelistToDelete(p);
+  };
 
   // Image scan handlers
   const handleScanClick = () => scanInputRef.current?.click();
@@ -428,19 +490,24 @@ export function Pricelist() {
     const file = e.target.files?.[0];
     if (!file) return;
     if (!file.type.startsWith('image/')) { toast.error('Please upload an image file.'); return; }
+    scanAbortRef.current?.abort();
+    const controller = new AbortController();
+    scanAbortRef.current = controller;
     setScanPreviewUrl(URL.createObjectURL(file));
     setScanName(`Scanned Pricelist - ${new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}`);
     setScanning(true);
     try {
       const startNum = getNextSkuSequence(products, saved);
-      const items = await scanPricelistImage(file, startNum, products);
+      const items = await scanPricelistImage(file, startNum, products, controller.signal);
+      if (controller.signal.aborted) return;
       if (!items.length) { toast.error('No products found in the image. Try a clearer photo.'); setScanning(false); return; }
       setScanItems(items);
       toast.success(`${items.length} products extracted starting from SKU-${String(startNum).padStart(3, '0')}.`);
-    } catch (err) {
+    } catch (err: any) {
+      if (err?.name === 'AbortError' || controller.signal.aborted) return;
       toast.error(`Scan failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
     } finally {
-      setScanning(false);
+      if (!controller.signal.aborted) setScanning(false);
       if (scanInputRef.current) scanInputRef.current.value = '';
     }
   };
@@ -449,17 +516,22 @@ export function Pricelist() {
     const file = e.target.files?.[0];
     if (!file) return;
     if (!file.type.startsWith('image/')) { toast.error('Please upload an image file.'); return; }
+    scanAbortRef.current?.abort();
+    const controller = new AbortController();
+    scanAbortRef.current = controller;
     setScanning(true);
     try {
       const startNum = getNextSkuSequence(products, saved, scanItems);
-      const newItems = await scanPricelistImage(file, startNum, products);
+      const newItems = await scanPricelistImage(file, startNum, products, controller.signal);
+      if (controller.signal.aborted) return;
       if (!newItems.length) { toast.error('No products found in the image.'); setScanning(false); return; }
       setScanItems(prev => [...(prev || []), ...newItems]);
       toast.success(`Added ${newItems.length} products (SKU-${String(startNum).padStart(3, '0')} to SKU-${String(startNum + newItems.length - 1).padStart(3, '0')}).`);
-    } catch (err) {
+    } catch (err: any) {
+      if (err?.name === 'AbortError' || controller.signal.aborted) return;
       toast.error(`Scan failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
     } finally {
-      setScanning(false);
+      if (!controller.signal.aborted) setScanning(false);
       if (appendScanInputRef.current) appendScanInputRef.current.value = '';
     }
   };
@@ -467,8 +539,9 @@ export function Pricelist() {
     if (!scanItems?.length || !scanName.trim() || syncing) return;
     setSyncing(true);
 
-    const p: SavedPricelist = { id: crypto.randomUUID(), name: scanName.trim(), createdAt: new Date().toISOString(), items: scanItems };
-    save([p, ...saved]);
+    const listId = crypto.randomUUID();
+    const resolvedItems = scanItems.map(item => ({ ...item }));
+    const createdAt = new Date().toISOString();
 
     let newCount = 0;
     let updateCount = 0;
@@ -488,7 +561,8 @@ export function Pricelist() {
 
       const syncedProducts = [...products];
 
-      for (const item of scanItems) {
+      for (let idx = 0; idx < resolvedItems.length; idx++) {
+        const item = resolvedItems[idx];
         const itemSku = (item.sku || '').trim();
         const itemName = (item.name || '').trim();
 
@@ -517,6 +591,7 @@ export function Pricelist() {
           }
 
           await updateDoc(doc(db, 'products', existing.id), updates);
+          resolvedItems[idx] = { ...item, productId: existing.id };
           updateCount++;
         } else {
           const newId = crypto.randomUUID();
@@ -526,26 +601,27 @@ export function Pricelist() {
             name: itemName,
             category: (item.category || 'General').trim(),
             basePrice: item.price,
-            mmPrice: item.priceType === 'metroManila' ? item.price : item.price,
-            wholesalePrice: item.priceType === 'metroManila' ? item.price : item.price,
-            provincialPrice: item.priceType === 'provincial' ? item.price : item.price,
-            dealerPrice: item.priceType === 'provincial' ? item.price : item.price,
+            mmPrice: item.price,
+            wholesalePrice: item.price,
+            provincialPrice: item.price,
+            dealerPrice: item.price,
             promoPrice: item.priceType === 'promo' ? item.price : null,
-            costPrice: 0,
             minStockLevel: 5,
             reorderPoint: 10,
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
           };
 
-          await addDoc(collection(db, 'products'), newProduct);
-          syncedProducts.push(newProduct as Product);
+          const addedRef = await addDoc(collection(db, 'products'), newProduct);
+          const realProductId = addedRef?.id || newId;
+          resolvedItems[idx] = { ...item, productId: realProductId };
+          syncedProducts.push({ ...newProduct, id: realProductId } as Product);
           newCount++;
 
           for (const wh of activeWarehouses) {
             try {
               await addDoc(collection(db, 'inventory'), {
-                productId: newId,
+                productId: realProductId,
                 warehouseId: wh.id,
                 quantity: 0,
                 lastUpdated: serverTimestamp(),
@@ -557,6 +633,9 @@ export function Pricelist() {
         }
       }
 
+      const p: SavedPricelist = { id: listId, name: scanName.trim(), createdAt, items: resolvedItems };
+      save([p, ...saved]);
+
       const details = [];
       if (newCount > 0) details.push(`${newCount} new products added`);
       if (updateCount > 0) details.push(`${updateCount} existing prices updated`);
@@ -566,6 +645,8 @@ export function Pricelist() {
         { description: 'All products are now available in Inventory and Order Entry.' }
       );
     } catch (err: any) {
+      const p: SavedPricelist = { id: listId, name: scanName.trim(), createdAt, items: resolvedItems };
+      save([p, ...saved]);
       console.error('Pricelist catalog sync error:', err);
       toast.warning(
         `"${p.name}" saved locally, but database sync had an issue: ${err.message || 'Check database permissions.'}`
@@ -602,11 +683,9 @@ export function Pricelist() {
 
       <div className="rounded-2xl border bg-card p-4"><div className="grid gap-3 md:grid-cols-4"><div><label className="text-xs invisible select-none block">Search</label><div className="relative mt-1"><SearchBar className="pl-9" placeholder="Search by pricelist name..." value={search} onValueChange={setSearch}/></div></div><Filter label="Date Created" value={dateFilter} set={setDateFilter} options={[["all","All Dates"],["today","Today"],["week","This Week"],["month","This Month"],["custom","Custom Date Range"]]}/><Filter label="Pricelist Type" value={typeFilter} set={setTypeFilter} options={[["all","All Types"],["Regular","Regular"],["Metro Manila","Metro Manila"],["Provincial","Provincial"],["Promo","Promo"],["Mixed","Mixed"]]}/><Filter label="PDF Status" value={pdfFilter} set={setPdfFilter} options={[["all","All Statuses"],["never","Never Exported"],["exported","Exported"]]}/></div>{dateFilter === 'custom' && <div className="mt-3 grid grid-cols-2 gap-3"><Field label="From" value={from} set={setFrom}/><Field label="To" value={to} set={setTo}/></div>}</div>
 
-      <div className="overflow-x-auto rounded-2xl border"><Table><TableHeader><TableRow><TableHead className="w-12"/><TableHead>Name</TableHead><TableHead>Type</TableHead><TableHead>Items</TableHead><TableHead>Date Created</TableHead><TableHead>Last PDF Generated</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader><TableBody>{filtered.map(p => <TableRow key={p.id}><TableCell><input type="checkbox" checked={selectedPdfId === p.id} onChange={e => setSelectedPdfId(e.target.checked ? p.id : '')}/></TableCell><TableCell><span className="flex items-center gap-2 font-bold"><FileText className="h-5 w-5"/>{p.name}</span></TableCell><TableCell>{listType(p)}</TableCell><TableCell>{p.items.length}</TableCell><TableCell>{dateLabel(p.createdAt)}</TableCell><TableCell>{dateLabel(p.lastPdfGeneratedAt)}</TableCell><TableCell><div className="flex justify-end gap-2"><Icon title="View" onClick={() => setViewId(p.id)}><Eye/></Icon>{canEdit && <><Icon title="Edit pricelist" onClick={() => { setEditing(p); setCreateOpen(true); }}><Pencil/></Icon><Icon title="Delete" danger onClick={() => remove(p)}><Trash2/></Icon></>}</div></TableCell></TableRow>)}{!filtered.length && <TableRow><TableCell colSpan={7} className="h-40 text-center text-muted-foreground">No saved pricelists match the selected filters.</TableCell></TableRow>}</TableBody></Table></div>
+      <div className="overflow-x-auto rounded-2xl border"><Table><TableHeader><TableRow><TableHead className="w-12"/><TableHead>Name</TableHead><TableHead>Type</TableHead><TableHead>Items</TableHead><TableHead>Date Created</TableHead><TableHead>Last PDF Generated</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader><TableBody>{filtered.map(p => <TableRow key={p.id}><TableCell><input type="checkbox" aria-label={`Select ${p.name} for PDF`} checked={selectedPdfId === p.id} onChange={e => setSelectedPdfId(e.target.checked ? p.id : '')}/></TableCell><TableCell><span className="flex items-center gap-2 font-bold"><FileText className="h-5 w-5"/>{p.name}</span></TableCell><TableCell>{listType(p)}</TableCell><TableCell>{p.items.length}</TableCell><TableCell>{dateLabel(p.createdAt)}</TableCell><TableCell>{dateLabel(p.lastPdfGeneratedAt)}</TableCell><TableCell><div className="flex justify-end gap-2"><Icon title="View" onClick={() => setViewId(p.id)}><Eye/></Icon>{canEdit && <><Icon title="Edit pricelist" onClick={() => { setEditing(p); setCreateOpen(true); }}><Pencil/></Icon><Icon title="Delete" danger onClick={() => remove(p)}><Trash2/></Icon></>}</div></TableCell></TableRow>)}{!filtered.length && <TableRow><TableCell colSpan={7} className="h-40 text-center text-muted-foreground">No saved pricelists match the selected filters.</TableCell></TableRow>}</TableBody></Table></div>
 
       <Dialog open={!!view} onOpenChange={o => !o && setViewId('')}><DialogContent className="max-h-[94vh] w-[96vw] max-w-[96vw] overflow-y-auto sm:max-w-[96vw]! lg:max-w-[96vw]!"><DialogHeader><DialogTitle>{view?.name}</DialogTitle><DialogDescription>{view && `${view.items.length} items - Created ${dateLabel(view.createdAt)}`}</DialogDescription></DialogHeader><Items items={view?.items || []} sections={view?.sections} stockMap={stockMap}/><DialogFooter><Button variant="outline" onClick={() => setViewId('')}>Close</Button><Button onClick={() => generatePdf()}><Download className="mr-2 h-4 w-4"/>Generate PDF</Button></DialogFooter></DialogContent></Dialog>
-
-      <Dialog open={!!renameId && canEdit} onOpenChange={o => !o && setRenameId('')}><DialogContent><DialogHeader><DialogTitle>Rename Pricelist</DialogTitle></DialogHeader><Label>Pricelist Name</Label><Input value={rename} onChange={e => setRename(e.target.value)}/><DialogFooter><Button variant="outline" onClick={() => setRenameId('')}>Cancel</Button><Button onClick={doRename}>Rename</Button></DialogFooter></DialogContent></Dialog>
 
       <Dialog open={!!scanItems} onOpenChange={o => !o && !syncing && cancelScan()}>
         <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-5xl">
@@ -698,11 +777,13 @@ export function Pricelist() {
                     <TableCell>
                       <Input
                         type="number"
+                        min="0"
                         step="0.01"
                         className="h-8 text-right font-bold text-sm"
                         value={item.price}
                         onChange={e => {
-                          const val = parseFloat(e.target.value) || 0;
+                          const parsed = parseFloat(e.target.value);
+                          const val = Number.isFinite(parsed) ? Math.max(0, parsed) : 0;
                           setScanItems(prev => prev ? prev.map((x, i) => i === idx ? { ...x, price: val } : x) : null);
                         }}
                       />
@@ -711,6 +792,7 @@ export function Pricelist() {
                       <Button
                         variant="ghost"
                         size="icon"
+                        aria-label={`Remove ${item.name || item.sku}`}
                         className="h-8 w-8 text-destructive"
                         onClick={() => {
                           setScanItems(prev => prev ? prev.filter((_, i) => i !== idx) : null);
@@ -753,6 +835,18 @@ export function Pricelist() {
       </Dialog>
 
       {createOpen && canEdit && <PricelistBuilder initial={editing} products={products} stockMap={stockMap} close={closeCreate} save={saveBuilder} preview={list => generatePdf(list, false)} />}
+
+      <ConfirmDialog
+        open={!!pricelistToDelete}
+        title="Delete pricelist"
+        description={`Delete "${pricelistToDelete?.name ?? ''}"? This action cannot be undone.`}
+        confirmLabel="Delete"
+        destructive
+        onOpenChange={open => { if (!open) setPricelistToDelete(null); }}
+        onConfirm={async () => {
+          if (pricelistToDelete) await executeRemove(pricelistToDelete);
+        }}
+      />
     </div>
   );
 }
@@ -764,7 +858,7 @@ function Icon({title,onClick,danger,children}:{title:string;onClick:()=>void;dan
 function Items({ items, sections, stockMap = {} }: { items: PricelistItem[]; sections?: SavedPricelist['sections']; stockMap?: Record<string, number> }) {
   const { profile } = useAuth();
   const { permissions } = useStaffAccess();
-  const priceAccess = profile?.role === 'admin' ? 'all' : (permissions.priceAccess || 'all');
+  const priceAccess = hasAdminRole(profile ?? null) ? 'all' : (permissions.priceAccess || 'all');
   const canViewWholesale = priceAccess === 'all' || priceAccess === 'selling_no_cost';
   const grouped = sectionsFor({ items, sections });
 

@@ -11,6 +11,14 @@ export const DELIVERY_REGIONS: DeliveryRegionOption[] = [
   { value: 'Mindanao', label: 'Mindanao (14 Days)', slaDays: 14 },
 ];
 
+export function getRegionalSlaDays(region?: string): number {
+  const normalized = (region || '').trim().toLowerCase();
+  const match = DELIVERY_REGIONS.find(
+    (opt) => opt.value.toLowerCase() === normalized || opt.label.toLowerCase() === normalized
+  );
+  return match ? match.slaDays : 14;
+}
+
 export const REGION_LOCATIONS: Record<string, string[]> = {
   'Metro Manila': [
     'Caloocan',

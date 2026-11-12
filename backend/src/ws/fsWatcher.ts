@@ -27,8 +27,10 @@ import { IncomingMessage, Server as HttpServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import chokidar, { FSWatcher } from 'chokidar';
 import path from 'path';
+import { env } from '../config/env';
 import { FRONTEND_ROOT, BACKEND_ROOT } from '../config/paths';
 import { WsFileEvent } from '../types/file.types';
+import { resolveUserRoleFromHeaders, UserRole } from '../middleware/rbac.middleware';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -42,6 +44,30 @@ type ChokidarEvent = 'add' | 'addDir' | 'change' | 'unlink' | 'unlinkDir';
  *
  * @param httpServer - The Node.js http.Server that Express is attached to.
  */
+type WsAuthenticatedRequest = IncomingMessage & { wsRole?: UserRole };
+type WsClientWithAuth = WebSocket & { isAlive?: boolean; userRole?: UserRole };
+
+const FS_WATCH_ROLES: ReadonlySet<UserRole> = new Set(['admin', 'cmo']);
+
+function isOriginAllowed(origin: string | undefined): boolean {
+  if (!origin) return true;
+  if (origin === 'null') return false;
+  return env.CORS_ORIGINS.some((allowed) => allowed !== '*' && allowed === origin);
+}
+
+function authorizeWsRole(req: IncomingMessage): UserRole | null {
+  if (!isOriginAllowed(req.headers.origin)) {
+    return null;
+  }
+
+  // Always fail closed: unauthenticated or field_agent clients cannot subscribe to live FS or P&L streams
+  const role = resolveUserRoleFromHeaders(req.headers as Record<string, string | string[] | undefined>);
+  if (role === 'field_agent') {
+    return null;
+  }
+  return role;
+}
+
 export function createFsWatcher(httpServer: HttpServer): {
   wss: WebSocketServer;
   startWatcher: () => FSWatcher;
@@ -50,6 +76,15 @@ export function createFsWatcher(httpServer: HttpServer): {
   const wss = new WebSocketServer({
     server: httpServer,
     path:   '/ws',       // ws://localhost:4000/ws
+    verifyClient: (info, done) => {
+      const role = authorizeWsRole(info.req);
+      if (!role) {
+        done(false, 403, 'Forbidden');
+        return;
+      }
+      (info.req as WsAuthenticatedRequest).wsRole = role;
+      done(true);
+    },
   });
 
   // ── Heartbeat Mechanism to Prevent Connection & Memory Leaks ──────────────
@@ -70,21 +105,22 @@ export function createFsWatcher(httpServer: HttpServer): {
 
   wss.on('connection', (socket: WebSocket, req: IncomingMessage) => {
     const clientIp = req.socket.remoteAddress ?? 'unknown';
-    const extSocket = socket as WebSocket & { isAlive: boolean };
+    const extSocket = socket as WsClientWithAuth;
     extSocket.isAlive = true;
+    extSocket.userRole = (req as WsAuthenticatedRequest).wsRole ?? 'field_agent';
 
     socket.on('pong', () => {
       extSocket.isAlive = true;
     });
 
-    console.log(`🔌  WebSocket client connected (${clientIp}) — ${wss.clients.size} total`);
+    console.log(`🔌  WebSocket client connected (${clientIp}, role=${extSocket.userRole}) — ${wss.clients.size} total`);
 
-    // Send a greeting so the client knows the connection is live
+    // Send a greeting without exposing host filesystem paths
     socket.send(JSON.stringify({
       event:     'connected',
       path:      '.',
       timestamp: new Date().toISOString(),
-      message:   `Watching: ${FRONTEND_ROOT}`,
+      message:   'WebSocket telemetry stream connected',
     }));
 
     socket.on('close', () => {
@@ -99,14 +135,15 @@ export function createFsWatcher(httpServer: HttpServer): {
   // ── Broadcast Helper ─────────────────────────────────────────────────────
 
   /**
-   * Broadcasts a WsFileEvent to every connected client.
-   * Silently drops clients that are no longer in OPEN state.
+   * Broadcasts a WsFileEvent to admin/cmo WebSocket clients only.
+   * Silently drops clients that are no longer in OPEN state or lack FS permissions.
    */
   function broadcast(event: WsFileEvent): void {
     const payload = JSON.stringify(event);
     let sent = 0;
     wss.clients.forEach((client) => {
-      if (client.readyState === WebSocket.OPEN) {
+      const extClient = client as WsClientWithAuth;
+      if (client.readyState === WebSocket.OPEN && extClient.userRole && FS_WATCH_ROLES.has(extClient.userRole)) {
         client.send(payload);
         sent++;
       }
@@ -122,9 +159,12 @@ export function createFsWatcher(httpServer: HttpServer): {
     const normBackendRoot = path.normalize(BACKEND_ROOT).toLowerCase();
 
     const watcher = chokidar.watch(FRONTEND_ROOT, {
-      // Ignore node_modules, .git, backend/ itself, and .trash/
+      // Ignore node_modules, .git, backend/ itself, .trash/, and sensitive files
       ignored: [
         /(^|[/\\])\../,             // Hidden files/dirs (e.g. .git, .env)
+        /(^|[/\\])config\.toml$/i,
+        /\.pem$/i,
+        /\.key$/i,
         /node_modules/,
         (targetPath: string) => {
           const norm = path.normalize(targetPath).toLowerCase();
@@ -133,6 +173,7 @@ export function createFsWatcher(httpServer: HttpServer): {
         /\.trash/,
         /dist/,
       ],
+      followSymlinks:    false,
       persistent:        true,
       ignoreInitial:     true,       // Don't flood events for existing files on startup
       awaitWriteFinish: {

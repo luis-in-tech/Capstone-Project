@@ -1,5 +1,5 @@
 import { SearchBar } from '@/components/ui/search-bar';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { WarehouseFloorplan } from './WarehouseFloorplan';
 import { ArrowLeftIcon as ArrowLeft, ArrowRightIcon as ArrowRight, ArrowsLeftRightIcon as ArrowsLeftRight, SquaresFourIcon as Grid2X2, InfoIcon as Info, SpinnerGapIcon as Loader2, PackageIcon as Package, WarehouseIcon } from '@phosphor-icons/react';
 import { toast } from 'sonner';
@@ -48,6 +48,11 @@ export function WarehouseLayout({ warehouses, products, inventory }: { warehouse
   const [assignQuantity, setAssignQuantity] = useState<number>(0);
   const [assignSaving, setAssignSaving] = useState(false);
   const [assignError, setAssignError] = useState('');
+  const lastLoadAtRef = useRef(0);
+
+  useEffect(() => {
+    setSelectedProductIds([]);
+  }, [search]);
 
   useEffect(() => {
     setSelectedProductIds([]);
@@ -71,12 +76,17 @@ export function WarehouseLayout({ warehouses, products, inventory }: { warehouse
           { table: 'warehouse_zones', error: z.error },
           { table: 'warehouse_zone_allocations', error: a.error },
         ].filter(result => result.error);
-        if (failures.length && failures.every(({ error }) => ['PGRST205', '42P01'].includes(error.code))) {
+        if (failures.length && failures.every(({ error }) => error && ['PGRST205', '42P01'].includes(error.code))) {
           const saved = readLocalLayout(localStorage, storageKey, id);
-          setZones(saved.zones); setAllocations(validLocalAllocations(saved, inventory, id)); setTemporary(true);
+          const pruned = validLocalAllocations(saved, inventory, id);
+          if (pruned.length !== saved.allocations.length) {
+            localStorage.setItem(storageKey, JSON.stringify({ ...saved, allocations: pruned }));
+          }
+          setZones(saved.zones); setAllocations(pruned); setTemporary(true);
           setSelected(previous => previous && previous !== 'unassigned' && !saved.zones.some(zone => zone.id === previous) ? 'unassigned' : previous);
         } else if (failures.length) {
           setError(failures.map(({ table, error }) => {
+            if (!error) return `The database request failed for ${table}.`;
             const guidance = ['PGRST205', '42P01'].includes(error.code)
               ? 'The zone table is missing from this app’s connected database or its API schema cache.'
               : error.code === '42501' ? 'The database denied access to zone data.'
@@ -85,8 +95,9 @@ export function WarehouseLayout({ warehouses, products, inventory }: { warehouse
             return `${guidance} ${table}${error.code ? ` [${error.code}]` : ''}: ${error.message}${error.hint ? ` Hint: ${error.hint}` : ''}`;
           }).join('\n\n'));
         } else {
-          setZones(z.data as WarehouseZone[]); setAllocations(a.data as ZoneAllocation[]);
-          setSelected(previous => previous && previous !== 'unassigned' && !z.data.some(zone => zone.id === previous) ? 'unassigned' : previous);
+          const zoneData = (z.data ?? []) as WarehouseZone[];
+          setZones(zoneData); setAllocations((a.data ?? []) as ZoneAllocation[]);
+          setSelected(previous => previous && previous !== 'unassigned' && !zoneData.some(zone => zone.id === previous) ? 'unassigned' : previous);
         }
       } catch (cause) {
         if (active) setError(`Unable to connect to warehouse data: ${cause instanceof Error ? cause.message : 'Check your connection and retry.'}`);
@@ -94,13 +105,20 @@ export function WarehouseLayout({ warehouses, products, inventory }: { warehouse
         if (active) setLoading(false);
       }
     }
-    void load();
+    void load().then(() => {
+      if (active) lastLoadAtRef.current = Date.now();
+    });
     return () => { active = false; };
   }, [id, reload, inventory, storageKey]);
 
   useEffect(() => {
     const refresh = (event: StorageEvent) => { if (event.key === storageKey || event.key === null) setReload(n => n + 1); };
-    const refreshOnFocus = () => setReload(n => n + 1);
+    const refreshOnFocus = () => {
+      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
+      if (Date.now() - lastLoadAtRef.current < 30_000) return;
+      lastLoadAtRef.current = Date.now();
+      setReload(n => n + 1);
+    };
     window.addEventListener('storage', refresh);
     window.addEventListener('focus', refreshOnFocus);
     return () => {
@@ -142,8 +160,92 @@ export function WarehouseLayout({ warehouses, products, inventory }: { warehouse
     finally { setSaving(false); }
   }
 
+  async function executeDbZoneMoves(
+    moves: Array<{ prodId: string; fromZone: string; toZone: string; qty: number }>,
+  ) {
+    // 1. Validate all source allocations exist with sufficient stock before mutating
+    const preparedMoves = moves.map(m => {
+      let existingFrom: ZoneAllocation | undefined;
+      if (m.fromZone !== 'unassigned') {
+        existingFrom = allocations.find(
+          a => a.warehouseId === id && a.zoneId === m.fromZone && a.productId === m.prodId,
+        );
+        if (!existingFrom || (existingFrom.quantity || 0) < m.qty) {
+          throw new Error('Source zone allocation no longer has enough stock. Refresh the layout and try again.');
+        }
+      }
+      const existingTo = m.toZone !== 'unassigned'
+        ? allocations.find(a => a.warehouseId === id && a.zoneId === m.toZone && a.productId === m.prodId)
+        : undefined;
+      return { ...m, existingFrom, existingTo };
+    });
+
+    const createdToIds: string[] = [];
+    const updatedRows: Array<{ id: string; prevQty: number }> = [];
+    const deletedRows: Array<Omit<ZoneAllocation, 'id'>> = [];
+
+    try {
+      // 2. Write destination allocations FIRST so a failure never leaves stock silently deleted from source
+      for (const m of preparedMoves) {
+        if (m.toZone === 'unassigned') continue;
+        const curTo = m.existingTo?.quantity || 0;
+        const nextTo = curTo + m.qty;
+        if (m.existingTo) {
+          updatedRows.push({ id: m.existingTo.id, prevQty: curTo });
+          const { error: upErr } = await supabase
+            .from('warehouse_zone_allocations')
+            .update({ quantity: nextTo })
+            .eq('id', m.existingTo.id);
+          if (upErr) throw upErr;
+        } else {
+          const { data: inserted, error: inErr } = await supabase
+            .from('warehouse_zone_allocations')
+            .insert({ warehouseId: id, zoneId: m.toZone, productId: m.prodId, quantity: nextTo })
+            .select('id')
+            .single();
+          if (inErr) throw inErr;
+          if (inserted?.id) createdToIds.push(inserted.id);
+        }
+      }
+
+      // 3. Decrement/delete source allocations only after all destination writes succeed
+      for (const m of preparedMoves) {
+        if (m.fromZone === 'unassigned' || !m.existingFrom) continue;
+        const curFrom = m.existingFrom.quantity || 0;
+        const nextFrom = Math.max(0, curFrom - m.qty);
+        if (nextFrom === 0) {
+          const { error: delErr } = await supabase
+            .from('warehouse_zone_allocations')
+            .delete()
+            .eq('id', m.existingFrom.id);
+          if (delErr) throw delErr;
+          deletedRows.push({ warehouseId: id, zoneId: m.fromZone, productId: m.prodId, quantity: curFrom });
+        } else {
+          updatedRows.push({ id: m.existingFrom.id, prevQty: curFrom });
+          const { error: upErr } = await supabase
+            .from('warehouse_zone_allocations')
+            .update({ quantity: nextFrom })
+            .eq('id', m.existingFrom.id);
+          if (upErr) throw upErr;
+        }
+      }
+    } catch (err) {
+      // Compensation rollback
+      for (const rowId of createdToIds) {
+        await supabase.from('warehouse_zone_allocations').delete().eq('id', rowId);
+      }
+      for (const upd of [...updatedRows].reverse()) {
+        await supabase.from('warehouse_zone_allocations').update({ quantity: upd.prevQty }).eq('id', upd.id);
+      }
+      for (const del of deletedRows) {
+        await supabase.from('warehouse_zone_allocations').insert(del);
+      }
+      throw err;
+    }
+  }
+
   async function handleSingleAssign() {
-    if (!assignTarget || !targetZoneId || assignQuantity <= 0 || assignSaving || !canEdit) return;
+    if (!assignTarget || !targetZoneId || assignTarget.availableQty <= 0 || assignQuantity <= 0 || assignSaving || !canEdit) return;
     if (assignQuantity > assignTarget.availableQty) {
       setAssignError(`Quantity exceeds available ${assignTarget.availableQty.toLocaleString()} units.`);
       return;
@@ -170,39 +272,13 @@ export function WarehouseLayout({ warehouses, products, inventory }: { warehouse
         localStorage.setItem(storageKey, JSON.stringify(saved));
         setAllocations(validLocalAllocations(saved, inventory, id));
       } else {
-        if (fromZone !== 'unassigned') {
-          const existingFrom = allocations.find(a => a.warehouseId === id && a.zoneId === fromZone && a.productId === prodId);
-          const curFrom = existingFrom?.quantity || 0;
-          const nextFrom = Math.max(0, curFrom - qty);
-          if (nextFrom === 0) {
-            if (existingFrom) {
-              const { error: delErr } = await supabase.from('warehouse_zone_allocations').delete().eq('id', existingFrom.id);
-              if (delErr) throw delErr;
-            }
-          } else {
-            if (existingFrom) {
-              const { error: upErr } = await supabase.from('warehouse_zone_allocations').update({ quantity: nextFrom }).eq('id', existingFrom.id);
-              if (upErr) throw upErr;
-            }
-          }
-        }
-        if (toZone !== 'unassigned') {
-          const existingTo = allocations.find(a => a.warehouseId === id && a.zoneId === toZone && a.productId === prodId);
-          const curTo = existingTo?.quantity || 0;
-          const nextTo = curTo + qty;
-          if (existingTo) {
-            const { error: upErr } = await supabase.from('warehouse_zone_allocations').update({ quantity: nextTo }).eq('id', existingTo.id);
-            if (upErr) throw upErr;
-          } else {
-            const { error: inErr } = await supabase.from('warehouse_zone_allocations').insert({ warehouseId: id, zoneId: toZone, productId: prodId, quantity: nextTo });
-            if (inErr) throw inErr;
-          }
-        }
+        await executeDbZoneMoves([{ prodId, fromZone, toZone, qty }]);
         setReload(n => n + 1);
       }
       toast.success(`Moved ${qty.toLocaleString()} units of ${assignTarget.product.name} to ${targetName}`);
       setAssignTarget(null);
     } catch (e) {
+      if (!temporary) setReload(n => n + 1);
       setAssignError((e as Error).message || 'Unable to update zone allocation.');
     } finally {
       setAssignSaving(false);
@@ -217,65 +293,35 @@ export function WarehouseLayout({ warehouses, products, inventory }: { warehouse
     let productsCount = 0;
 
     try {
+      const moves = selectedProductIds
+        .map(prodId => ({ prodId, fromZone: selected, toZone: bulkZoneId, qty: count(prodId, selected) }))
+        .filter(m => m.qty > 0);
+      totalMovedUnits = moves.reduce((s, m) => s + m.qty, 0);
+      productsCount = moves.length;
+
       if (temporary) {
         let saved = readLocalLayout(localStorage, storageKey, id);
-        for (const prodId of selectedProductIds) {
-          const avail = count(prodId, selected);
-          if (avail <= 0) continue;
-          totalMovedUnits += avail;
-          productsCount++;
-          if (selected !== 'unassigned') {
-            const curFrom = saved.allocations.find(a => a.warehouseId === id && a.zoneId === selected && a.productId === prodId)?.quantity || 0;
-            saved = assignLocalQuantity(saved, inventory, id, selected, prodId, Math.max(0, curFrom - avail));
+        for (const m of moves) {
+          if (m.fromZone !== 'unassigned') {
+            const curFrom = saved.allocations.find(a => a.warehouseId === id && a.zoneId === m.fromZone && a.productId === m.prodId)?.quantity || 0;
+            saved = assignLocalQuantity(saved, inventory, id, m.fromZone, m.prodId, Math.max(0, curFrom - m.qty));
           }
-          if (bulkZoneId !== 'unassigned') {
-            const curTo = saved.allocations.find(a => a.warehouseId === id && a.zoneId === bulkZoneId && a.productId === prodId)?.quantity || 0;
-            saved = assignLocalQuantity(saved, inventory, id, bulkZoneId, prodId, curTo + avail);
+          if (m.toZone !== 'unassigned') {
+            const curTo = saved.allocations.find(a => a.warehouseId === id && a.zoneId === m.toZone && a.productId === m.prodId)?.quantity || 0;
+            saved = assignLocalQuantity(saved, inventory, id, m.toZone, m.prodId, curTo + m.qty);
           }
         }
         localStorage.setItem(storageKey, JSON.stringify(saved));
         setAllocations(validLocalAllocations(saved, inventory, id));
       } else {
-        for (const prodId of selectedProductIds) {
-          const avail = count(prodId, selected);
-          if (avail <= 0) continue;
-          totalMovedUnits += avail;
-          productsCount++;
-          if (selected !== 'unassigned') {
-            const existingFrom = allocations.find(a => a.warehouseId === id && a.zoneId === selected && a.productId === prodId);
-            const curFrom = existingFrom?.quantity || 0;
-            const nextFrom = Math.max(0, curFrom - avail);
-            if (nextFrom === 0) {
-              if (existingFrom) {
-                const { error: delErr } = await supabase.from('warehouse_zone_allocations').delete().eq('id', existingFrom.id);
-                if (delErr) throw delErr;
-              }
-            } else {
-              if (existingFrom) {
-                const { error: upErr } = await supabase.from('warehouse_zone_allocations').update({ quantity: nextFrom }).eq('id', existingFrom.id);
-                if (upErr) throw upErr;
-              }
-            }
-          }
-          if (bulkZoneId !== 'unassigned') {
-            const existingTo = allocations.find(a => a.warehouseId === id && a.zoneId === bulkZoneId && a.productId === prodId);
-            const curTo = existingTo?.quantity || 0;
-            const nextTo = curTo + avail;
-            if (existingTo) {
-              const { error: upErr } = await supabase.from('warehouse_zone_allocations').update({ quantity: nextTo }).eq('id', existingTo.id);
-              if (upErr) throw upErr;
-            } else {
-              const { error: inErr } = await supabase.from('warehouse_zone_allocations').insert({ warehouseId: id, zoneId: bulkZoneId, productId: prodId, quantity: nextTo });
-              if (inErr) throw inErr;
-            }
-          }
-        }
+        await executeDbZoneMoves(moves);
         setReload(n => n + 1);
       }
       toast.success(`Assigned ${productsCount} products (${totalMovedUnits.toLocaleString()} units) to ${targetName}`);
       setSelectedProductIds([]);
       setBulkZoneId('');
     } catch (e) {
+      if (!temporary) setReload(n => n + 1);
       toast.error((e as Error).message || 'Unable to complete bulk assignment.');
     } finally {
       setBulkSaving(false);
@@ -335,7 +381,7 @@ export function WarehouseLayout({ warehouses, products, inventory }: { warehouse
                 <span className="text-muted-foreground">({totalSelectedUnits.toLocaleString()} total units)</span>
               </div>
               <div className="flex flex-wrap items-center gap-2">
-                <Select value={bulkZoneId} onValueChange={setBulkZoneId}>
+                <Select value={bulkZoneId} onValueChange={(val) => { if (val !== null) setBulkZoneId(val); }}>
                   <SelectTrigger className="h-9 w-52 bg-card text-xs">
                     <SelectValue placeholder="Choose destination zone">
                       {destinationOptions.find(opt => opt.value === bulkZoneId)?.label || 'Choose destination zone'}
@@ -412,7 +458,7 @@ export function WarehouseLayout({ warehouses, products, inventory }: { warehouse
                   variant="outline"
                   size="sm"
                   className="h-8 gap-1.5 text-xs"
-                  disabled={zones.length === 0}
+                  disabled={zones.length === 0 || qty <= 0}
                   onClick={() => {
                     setAssignTarget({ product: p, currentZoneId: selected, availableQty: qty });
                     setTargetZoneId(selected === 'unassigned' ? (zones[0]?.id || '') : 'unassigned');
@@ -449,7 +495,7 @@ export function WarehouseLayout({ warehouses, products, inventory }: { warehouse
         </div>
         <div className="space-y-2">
           <Label htmlFor="target-zone-select">Destination zone</Label>
-          <Select value={targetZoneId} onValueChange={setTargetZoneId}>
+          <Select value={targetZoneId} onValueChange={(val) => { if (val !== null) setTargetZoneId(val); }}>
             <SelectTrigger id="target-zone-select" className="w-full bg-card">
               <SelectValue placeholder="Choose destination">
                 {targetZoneId === 'unassigned' ? 'Unassigned Stock (Return to unallocated)' : (zones.find(z => z.id === targetZoneId)?.name || 'Choose destination')}

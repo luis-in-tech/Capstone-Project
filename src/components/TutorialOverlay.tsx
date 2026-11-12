@@ -1,7 +1,6 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
-  XIcon as X,
   CaretRightIcon as ChevronRight,
   CaretLeftIcon as ChevronLeft,
   PackageIcon as Package,
@@ -23,7 +22,7 @@ import { Button } from '@/components/ui/button';
 import {
   Dialog,
   DialogContent,
-  DialogHeader,
+  DialogDescription,
   DialogTitle,
 } from "@/components/ui/dialog";
 
@@ -31,7 +30,7 @@ const TUTORIAL_PAGES = [
   {
     id: 'intro',
     title: 'Welcome to Active Pro',
-    icon: <Zap className="w-8 h-8 text-zinc-900" />,
+    icon: <Zap className="w-8 h-8 text-white" />,
     content: 'Active Pro is a centralized logistics management system built for multi-hub warehouse environments. It synchronizes stock levels, order fulfillment, financial tracking, and staff delegation — all in real-time.',
     highlights: [
       'Real-time Supabase Sync',
@@ -44,7 +43,7 @@ const TUTORIAL_PAGES = [
   {
     id: 'admin',
     title: 'Admin Panel',
-    icon: <Shield className="w-8 h-8 text-zinc-900" />,
+    icon: <Shield className="w-8 h-8 text-white" />,
     content: 'The Admin Panel provides a high-level overview of your entire operation. View total revenue, order counts, registered users, and product catalog size at a glance. It also features a Top Performers section showing the best-selling products with detailed unit sales and revenue breakdowns.',
     highlights: [
       'Revenue & Order Summary Cards',
@@ -57,7 +56,7 @@ const TUTORIAL_PAGES = [
   {
     id: 'dashboard',
     title: 'Analytics',
-    icon: <BarChart3 className="w-8 h-8 text-zinc-900" />,
+    icon: <BarChart3 className="w-8 h-8 text-white" />,
     content: 'Analytics provides historical Active Pro order and revenue trends. Compare periods, filter by delivery region and fulfillment status, review operational breakdowns, and download the filtered report as a CSV file.',
     highlights: [
       'Revenue Trajectory Chart',
@@ -70,7 +69,7 @@ const TUTORIAL_PAGES = [
   {
     id: 'inventory',
     title: 'Inventory',
-    icon: <Package className="w-8 h-8 text-zinc-900" />,
+    icon: <Package className="w-8 h-8 text-white" />,
     content: 'The Inventory module tracks every SKU across your warehouse network. View products in table or card layout, monitor stock levels per warehouse hub, generate QR labels, and perform manual stock adjustments with full audit logging. Each product supports multiple variations (Color, Size, Model, Series) for detailed tracking.',
     highlights: [
       'SKU Tracking & Categorization',
@@ -84,7 +83,7 @@ const TUTORIAL_PAGES = [
   {
     id: 'orders',
     title: 'Order Entry',
-    icon: <ShoppingCart className="w-8 h-8 text-zinc-900" />,
+    icon: <ShoppingCart className="w-8 h-8 text-white" />,
     content: 'Orders follow a strict lifecycle: Pending → Preparing → Out for Delivery → Delivered → Completed. The system uses photo validation during dispatch for accountability. Create new orders with multiple line items, assign warehouses, and track the full order history with status updates.',
     highlights: [
       'Full Order Lifecycle Management',
@@ -98,7 +97,7 @@ const TUTORIAL_PAGES = [
   {
     id: 'transport',
     title: 'Inventory Movement',
-    icon: <Truck className="w-8 h-8 text-zinc-900" />,
+    icon: <Truck className="w-8 h-8 text-white" />,
     content: 'Record external supplier receipts or internal warehouse transfers. Select products and quantities, review the summary, and confirm to update inventory. External receipts also record a purchase expense. Movement IDs, date/time, and the recorder are assigned automatically. Earlier transport requests remain available in history.',
     highlights: [
       'External Receipts & Internal Transfers',
@@ -112,7 +111,7 @@ const TUTORIAL_PAGES = [
   {
     id: 'finance',
     title: 'Financials',
-    icon: <DollarSign className="w-8 h-8 text-zinc-900" />,
+    icon: <DollarSign className="w-8 h-8 text-white" />,
     content: 'The Financials module tracks revenue from orders against operational expenses. Record expenses by category, view profit & loss summaries, and monitor financial health with trajectory charts. Understand your margins with categorized expenditure breakdowns.',
     highlights: [
       'Profit & Loss Ledgers',
@@ -125,7 +124,7 @@ const TUTORIAL_PAGES = [
   {
     id: 'logistics',
     title: 'Logistics Optimizer',
-    icon: <Activity className="w-8 h-8 text-zinc-900" />,
+    icon: <Activity className="w-8 h-8 text-white" />,
     content: 'The Logistics Optimizer provides AI-driven recommendations for your operations. Get suggestions for route consolidation, traffic rerouting, and load balancing between warehouses. Apply recommendations directly to optimize delivery efficiency and reduce fuel costs.',
     highlights: [
       'Route Consolidation Suggestions',
@@ -138,7 +137,7 @@ const TUTORIAL_PAGES = [
   {
     id: 'pricelist',
     title: 'Pricelist',
-    icon: <Tag className="w-8 h-8 text-zinc-900" />,
+    icon: <Tag className="w-8 h-8 text-white" />,
     content: 'The Pricelist module provides a centralized catalog of all product pricing. Browse products by category tabs, search by name or SKU, and view base prices. Admins and delegated staff can add new products or edit existing pricing directly from this view.',
     highlights: [
       'Category-Based Product Tabs',
@@ -151,7 +150,7 @@ const TUTORIAL_PAGES = [
   {
     id: 'delegation',
     title: 'Staff Delegation',
-    icon: <UserCog className="w-8 h-8 text-zinc-900" />,
+    icon: <UserCog className="w-8 h-8 text-white" />,
     content: 'The Staff Delegation panel allows admins to grant specific permissions to staff members. Delegate inventory adjustment access or pricelist editing privileges to individual team members by email. Edit or revoke delegations at any time to maintain security.',
     highlights: [
       'Grant Inventory Adjustment Access',
@@ -164,7 +163,7 @@ const TUTORIAL_PAGES = [
   {
     id: 'settings',
     title: 'Settings',
-    icon: <Settings className="w-8 h-8 text-zinc-900" />,
+    icon: <Settings className="w-8 h-8 text-white" />,
     content: 'Configure your Active Pro experience. Manage your profile information, toggle between light and dark themes, view notification preferences, and check system health status including database connectivity and regional cluster info.',
     highlights: [
       'Profile Management',
@@ -187,6 +186,8 @@ export const TutorialOverlay = ({ open, onOpenChange }: { open: boolean, onOpenC
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="w-[75vw] max-w-[95vw] sm:max-w-[95vw] p-0 bg-white border-zinc-200 overflow-hidden rounded-[2rem]">
+        <DialogTitle className="sr-only">{current.title}</DialogTitle>
+        <DialogDescription className="sr-only">{current.content}</DialogDescription>
         <div className="flex flex-col md:flex-row h-[90vh] min-h-[90vh]">
           {/* Left: Module Info */}
           <div className="md:w-2/5 bg-zinc-950 p-10 flex flex-col justify-between text-white relative overflow-y-auto">
@@ -236,10 +237,10 @@ export const TutorialOverlay = ({ open, onOpenChange }: { open: boolean, onOpenC
                     </p>
 
                     {/* Video Placeholder */}
-                    <div className="bg-zinc-950 rounded-2xl overflow-hidden border border-zinc-200 aspect-video flex flex-col items-center justify-center relative group cursor-pointer hover:border-zinc-400 transition-all">
+                    <div className="bg-zinc-950 rounded-2xl overflow-hidden border border-zinc-200 aspect-video flex flex-col items-center justify-center relative">
                        <div className="absolute inset-0 bg-linear-to-b from-zinc-900/80 to-zinc-950/95" />
                        <div className="relative z-10 flex flex-col items-center gap-4">
-                          <div className="w-16 h-16 rounded-full bg-white/10 border-2 border-white/20 flex items-center justify-center group-hover:bg-white/20 group-hover:scale-110 transition-all">
+                          <div className="w-16 h-16 rounded-full bg-white/10 border-2 border-white/20 flex items-center justify-center">
                              <Play className="w-6 h-6 text-white ml-0.5" />
                           </div>
                           <div className="text-center">
@@ -248,18 +249,18 @@ export const TutorialOverlay = ({ open, onOpenChange }: { open: boolean, onOpenC
                           </div>
                        </div>
                        <div className="absolute bottom-3 right-3 z-10">
-                          <div className="flex items-center gap-1.5 text-[9px] font-bold uppercase tracking-widest text-zinc-500">
+                          <div className="flex items-center gap-1.5 text-[9px] font-bold uppercase tracking-widest text-zinc-300">
                              <Monitor className="w-3 h-3" />
                              Coming Soon
                           </div>
                        </div>
                     </div>
 
-                    <div className="bg-zinc-50 rounded-2xl p-6 border border-zinc-100">
-                       <h4 className="text-[10px] font-black uppercase tracking-wider text-zinc-400 mb-4 flex items-center gap-2">
+                    <div className="bg-zinc-50 rounded-2xl p-6 border border-zinc-200">
+                       <h4 className="text-[10px] font-black uppercase tracking-wider text-zinc-600 mb-4 flex items-center gap-2">
                           <ShieldCheck className="w-3 h-3" /> Access Control
                        </h4>
-                       <p className="text-xs text-zinc-500 font-medium">
+                       <p className="text-xs text-zinc-700 font-medium">
                           {current.id === 'intro' && 'Active Pro uses role-based access control. Admins have full access, while Secretaries, Agents, and Staff see only the modules relevant to their responsibilities.'}
                           {current.id === 'admin' && 'Only users with the Admin role can access the Admin Panel. This provides system-wide visibility and management controls.'}
                           {current.id === 'dashboard' && 'Analytics is accessible to Admin users and reports on Active Pro order and fulfillment performance.'}
@@ -278,22 +279,25 @@ export const TutorialOverlay = ({ open, onOpenChange }: { open: boolean, onOpenC
             </div>
 
             <div className="mt-8 flex items-center justify-between pt-6 border-t border-zinc-100">
-               <div className="flex gap-1">
-                  {TUTORIAL_PAGES.map((_, i) => (
-                    <div 
-                      key={i} 
-                      className={`h-1 rounded-full transition-all cursor-pointer ${i === currentPage ? 'w-6 bg-zinc-900' : 'w-2 bg-zinc-200 hover:bg-zinc-400'}`} 
+               <div className="flex gap-1.5 items-center">
+                  {TUTORIAL_PAGES.map((page, i) => (
+                    <button
+                      key={page.id}
+                      type="button"
+                      aria-label={`Go to ${page.title} (${i + 1} of ${TUTORIAL_PAGES.length})`}
+                      aria-current={i === currentPage ? 'step' : undefined}
+                      className={`h-1.5 rounded-full transition-all cursor-pointer ${i === currentPage ? 'w-6 bg-zinc-900' : 'w-2 bg-zinc-300 hover:bg-zinc-400'}`}
                       onClick={() => setCurrentPage(i)}
                     />
                   ))}
                </div>
                
                <div className="flex gap-2">
-                  <Button variant="ghost" onClick={prevPage} disabled={currentPage === 0} className="text-[10px] font-black uppercase"><ChevronLeft className="w-4 h-4 mr-1" /> Prev</Button>
+                  <Button type="button" variant="ghost" onClick={prevPage} disabled={currentPage === 0} className="text-[10px] font-black uppercase text-zinc-700 hover:text-zinc-900 hover:bg-zinc-100"><ChevronLeft className="w-4 h-4 mr-1" /> Prev</Button>
                   {currentPage === TUTORIAL_PAGES.length - 1 ? (
-                    <Button onClick={() => onOpenChange(false)} className="bg-zinc-900 text-white text-[10px] font-black uppercase px-6">Finish Guide</Button>
+                    <Button type="button" onClick={() => onOpenChange(false)} className="bg-zinc-900 text-white text-[10px] font-black uppercase px-6">Finish Guide</Button>
                   ) : (
-                    <Button onClick={nextPage} className="bg-zinc-900 text-white text-[10px] font-black uppercase px-6">Next Module <ChevronRight className="w-4 h-4 ml-1" /></Button>
+                    <Button type="button" onClick={nextPage} className="bg-zinc-900 text-white text-[10px] font-black uppercase px-6">Next Module <ChevronRight className="w-4 h-4 ml-1" /></Button>
                   )}
                </div>
             </div>

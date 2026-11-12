@@ -51,14 +51,39 @@ export async function processReturn(payload: ProcessReturnPayload): Promise<Retu
     throw new AppError(400, 'VALIDATION_ERROR', 'At least one return item must be specified.');
   }
 
-  // Verify order exists
+  if (!['refund', 'exchange', 'credit'].includes(payload.actionType)) {
+    throw new AppError(400, 'VALIDATION_ERROR', 'Action type must be refund, exchange, or credit.');
+  }
+
+  if (!['Cash', 'Cheque', 'Debt_Adjustment'].includes(payload.refundMethod)) {
+    throw new AppError(400, 'VALIDATION_ERROR', 'Invalid refund method.');
+  }
+
+  // Verify order if it exists in store
   let orderNumber = payload.orderId;
   let clientId = payload.clientId || 'CLI-UNKNOWN';
+  let purchasedByProduct = new Map<string, number>();
+  let hasOrderItems = false;
   try {
     const existingOrder = await getOrderById(payload.orderId);
+    if (existingOrder.status === 'cancelled') {
+      throw new AppError(400, 'INVALID_STATE', `Order "${existingOrder.orderNumber}" is cancelled and cannot be returned.`);
+    }
     orderNumber = existingOrder.orderNumber;
     clientId = existingOrder.clientId || clientId;
-  } catch {
+    if (existingOrder.items && existingOrder.items.length > 0) {
+      hasOrderItems = true;
+      for (const orderItem of existingOrder.items) {
+        purchasedByProduct.set(
+          orderItem.productId,
+          (purchasedByProduct.get(orderItem.productId) ?? 0) + orderItem.quantity
+        );
+      }
+    }
+  } catch (err) {
+    if (!(err instanceof AppError && err.code === 'NOT_FOUND')) {
+      throw err;
+    }
     // If order is not in local memory, retain supplied orderId
   }
 
@@ -66,10 +91,25 @@ export async function processReturn(payload: ProcessReturnPayload): Promise<Retu
   const returnNumber = `RET-${returnId.slice(-7).toUpperCase()}`;
   const now = new Date().toISOString();
 
-  let totalRefundAmount = 0;
+  // Compute prior returned quantities per product for this order
+  const priorReturnedByProduct = new Map<string, number>();
+  for (const prev of returnsStore.values()) {
+    if (prev.orderId === payload.orderId) {
+      for (const prevItem of prev.items) {
+        priorReturnedByProduct.set(
+          prevItem.productId,
+          (priorReturnedByProduct.get(prevItem.productId) ?? 0) + prevItem.quantity
+        );
+      }
+    }
+  }
+  const batchReturnedByProduct = new Map<string, number>();
+
+  let totalRefundCents = 0;
   let restockedCount = 0;
   let quarantinedCount = 0;
   const processedItems: ReturnItemRecord[] = [];
+  const stagedAuditEntries: ReturnAuditEntry[] = [];
 
   for (let idx = 0; idx < payload.items.length; idx++) {
     const item = payload.items[idx];
@@ -81,9 +121,48 @@ export async function processReturn(payload: ProcessReturnPayload): Promise<Retu
       throw new AppError(400, 'VALIDATION_ERROR', `Quantity for item ${item.name || item.sku} must be at least 1.`);
     }
 
-    const unitPrice = Number(item.unitPrice || 0);
-    const itemSubtotal = item.refundAmount != null ? Number(item.refundAmount) : Math.round(item.quantity * unitPrice * 100) / 100;
-    totalRefundAmount += itemSubtotal;
+    if (item.condition !== 'viable' && item.condition !== 'damaged') {
+      throw new AppError(400, 'VALIDATION_ERROR', `Return condition for item ${item.sku} must be viable or damaged.`);
+    }
+
+    const unitPrice = item.unitPrice ?? 0;
+    if (typeof unitPrice !== 'number' || !Number.isFinite(unitPrice) || unitPrice < 0) {
+      throw new AppError(400, 'VALIDATION_ERROR', `Unit price for item ${item.sku} must be non-negative.`);
+    }
+
+    if (hasOrderItems) {
+      const purchasedQty = purchasedByProduct.get(item.productId);
+      if (purchasedQty === undefined) {
+        throw new AppError(400, 'VALIDATION_ERROR', `Product "${item.productId}" was not part of order "${orderNumber}".`);
+      }
+      const nextCumulative =
+        (priorReturnedByProduct.get(item.productId) ?? 0) +
+        (batchReturnedByProduct.get(item.productId) ?? 0) +
+        item.quantity;
+      if (nextCumulative > purchasedQty) {
+        throw new AppError(
+          400,
+          'VALIDATION_ERROR',
+          `Return quantity exceeds purchased quantity (${purchasedQty}) for product "${item.productId}".`
+        );
+      }
+      batchReturnedByProduct.set(
+        item.productId,
+        (batchReturnedByProduct.get(item.productId) ?? 0) + item.quantity
+      );
+    }
+
+    let itemSubtotalCents: number;
+    if (item.refundAmount != null) {
+      if (typeof item.refundAmount !== 'number' || !Number.isFinite(item.refundAmount) || item.refundAmount < 0) {
+        throw new AppError(400, 'VALIDATION_ERROR', `Refund amount for item ${item.sku} must be non-negative.`);
+      }
+      itemSubtotalCents = Math.round(item.refundAmount * 100);
+    } else {
+      itemSubtotalCents = Math.round(item.quantity * unitPrice * 100);
+    }
+    const itemSubtotal = itemSubtotalCents / 100;
+    totalRefundCents += itemSubtotalCents;
 
     const isViable = item.condition === 'viable';
     const destination = isViable ? 'warehouse_inventory' : 'quarantine';
@@ -110,8 +189,7 @@ export async function processReturn(payload: ProcessReturnPayload): Promise<Retu
 
     processedItems.push(itemRecord);
 
-    // Record stock audit entry
-    returnAuditStore.push({
+    stagedAuditEntries.push({
       id: `aud_ret_${Date.now()}_${idx}`,
       returnId,
       orderId: payload.orderId,
@@ -126,7 +204,10 @@ export async function processReturn(payload: ProcessReturnPayload): Promise<Retu
     });
   }
 
-  totalRefundAmount = Math.round(totalRefundAmount * 100) / 100;
+  for (const audit of stagedAuditEntries) {
+    returnAuditStore.push(audit);
+  }
+  const totalRefundAmount = totalRefundCents / 100;
 
   // Autonomously map financial ledger adjustment (FR-17)
   if (totalRefundAmount > 0 && (payload.refundMethod === 'Cash' || payload.refundMethod === 'Cheque')) {
@@ -139,8 +220,8 @@ export async function processReturn(payload: ProcessReturnPayload): Promise<Retu
         date: now,
         recordedBy: payload.processedBy || 'finance_officer',
       });
-    } catch {
-      // Non-blocking P&L synchronization fallback
+    } catch (pnlErr) {
+      console.warn('[returns.service] Failed to record P&L refund expense:', pnlErr);
     }
   }
 

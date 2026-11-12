@@ -4,8 +4,18 @@
  */
 
 import { Request, Response, NextFunction } from 'express';
+import { z } from 'zod';
+import { AppError } from '../middleware/errorHandler';
 import * as dbBackupService from '../services/databaseBackup.service';
 import { ApiSuccess } from '../types/api.types';
+
+const exportCsvQuerySchema = z.object({
+  table: z
+    .enum(['all', 'inventory', 'cmdb', 'orders', 'pnl', 'finance', 'expenses', 'audit', 'transfers'])
+    .optional()
+    .default('all'),
+  download: z.enum(['true', 'false']).optional(),
+});
 
 function ok<T>(res: Response, data: T, message?: string, status = 200): void {
   const body: ApiSuccess<T> = {
@@ -28,14 +38,23 @@ export async function exportCsv(
   next: NextFunction
 ): Promise<void> {
   try {
-    const table = (req.query['table'] as string) || 'all';
-    const isDownload = req.query['download'] === 'true';
+    const parsed = exportCsvQuerySchema.safeParse({
+      table: typeof req.query['table'] === 'string' ? req.query['table'].toLowerCase().trim() : undefined,
+      download: typeof req.query['download'] === 'string' ? req.query['download'].trim() : undefined,
+    });
+    if (!parsed.success) {
+      throw new AppError(400, 'VALIDATION_ERROR', 'Invalid export query parameters.');
+    }
+
+    const { table, download } = parsed.data;
+    const isDownload = download === 'true';
 
     const result = await dbBackupService.exportDatabaseTableCsv(table);
 
     if (isDownload) {
+      const safeFilename = result.filename.replace(/[^a-zA-Z0-9._-]/g, '_');
       res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-      res.setHeader('Content-Disposition', `attachment; filename="${result.filename}"`);
+      res.setHeader('Content-Disposition', `attachment; filename="${safeFilename}"`);
       res.status(200).send(result.csv);
       return;
     }

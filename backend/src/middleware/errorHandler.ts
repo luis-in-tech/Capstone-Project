@@ -47,6 +47,14 @@ export function errorHandler(
     code       = err.code;
     message    = err.message;
     details    = err.details;
+  } else if (
+    err instanceof SyntaxError &&
+    'body' in err &&
+    (err as { status?: number }).status === 400
+  ) {
+    statusCode = 400;
+    code = 'INVALID_JSON';
+    message = 'Malformed JSON request body.';
   } else if (err instanceof Error) {
     message = err.message;
 

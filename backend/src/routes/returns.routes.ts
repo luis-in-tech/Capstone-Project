@@ -10,9 +10,11 @@
  */
 
 import { Router } from 'express';
+import { requireRole } from '../middleware/rbac.middleware';
 import * as returnsCtrl from '../controllers/returns.controller';
 
 const router = Router();
+router.use(requireRole(['admin', 'cmo', 'secretary']));
 
 router.post('/process', returnsCtrl.processReturn);
 router.get('/', returnsCtrl.listReturns);

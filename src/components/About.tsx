@@ -1,6 +1,5 @@
-import React from 'react';
 import { motion } from 'motion/react';
-import { ShieldCheckIcon as ShieldCheck, TargetIcon as Target, LightningIcon as Zap, GlobeIcon as Globe, PackageIcon as Package, UsersIcon as Users } from '@phosphor-icons/react';
+import { ShieldCheckIcon as ShieldCheck, TargetIcon as Target, LightningIcon as Zap, GlobeIcon as Globe, PackageIcon as Package } from '@phosphor-icons/react';
 import { Link } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 
@@ -33,8 +32,8 @@ export const About = () => {
             
             <div className="space-y-12">
               <section>
-                <h2 className="text-xs font-black uppercase tracking-[0.3em] text-zinc-400 mb-6 underline decoration-2 underline-offset-8">The Philosophy</h2>
-                <p className="text-xl text-zinc-600 font-medium leading-relaxed">
+                <h2 className="text-xs font-black uppercase tracking-[0.3em] text-zinc-600 mb-6 underline decoration-2 underline-offset-8">The Philosophy</h2>
+                <p className="text-xl text-zinc-700 font-medium leading-relaxed">
                   Active Pro was born out of a simple observation: the tools used to manage multi-warehousing 
                   are often either too simplistic for growth or too complex for agility. We've built 
                   a system that bridges that gap, providing enterprise-grade power with a consumer-grade experience.
@@ -46,21 +45,21 @@ export const About = () => {
                    <div className="bg-zinc-100 w-12 h-12 rounded-2xl flex items-center justify-center">
                      <Target className="w-6 h-6 text-zinc-900" />
                    </div>
-                   <h3 className="text-lg font-black tracking-tight">Our Focus</h3>
-                   <p className="text-zinc-500 font-medium">To provide the most accurate real-time inventory synchronization across global multi-hub environments.</p>
+                   <h3 className="text-lg font-black tracking-tight text-zinc-900">Our Focus</h3>
+                   <p className="text-zinc-600 font-medium">To provide the most accurate real-time inventory synchronization across global multi-hub environments.</p>
                 </div>
                 <div className="space-y-4">
                    <div className="bg-zinc-100 w-12 h-12 rounded-2xl flex items-center justify-center">
                      <Zap className="w-6 h-6 text-zinc-900" />
                    </div>
-                   <h3 className="text-lg font-black tracking-tight">Our Speed</h3>
-                   <p className="text-zinc-500 font-medium">Built on top-tier cloud infrastructure, ensuring that every stock transfer and order update happens in milliseconds.</p>
+                   <h3 className="text-lg font-black tracking-tight text-zinc-900">Our Speed</h3>
+                   <p className="text-zinc-600 font-medium">Built on top-tier cloud infrastructure, ensuring that every stock transfer and order update happens in milliseconds.</p>
                 </div>
               </div>
 
               <section className="bg-zinc-950 rounded-[3rem] p-12 text-white overflow-hidden relative group">
                 <div className="relative z-10">
-                  <h2 className="text-xs font-black uppercase tracking-[0.3em] text-zinc-500 mb-6">The Technology</h2>
+                  <h2 className="text-xs font-black uppercase tracking-[0.3em] text-zinc-300 mb-6">The Technology</h2>
                   <p className="text-2xl font-bold tracking-tight mb-8">
                     Fully integrated with Supabase for real-time reactivity and ITIL 4 compliant service management principles.
                   </p>
@@ -79,7 +78,7 @@ export const About = () => {
               </section>
 
               <section>
-                <h2 className="text-xs font-black uppercase tracking-[0.3em] text-zinc-400 mb-6">The Roadmap</h2>
+                <h2 className="text-xs font-black uppercase tracking-[0.3em] text-zinc-600 mb-6">The Roadmap</h2>
                 <div className="space-y-6">
                   {[
                     { phase: 'Phase 1', title: 'Inventory Core', desc: 'Centralized multi-warehouse management.' },
@@ -87,10 +86,10 @@ export const About = () => {
                     { phase: 'Phase 3', title: 'Mobile Fulfillment', desc: 'Photo Validation & Real-time GPS Tracking.' },
                   ].map((item, i) => (
                     <div key={i} className="flex gap-6 items-start">
-                      <span className="text-[10px] font-black uppercase text-zinc-400 pt-1.5 min-w-15">{item.phase}</span>
+                      <span className="text-[10px] font-black uppercase text-zinc-600 pt-1.5 min-w-15">{item.phase}</span>
                       <div>
                         <h4 className="text-lg font-black tracking-tight text-zinc-900">{item.title}</h4>
-                        <p className="text-zinc-500 font-medium">{item.desc}</p>
+                        <p className="text-zinc-600 font-medium">{item.desc}</p>
                       </div>
                     </div>
                   ))}
@@ -100,7 +99,7 @@ export const About = () => {
             
             <div className="pt-24 flex justify-center">
               <Link to="/login">
-                <Button size="lg" className="h-14 px-10 bg-zinc-900 text-white font-black uppercase tracking-widest text-sm hover:translate-y-0.5` transition-all">
+                <Button size="lg" className="h-14 px-10 bg-zinc-900 text-white font-black uppercase tracking-widest text-sm hover:translate-y-0.5 transition-all">
                   Join the Network
                 </Button>
               </Link>

@@ -3,8 +3,8 @@
 ## Data Invariants
 1. A user cannot modify their own `role` in `/users/{userId}`.
 2. An order can only be created by an `agent` or `admin`.
-3. An order status can only be updated sequentially (e.g., `pending` -> `preparing` -> `out_for_delivery`).
-4. Physical stock deductions must happen when an order moves to `out_for_delivery` or `delivered`.
+3. An order status can only be updated sequentially (e.g., `pending` -> `preparing` -> `out_for_delivery` -> `delivered`).
+4. Physical stock is validated against live warehouse balances and deducted atomically at `OrderEntry` creation (`stockReserved: true`), while dispatch to `out_for_delivery` requires photo validation proof.
 5. P&L financial data (expenses and total revenue) is only visible to `admin`.
 6. Field agents can only view their own orders but can view all products and stock availability.
 7. Warehouse transfers can only be initiated by `admin` or `secretary`.

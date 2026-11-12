@@ -1,6 +1,6 @@
 import { PageHeading } from './PageHeading';
 import { hasAdminRole } from '../lib/staffPermissions';
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { collection, db, getDocs } from '../lib/supabaseAdapter';
 import { InventoryItem, Order, Product, Transfer } from '../types';
@@ -9,7 +9,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useAuth } from '../hooks/useAuth';
-import { PulseIcon as Activity, WarningIcon as AlertTriangle, ArrowRightIcon as ArrowRight, CheckCircleIcon as CheckCircle2, ClockIcon as Clock3, PackageIcon as Package, CoinsIcon as PhilippinePeso, ArrowsClockwiseIcon as RefreshCw, ShoppingCartIcon as ShoppingCart, TruckIcon as Truck } from '@phosphor-icons/react';
+import { useAdminNotifications } from '../hooks/useStaffAccess';
+import { BellIcon as Bell, WarningIcon as AlertTriangle, ArrowRightIcon as ArrowRight, CheckCircleIcon as CheckCircle2, ClockIcon as Clock3, PackageIcon as Package, CoinsIcon as PhilippinePeso, ArrowsClockwiseIcon as RefreshCw, ShoppingCartIcon as ShoppingCart, TruckIcon as Truck } from '@phosphor-icons/react';
 
 const toDate = (value: any) => {
   if (!value) return null;
@@ -26,6 +27,7 @@ const isToday = (value: any) => {
 
 export function AdminPanel() {
   const { profile } = useAuth();
+  const { unreadCount } = useAdminNotifications();
   const [orders, setOrders] = useState<Order[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
@@ -33,11 +35,25 @@ export function AdminPanel() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
   const [lastChecked, setLastChecked] = useState<Date | null>(null);
+  const mountedRef = useRef(true);
+  const isAdmin = hasAdminRole(profile);
 
-  const loadOverview = async () => {
-    if (!hasAdminRole(profile)) return;
-    setLoading(true);
-    setLoadError(false);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  const loadOverview = useCallback(async (silent = false) => {
+    if (!isAdmin) {
+      if (mountedRef.current) setLoading(false);
+      return;
+    }
+    if (mountedRef.current) {
+      if (!silent) setLoading(true);
+      setLoadError(false);
+    }
     try {
       const [ordersSnap, productsSnap, inventorySnap, transfersSnap] = await Promise.all([
         getDocs(collection(db, 'orders')),
@@ -45,20 +61,44 @@ export function AdminPanel() {
         getDocs(collection(db, 'inventory')),
         getDocs(collection(db, 'transfers')),
       ]);
+      if (!mountedRef.current) return;
       setOrders(ordersSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Order)));
       setProducts(productsSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Product)));
       setInventory(inventorySnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as InventoryItem)));
       setTransfers(transfersSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Transfer)));
       setLastChecked(new Date());
     } catch (error) {
+      if (!mountedRef.current) return;
       setLoadError(true);
       handleSupabaseError(error, OperationType.GET, 'admin_overview');
     } finally {
-      setLoading(false);
+      if (mountedRef.current && !silent) setLoading(false);
     }
-  };
+  }, [isAdmin]);
 
-  useEffect(() => { loadOverview(); }, [profile?.role]);
+  useEffect(() => { void loadOverview(); }, [loadOverview]);
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    const overviewCollections = new Set(['orders', 'products', 'inventory', 'transfers']);
+    const handleDbChange = (e: Event) => {
+      const path = (e as CustomEvent<{ path?: string }>).detail?.path;
+      if (!path || overviewCollections.has(path)) {
+        void loadOverview(true);
+      }
+    };
+    const handleStorage = (e: StorageEvent) => {
+      if (!e.key || Array.from(overviewCollections).some(col => e.key === `activepro_db_${col}`)) {
+        void loadOverview(true);
+      }
+    };
+    window.addEventListener('activepro_db_changed', handleDbChange);
+    window.addEventListener('storage', handleStorage);
+    return () => {
+      window.removeEventListener('activepro_db_changed', handleDbChange);
+      window.removeEventListener('storage', handleStorage);
+    };
+  }, [isAdmin, loadOverview]);
 
   const overview = useMemo(() => {
     const todaysOrders = orders.filter(order => isToday(order.createdAt));
@@ -69,13 +109,18 @@ export function AdminPanel() {
       .filter(({ product, quantity }) => quantity <= Number(product.reorderPoint || 0)).sort((a, b) => a.quantity - b.quantity);
     const pendingOrders = orders.filter(order => ['pending', 'preparing', 'escalated'].includes(order.status));
     const pendingTransfers = transfers.filter(transfer => ['pending', 'in_transit'].includes(transfer.status));
+    const now = new Date();
     const overdueOrders = orders.filter(order => {
       const deadline = toDate(order.deliveryDeadline);
-      return deadline && deadline < new Date() && !['completed', 'delivered'].includes(order.status);
+      return deadline && deadline < now && !['completed', 'delivered', 'cancelled'].includes(order.status);
     });
+    const pendingOrderOrOverdueCount = new Set([
+      ...pendingOrders.map(order => order.id),
+      ...overdueOrders.map(order => order.id),
+    ]).size;
     return {
       todaysOrders, todaysRevenue, stockAlerts, pendingOrders, pendingTransfers, overdueOrders,
-      pendingActions: pendingOrders.length + pendingTransfers.length + overdueOrders.length
+      pendingActions: pendingOrderOrOverdueCount + pendingTransfers.length
     };
   }, [inventory, orders, products, transfers]);
 
@@ -91,9 +136,20 @@ export function AdminPanel() {
     <div className="space-y-8 animate-in fade-in duration-500">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <PageHeading title="Overview" subtitle="Today’s operational pulse for Active Pro inventory and fulfillment." />
-        <button type="button" onClick={loadOverview} className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-border bg-card px-3 text-xs font-bold text-foreground hover:bg-muted">
-          <RefreshCw className="h-3.5 w-3.5" /> Refresh
-        </button>
+        <div className="flex items-center gap-2">
+          <Link to="/settings" className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-border bg-card px-3 text-xs font-bold text-foreground hover:bg-muted">
+            <Bell className="h-3.5 w-3.5 text-primary" />
+            <span>Notifications</span>
+            {unreadCount > 0 && (
+              <Badge variant="secondary" className="h-4 px-1.5 py-0 text-[10px] font-black bg-primary/15 text-primary border-0">
+                {unreadCount}
+              </Badge>
+            )}
+          </Link>
+          <button type="button" onClick={() => void loadOverview()} className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-border bg-card px-3 text-xs font-bold text-foreground hover:bg-muted">
+            <RefreshCw className="h-3.5 w-3.5" /> Refresh
+          </button>
+        </div>
       </div>
 
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">

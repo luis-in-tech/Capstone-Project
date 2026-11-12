@@ -9,7 +9,7 @@ import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { db, collection, onSnapshot, addDoc, updateDoc, setDoc, doc, serverTimestamp } from '../lib/supabaseAdapter';
+import { db, collection, onSnapshot, addDoc, updateDoc, setDoc, deleteDoc, getDoc, getDocs, doc, serverTimestamp } from '../lib/supabaseAdapter';
 import type { InventoryItem, Order, OrderItem, Product, Transfer, Warehouse } from '../types';
 import type { InventoryMovementRecord } from '../lib/inventoryMovement';
 import { dateValue, isOverdue, orderBalance, supportsAction, type ChainTransaction, type SupplyView } from '../lib/supplyChain';
@@ -54,12 +54,22 @@ const formatDate = (value?: string) => value && dateValue(value) ? new Date(valu
 
 export function SupplyChainWorkspace({ sourceLoading, sourceError, onRetrySources, products, inventory, warehouses, suppliers, onRemoveWarehouse, onRemoveSupplier, categoriesContent }: Props) {
   const { profile } = useAuth();
-  const { permissions, hasDelegation } = useStaffAccess();
-  const canManage = profile?.role === 'admin';
+  const { permissions } = useStaffAccess();
+  const canManage = hasAdminRole(profile);
   const allowedViews = views.filter(item => getSupplyChainViews(permissions.supplyChain).includes(item.id));
+  const allowedViewIds = allowedViews.map(item => item.id).join(',');
+  const selectableWarehouses = permissions.warehouseAccess === 'selected'
+    ? warehouses.filter(w => permissions.warehouseIds.includes(w.id))
+    : warehouses;
   const canViewValuation = hasAdminRole(profile);
   const [showCategories, setShowCategories] = useState(false);
   const [view, setView] = useState<SupplyView>(allowedViews[0]?.id || 'customers');
+  const [deletingCustomer, setDeletingCustomer] = useState(false);
+  useEffect(() => {
+    if (allowedViews.length > 0 && !allowedViews.some(item => item.id === view)) {
+      setView(allowedViews[0].id);
+    }
+  }, [allowedViewIds, view]);
   const [entityId, setEntityId] = useState('');
   const [directorySearch, setDirectorySearch] = useState('');
   const [search, setSearch] = useState('');
@@ -118,6 +128,7 @@ export function SupplyChainWorkspace({ sourceLoading, sourceError, onRetrySource
   const [editor, setEditor] = useState<Entity | null>(null);
   const [removing, setRemoving] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [committing, setCommitting] = useState(false);
   const [editError, setEditError] = useState('');
 
   useEffect(() => {
@@ -146,7 +157,7 @@ export function SupplyChainWorkspace({ sourceLoading, sourceError, onRetrySource
   useEffect(() => {
     setLoaded({}); setErrors({});
     const watch = <T,>(table: string, update: (records: T[]) => void) => onSnapshot(collection(db, table), snap => {
-      update(snap.docs.map(d => ({ id: d.id, ...d.data() } as T)));
+      update(snap.docs.map((d: any) => ({ id: d.id, ...d.data() } as T)));
       setLoaded(current => ({ ...current, [table]: true }));
       setErrors(current => ({ ...current, [table]: false }));
     }, () => { setErrors(current => ({ ...current, [table]: true })); setLoaded(current => ({ ...current, [table]: true })); });
@@ -313,6 +324,7 @@ export function SupplyChainWorkspace({ sourceLoading, sourceError, onRetrySource
 
   async function saveEntity() {
     if (!editor || saving) return;
+    if (!canManage) { setEditError('Administrator access is required to modify directory records.'); return; }
     if (!customer && (sourceLoading || sourceError)) { setEditError("Wait for the directory and inventory records to load before saving."); return; }
     const name = editor.name.trim();
     if (!name) { setEditError('Enter a name.'); return; }
@@ -345,13 +357,44 @@ export function SupplyChainWorkspace({ sourceLoading, sourceError, onRetrySource
           draft: false,
         };
 
-        const isRenaming = oldKey && oldKey !== newKey;
+        const isRenaming = Boolean(oldKey && oldKey !== newKey);
 
+        // 1. Persist customer record to Supabase first; propagate errors cleanly
+        await setDoc(doc(db, 'customers', newKey), {
+          id: newKey,
+          name,
+          address: record.address || '',
+          contact: record.contact || '',
+          phone: record.phone || '',
+          terms: record.terms || '',
+          viber: record.viber || '',
+          messenger: record.messenger || '',
+          email: record.email || '',
+          bankName: record.bankName || '',
+          bankAccountNumber: record.bankAccountNumber || '',
+          bankAccountName: record.bankAccountName || '',
+          bankBranchAddress: record.bankBranchAddress || '',
+          paymentNotes: record.paymentNotes || '',
+          updatedAt: serverTimestamp(),
+        });
+
+        // 2. Migrate linked orders and remove obsolete customer key from Supabase when renaming
+        if (isRenaming) {
+          if (oldName) {
+            const matchingOrders = orders.filter(o => o.clientName?.trim().toLowerCase() === oldName.toLowerCase());
+            for (const ord of matchingOrders) {
+              await updateDoc(doc(db, 'orders', ord.id), { clientName: name, updatedAt: serverTimestamp() });
+            }
+          }
+          await deleteDoc(doc(db, 'customers', oldKey));
+        }
+
+        // 3. Update local customer directory cache after confirmed DB persistence
         setCustomerDrafts(items => {
-          const filtered = items.filter(c => 
-            c.id !== id && 
-            c.id !== oldKey && 
-            c.name.toLowerCase() !== name.toLowerCase() && 
+          const filtered = items.filter(c =>
+            c.id !== id &&
+            c.id !== oldKey &&
+            c.name.toLowerCase() !== name.toLowerCase() &&
             (!oldName || c.name.toLowerCase() !== oldName.toLowerCase())
           );
           const next = [...filtered, record];
@@ -360,48 +403,12 @@ export function SupplyChainWorkspace({ sourceLoading, sourceError, onRetrySource
           return next;
         });
 
-        // Persist to Supabase database so all devices/users receive the customer update
-        try {
-          await setDoc(doc(db, 'customers', newKey), {
-            id: newKey,
-            name,
-            address: record.address || '',
-            contact: record.contact || '',
-            phone: record.phone || '',
-            terms: record.terms || '',
-            viber: record.viber || '',
-            messenger: record.messenger || '',
-            email: record.email || '',
-            bankName: record.bankName || '',
-            bankAccountNumber: record.bankAccountNumber || '',
-            bankAccountName: record.bankAccountName || '',
-            bankBranchAddress: record.bankBranchAddress || '',
-            paymentNotes: record.paymentNotes || '',
-            updatedAt: serverTimestamp(),
-          });
-        } catch (custDbErr) {
-          console.warn('Could not persist customer to Supabase table:', custDbErr);
-        }
-
         if (isRenaming) {
-          // Hide old customer key so past orders mapped to oldName won't recreate a duplicate
           setHiddenCustomers(items => {
             const next = Array.from(new Set([...items.filter(hId => hId !== newKey), oldKey]));
             try { localStorage.setItem('activepro_supply_chain_hidden_customers', JSON.stringify(next)); } catch {}
             return next;
           });
-
-          // Sync past orders to new customer name
-          if (oldName) {
-            const matchingOrders = orders.filter(o => o.clientName?.trim().toLowerCase() === oldName.toLowerCase());
-            for (const ord of matchingOrders) {
-              try {
-                await updateDoc(doc(db, 'orders', ord.id), { clientName: name });
-              } catch (ordErr) {
-                console.warn('Could not update order clientName for renamed customer:', ordErr);
-              }
-            }
-          }
         } else {
           setHiddenCustomers(items => {
             const next = items.filter(hId => hId !== id);
@@ -430,25 +437,28 @@ export function SupplyChainWorkspace({ sourceLoading, sourceError, onRetrySource
           }
         }
       } else {
-        if (id) {
-          const original = suppliers.find(supplier => supplier.id === id);
+        const isExistingSupplier = Boolean(id && !id.startsWith('product-supplier:'));
+        const original = id ? suppliers.find(supplier => supplier.id === id) : undefined;
+        if (isExistingSupplier) {
           await updateDoc(doc(db, 'suppliers', id), { name, updatedAt: serverTimestamp() });
-          if (original && original.name !== name) {
-            const matching = products.filter(p => p.supplier === original.name);
-            const CHUNK_SIZE = 25;
-            for (let i = 0; i < matching.length; i += CHUNK_SIZE) {
-              const chunk = matching.slice(i, i + CHUNK_SIZE);
-              await Promise.all(
-                chunk.map(product =>
-                  updateDoc(doc(db, 'products', product.id), {
-                    supplier: name,
-                    updatedAt: serverTimestamp()
-                  })
-                )
-              );
-            }
+        } else {
+          id = (await addDoc(collection(db, 'suppliers'), { name, createdAt: serverTimestamp(), updatedAt: serverTimestamp() })).id;
+        }
+        if (original && original.name !== name) {
+          const matching = products.filter(p => p.supplier === original.name);
+          const CHUNK_SIZE = 25;
+          for (let i = 0; i < matching.length; i += CHUNK_SIZE) {
+            const chunk = matching.slice(i, i + CHUNK_SIZE);
+            await Promise.all(
+              chunk.map(product =>
+                updateDoc(doc(db, 'products', product.id), {
+                  supplier: name,
+                  updatedAt: serverTimestamp()
+                })
+              )
+            );
           }
-        } else id = (await addDoc(collection(db, 'suppliers'), { name, createdAt: serverTimestamp(), updatedAt: serverTimestamp() })).id;
+        }
       }
       setMetadata(items => {
         const next = {
@@ -478,80 +488,281 @@ export function SupplyChainWorkspace({ sourceLoading, sourceError, onRetrySource
   }
 
   const handleCommitPreviews = async () => {
-    if (!previews.length) return;
+    if (!previews.length || committing || !canManage) return;
+    setCommitting(true);
+
+    const roundMoney = (val: number) => Math.round(val * 100) / 100;
+    const createdExpenseIds: string[] = [];
+    const createdInventoryIds: string[] = [];
+    const createdAdjustmentIds: string[] = [];
+    const revertedInventory: Array<{ id: string; prevQty: number }> = [];
+    const revertedOrders: Array<{ id: string; remainingBalance: number; amountPaid: number; paymentStatus: Order['paymentStatus'] }> = [];
+    const revertedMovements: Array<{ id: string; amountPaid: number; remainingBalance: number; status: string }> = [];
+
     try {
       const newCommitted: ChainTransaction[] = [];
       const updatedOrderBalances = { ...orderBalanceOverrides };
+      const runningOrderState = new Map<string, { rem: number; paid: number; original: number; remKnown: boolean; paymentStatus: Order['paymentStatus'] }>();
+      const runningMovementState = new Map<string, { rem: number; paid: number; original: number; status: string }>();
+      const runningOrderRefunds = new Map<string, number>();
+      const runningMovementRefunds = new Map<string, number>();
+      const getPriorRefunds = (parentId: string, refundType: 'Refund' | 'Purchase Refund') =>
+        committedTransactions
+          .filter(t => t.parentId === parentId && t.type === refundType)
+          .reduce((sum, t) => sum + Number(t.amount || 0), 0);
+
+      const hasPhysicalItems = previews.some(p => p.direction && p.items.length > 0);
+      const liveInvList: InventoryItem[] = hasPhysicalItems
+        ? (await getDocs(collection(db, 'inventory'))).docs.map((d: any) => ({ ...(d.data() as InventoryItem), id: d.id }))
+        : [];
+
+      // Track live in-memory inventory quantities so multi-item batch commits validate cumulatively
+      const invQuantities = new Map<string, number>(liveInvList.map(i => [i.id, Number(i.quantity || 0)]));
 
       for (const preview of previews) {
-        if (preview.type === 'Refund' || preview.type === 'Purchase Refund' || preview.type === 'Payment' || preview.type === 'Bill Payment') {
-          await addDoc(collection(db, 'expenses'), {
-            amount: preview.amount,
+        const amt = roundMoney(Number(preview.amount || 0));
+        let cashAmt = amt;
+        let committedRemaining = preview.remaining;
+        let pendingOrderUpdate: { id: string; prev: { id: string; remainingBalance: number; amountPaid: number; paymentStatus: Order['paymentStatus'] } | null; next: { rem: number; paid: number; paymentStatus: Order['paymentStatus'] } } | null = null;
+        let pendingMovementUpdate: { id: string; prev: { id: string; amountPaid: number; remainingBalance: number; status: string } | null; next: { rem: number; paid: number; original: number; status: string } } | null = null;
+
+        // Pre-validate order / movement balance & compute exact cash vs credit refund before mutating stock or ledger
+        if ((preview.type === 'Payment' || preview.type === 'Refund') && preview.parentId) {
+          const targetOrder = orders.find(o => o.id === preview.parentId);
+          if (targetOrder) {
+            let state = runningOrderState.get(targetOrder.id);
+            let prevSnapshot: { id: string; remainingBalance: number; amountPaid: number; paymentStatus: Order['paymentStatus'] } | null = null;
+            if (!state) {
+              const remKnown = updatedOrderBalances[targetOrder.id] !== undefined || orderBalance(targetOrder) !== null;
+              const initRem = updatedOrderBalances[targetOrder.id] !== undefined
+                ? updatedOrderBalances[targetOrder.id]
+                : (orderBalance(targetOrder) ?? Number(targetOrder.totalAmount || 0));
+              state = {
+                rem: roundMoney(initRem),
+                paid: roundMoney(Number(targetOrder.amountPaid || 0)),
+                original: roundMoney(Number(targetOrder.totalAmount || 0)),
+                remKnown,
+                paymentStatus: targetOrder.paymentStatus,
+              };
+              prevSnapshot = {
+                id: targetOrder.id,
+                remainingBalance: state.rem,
+                amountPaid: state.paid,
+                paymentStatus: state.paymentStatus,
+              };
+            }
+
+            if (preview.type === 'Refund') {
+              const priorRefunds = runningOrderRefunds.get(targetOrder.id) ?? getPriorRefunds(targetOrder.id, 'Refund');
+              const remainingRefundable = roundMoney(Math.max(0, state.original - priorRefunds));
+              if (amt > remainingRefundable + 0.01) {
+                throw new Error(`Refund (${chainMoney(amt)}) exceeds remaining refundable amount (${chainMoney(remainingRefundable)}) for ${preview.reference}.`);
+              }
+              const cashRefund = state.remKnown ? roundMoney(Math.max(0, amt - state.rem)) : 0;
+              cashAmt = cashRefund;
+              const newRem = Math.max(0, roundMoney(state.rem - amt));
+              const newPaid = roundMoney(Math.max(0, state.paid - cashRefund));
+              const newPaymentStatus: Order['paymentStatus'] =
+                newRem <= 0 ? 'paid' : newPaid > 0 ? 'partially_paid' : state.paymentStatus;
+              runningOrderRefunds.set(targetOrder.id, roundMoney(priorRefunds + amt));
+              committedRemaining = newRem;
+              pendingOrderUpdate = { id: targetOrder.id, prev: prevSnapshot, next: { rem: newRem, paid: newPaid, paymentStatus: newPaymentStatus } };
+            } else {
+              if (state.remKnown && amt > state.rem + 0.01) {
+                throw new Error(`Payment (${chainMoney(amt)}) exceeds remaining balance (${chainMoney(state.rem)}) for ${preview.reference}.`);
+              }
+              const newRem = Math.max(0, roundMoney(state.rem - amt));
+              const newPaid = roundMoney(state.paid + amt);
+              const newPaymentStatus: Order['paymentStatus'] =
+                newRem <= 0 ? 'paid' : newPaid > 0 ? 'partially_paid' : state.paymentStatus;
+              committedRemaining = newRem;
+              pendingOrderUpdate = { id: targetOrder.id, prev: prevSnapshot, next: { rem: newRem, paid: newPaid, paymentStatus: newPaymentStatus } };
+            }
+          }
+        }
+
+        if ((preview.type === 'Bill Payment' || preview.type === 'Purchase Refund') && preview.parentId) {
+          const targetMovement = movements.find(m => m.id === preview.parentId);
+          if (targetMovement) {
+            let state = runningMovementState.get(targetMovement.id);
+            let prevSnapshot: { id: string; amountPaid: number; remainingBalance: number; status: string } | null = null;
+            if (!state) {
+              const originalAmount = targetMovement.totalValue != null
+                ? Number(targetMovement.totalValue)
+                : targetMovement.items.reduce((sum, line) => sum + line.quantity * (line.unitCost || 0), 0);
+              const initPaid = roundMoney(Number((targetMovement as any).amountPaid || 0));
+              const initRem = (targetMovement as any).remainingBalance != null && Number.isFinite(Number((targetMovement as any).remainingBalance))
+                ? roundMoney(Number((targetMovement as any).remainingBalance))
+                : Math.max(0, roundMoney(originalAmount - initPaid));
+              state = {
+                original: roundMoney(originalAmount),
+                paid: initPaid,
+                rem: initRem,
+                status: targetMovement.status || 'confirmed',
+              };
+              prevSnapshot = {
+                id: targetMovement.id,
+                amountPaid: initPaid,
+                remainingBalance: initRem,
+                status: state.status,
+              };
+            }
+
+            if (preview.type === 'Purchase Refund') {
+              const priorRefunds = runningMovementRefunds.get(targetMovement.id) ?? getPriorRefunds(targetMovement.id, 'Purchase Refund');
+              const remainingRefundable = roundMoney(Math.max(0, state.original - priorRefunds));
+              if (amt > remainingRefundable + 0.01) {
+                throw new Error(`Refund (${chainMoney(amt)}) exceeds remaining refundable amount (${chainMoney(remainingRefundable)}) for ${preview.reference}.`);
+              }
+              const cashRefund = roundMoney(Math.max(0, amt - state.rem));
+              cashAmt = cashRefund;
+              const newRem = Math.max(0, roundMoney(state.rem - amt));
+              const newPaid = roundMoney(Math.max(0, state.paid - cashRefund));
+              const newStatus = newRem <= 0 ? 'paid' : newPaid > 0 ? 'partially_paid' : state.status;
+              runningMovementRefunds.set(targetMovement.id, roundMoney(priorRefunds + amt));
+              committedRemaining = newRem;
+              pendingMovementUpdate = { id: targetMovement.id, prev: prevSnapshot, next: { original: state.original, paid: newPaid, rem: newRem, status: newStatus } };
+            } else {
+              if (amt > state.rem + 0.01) {
+                throw new Error(`Bill payment (${chainMoney(amt)}) exceeds remaining balance (${chainMoney(state.rem)}) for ${preview.reference}.`);
+              }
+              const newPaid = roundMoney(state.paid + amt);
+              const newRem = Math.max(0, roundMoney(state.rem - amt));
+              const newStatus = newRem <= 0 ? 'paid' : newPaid > 0 ? 'partially_paid' : state.status;
+              committedRemaining = newRem;
+              pendingMovementUpdate = { id: targetMovement.id, prev: prevSnapshot, next: { original: state.original, paid: newPaid, rem: newRem, status: newStatus } };
+            }
+          }
+        }
+
+        // 1. Update physical inventory when committing physical Payment (Item/XDeal) or Refund (With Item)
+        if (preview.direction && preview.items.length > 0) {
+          for (const line of preview.items) {
+            if (!line.warehouseId || !line.productId || !line.quantity) continue;
+            const matchingRows = liveInvList.filter(i => i.productId === line.productId && i.warehouseId === line.warehouseId);
+            if (preview.direction === 'out') {
+              const available = matchingRows.reduce((s, r) => s + (invQuantities.get(r.id) ?? 0), 0);
+              if (available < line.quantity) {
+                throw new Error(`Insufficient stock for ${line.name} (${available} available, ${line.quantity} required).`);
+              }
+              let remaining = line.quantity;
+              for (const row of matchingRows) {
+                if (remaining <= 0) break;
+                const curQty = invQuantities.get(row.id) ?? 0;
+                if (curQty <= 0) continue;
+                const take = Math.min(curQty, remaining);
+                revertedInventory.push({ id: row.id, prevQty: curQty });
+                await updateDoc(doc(db, 'inventory', row.id), {
+                  quantity: curQty - take,
+                  lastUpdated: serverTimestamp(),
+                });
+                invQuantities.set(row.id, curQty - take);
+                remaining -= take;
+              }
+            } else {
+              if (matchingRows.length > 0) {
+                const row = matchingRows[0];
+                const curQty = invQuantities.get(row.id) ?? 0;
+                revertedInventory.push({ id: row.id, prevQty: curQty });
+                await updateDoc(doc(db, 'inventory', row.id), {
+                  quantity: curQty + line.quantity,
+                  lastUpdated: serverTimestamp(),
+                });
+                invQuantities.set(row.id, curQty + line.quantity);
+              } else {
+                const createdInvRef = await addDoc(collection(db, 'inventory'), {
+                  productId: line.productId,
+                  warehouseId: line.warehouseId,
+                  quantity: line.quantity,
+                  lastUpdated: serverTimestamp(),
+                });
+                if (createdInvRef?.id) {
+                  createdInventoryIds.push(createdInvRef.id);
+                  const newRow: InventoryItem = { id: createdInvRef.id, productId: line.productId, warehouseId: line.warehouseId, quantity: line.quantity, lastUpdated: new Date() } as InventoryItem;
+                  liveInvList.push(newRow);
+                  invQuantities.set(createdInvRef.id, line.quantity);
+                }
+              }
+            }
+
+            const adjRef = await addDoc(collection(db, 'stockAdjustments'), {
+              productId: line.productId,
+              warehouseId: line.warehouseId,
+              adjustmentAmount: preview.direction === 'in' ? line.quantity : -line.quantity,
+              reason: `Supply Chain ${preview.type} [${preview.reference}]`,
+              recordedBy: profile?.uid || 'system',
+              timestamp: serverTimestamp(),
+            });
+            if (adjRef?.id) createdAdjustmentIds.push(adjRef.id);
+          }
+        }
+
+        // 2. Record cash direction accurately: Payment & Purchase Refund bring cash IN ('income'); Bill Payment & Customer Refund send cash OUT ('expense').
+        // For refunds, only cash exceeding the unpaid credit balance moves cash (cashAmt > 0).
+        if ((preview.type === 'Refund' || preview.type === 'Purchase Refund' || preview.type === 'Payment' || preview.type === 'Bill Payment') && cashAmt > 0) {
+          const entryType = preview.type === 'Payment' || preview.type === 'Purchase Refund' ? 'income' : 'expense';
+          const expRef = await addDoc(collection(db, 'expenses'), {
+            amount: cashAmt,
             category: preview.type.includes('Refund') ? 'Refund / Return' : 'Supply Chain Ledger',
             date: preview.date,
-            description: preview.notes || `Supply Chain Transaction: ${preview.reference}`,
-            type: preview.type.includes('Payment') ? 'income' : 'expense'
+            description: preview.notes || `Supply Chain ${preview.type}: ${preview.reference}`,
+            type: entryType,
+          });
+          if (expRef?.id) createdExpenseIds.push(expRef.id);
+        }
+
+        // 3. Persist updated order balance
+        if (pendingOrderUpdate) {
+          if (pendingOrderUpdate.prev) revertedOrders.push(pendingOrderUpdate.prev);
+          const prevState = runningOrderState.get(pendingOrderUpdate.id);
+          const targetOrder = orders.find(o => o.id === pendingOrderUpdate.id);
+          runningOrderState.set(pendingOrderUpdate.id, {
+            rem: pendingOrderUpdate.next.rem,
+            paid: pendingOrderUpdate.next.paid,
+            original: prevState?.original ?? roundMoney(Number(targetOrder?.totalAmount || 0)),
+            remKnown: prevState?.remKnown ?? true,
+            paymentStatus: pendingOrderUpdate.next.paymentStatus,
+          });
+          updatedOrderBalances[pendingOrderUpdate.id] = pendingOrderUpdate.next.rem;
+          await updateDoc(doc(db, 'orders', pendingOrderUpdate.id), {
+            remainingBalance: pendingOrderUpdate.next.rem,
+            amountPaid: pendingOrderUpdate.next.paid,
+            paymentStatus: pendingOrderUpdate.next.paymentStatus,
+            updatedAt: serverTimestamp(),
           });
         }
 
-        // If it's a Customer Payment on an order, deduct remaining balance and persist
-        if (preview.type === 'Payment' && preview.parentId) {
-          const targetOrder = orders.find(o => o.id === preview.parentId);
-          if (targetOrder) {
-            const currentRem = updatedOrderBalances[targetOrder.id] !== undefined
-              ? updatedOrderBalances[targetOrder.id]
-              : (orderBalance(targetOrder) ?? targetOrder.totalAmount);
-            const newRem = Math.max(0, currentRem - (preview.amount || 0));
-            const newPaid = (targetOrder.amountPaid || 0) + (preview.amount || 0);
-            const newPaymentStatus = newRem <= 0 ? 'paid' : 'partially_paid';
-
-            updatedOrderBalances[targetOrder.id] = newRem;
-
-            setOrders(prev => prev.map(o => o.id === targetOrder.id ? { ...o, remainingBalance: newRem, amountPaid: newPaid, paymentStatus: newPaymentStatus as any } : o));
-            try {
-              await updateDoc(doc(db, 'orders', targetOrder.id), {
-                remainingBalance: newRem,
-                amountPaid: newPaid,
-                paymentStatus: newPaymentStatus,
-                updatedAt: serverTimestamp()
-              });
-            } catch (err) {
-              console.warn('Could not update order in database:', err);
-            }
-          }
-        }
-
-        // If it's a Supplier Bill Payment on a purchase movement, update paid/remaining amount and persist
-        if (preview.type === 'Bill Payment' && preview.parentId) {
-          const targetMovement = movements.find(m => m.id === preview.parentId);
-          if (targetMovement) {
-            const originalAmount = targetMovement.totalValue != null
-              ? Number(targetMovement.totalValue)
-              : targetMovement.items.reduce((sum, line) => sum + line.quantity * (line.unitCost || 0), 0);
-            const currentPaid = Number((targetMovement as any).amountPaid || 0);
-            const newPaid = currentPaid + (preview.amount || 0);
-            const newRem = Math.max(0, originalAmount - newPaid);
-            const newStatus = newRem <= 0 ? 'paid' : 'partially_paid';
-
-            setMovements(prev => prev.map(m => m.id === targetMovement.id ? { ...m, amountPaid: newPaid, remainingBalance: newRem, status: newStatus as any } : m));
-            try {
-              await updateDoc(doc(db, 'inventory_movements', targetMovement.id), {
-                amountPaid: newPaid,
-                remainingBalance: newRem,
-                status: newStatus,
-                lastUpdated: serverTimestamp()
-              });
-            } catch (err) {
-              console.warn('Could not update inventory movement in database:', err);
-            }
-          }
+        // 4. Persist updated supplier purchase movement balance
+        if (pendingMovementUpdate) {
+          if (pendingMovementUpdate.prev) revertedMovements.push(pendingMovementUpdate.prev);
+          runningMovementState.set(pendingMovementUpdate.id, pendingMovementUpdate.next);
+          await updateDoc(doc(db, 'inventory_movements', pendingMovementUpdate.id), {
+            amountPaid: pendingMovementUpdate.next.paid,
+            remainingBalance: pendingMovementUpdate.next.rem,
+            status: pendingMovementUpdate.next.status,
+            lastUpdated: serverTimestamp(),
+          });
         }
 
         newCommitted.push({
           ...preview,
+          remaining: committedRemaining,
           status: 'Completed',
           draft: false,
         });
+      }
+
+      if (runningOrderState.size > 0) {
+        setOrders(prev => prev.map(o => {
+          const st = runningOrderState.get(o.id);
+          return st ? { ...o, remainingBalance: st.rem, amountPaid: st.paid, paymentStatus: st.paymentStatus } : o;
+        }));
+      }
+      if (runningMovementState.size > 0) {
+        setMovements(prev => prev.map(m => {
+          const st = runningMovementState.get(m.id);
+          return st ? { ...m, amountPaid: st.paid, remainingBalance: st.rem, status: st.status as any } : m;
+        }));
       }
 
       setOrderBalanceOverrides(updatedOrderBalances);
@@ -570,9 +781,70 @@ export function SupplyChainWorkspace({ sourceLoading, sourceError, onRetrySource
       setPreviews([]);
       setSelectedId('');
       toast.success('All transactions successfully committed to the ledger.');
-    } catch (err) {
-      console.error('Commit error:', err);
-      toast.error('Failed to commit transactions. Please try again.');
+    } catch (err: any) {
+      const rollbackErrors: string[] = [];
+      for (const prevMov of [...revertedMovements].reverse()) {
+        try {
+          await updateDoc(doc(db, 'inventory_movements', prevMov.id), {
+            amountPaid: prevMov.amountPaid,
+            remainingBalance: prevMov.remainingBalance,
+            status: prevMov.status,
+            lastUpdated: serverTimestamp(),
+          });
+        } catch (rbErr: any) {
+          rollbackErrors.push(rbErr?.message || `movement:${prevMov.id}`);
+        }
+      }
+      for (const prevOrd of [...revertedOrders].reverse()) {
+        try {
+          await updateDoc(doc(db, 'orders', prevOrd.id), {
+            remainingBalance: prevOrd.remainingBalance,
+            amountPaid: prevOrd.amountPaid,
+            paymentStatus: prevOrd.paymentStatus,
+            updatedAt: serverTimestamp(),
+          });
+        } catch (rbErr: any) {
+          rollbackErrors.push(rbErr?.message || `order:${prevOrd.id}`);
+        }
+      }
+      for (const expId of [...createdExpenseIds].reverse()) {
+        try {
+          await deleteDoc(doc(db, 'expenses', expId));
+        } catch (rbErr: any) {
+          rollbackErrors.push(rbErr?.message || `expense:${expId}`);
+        }
+      }
+      for (const adjId of [...createdAdjustmentIds].reverse()) {
+        try {
+          await deleteDoc(doc(db, 'stockAdjustments', adjId));
+        } catch (rbErr: any) {
+          rollbackErrors.push(rbErr?.message || `stockAdjustment:${adjId}`);
+        }
+      }
+      for (const invId of [...createdInventoryIds].reverse()) {
+        try {
+          await deleteDoc(doc(db, 'inventory', invId));
+        } catch (rbErr: any) {
+          rollbackErrors.push(rbErr?.message || `inventory:${invId}`);
+        }
+      }
+      for (const prevInv of [...revertedInventory].reverse()) {
+        try {
+          await updateDoc(doc(db, 'inventory', prevInv.id), {
+            quantity: prevInv.prevQty,
+            lastUpdated: serverTimestamp(),
+          });
+        } catch (rbErr: any) {
+          rollbackErrors.push(rbErr?.message || `inventory:${prevInv.id}`);
+        }
+      }
+      console.error('Commit error:', err, rollbackErrors.length ? { rollbackErrors } : undefined);
+      toast.error(err?.message || 'Failed to commit transactions. Partial updates were rolled back.');
+      if (rollbackErrors.length > 0) {
+        toast.warning(`Rollback warning: ${rollbackErrors.length} item(s) could not be restored automatically. Verify ledger records.`);
+      }
+    } finally {
+      setCommitting(false);
     }
   };
 
@@ -638,16 +910,21 @@ export function SupplyChainWorkspace({ sourceLoading, sourceError, onRetrySource
               {!loading && filteredRows.map(row => <TableRow key={row.id} tabIndex={0} aria-selected={selectedId === row.id} onClick={() => setSelectedId(row.id)} onDoubleClick={() => setDetails(row)} onKeyDown={event => { if (event.target !== event.currentTarget) return; if (event.key === 'Enter') { event.preventDefault(); setDetails(row); } if (event.key === ' ') { event.preventDefault(); setSelectedId(row.id); } }} className={`cursor-pointer focus-visible:outline-2 focus-visible:outline-primary ${selectedId === row.id ? 'bg-primary/10 hover:bg-primary/15' : ''} ${isOverdue(row) ? 'bg-red-500/5' : ''}`}><TableCell><div className="flex items-center gap-2 whitespace-nowrap">{row.direction === 'in' ? <ArrowDownLeft className="size-4 text-emerald-600" /> : row.direction === 'out' ? <ArrowUpRight className="size-4 text-orange-600" /> : <CreditCard className="size-4 text-muted-foreground" />}<span className="text-sm font-medium">{row.type}</span>{row.draft && <Badge variant="outline">Preview</Badge>}</div></TableCell><TableCell className="whitespace-nowrap text-xs text-muted-foreground">{formatDate(row.date)}</TableCell><TableCell className="font-mono text-xs">{row.reference}</TableCell><TableCell className="text-right tabular-nums">{chainMoney(row.amount)}</TableCell>{warehouse ? <TableCell><Badge variant="secondary" className="capitalize">{row.status.replaceAll('_', ' ')}</Badge></TableCell> : <><TableCell className={`text-right font-medium tabular-nums ${isOverdue(row) ? 'text-red-600' : ''}`}>{chainMoney(row.remaining)}</TableCell><TableCell className="whitespace-nowrap text-xs">{formatDate(row.dueDate)}{isOverdue(row) && <span className="mt-1 block font-semibold text-red-600">Overdue</span>}</TableCell></>}<TableCell><Button variant="ghost" size="icon" aria-label={`View ${row.reference}`} onClick={event => { event.stopPropagation(); setDetails(row); }}><Eye className="size-4" /></Button></TableCell></TableRow>)}
               {(loading || !filteredRows.length) && <TableRow><TableCell colSpan={warehouse ? 6 : 7} className="h-56 text-center"><div className="mx-auto flex max-w-sm flex-col items-center gap-2 text-muted-foreground">{loading ? <Loader2 className="size-7 animate-spin" /> : <Package className="size-8 opacity-40" />}<p className="font-medium text-foreground">{loading ? 'Loading history…' : loadError ? 'History unavailable' : search || typeFilter !== 'All' ? 'No matching transactions' : 'No transactions yet'}</p><p className="text-xs">{loading ? 'Getting your latest records.' : search || typeFilter !== 'All' ? 'Try another search or transaction type.' : `Activity for ${current.name} will appear here.`}</p>{(search || typeFilter !== 'All') && <Button size="sm" variant="outline" onClick={() => { setSearch(''); setTypeFilter('All'); }}>Reset filters</Button>}</div></TableCell></TableRow>}
             </TableBody></Table></div>
-            <div className="flex flex-wrap items-center justify-between gap-2 border-t px-4 py-3 text-xs text-muted-foreground"><span>{filteredRows.length} {filteredRows.length === 1 ? 'entry' : 'entries'}{warehouse && ' · ↑ Outgoing  ↓ Incoming'}</span>{previews.length > 0 && <div className="flex items-center gap-2"><Button size="sm" variant="ghost" onClick={() => { setPreviews([]); setSelectedId(''); }}>Clear previews</Button><Button size="sm" onClick={handleCommitPreviews}>Commit {previews.length} Previews to Ledger</Button></div>}</div>
+            <div className="flex flex-wrap items-center justify-between gap-2 border-t px-4 py-3 text-xs text-muted-foreground"><span>{filteredRows.length} {filteredRows.length === 1 ? 'entry' : 'entries'}{warehouse && ' · ↑ Outgoing  ↓ Incoming'}</span>{previews.length > 0 && <div className="flex items-center gap-2"><Button size="sm" variant="ghost" disabled={committing} onClick={() => { setPreviews([]); setSelectedId(''); }}>Clear previews</Button><Button size="sm" disabled={committing} onClick={handleCommitPreviews}>{committing ? 'Committing…' : `Commit ${previews.length} Previews to Ledger`}</Button></div>}</div>
           </section>
-          <p className="text-xs leading-relaxed text-muted-foreground">{warehouse ? 'History uses inventory receipts, transfers, and orders with a recorded warehouse. Financial previews do not change stock.' : 'Payments and refunds are interactive previews. Due dates appear only when recorded; delivery deadlines are not treated as payment due dates.'}</p>
+          <p className="text-xs leading-relaxed text-muted-foreground">{warehouse ? 'History uses inventory receipts, transfers, and orders with a recorded warehouse. Staged previews do not change stock until committed.' : 'Payments and refunds are staged as previews first and posted to Finance, Order/Purchase balances, and Inventory when you commit. Due dates appear only when recorded; delivery deadlines are not treated as payment due dates.'}</p>
         </> : <div className="flex min-h-80 flex-col items-center justify-center rounded-2xl border border-dashed p-8 text-center"><Users className="mb-3 size-9 text-muted-foreground/40" /><h2 className="font-semibold">{loading ? 'Loading directory…' : `Select a ${singular}`}</h2><p className="mt-2 text-sm text-muted-foreground">Choose a record on the left, or add one to get started.</p></div>}
       </div>
     </div>
 
-    {action && selected && canAct(action) && <SupplyChainTransactionDialog key={`${selected.id}:${action}`} view={view} action={action} transaction={selected} products={products} warehouses={warehouses} inventory={inventory} onClose={() => setAction(null)} onPreview={entry => { setPreviews(rows => [...rows, entry]); setAction(null); setSelectedId(entry.id); setTypeFilter('All'); setSearch(''); toast.success('Preview added. No financial or inventory changes posted.'); }} />}
+    {action && selected && canAct(action) && <SupplyChainTransactionDialog key={`${selected.id}:${action}`} view={view} action={action} transaction={selected} products={products} warehouses={selectableWarehouses} inventory={inventory} maxRefundAmount={(() => {
+      const prior = committedTransactions
+        .filter(t => t.parentId === selected.id && (t.type === 'Refund' || t.type === 'Purchase Refund'))
+        .reduce((sum, t) => sum + Number(t.amount || 0), 0);
+      return Math.max(0, Math.round(((selected.amount ?? 0) - prior) * 100) / 100);
+    })()} onClose={() => setAction(null)} onPreview={entry => { setPreviews(rows => [...rows, entry]); setAction(null); setSelectedId(entry.id); setTypeFilter('All'); setSearch(''); toast.success('Staged to preview queue. Click "Commit Previews to Ledger" to post.'); }} />}
 
-    <Dialog open={!!details} onOpenChange={open => { if (!open) setDetails(null); }}><DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl"><DialogHeader><DialogTitle>{details?.type} details</DialogTitle><DialogDescription>{details?.reference} · {formatDate(details?.date)}</DialogDescription></DialogHeader>{details && <><div className="flex flex-wrap justify-between gap-3 rounded-xl bg-muted/40 p-4"><div><p className="text-xs text-muted-foreground">Amount / value</p><p className="text-2xl font-bold">{chainMoney(details.amount)}</p></div><Badge variant="secondary" className="h-fit capitalize">{details.status.replaceAll('_', ' ')}</Badge></div>{details.direction && <div className={`rounded-lg p-3 text-sm ${details.direction === 'in' ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' : 'bg-orange-500/10 text-orange-700 dark:text-orange-300'}`}>{details.draft ? 'Preview: inventory would ' : 'Inventory direction: '}{details.direction === 'in' ? 'increase — items received' : 'decrease — items issued'}</div>}{details.notes && <p className="text-sm text-muted-foreground">{details.notes}</p>}<Table><TableHeader><TableRow><TableHead>Item</TableHead><TableHead className="text-right">Quantity</TableHead><TableHead className="text-right">Unit value</TableHead></TableRow></TableHeader><TableBody>{details.items.map(item => <TableRow key={item.id}><TableCell><p className="font-medium">{item.name}</p><p className="text-xs text-muted-foreground">{item.sku}{item.warehouseId && ` · ${warehouses.find(w => w.id === item.warehouseId)?.name || 'Warehouse'}`}</p></TableCell><TableCell className="text-right">{item.quantity}</TableCell><TableCell className="text-right">{chainMoney(item.unitPrice)}</TableCell></TableRow>)}{!details.items.length && <TableRow><TableCell colSpan={3} className="py-8 text-center text-muted-foreground">No physical items recorded.</TableCell></TableRow>}</TableBody></Table>{details.draft && <p className="text-xs text-amber-700 dark:text-amber-300">Session preview only. No financial or inventory changes posted.</p>}<Button variant="outline" onClick={() => setDetails(null)}>Close</Button></>}</DialogContent></Dialog>
+    <Dialog open={!!details} onOpenChange={open => { if (!open) setDetails(null); }}><DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl"><DialogHeader><DialogTitle>{details?.type} details</DialogTitle><DialogDescription>{details?.reference} · {formatDate(details?.date)}</DialogDescription></DialogHeader>{details && <><div className="flex flex-wrap justify-between gap-3 rounded-xl bg-muted/40 p-4"><div><p className="text-xs text-muted-foreground">Amount / value</p><p className="text-2xl font-bold">{chainMoney(details.amount)}</p></div><Badge variant="secondary" className="h-fit capitalize">{details.status.replaceAll('_', ' ')}</Badge></div>{details.direction && <div className={`rounded-lg p-3 text-sm ${details.direction === 'in' ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' : 'bg-orange-500/10 text-orange-700 dark:text-orange-300'}`}>{details.draft ? 'Staged preview: inventory will ' : 'Inventory direction: '}{details.direction === 'in' ? 'increase — items received' : 'decrease — items issued'}</div>}{details.notes && <p className="text-sm text-muted-foreground">{details.notes}</p>}<Table><TableHeader><TableRow><TableHead>Item</TableHead><TableHead className="text-right">Quantity</TableHead><TableHead className="text-right">Unit value</TableHead></TableRow></TableHeader><TableBody>{details.items.map(item => <TableRow key={item.id}><TableCell><p className="font-medium">{item.name}</p><p className="text-xs text-muted-foreground">{item.sku}{item.warehouseId && ` · ${warehouses.find(w => w.id === item.warehouseId)?.name || 'Warehouse'}`}</p></TableCell><TableCell className="text-right">{item.quantity}</TableCell><TableCell className="text-right">{chainMoney(item.unitPrice)}</TableCell></TableRow>)}{!details.items.length && <TableRow><TableCell colSpan={3} className="py-8 text-center text-muted-foreground">No physical items recorded.</TableCell></TableRow>}</TableBody></Table>{details.draft && <p className="text-xs text-amber-700 dark:text-amber-300">Staged preview. Click &quot;Commit Previews to Ledger&quot; to post changes.</p>}<Button variant="outline" onClick={() => setDetails(null)}>Close</Button></>}</DialogContent></Dialog>
 
     <Dialog open={!!editor} onOpenChange={open => { if (!open && !saving) setEditor(null); }}><DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-xl"><DialogHeader><DialogTitle>{editor?.id ? 'Edit' : 'Add'} {singular}</DialogTitle><DialogDescription>{customer ? 'Customer profiles can be used in Order Entry to create orders.' : `The ${warehouse ? 'name, location, and status' : 'name'} will be saved. Contact details${!warehouse ? ', address, and payment terms' : ''} are session previews.`}</DialogDescription></DialogHeader>{editor && <form onSubmit={event => { event.preventDefault(); void saveEntity(); }} className="space-y-4">
       <Field label="Name" id="chain-entity-name"><Input id="chain-entity-name" required value={editor.name} onChange={e => setEditor({ ...editor, name: e.target.value })} /></Field>
@@ -693,20 +970,37 @@ export function SupplyChainWorkspace({ sourceLoading, sourceError, onRetrySource
       </div>
     </form>}</DialogContent></Dialog>
 
-    <Dialog open={removing} onOpenChange={setRemoving}><DialogContent className="sm:max-w-md"><DialogHeader><DialogTitle>Remove {current?.name}?</DialogTitle><DialogDescription>{customer ? 'This removes the customer from the directory and Order Entry. Existing orders and balances are preserved.' : warehouse ? 'The existing warehouse removal flow will show the stock impact before deletion.' : 'The existing supplier removal flow will show which product assignments are affected.'}</DialogDescription></DialogHeader><div className="flex justify-end gap-2"><Button variant="outline" onClick={() => setRemoving(false)}>Cancel</Button><Button variant="destructive" onClick={() => { if (!current) return; if (customer) {
-      setHiddenCustomers(ids => {
-        const next = [...ids, current.id];
-        try { localStorage.setItem('activepro_supply_chain_hidden_customers', JSON.stringify(next)); } catch {}
-        return next;
-      });
-      setCustomerDrafts(items => {
-        const next = items.filter(c => c.id !== current.id && c.name.toLowerCase() !== current.name.toLowerCase());
-        try { localStorage.setItem('activepro_supply_chain_customers', JSON.stringify(next)); } catch {}
-        window.dispatchEvent(new CustomEvent('activepro_customers_changed'));
-        return next;
-      });
-      setEntityId('');
-    } else if (warehouse) { const record = warehouses.find(w => w.id === current.id); if (record) onRemoveWarehouse(record); } else onRemoveSupplier(current.name); setRemoving(false); }}>{customer ? 'Remove customer' : 'Continue'}</Button></div></DialogContent></Dialog>
+    <Dialog open={removing} onOpenChange={(open) => { if (!open && !deletingCustomer) setRemoving(false); }}><DialogContent className="sm:max-w-md"><DialogHeader><DialogTitle>Remove {current?.name}?</DialogTitle><DialogDescription>{customer ? 'This removes the customer from the directory and Order Entry. Existing orders and balances are preserved.' : warehouse ? 'The existing warehouse removal flow will show the stock impact before deletion.' : 'The existing supplier removal flow will show which product assignments are affected.'}</DialogDescription></DialogHeader><div className="flex justify-end gap-2"><Button variant="outline" disabled={deletingCustomer} onClick={() => setRemoving(false)}>Cancel</Button><Button variant="destructive" disabled={deletingCustomer} onClick={async () => { if (!current || deletingCustomer) return; if (customer) {
+      if (!canManage) {
+        toast.error('Administrator access is required to remove customers.');
+        setRemoving(false);
+        return;
+      }
+      setDeletingCustomer(true);
+      try {
+        const existingSnap = await getDoc(doc(db, 'customers', current.id));
+        if (existingSnap.exists()) {
+          await deleteDoc(doc(db, 'customers', current.id));
+        }
+        setHiddenCustomers(ids => {
+          const next = Array.from(new Set([...ids, current.id]));
+          try { localStorage.setItem('activepro_supply_chain_hidden_customers', JSON.stringify(next)); } catch {}
+          return next;
+        });
+        setCustomerDrafts(items => {
+          const next = items.filter(c => c.id !== current.id && c.name.toLowerCase() !== current.name.toLowerCase());
+          try { localStorage.setItem('activepro_supply_chain_customers', JSON.stringify(next)); } catch {}
+          window.dispatchEvent(new CustomEvent('activepro_customers_changed'));
+          return next;
+        });
+        setEntityId('');
+        setRemoving(false);
+      } catch (err: any) {
+        toast.error('Could not remove customer: ' + (err?.message || 'Database error'));
+      } finally {
+        setDeletingCustomer(false);
+      }
+    } else { if (warehouse) { const record = warehouses.find(w => w.id === current.id); if (record) onRemoveWarehouse(record); } else onRemoveSupplier(current.name); setRemoving(false); } }}>{customer ? (deletingCustomer ? 'Removing…' : 'Remove customer') : 'Continue'}</Button></div></DialogContent></Dialog>
   </>}
   </div>;
 }

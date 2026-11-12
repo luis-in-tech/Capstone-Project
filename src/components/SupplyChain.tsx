@@ -1,9 +1,10 @@
-import { getSupplyChainViews } from '../lib/staffPermissions';
+import { getSupplyChainViews, hasAdminRole } from '../lib/staffPermissions';
 import { useStaffAccess } from '../hooks/useStaffAccess';
+import { useAuth } from '../hooks/useAuth';
 import React, { useState, useEffect } from 'react';
 import { CategoryWorkspace } from './CategoryWorkspace';
 import { SupplyChainWorkspace } from './SupplyChainWorkspace';
-import { db, collection, onSnapshot, addDoc, updateDoc, deleteDoc, doc, serverTimestamp } from '../lib/supabaseAdapter';
+import { db, collection, onSnapshot, addDoc, updateDoc, setDoc, deleteDoc, doc, serverTimestamp } from '../lib/supabaseAdapter';
 import { Product, InventoryItem, Warehouse } from '../types';
 import { handleSupabaseError, OperationType } from '../lib/supabaseErrorHandler';
 import { Button } from '@/components/ui/button';
@@ -11,7 +12,7 @@ import { Input } from '@/components/ui/input';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
 import { PlusIcon as Plus, WarningIcon as AlertTriangle, PencilIcon as Pencil, TrashIcon as Trash2, CheckCircleIcon as CheckCircle2 } from '@phosphor-icons/react';
-import { useAuth } from '../hooks/useAuth';
+import { ConfirmDialog } from './ConfirmDialog';
 import { toast } from 'sonner';
 
 interface NamedOption { id: string; name: string; }
@@ -19,7 +20,7 @@ interface NamedOption { id: string; name: string; }
 export function SupplyChain() {
   const { profile } = useAuth();
   const { permissions } = useStaffAccess();
-  const isAdmin = profile?.role === 'admin';
+  const isAdmin = hasAdminRole(profile);
   const [sourceLoaded, setSourceLoaded] = useState<Record<string, boolean>>({});
   const [sourceErrors, setSourceErrors] = useState<Record<string, boolean>>({});
   const [sourceReload, setSourceReload] = useState(0);
@@ -39,6 +40,11 @@ export function SupplyChain() {
     type: 'category' | 'supplier';
     affectedCount: number;
     affectedItems: Product[];
+  } | null>(null);
+  const [warehouseToDelete, setWarehouseToDelete] = useState<{
+    warehouse: Warehouse;
+    warning: string;
+    warehouseInventory: InventoryItem[];
   } | null>(null);
 
   useEffect(() => {
@@ -89,24 +95,48 @@ export function SupplyChain() {
     };
   }, [sourceReload]);
 
-  const handleDeleteWarehouse = async (warehouse: Warehouse) => {
+  const handleDeleteWarehouse = (warehouse: Warehouse) => {
+    if (!isAdmin) {
+      toast.error('Administrator access required to delete warehouses.');
+      return;
+    }
     if (warehouseActionId !== null) return;
     const warehouseInventory = inventory.filter(item => item.warehouseId === warehouse.id);
     const stockCount = warehouseInventory.reduce((sum, item) => sum + item.quantity, 0);
     const warning = stockCount > 0
       ? `This warehouse still contains ${stockCount.toLocaleString()} units. Deleting it will also remove those inventory records. Continue?`
       : `Delete "${warehouse.name}"? This will also remove its inventory records.`;
-    if (!window.confirm(warning)) return;
+    setWarehouseToDelete({ warehouse, warning, warehouseInventory });
+  };
 
+  const executeDeleteWarehouse = async ({ warehouse, warehouseInventory }: { warehouse: Warehouse; warehouseInventory: InventoryItem[] }) => {
     setWarehouseActionId(warehouse.id);
+    const deletedInventory: InventoryItem[] = [];
     try {
       for (const item of warehouseInventory) {
         await deleteDoc(doc(db, 'inventory', item.id));
+        deletedInventory.push(item);
       }
       await deleteDoc(doc(db, 'warehouses', warehouse.id));
       toast.success(`Warehouse "${warehouse.name}" deleted`);
     } catch (err) {
+      const rollbackErrors: string[] = [];
+      for (const item of [...deletedInventory].reverse()) {
+        try {
+          await setDoc(doc(db, 'inventory', item.id), {
+            productId: item.productId,
+            warehouseId: item.warehouseId,
+            quantity: item.quantity,
+            lastUpdated: serverTimestamp(),
+          });
+        } catch (rbErr: any) {
+          rollbackErrors.push(rbErr?.message || item.id);
+        }
+      }
       handleSupabaseError(err, OperationType.DELETE, `warehouses/${warehouse.id}`);
+      if (rollbackErrors.length > 0) {
+        toast.warning(`Rollback warning: could not restore ${rollbackErrors.length} inventory record(s).`);
+      }
     } finally {
       setWarehouseActionId(null);
     }
@@ -114,6 +144,10 @@ export function SupplyChain() {
 
   const handleAddReference = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (!isAdmin) {
+      toast.error('Administrator access required.');
+      return;
+    }
     if (!referenceManager || !newReferenceName.trim()) return;
     const name = newReferenceName.trim();
     const values = referenceManager === 'category' ? categories : suppliers;
@@ -132,6 +166,10 @@ export function SupplyChain() {
   };
 
   const handleUpdateReference = async (oldName: string) => {
+    if (!isAdmin) {
+      toast.error('Administrator access required.');
+      return;
+    }
     if (!referenceManager || !referenceDraft.trim()) return;
     const name = referenceDraft.trim();
     setReferenceAction(oldName);
@@ -142,7 +180,7 @@ export function SupplyChain() {
       if (record) await updateDoc(doc(db, collectionName, record.id), { name, updatedAt: serverTimestamp() });
       else await addDoc(collection(db, collectionName), { name, createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
       for (const product of products.filter(item => referenceManager === 'category' ? item.category === oldName : item.supplier === oldName)) {
-        await updateDoc(doc(db, 'products', product.id), { [referenceManager === 'category' ? 'category' : 'supplier']: name, updatedAt: new Date() });
+        await updateDoc(doc(db, 'products', product.id), { [referenceManager === 'category' ? 'category' : 'supplier']: name, updatedAt: serverTimestamp() });
       }
       setEditingReferenceName(null);
       toast.success(`${referenceManager === 'category' ? 'Category' : 'Supplier'} updated`);
@@ -152,7 +190,7 @@ export function SupplyChain() {
   };
 
   const handleDeleteReference = (name: string) => {
-    if (!referenceManager) return;
+    if (!isAdmin || !referenceManager) return;
     const affected = products.filter(item => referenceManager === 'category' ? item.category === name : item.supplier === name);
     setDeletingReference({
       name,
@@ -163,7 +201,7 @@ export function SupplyChain() {
   };
 
   const confirmDeleteReference = async () => {
-    if (!deletingReference) return;
+    if (!isAdmin || !deletingReference) return;
     const { name, type, affectedCount } = deletingReference;
     setReferenceAction(name);
     try {
@@ -177,7 +215,7 @@ export function SupplyChain() {
       for (const product of products.filter(item => type === 'category' ? item.category === name : item.supplier === name)) {
         await updateDoc(doc(db, 'products', product.id), {
           [type === 'category' ? 'category' : 'supplier']: type === 'category' ? 'Uncategorized' : 'N/A',
-          updatedAt: new Date()
+          updatedAt: serverTimestamp()
         });
       }
 
@@ -224,6 +262,10 @@ export function SupplyChain() {
         suppliers={combinedSuppliers}
         onRemoveWarehouse={handleDeleteWarehouse}
         onRemoveSupplier={(name) => {
+          if (!isAdmin) {
+            toast.error('Administrator access required to delete suppliers.');
+            return;
+          }
           const affected = products.filter(product => product.supplier === name);
           setDeletingReference({ name, type: 'supplier', affectedCount: affected.length, affectedItems: affected });
         }}
@@ -236,14 +278,16 @@ export function SupplyChain() {
             <DialogTitle>Manage {referenceManager === 'category' ? 'Categories' : 'Suppliers'}</DialogTitle>
             <DialogDescription>Add, rename, or remove {referenceManager === 'category' ? 'product categories' : 'preferred suppliers'} used by Inventory.</DialogDescription>
           </DialogHeader>
-          <form onSubmit={handleAddReference} className="space-y-3 border-b border-border pb-4">
-            <Label htmlFor="newReferenceName">Add {referenceManager === 'category' ? 'Category' : 'Supplier'}</Label>
-            <div className="flex gap-2"><Input id="newReferenceName" value={newReferenceName} onChange={event => setNewReferenceName(event.target.value)} required placeholder={`Enter ${referenceManager || ''} name`} /><Button type="submit" disabled={!newReferenceName.trim() || referenceAction !== null}><Plus className="mr-2 h-4 w-4" />Add</Button></div>
-          </form>
+          {isAdmin && (
+            <form onSubmit={handleAddReference} className="space-y-3 border-b border-border pb-4">
+              <Label htmlFor="newReferenceName">Add {referenceManager === 'category' ? 'Category' : 'Supplier'}</Label>
+              <div className="flex gap-2"><Input id="newReferenceName" value={newReferenceName} onChange={event => setNewReferenceName(event.target.value)} required placeholder={`Enter ${referenceManager || ''} name`} /><Button type="submit" disabled={!newReferenceName.trim() || referenceAction !== null}><Plus className="mr-2 h-4 w-4" />Add</Button></div>
+            </form>
+          )}
           <div className="max-h-72 space-y-2 overflow-y-auto py-2 pr-1">
             {(referenceManager === 'category' ? categories : suppliers.filter(name => name !== 'N/A')).map(name => (
               <div key={name} className="flex items-center gap-2 rounded-xl border border-border p-3">
-                {editingReferenceName === name ? (
+                {editingReferenceName === name && isAdmin ? (
                   <>
                     <Input value={referenceDraft} onChange={event => setReferenceDraft(event.target.value)} autoFocus />
                     <Button type="button" size="sm" variant="outline" onClick={() => setEditingReferenceName(null)}>Cancel</Button>
@@ -252,8 +296,12 @@ export function SupplyChain() {
                 ) : (
                   <>
                     <span className="min-w-0 flex-1 truncate text-sm font-semibold">{name}</span>
-                    <Button type="button" variant="ghost" size="icon" title={`Edit ${referenceManager}`} disabled={referenceAction !== null} onClick={() => { setEditingReferenceName(name); setReferenceDraft(name); }}><Pencil className="h-4 w-4" /></Button>
-                    <Button type="button" variant="ghost" size="icon" title={`Delete ${referenceManager}`} disabled={referenceAction !== null} className="text-red-500 hover:bg-red-50 hover:text-red-600" onClick={() => handleDeleteReference(name)}><Trash2 className="h-4 w-4" /></Button>
+                    {isAdmin && (
+                      <>
+                        <Button type="button" variant="ghost" size="icon" title={`Edit ${referenceManager}`} disabled={referenceAction !== null} onClick={() => { setEditingReferenceName(name); setReferenceDraft(name); }}><Pencil className="h-4 w-4" /></Button>
+                        <Button type="button" variant="ghost" size="icon" title={`Delete ${referenceManager}`} disabled={referenceAction !== null} className="text-red-500 hover:bg-red-50 hover:text-red-600" onClick={() => handleDeleteReference(name)}><Trash2 className="h-4 w-4" /></Button>
+                      </>
+                    )}
                   </>
                 )}
               </div>
@@ -333,6 +381,18 @@ export function SupplyChain() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <ConfirmDialog
+        open={warehouseToDelete !== null}
+        title="Delete warehouse"
+        description={warehouseToDelete?.warning ?? ''}
+        confirmLabel="Delete warehouse"
+        destructive
+        onOpenChange={(open) => { if (!open && warehouseActionId === null) setWarehouseToDelete(null); }}
+        onConfirm={async () => {
+          if (warehouseToDelete) await executeDeleteWarehouse(warehouseToDelete);
+        }}
+      />
 
     </div>
   );

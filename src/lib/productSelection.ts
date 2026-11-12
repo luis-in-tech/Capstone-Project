@@ -42,7 +42,7 @@ export function createProductSelection<T extends { sku: string }>(
     const input = scan ? classifyBatchQr(value, origin) : { kind: 'sku' as const };
     if (input.kind === 'sku') {
       const match = matchProductSku(current().products, value);
-      if (match.error) { report(match.error); return 'rejected'; }
+      if (match.error || !match.product) { report(match.error ?? 'Product not found'); return 'rejected'; }
       return choose(match.product);
     }
     if (input.kind === 'invalid-batch') { report('Invalid batch QR.'); return 'rejected'; }

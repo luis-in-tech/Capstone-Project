@@ -8,11 +8,8 @@ import {
   CheckCircleIcon as CheckCircle2,
   MagnifyingGlassIcon as Search,
   XIcon as X,
-  CaretDownIcon as ChevronDown,
   CaretUpDownIcon as ChevronsUpDown,
   ShieldWarningIcon as ShieldAlert,
-  WarningCircleIcon as AlertCircle,
-  CheckIcon as Check,
 } from '@phosphor-icons/react';
 import {
   Dialog,
@@ -30,6 +27,7 @@ import type { Product, InventoryItem, Warehouse as WarehouseType, UserProfile, D
 import { logDefectiveStockException, exportDefectiveProductsReportCSV } from '../lib/itilService';
 import { compressImage } from '../lib/imageCompressor';
 import { storage, ref, uploadBytes, getDownloadURL } from '../lib/supabaseAdapter';
+import { hasAdminRole } from '../lib/staffPermissions';
 import { toast } from 'sonner';
 
 interface DefectiveStockModalProps {
@@ -39,6 +37,8 @@ interface DefectiveStockModalProps {
   inventory: InventoryItem[];
   warehouses: WarehouseType[];
   profile?: UserProfile | null;
+  canAdjustStock?: boolean;
+  allowedWarehouseIds?: string[] | null;
   onSuccess: (ticket: DefectiveStockTicket) => void;
 }
 
@@ -49,8 +49,13 @@ export function DefectiveStockModal({
   inventory,
   warehouses,
   profile,
+  canAdjustStock,
+  allowedWarehouseIds,
   onSuccess,
 }: DefectiveStockModalProps) {
+  const canAdjust = canAdjustStock ?? hasAdminRole(profile ?? null);
+  const warehouseAllowed = (warehouseId: string) =>
+    !allowedWarehouseIds || allowedWarehouseIds.includes(warehouseId);
   const [selectedProductId, setSelectedProductId] = useState('');
   const [selectedWarehouseId, setSelectedWarehouseId] = useState('');
   const [quantity, setQuantity] = useState('1');
@@ -70,6 +75,7 @@ export function DefectiveStockModal({
 
   const productDropdownRef = useRef<HTMLDivElement>(null);
   const warehouseDropdownRef = useRef<HTMLDivElement>(null);
+  const submitLockRef = useRef(false);
 
   // Close dropdowns on outside click
   useEffect(() => {
@@ -114,7 +120,7 @@ export function DefectiveStockModal({
   // Filter products by SKU, name, brand, category, supplier
   const filteredProducts = useMemo(() => {
     const query = productSearch.trim().toLowerCase();
-    const leafProducts = products.filter((p) => !p.hasVariations);
+    const leafProducts = products.filter((p) => !p.hasVariations && p.variantEnabled !== false);
     if (!query) return leafProducts;
     return leafProducts.filter((p) => {
       const matchSku = p.sku?.toLowerCase().includes(query);
@@ -129,7 +135,7 @@ export function DefectiveStockModal({
   // Filter warehouses - sort facilities with positive stock to the top when a product is selected
   const filteredWarehouses = useMemo(() => {
     const query = warehouseSearch.trim().toLowerCase();
-    const activeWarehouses = warehouses.filter((w) => w.active !== false);
+    const activeWarehouses = warehouses.filter((w) => w.active !== false && warehouseAllowed(w.id));
     const list = !query
       ? activeWarehouses
       : activeWarehouses.filter((w) => {
@@ -169,6 +175,7 @@ export function DefectiveStockModal({
 
     if (!selectedWarehouseId || currentStockInSelectedWh === 0) {
       const facilityWithStock = warehouses.find((w) => {
+        if (w.active === false || !warehouseAllowed(w.id)) return false;
         const count = inventory
           .filter((i) => i.productId === prod.id && i.warehouseId === w.id)
           .reduce((sum, i) => sum + Math.max(0, i.quantity), 0);
@@ -226,12 +233,17 @@ export function DefectiveStockModal({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (submitLockRef.current || isSubmitting) return;
     if (!selectedProduct) {
       toast.error('Please select a product CI.');
       return;
     }
-    if (!selectedWarehouseId) {
-      toast.error('Please select the originating warehouse.');
+    if (!canAdjust) {
+      toast.error('You do not have permission to log damaged stock.');
+      return;
+    }
+    if (!selectedWarehouseId || !warehouseAllowed(selectedWarehouseId)) {
+      toast.error('Please select a permitted originating warehouse.');
       return;
     }
     if (availableInWarehouse <= 0) {
@@ -248,21 +260,17 @@ export function DefectiveStockModal({
       return;
     }
 
+    submitLockRef.current = true;
     setIsSubmitting(true);
     try {
       let resolvedPhotoUrl = '';
       if (photoFile) {
-        try {
-          const safeName = photoFile.name.replace(/[^a-zA-Z0-9._-]/g, '');
-          const nonce = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID().slice(0, 8) : Math.random().toString(36).substring(2, 8);
-          const storagePath = `quarantine/${Date.now()}_${nonce}_${safeName}`;
-          const fileRef = ref(storage, storagePath);
-          await uploadBytes(fileRef, photoFile);
-          resolvedPhotoUrl = await getDownloadURL(fileRef);
-        } catch (uploadErr) {
-          console.warn('Storage upload fallback:', uploadErr);
-          resolvedPhotoUrl = '';
-        }
+        const safeName = photoFile.name.replace(/[^a-zA-Z0-9._-]/g, '');
+        const nonce = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID().slice(0, 8) : Math.random().toString(36).substring(2, 8);
+        const storagePath = `quarantine/${Date.now()}_${nonce}_${safeName}`;
+        const fileRef = ref(storage, storagePath);
+        await uploadBytes(fileRef, photoFile);
+        resolvedPhotoUrl = await getDownloadURL(fileRef);
       }
 
       const { ticket } = await logDefectiveStockException({
@@ -289,6 +297,7 @@ export function DefectiveStockModal({
       toast.error(err?.message || 'Failed to log defective stock exception.');
     } finally {
       setIsSubmitting(false);
+      submitLockRef.current = false;
     }
   };
 
@@ -298,6 +307,7 @@ export function DefectiveStockModal({
   };
 
   const handleCloseAll = () => {
+    if (isSubmitting) return;
     if (photoPreview) {
       URL.revokeObjectURL(photoPreview);
     }
@@ -317,7 +327,7 @@ export function DefectiveStockModal({
 
 
   return (
-    <Dialog open={open} onOpenChange={(val) => !val && handleCloseAll()}>
+    <Dialog open={open} onOpenChange={(val) => { if (!val && !isSubmitting) handleCloseAll(); }}>
       <DialogContent className="sm:max-w-2xl md:max-w-3xl max-h-[90vh] overflow-y-auto">
         {!generatedTicket ? (
           <form onSubmit={handleSubmit} className="space-y-4">
@@ -477,7 +487,7 @@ export function DefectiveStockModal({
                     </div>
 
                     <div className="p-2 border-t bg-muted/20 text-[10px] text-muted-foreground text-center">
-                      Showing {filteredProducts.length} of {products.filter((p) => !p.hasVariations).length} items
+                      Showing {filteredProducts.length} of {products.filter((p) => !p.hasVariations && p.variantEnabled !== false).length} items
                     </div>
                   </div>
                 )}
@@ -615,7 +625,7 @@ export function DefectiveStockModal({
               </div>
 
               {/* Zero Stock Guardrail Banner */}
-              {isZeroStock && (
+              {isZeroStock && selectedProduct && (
                 <div className="flex items-start gap-3 p-3.5 rounded-xl bg-destructive/10 border border-destructive/30 text-destructive text-xs animate-in fade-in-0 duration-200">
                   <ShieldAlert className="size-5 shrink-0 mt-0.5 text-destructive" />
                   <div className="space-y-1 flex-1">
@@ -758,7 +768,10 @@ export function DefectiveStockModal({
                 <div className="text-right">
                   <p className="font-mono font-bold text-amber-600 text-base">{generatedTicket.ticketNumber}</p>
                   <p className="text-[10px] text-muted-foreground">
-                    {new Date(generatedTicket.createdAt).toLocaleDateString()}
+                    {(() => {
+                      const d = new Date(generatedTicket.createdAt);
+                      return Number.isNaN(d.getTime()) ? 'N/A' : d.toLocaleDateString();
+                    })()}
                   </p>
                 </div>
               </div>

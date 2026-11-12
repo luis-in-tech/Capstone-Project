@@ -9,7 +9,7 @@ export type BatchQrInput = { kind: 'sku' } | { kind: 'invalid-batch' } | { kind:
 // Pure classification: no navigation or fetching; only the current origin is trusted.
 export function classifyBatchQr(value: string, origin: string): BatchQrInput {
   const input = value.trim();
-  const looksLikeBatch = /(?:^|\/)transfers(?:[/?#]|$)/i.test(input) || /[?&]batch(?:=|&|#|$)/i.test(input);
+  const looksLikeBatch = /^(?:\/|(?:\/\/|[a-z][a-z\d+.-]*:(?:\/\/)?)(?:[^/?#]*\/))transfers(?:[/?#]|$)/i.test(input) || /[?&]batch(?:=|&|#|$)/i.test(input);
   if (!looksLikeBatch) return { kind: 'sku' };
   try {
     const base = new URL(origin);

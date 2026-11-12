@@ -1,16 +1,17 @@
 import { hasAdminRole } from '../lib/staffPermissions';
 import { useStaffAccess } from '../hooks/useStaffAccess';
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { db } from '../lib/supabaseAdapter';
-import { collection, onSnapshot, query, where, addDoc, updateDoc, doc, serverTimestamp, deleteDoc } from '../lib/supabaseAdapter';
+import { db, storage, collection, onSnapshot, addDoc, getDoc, updateDoc, doc, serverTimestamp, deleteDoc, ref, uploadBytes, getDownloadURL } from '../lib/supabaseAdapter';
+import { supabase } from '../lib/supabase';
+import { escapeCsvCell, escapeHtml } from '../lib/exportUtils';
 import { Product, InventoryItem, Warehouse } from '../types';
 import { handleSupabaseError, OperationType } from '../lib/supabaseErrorHandler';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Card, CardContent } from '@/components/ui/card';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter, DialogDescription } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
 import { MagnifyingGlassIcon as Search, PlusIcon as Plus, QrCodeIcon as QrCode, PackageIcon as Package, WarehouseIcon, WarningIcon as AlertTriangle, EyeIcon as Eye, CurrencyCircleDollarIcon as CircleDollarSign, SlidersHorizontalIcon as SlidersHorizontal, TagIcon as Tag, PencilIcon as Pencil, TrashIcon as Trash2, ImageSquareIcon as ImagePlus, XIcon as X, DownloadIcon as Download, UploadSimpleIcon as Upload, FileXlsIcon as FileSpreadsheet, FileTextIcon as FileText, ChartBarIcon as BarChart3, InfoIcon as Info, PrinterIcon as Printer, CaretLeftIcon as ChevronLeft, CaretRightIcon as ChevronRight } from '@phosphor-icons/react';
 import { QRCodeSVG } from 'qrcode.react';
@@ -21,14 +22,14 @@ import { toast } from 'sonner';
 import * as XLSX from 'xlsx';
 import { WarehouseLayout } from './WarehouseLayout';
 import { ProductVariationEditor } from './ProductVariationEditor';
-import { emptyVariations, variationDraft, validateVariations, variantLabel, variantFields, stockForProduct } from '../lib/productVariations';
+import { emptyVariations, variationDraft, validateVariations, variantLabel, variantFields } from '../lib/productVariations';
 import { saveProductVariations } from '../lib/saveProductVariations';
 import { DefectiveStockModal } from './DefectiveStockModal';
 import { QuarantineLedger } from './QuarantineLedger';
-import { getLocalDefectiveTickets, exportDefectiveProductsReportCSV } from '../lib/itilService';
+import { getLocalDefectiveTickets } from '../lib/itilService';
 import type { DefectiveStockTicket } from '../types';
 
-const PRODUCT_TEMPLATE_HEADERS = ['SKU Code', 'Item Name', 'Category', 'Supplier Name', 'Base Price / Retail Price', 'Metro Manila Price', 'Provincial Price', 'Cost', 'Minimum Stock Level', 'Reorder Point'];
+const PRODUCT_TEMPLATE_HEADERS = ['SKU Code', 'Item Name', 'Category', 'Supplier Name', 'Base Price / Retail Price', 'Metro Manila Price', 'Provincial Price', 'Cost', 'Minimum Stock Level', 'Reorder Point', 'Unit'];
 type ImportRow = Record<string, string | number | undefined>;
 interface ProductImportPreview { row: number; data: Omit<Product, 'id'>; errors: string[]; }
 interface NamedOption { id: string; name: string; active?: boolean; }
@@ -104,12 +105,10 @@ export function Inventory() {
   const [inventoryView, setInventoryView] = useState<'stock' | 'layout' | 'quarantine'>('stock');
   const [managedCategories, setManagedCategories] = useState<NamedOption[]>([]);
   const [managedSuppliers, setManagedSuppliers] = useState<NamedOption[]>([]);
-  const [hasDelegatedAccess, setHasDelegatedAccess] = useState(false);
 
   // FR-11: Defective Stock Exception Logging & Quarantine
   const [isDefectiveModalOpen, setIsDefectiveModalOpen] = useState(false);
   const [defectiveTickets, setDefectiveTickets] = useState<DefectiveStockTicket[]>(() => getLocalDefectiveTickets());
-  const cleanedProductIdsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     const handleTicketsChanged = () => setDefectiveTickets(getLocalDefectiveTickets());
@@ -142,6 +141,18 @@ export function Inventory() {
 
   const isAdmin = hasAdminRole(profile) && permissions.inventory === 'adjust';
   const canAdjustStock = permissions.inventory === 'adjust';
+  const allowedWarehouseIds = useMemo(
+    () => (hasAdminRole(profile) || permissions.warehouseAccess === 'all' ? null : permissions.warehouseIds),
+    [profile, permissions.warehouseAccess, permissions.warehouseIds],
+  );
+  const visibleWarehouses = useMemo(
+    () => (allowedWarehouseIds ? warehouses.filter(w => allowedWarehouseIds.includes(w.id)) : warehouses),
+    [warehouses, allowedWarehouseIds],
+  );
+  const printCleanupRef = useRef<(() => void) | null>(null);
+  const deleteLockRef = useRef(false);
+  const adjustLockRef = useRef(false);
+  useEffect(() => () => { printCleanupRef.current?.(); }, []);
   const extractSkuNumber = (sku?: string): number | null => {
     if (!sku) return null;
     const match = sku.match(/(\d+)/);
@@ -192,8 +203,8 @@ export function Inventory() {
   const variantModeLocked = !!editingProduct && hasStock([editingProduct.id, ...childrenOf(editingProduct.id).map(p => p.id)]);
   const adjustmentProduct = selectedProduct?.hasVariations ? childrenOf(selectedProduct.id).find(p => p.id === selectedVariantId) : selectedProduct;
 
-  useEffect(() => { setSelectedVariantId(''); }, [selectedProduct?.id]);
-  useEffect(() => { if (!isStockUpdateOpen) { setSelectedVariantId(''); setAdjustQty(''); } }, [isStockUpdateOpen]);
+  useEffect(() => { setSelectedVariantId(''); setSelectedWarehouseId(''); }, [selectedProduct?.id]);
+  useEffect(() => { if (!isStockUpdateOpen) { setSelectedVariantId(''); setAdjustQty(''); setSelectedWarehouseId(''); } }, [isStockUpdateOpen]);
   useEffect(() => {
     if (selectedProduct) {
       const latest = products.find(p => p.id === selectedProduct.id);
@@ -256,14 +267,6 @@ export function Inventory() {
         const rawName = String(data.name || '');
         const sanitizedName = cleanItemName(rawName);
 
-        // Auto-clean database record if it contains '#000' or '#12' format in the name (once per document)
-        if (rawName && rawName !== sanitizedName && !cleanedProductIdsRef.current.has(d.id)) {
-          cleanedProductIdsRef.current.add(d.id);
-          updateDoc(doc(db, 'products', d.id), { name: sanitizedName }).catch((err) => {
-            console.warn(`Failed to auto-clean product name for ${d.id}:`, err);
-          });
-        }
-
         return {
           id: d.id,
           ...data,
@@ -303,7 +306,6 @@ export function Inventory() {
   const uploadProductImage = async (file: File): Promise<string> => {
     // 1. Try Supabase Storage upload if available
     try {
-      const { storage, ref, uploadBytes, getDownloadURL } = await import('../lib/supabaseAdapter');
       const safeName = file.name.replace(/[^a-zA-Z0-9.-]/g, '_');
       const filePath = `products/${Date.now()}_${safeName}`;
       const storageRef = ref(storage, filePath);
@@ -364,8 +366,18 @@ export function Inventory() {
     const formData = new FormData(e.currentTarget);
     const sku = String(formData.get('sku') || addSku || '').trim();
     const name = cleanItemName(String(formData.get('name') || addName || '').trim());
-    const category = String(addCategory || formData.get('category') || 'Uncategorized').trim() || 'Uncategorized';
-    const supplier = String(addSupplier || formData.get('supplier') || 'N/A').trim() || 'N/A';
+    if (!categoryOptions.includes(addCategory) && !addCategory.trim()) {
+      toast.error('Enter a category name or select an existing category.');
+      return;
+    }
+    if (!supplierOptions.includes(addSupplier) && !addSupplier.trim()) {
+      toast.error('Enter a supplier name or select an existing supplier.');
+      return;
+    }
+    const formCategory = String(formData.get('category') || '');
+    const formSupplier = String(formData.get('supplier') || '');
+    const category = (addCategory.trim() || (formCategory !== 'custom' ? formCategory.trim() : '') || 'Uncategorized');
+    const supplier = (addSupplier.trim() || (formSupplier !== 'custom' ? formSupplier.trim() : '') || 'N/A');
     const unit = String(formData.get('unit') ?? addUnits).trim() || 'pc';
 
 
@@ -446,18 +458,30 @@ export function Inventory() {
       if (addVariations.enabled) {
         await saveProductVariations({ ...newProduct, id: crypto.randomUUID() }, addVariations, uploadProductImage);
       } else {
-        const docRef = await addDoc(collection(db, 'products'), newProduct);
-        // Initialize inventory for all warehouses
-        await Promise.all(
-          warehouses.map(wh =>
-            addDoc(collection(db, 'inventory'), {
+        const createdInvIds: string[] = [];
+        let createdProdId: string | null = null;
+        try {
+          const docRef = await addDoc(collection(db, 'products'), newProduct);
+          createdProdId = docRef.id;
+          // Initialize inventory for all warehouses
+          for (const wh of warehouses) {
+            const invRef = await addDoc(collection(db, 'inventory'), {
               productId: docRef.id,
               warehouseId: wh.id,
               quantity: 0,
               lastUpdated: serverTimestamp()
-            })
-          )
-        );
+            });
+            if (invRef?.id) createdInvIds.push(invRef.id);
+          }
+        } catch (createErr) {
+          for (const invId of [...createdInvIds].reverse()) {
+            await deleteDoc(doc(db, 'inventory', invId)).catch(() => {});
+          }
+          if (createdProdId) {
+            await deleteDoc(doc(db, 'products', createdProdId)).catch(() => {});
+          }
+          throw createErr;
+        }
       }
       setProductImage(null);
       setProductImagePreview('');
@@ -505,11 +529,16 @@ export function Inventory() {
         if (name && existingNames.has(normalizedName)) errors.push('Item Name already exists in Inventory');
         if (name && fileNames.has(normalizedName)) errors.push('Duplicate Item Name in file');
         if (name) fileNames.add(normalizedName);
-        const numericHeaders = ['Base Price / Retail Price', 'Metro Manila Price', 'Provincial Price', 'Cost', 'Minimum Stock Level', 'Reorder Point'];
+        const baseVal = row['Base Price / Retail Price'];
+        if (baseVal === '' || !Number.isFinite(Number(baseVal)) || Number(baseVal) <= 0) {
+          errors.push('Base Price / Retail Price must be greater than 0');
+        }
+        const numericHeaders = ['Metro Manila Price', 'Provincial Price', 'Cost', 'Minimum Stock Level', 'Reorder Point'];
         numericHeaders.forEach((header) => {
           const value = row[header];
           if (value !== '' && (!Number.isFinite(Number(value)) || Number(value) < 0)) errors.push(`${header} must be a non-negative number`);
         });
+        const rawUnit = String(row['Unit'] ?? row['Units'] ?? '').trim();
         const now = new Date();
         return {
           row: index + 2,
@@ -526,8 +555,8 @@ export function Inventory() {
             costPrice: Number(row.Cost) || 0,
             minStockLevel: Number(row['Minimum Stock Level']) || 0,
             reorderPoint: Number(row['Reorder Point']) || 0,
-            units: Number(row['Units'] || row['Unit'] || 1) || 1,
-            unit: String(row['Units'] || row['Unit'] || '1').toLowerCase(),
+            units: Number(rawUnit) > 0 ? Number(rawUnit) : 1,
+            unit: rawUnit ? rawUnit.toLowerCase() : 'pc',
             createdAt: now, updatedAt: now,
           },
         };
@@ -546,14 +575,26 @@ export function Inventory() {
   const handleConfirmImport = async () => {
     if (!importPreview.length || importPreview.some((row) => row.errors.length)) return;
     setIsImporting(true);
+    const createdProductIds: string[] = [];
+    const createdInventoryIds: string[] = [];
     try {
       for (const row of importPreview) {
         const productRef = await addDoc(collection(db, 'products'), row.data);
-        for (const warehouse of warehouses) await addDoc(collection(db, 'inventory'), { productId: productRef.id, warehouseId: warehouse.id, quantity: 0, lastUpdated: serverTimestamp() });
+        createdProductIds.push(productRef.id);
+        for (const warehouse of warehouses) {
+          const invRef = await addDoc(collection(db, 'inventory'), { productId: productRef.id, warehouseId: warehouse.id, quantity: 0, lastUpdated: serverTimestamp() });
+          if (invRef?.id) createdInventoryIds.push(invRef.id);
+        }
       }
       toast.success(`${importPreview.length} products added to Inventory`);
       setIsImportOpen(false); setImportPreview([]); setImportFileName('');
     } catch (error) {
+      for (const invId of createdInventoryIds) {
+        await deleteDoc(doc(db, 'inventory', invId)).catch(() => {});
+      }
+      for (const prodId of createdProductIds) {
+        await deleteDoc(doc(db, 'products', prodId)).catch(() => {});
+      }
       handleSupabaseError(error, OperationType.CREATE, 'products');
     } finally { setIsImporting(false); }
   };
@@ -564,11 +605,21 @@ export function Inventory() {
     const variationError = validateVariations(editVariations, editSku, products, editingProduct.id);
     if (variationError) { toast.error(variationError); return; }
     if (!!editingProduct.hasVariations !== editVariations.enabled && variantModeLocked) { toast.error('Clear existing stock through Adjust Stock before changing variation mode.'); return; }
+    if (!categoryOptions.includes(editCategory) && !editCategory.trim()) {
+      toast.error('Enter a category name or select an existing category.');
+      return;
+    }
+    if (!supplierOptions.includes(editSupplier) && !editSupplier.trim()) {
+      toast.error('Enter a supplier name or select an existing supplier.');
+      return;
+    }
     const form = new FormData(event.currentTarget);
     const sku = String(editSku || form.get('sku') || '').trim();
     const name = cleanItemName(String(editName || form.get('name') || '').trim());
-    const category = String(editCategory || form.get('category') || 'Uncategorized').trim() || 'Uncategorized';
-    const supplier = String(editSupplier || form.get('supplier') || 'N/A').trim() || 'N/A';
+    const formCategory = String(form.get('category') || '');
+    const formSupplier = String(form.get('supplier') || '');
+    const category = (editCategory.trim() || (formCategory !== 'custom' ? formCategory.trim() : '') || 'Uncategorized');
+    const supplier = (editSupplier.trim() || (formSupplier !== 'custom' ? formSupplier.trim() : '') || 'N/A');
     const unit = String(form.get('unit') ?? editUnits).trim() || 'pc';
 
 
@@ -621,7 +672,7 @@ export function Inventory() {
       const mmPrice = Number(form.get('mmPrice')) || 0;
       const provincialPrice = Number(form.get('provincialPrice')) || 0;
       const promoVal = form.get('promoPrice');
-      const promoPrice = promoVal !== '' && promoVal != null ? Number(promoVal) : null;
+      const promoPrice = promoVal !== '' && promoVal != null && Number.isFinite(Number(promoVal)) ? Number(promoVal) : undefined;
       const updatedData = {
         sku,
         name,
@@ -645,7 +696,7 @@ export function Inventory() {
 
       if (editVariations.enabled || editingProduct.hasVariations || childrenOf(editingProduct.id).length) {
         await saveProductVariations({ ...updatedData, id: editingProduct.id }, editVariations, uploadProductImage);
-      } else await updateDoc(doc(db, 'products', editingProduct.id), updatedData);
+      } else await updateDoc(doc(db, 'products', editingProduct.id), { ...updatedData, promoPrice: promoPrice ?? null });
 
       if (selectedProduct && selectedProduct.id === editingProduct.id) {
         setSelectedProduct(prev => prev ? { ...prev, ...updatedData } : null);
@@ -664,17 +715,28 @@ export function Inventory() {
   };
 
   const handleDeleteProduct = async () => {
-    if (!productToDelete) return;
+    if (!productToDelete || deleteLockRef.current || isDeletingProduct) return;
+    deleteLockRef.current = true;
     setIsDeletingProduct(true);
     try {
       const childIds = childrenOf(productToDelete.id).map(p => p.id);
+      const allProductIds = [productToDelete.id, ...childIds];
       const inventoryItems = inventory.filter(i => i.productId === productToDelete.id || childIds.includes(i.productId));
-      for (const item of inventoryItems) {
-        await deleteDoc(doc(db, 'inventory', item.id));
-      }
 
+      // Delete product records first so a failed delete never leaves stock wiped on an active product
       for (const childId of childIds) await deleteDoc(doc(db, 'products', childId));
       await deleteDoc(doc(db, 'products', productToDelete.id));
+
+      for (const item of inventoryItems) {
+        await deleteDoc(doc(db, 'inventory', item.id)).catch(() => {});
+      }
+      const { error: zoneAllocErr } = await supabase
+        .from('warehouse_zone_allocations')
+        .delete()
+        .in('productId', allProductIds);
+      if (zoneAllocErr && !['PGRST205', '42P01'].includes(zoneAllocErr.code || '')) {
+        console.warn('Could not clean up warehouse zone allocations:', zoneAllocErr);
+      }
 
       toast.success('Product deleted successfully');
       setProductToDelete(null);
@@ -682,38 +744,60 @@ export function Inventory() {
       handleSupabaseError(error, OperationType.DELETE, `products/${productToDelete.id}`);
     } finally {
       setIsDeletingProduct(false);
+      deleteLockRef.current = false;
     }
   };
 
   const updateStock = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    if (isAdjusting) return;
+    if (adjustLockRef.current || isAdjusting) return;
     if (!adjustmentProduct) { toast.error('Select the specific variant to adjust.'); return; }
     const formData = new FormData(e.currentTarget);
-    const warehouseId = formData.get('warehouseId') as string;
+    const warehouseId = (formData.get('warehouseId') as string) || selectedWarehouseId;
     if (!canAdjustStock || (permissions.warehouseAccess === 'selected' && !permissions.warehouseIds.includes(warehouseId))) { toast.error('You do not have permission to adjust this warehouse.'); return; }
     const quantity = Number(formData.get('quantity'));
-    const reason = formData.get('reason') as string;
+    const reason = String(formData.get('reason') || '').trim();
 
-    if (selectedProduct?.hasVariations && (!warehouseId || !Number.isInteger(quantity) || !quantity || !reason.trim())) { toast.error('Choose a warehouse, enter a non-zero whole quantity and a reason.'); return; }
+    if (!warehouseId || !Number.isInteger(quantity) || !quantity || !reason) {
+      toast.error('Choose a warehouse, enter a non-zero whole quantity and a reason.');
+      return;
+    }
+
     const item = inventory.find(i => i.productId === adjustmentProduct.id && i.warehouseId === warehouseId);
     if (selectedProduct && profile) {
+      adjustLockRef.current = true;
       setIsAdjusting(true);
+      let updatedRowId: string | null = null;
+      let prevRowQty: number | null = null;
+      let createdInvId: string | null = null;
       try {
+        let currentQty = item ? Number(item.quantity || 0) : 0;
+        if (item?.id) {
+          const liveSnap = await getDoc(doc(db, 'inventory', item.id)).catch(() => null);
+          if (liveSnap?.exists()) {
+            currentQty = Number((liveSnap.data() as InventoryItem).quantity || 0);
+          }
+        }
+        if (quantity < 0 && currentQty + quantity < 0) {
+          toast.error(`Cannot deduct ${Math.abs(quantity)} units; only ${Math.max(0, currentQty)} available.`);
+          return;
+        }
+
         if (item) {
-          // 1a. Existing row — update the inventory level
+          prevRowQty = currentQty;
+          updatedRowId = item.id;
           await updateDoc(doc(db, 'inventory', item.id), {
-            quantity: item.quantity + quantity,
+            quantity: currentQty + quantity,
             lastUpdated: serverTimestamp()
           });
         } else {
-          // 1b. No row for this product+warehouse yet — insert one
-          await addDoc(collection(db, 'inventory'), {
+          const createdRef = await addDoc(collection(db, 'inventory'), {
             productId: adjustmentProduct.id,
             warehouseId,
             quantity,
             lastUpdated: serverTimestamp()
           });
+          createdInvId = createdRef?.id || null;
         }
 
         // 2. Log the adjustment for auditing
@@ -729,8 +813,20 @@ export function Inventory() {
         setIsStockUpdateOpen(false);
         toast.success('Inventory balance synchronized and adjustment logged');
       } catch (err) {
+        if (updatedRowId !== null && prevRowQty !== null) {
+          await updateDoc(doc(db, 'inventory', updatedRowId), {
+            quantity: prevRowQty,
+            lastUpdated: serverTimestamp()
+          }).catch(() => {});
+        }
+        if (createdInvId) {
+          await deleteDoc(doc(db, 'inventory', createdInvId)).catch(() => {});
+        }
         handleSupabaseError(err, OperationType.UPDATE, `inventory/${item?.id || 'new'}`);
-      } finally { setIsAdjusting(false); }
+      } finally {
+        setIsAdjusting(false);
+        adjustLockRef.current = false;
+      }
     }
   };
 
@@ -738,6 +834,7 @@ export function Inventory() {
   const stockMap = useMemo(() => {
     const map = new Map<string, number>();
     for (const item of inventory) {
+      if (allowedWarehouseIds && !allowedWarehouseIds.includes(item.warehouseId)) continue;
       const qty = Number(item.quantity) || 0;
       const whKey = `${item.productId}:${item.warehouseId}`;
       map.set(whKey, (map.get(whKey) || 0) + qty);
@@ -746,7 +843,7 @@ export function Inventory() {
       map.set(allKey, (map.get(allKey) || 0) + Math.max(0, qty));
     }
     return map;
-  }, [inventory]);
+  }, [inventory, allowedWarehouseIds]);
 
   const getStockCount = (productId: string, warehouseId?: string) => {
     const targetWh = !warehouseId || warehouseId === 'all' ? 'all' : warehouseId;
@@ -761,23 +858,6 @@ export function Inventory() {
       return sum;
     }
     return stockMap.get(`${productId}:${targetWh}`) || 0;
-  };
-
-  // Check if any individual warehouse has stock at or below zero for a product
-  const hasAnyWarehouseDeficit = (productId: string) => {
-    return warehouses.some(wh => {
-      const qty = stockMap.get(`${productId}:${wh.id}`);
-      return qty !== undefined && qty <= 0;
-    });
-  };
-
-  // Check if any individual warehouse has low stock for a product
-  const hasAnyWarehouseLowStock = (productId: string, product: Product) => {
-    const threshold = product.reorderPoint || product.minStockLevel || 0;
-    return warehouses.some(wh => {
-      const qty = stockMap.get(`${productId}:${wh.id}`) || 0;
-      return qty > 0 && qty <= threshold;
-    });
   };
 
   const activeWarehouseObj = warehouses.find(w => w.id === warehouseFilter);
@@ -834,7 +914,7 @@ export function Inventory() {
 
       return matchesSearch
         && (categoryFilter === 'all' || (product.category || 'Uncategorized') === categoryFilter)
-        && (supplierFilter === 'all' || product.supplier === supplierFilter)
+        && (supplierFilter === 'all' || (product.supplier || 'N/A') === supplierFilter)
         && (stockFilter === 'all' || getProductStatus(product, stock, warehouseFilter) === stockFilter)
         && (!hideZeroStock || stock > 0);
     });
@@ -854,7 +934,7 @@ export function Inventory() {
 
     let totalVal = 0;
     for (const product of products) {
-      if (product.hasVariations) continue;
+      if (product.hasVariations || product.variantEnabled === false) continue;
       const unitVal = (product.costPrice && product.costPrice > 0) ? product.costPrice : (product.basePrice || 0);
       totalVal += unitVal * Math.max(0, getStockCount(product.id, warehouseFilter));
     }
@@ -933,11 +1013,13 @@ export function Inventory() {
     printFrame.style.border = '0';
     document.body.appendChild(printFrame);
 
+    const safeSku = escapeHtml(product.sku || '');
+    const safeName = escapeHtml(cleanItemName(product.name || ''));
     const htmlContent = `
       <!DOCTYPE html>
       <html>
         <head>
-          <title>Label - ${product.sku}</title>
+          <title>Label - ${safeSku}</title>
           <style>
             @page {
               size: 50mm 30mm;
@@ -1024,70 +1106,117 @@ export function Inventory() {
           <div class="qr-side">${svgHtml}</div>
           <div class="info-side">
             <div class="brand">ActivePro Asset</div>
-            <div class="prod-name">${product.name}</div>
-            <div class="prod-sku">${product.sku}</div>
-            <div class="prod-price">₱${priceFormatted}</div>
+            <div class="prod-name">${safeName}</div>
+            <div class="prod-sku">${safeSku}</div>
+            <div class="prod-price">₱${escapeHtml(priceFormatted)}</div>
           </div>
         </body>
       </html>
     `;
 
+    printCleanupRef.current?.();
+    let printDelayTimer = 0;
+    let fallbackTimer = 0;
+    let cleaned = false;
+    const cleanupFrame = () => {
+      if (cleaned) return;
+      cleaned = true;
+      window.clearTimeout(printDelayTimer);
+      window.clearTimeout(fallbackTimer);
+      if (document.body.contains(printFrame)) {
+        document.body.removeChild(printFrame);
+      }
+      if (printCleanupRef.current === cleanupFrame) {
+        printCleanupRef.current = null;
+      }
+    };
+    printCleanupRef.current = cleanupFrame;
     const frameDoc = printFrame.contentWindow?.document || printFrame.contentDocument;
-    if (frameDoc) {
-      frameDoc.open();
-      frameDoc.write(htmlContent);
-      frameDoc.close();
-      setTimeout(() => {
-        printFrame.contentWindow?.focus();
-        printFrame.contentWindow?.print();
-        setTimeout(() => {
-          if (document.body.contains(printFrame)) {
-            document.body.removeChild(printFrame);
-          }
-        }, 1500);
-      }, 250);
+    if (!frameDoc) {
+      cleanupFrame();
+      toast.error('Unable to initialize label print frame.');
+      return;
     }
+    frameDoc.open();
+    frameDoc.write(htmlContent);
+    frameDoc.close();
+    const frameWin = printFrame.contentWindow;
+    if (frameWin) {
+      frameWin.addEventListener('afterprint', cleanupFrame, { once: true });
+    }
+    printDelayTimer = window.setTimeout(() => {
+      frameWin?.focus();
+      frameWin?.print();
+      fallbackTimer = window.setTimeout(cleanupFrame, 3000);
+    }, 250);
   };
 
 
   const exportMultiWarehouseLedger = () => {
-    const csvRows = [];
-    csvRows.push(['SKU', 'Product Name', 'Supplier', 'Category', 'Aisle/Bin', 'Warehouse A Stock', 'Warehouse B Stock', 'Quarantined Stock', 'Unit Cost', 'Total Asset Value'].join(','));
-    
-    const whA = warehouses.find(w => w.name.includes('Valenzuela A')) || warehouses[0];
-    const whB = warehouses.find(w => w.name.includes('Valenzuela B')) || warehouses[1];
+    const activeWhs = visibleWarehouses.filter(w => w.active !== false);
+    const exportWarehouses = activeWhs.length > 0 ? activeWhs : visibleWarehouses;
+    const header = [
+      'SKU',
+      'Product Name',
+      'Supplier',
+      'Category',
+      'Aisle/Bin',
+      ...exportWarehouses.map(w => `${w.name} Stock`),
+      'Quarantined Stock',
+      'Unit Cost',
+      'Total Asset Value',
+    ];
+    const csvRows = [header.map(escapeCsvCell).join(',')];
+
+    const sumWarehouseQty = (productId: string, warehouseId: string) =>
+      inventory
+        .filter(i => i.productId === productId && i.warehouseId === warehouseId)
+        .reduce((sum, i) => sum + Math.max(0, Number(i.quantity || 0)), 0);
+
+    const sumQuarantineQty = (productId: string) =>
+      inventory
+        .filter(i => i.productId === productId && (!allowedWarehouseIds || allowedWarehouseIds.includes(i.warehouseId)))
+        .reduce((sum, i) => sum + Math.max(0, Number(i.quarantineQuantity || 0)), 0);
 
     products.filter(p => !p.parentProductId).forEach(p => {
       if (p.hasVariations) {
-         const variants = childrenOf(p.id);
-         variants.forEach(v => {
-            const stockA = inventory.find(i => i.productId === v.id && i.warehouseId === whA?.id)?.quantity || 0;
-            const stockB = inventory.find(i => i.productId === v.id && i.warehouseId === whB?.id)?.quantity || 0;
-            const quarantine = inventory.find(i => i.productId === v.id)?.quarantineQuantity || 0;
-            const cost = canViewCost ? (v.costPrice || p.costPrice || 0) : 'N/A';
-            const totalValue = canViewCost ? ((stockA + stockB + quarantine) * (Number(cost) || 0)) : 'N/A';
-            csvRows.push([
-              `"${v.sku || ''}"`,
-              `"${p.name} - ${variantLabel(v)}"`,
-              `"${p.supplier || 'N/A'}"`,
-              `"${p.category || 'N/A'}"`,
-              `"${p.locationAisle || ''}/${p.locationBin || ''}"`,
-              stockA, stockB, quarantine, cost, totalValue
-            ].join(','));
-         });
+        const variants = childrenOf(p.id).filter(v => v.variantEnabled !== false);
+        variants.forEach(v => {
+          const whStocks = exportWarehouses.map(w => sumWarehouseQty(v.id, w.id));
+          const quarantine = sumQuarantineQty(v.id);
+          const totalUnits = whStocks.reduce((a, b) => a + b, 0) + quarantine;
+          const costNum = v.costPrice ?? p.costPrice ?? 0;
+          const cost = canViewCost ? costNum : 'N/A';
+          const totalValue = canViewCost ? totalUnits * (Number(costNum) || 0) : 'N/A';
+          csvRows.push([
+            escapeCsvCell(v.sku || ''),
+            escapeCsvCell(`${p.name} - ${variantLabel(v)}`),
+            escapeCsvCell(p.supplier || 'N/A'),
+            escapeCsvCell(p.category || 'N/A'),
+            escapeCsvCell(`${p.locationAisle || ''}/${p.locationBin || ''}`),
+            ...whStocks.map(q => escapeCsvCell(q)),
+            escapeCsvCell(quarantine),
+            escapeCsvCell(cost),
+            escapeCsvCell(totalValue),
+          ].join(','));
+        });
       } else {
-        const stockA = inventory.find(i => i.productId === p.id && i.warehouseId === whA?.id)?.quantity || 0;
-        const stockB = inventory.find(i => i.productId === p.id && i.warehouseId === whB?.id)?.quantity || 0;
-        const quarantine = inventory.find(i => i.productId === p.id)?.quarantineQuantity || 0;
-        const cost = canViewCost ? (p.costPrice || 0) : 'N/A';
-        const totalValue = canViewCost ? ((stockA + stockB + quarantine) * (Number(cost) || 0)) : 'N/A';
+        const whStocks = exportWarehouses.map(w => sumWarehouseQty(p.id, w.id));
+        const quarantine = sumQuarantineQty(p.id);
+        const totalUnits = whStocks.reduce((a, b) => a + b, 0) + quarantine;
+        const costNum = p.costPrice || 0;
+        const cost = canViewCost ? costNum : 'N/A';
+        const totalValue = canViewCost ? totalUnits * (Number(costNum) || 0) : 'N/A';
         csvRows.push([
-          `"${p.sku || ''}"`,
-          `"${p.name}"`,
-          `"${p.supplier || 'N/A'}"`,
-          `"${p.category || 'N/A'}"`,
-          `"${p.locationAisle || ''}/${p.locationBin || ''}"`,
-          stockA, stockB, quarantine, cost, totalValue
+          escapeCsvCell(p.sku || ''),
+          escapeCsvCell(p.name),
+          escapeCsvCell(p.supplier || 'N/A'),
+          escapeCsvCell(p.category || 'N/A'),
+          escapeCsvCell(`${p.locationAisle || ''}/${p.locationBin || ''}`),
+          ...whStocks.map(q => escapeCsvCell(q)),
+          escapeCsvCell(quarantine),
+          escapeCsvCell(cost),
+          escapeCsvCell(totalValue),
         ].join(','));
       }
     });
@@ -1098,6 +1227,7 @@ export function Inventory() {
     link.href = url;
     link.download = `multi_warehouse_ledger_${new Date().toISOString().split('T')[0]}.csv`;
     link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
     toast.success('Multi-Warehouse Ledger exported successfully');
   };
 
@@ -1115,7 +1245,7 @@ export function Inventory() {
     </Button>
   </div>;
 
-  if (inventoryView === 'layout') return <div className="space-y-5 pb-20">{inventoryNavigation}<WarehouseLayout warehouses={warehouses} products={products.filter(p => !p.hasVariations)} inventory={inventory} /></div>;
+  if (inventoryView === 'layout') return <div className="space-y-5 pb-20">{inventoryNavigation}<WarehouseLayout warehouses={warehouses} products={products.filter(p => !p.hasVariations && p.variantEnabled !== false)} inventory={inventory} /></div>;
   if (inventoryView === 'quarantine') return (
     <div className="space-y-5 pb-20">
       {inventoryNavigation}
@@ -1123,6 +1253,8 @@ export function Inventory() {
         tickets={defectiveTickets}
         inventory={inventory}
         profile={profile}
+        canAdjustStock={canAdjustStock}
+        allowedWarehouseIds={allowedWarehouseIds}
         onOpenLogModal={() => setIsDefectiveModalOpen(true)}
         onRefresh={() => setDefectiveTickets(getLocalDefectiveTickets())}
       />
@@ -1133,6 +1265,8 @@ export function Inventory() {
         inventory={inventory}
         warehouses={warehouses}
         profile={profile}
+        canAdjustStock={canAdjustStock}
+        allowedWarehouseIds={allowedWarehouseIds}
         onSuccess={() => setDefectiveTickets(getLocalDefectiveTickets())}
       />
     </div>
@@ -1146,22 +1280,24 @@ export function Inventory() {
           <p className="mt-1 text-sm text-muted-foreground">Manage products, stock levels, suppliers, and warehouse inventory.</p>
         </div>
         <div className="flex max-w-full flex-nowrap gap-2 overflow-x-auto lg:shrink-0 [&>button]:shrink-0">
-          <Button
-            type="button"
-            variant="outline"
-            onClick={() => setIsDefectiveModalOpen(true)}
-            className="h-11 gap-2 rounded-xl border-amber-300 bg-amber-50/70 text-amber-800 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-800 px-4 font-bold shadow-sm hover:bg-amber-100"
-          >
-            <AlertTriangle className="h-4 w-4 text-amber-600" /> Log Damaged Stock
-          </Button>
-          <Button type="button" variant="outline" onClick={() => navigate('/pricelist')} className="h-11 gap-3 rounded-xl border-zinc-200 bg-white px-5 text-base font-semibold text-zinc-500 shadow-sm hover:bg-zinc-50 hover:text-zinc-700">
-            <Tag className="h-5 w-5 text-zinc-500" weight="bold" /> Pricelist
+          {canAdjustStock && (
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setIsDefectiveModalOpen(true)}
+              className="h-11 gap-2 rounded-xl border-amber-300 bg-amber-50/70 text-amber-800 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-800 px-4 font-bold shadow-sm hover:bg-amber-100"
+            >
+              <AlertTriangle className="h-4 w-4 text-amber-600" /> Log Damaged Stock
+            </Button>
+          )}
+          <Button type="button" variant="outline" onClick={() => navigate('/pricelist')} className="h-11 gap-3 rounded-xl border-border bg-card px-5 text-base font-semibold text-foreground shadow-sm hover:bg-muted">
+            <Tag className="h-5 w-5 text-muted-foreground" weight="bold" /> Pricelist
           </Button>
           <Button type="button" variant="outline" onClick={exportMultiWarehouseLedger} className="h-11 gap-2 rounded-xl px-5 font-bold shadow-sm">
             <Download className="h-4 w-4" /> Export Ledger
           </Button>
           {isAdmin && <Button type="button" variant="outline" onClick={() => setIsImportOpen(true)} className="h-11 gap-2 rounded-xl px-5 font-bold shadow-sm"><Upload className="h-4 w-4" /> Import Products</Button>}
-          {isAdmin && <Button type="button" onClick={() => setIsAddProductOpen(true)} className="h-11 gap-2 rounded-xl bg-[#101d33] px-5 font-bold text-white shadow-lg hover:bg-[#172842]"><Plus className="h-4 w-4" /> Add Product</Button>}
+          {isAdmin && <Button type="button" onClick={() => setIsAddProductOpen(true)} className="h-11 gap-2 rounded-xl bg-primary px-5 font-bold text-primary-foreground shadow-lg hover:bg-primary/90"><Plus className="h-4 w-4" /> Add Product</Button>}
         </div>
       </div>
 
@@ -1190,7 +1326,7 @@ export function Inventory() {
             </div>
           </div>
           <div className="grid grid-cols-1 gap-3 p-4 sm:grid-cols-2 xl:grid-cols-[1fr_1fr_1fr_1fr_auto] xl:items-end">
-            <div className="space-y-1.5"><Label className="text-xs font-semibold">Warehouse</Label><Select value={warehouseFilter} onValueChange={(value) => setWarehouseFilter(value ?? 'all')}><SelectTrigger className="h-10 rounded-xl"><SelectValue>{warehouseFilter === 'all' ? 'All Warehouses' : activeWarehouseObj?.name}</SelectValue></SelectTrigger><SelectContent><SelectItem value="all">All Warehouses</SelectItem>{warehouses.map(warehouse => <SelectItem key={warehouse.id} value={warehouse.id}>{warehouse.name}</SelectItem>)}</SelectContent></Select></div>
+            <div className="space-y-1.5"><Label className="text-xs font-semibold">Warehouse</Label><Select value={warehouseFilter} onValueChange={(value) => setWarehouseFilter(value ?? 'all')}><SelectTrigger className="h-10 rounded-xl"><SelectValue>{warehouseFilter === 'all' ? 'All Warehouses' : activeWarehouseObj?.name}</SelectValue></SelectTrigger><SelectContent><SelectItem value="all">All Warehouses</SelectItem>{visibleWarehouses.map(warehouse => <SelectItem key={warehouse.id} value={warehouse.id}>{warehouse.name}</SelectItem>)}</SelectContent></Select></div>
             <div className="space-y-1.5"><Label className="text-xs font-semibold">Category</Label><Select value={categoryFilter} onValueChange={(value) => setCategoryFilter(value ?? 'all')}><SelectTrigger className="h-10 rounded-xl"><SelectValue>{categoryFilter === 'all' ? 'All Categories' : categoryFilter}</SelectValue></SelectTrigger><SelectContent><SelectItem value="all">All Categories</SelectItem>{categories.filter(c => c !== 'Uncategorized').map(category => <SelectItem key={category} value={category}>{category}</SelectItem>)}<div className="my-1 h-px bg-muted" /><SelectItem value="Uncategorized" className="italic text-muted-foreground">Uncategorized</SelectItem></SelectContent></Select></div>
             <div className="space-y-1.5"><Label className="text-xs font-semibold">Supplier</Label><Select value={supplierFilter} onValueChange={(value) => setSupplierFilter(value ?? 'all')}><SelectTrigger className="h-10 rounded-xl"><SelectValue>{supplierFilter === 'all' ? 'All Suppliers' : supplierFilter}</SelectValue></SelectTrigger><SelectContent><SelectItem value="all">All Suppliers</SelectItem>{suppliers.filter(s => s !== 'N/A').map(supplier => <SelectItem key={supplier} value={supplier}>{supplier}</SelectItem>)}<div className="my-1 h-px bg-muted" /><SelectItem value="N/A" className="italic text-muted-foreground">N/A</SelectItem></SelectContent></Select></div>
             <div className="space-y-1.5"><Label className="text-xs font-semibold">Stock Status</Label><Select value={stockFilter} onValueChange={(value) => setStockFilter(value ?? 'all')}><SelectTrigger className="h-10 rounded-xl"><SelectValue>{stockFilter === 'all' ? 'All Statuses' : stockFilter === 'in' ? 'In Stock' : stockFilter === 'low' ? 'Low Stock' : 'Out of Stock'}</SelectValue></SelectTrigger><SelectContent><SelectItem value="all">All Statuses</SelectItem><SelectItem value="in">In Stock</SelectItem><SelectItem value="low">Low Stock</SelectItem><SelectItem value="out">Out of Stock</SelectItem></SelectContent></Select></div>
@@ -1220,9 +1356,23 @@ export function Inventory() {
               {paginatedProducts.map((product, index) => {
                 const stock = getStockCount(product.id, warehouseFilter);
                 const status = getProductStatus(product, stock, warehouseFilter);
-                const statusClass = status === 'out' ? 'border-red-200 bg-red-50 text-red-600' : status === 'low' ? 'border-amber-200 bg-amber-50 text-amber-600' : 'border-emerald-200 bg-emerald-50 text-emerald-600';
+                const statusClass = status === 'out' ? 'border-red-500/30 bg-red-500/10 text-red-600 dark:text-red-400' : status === 'low' ? 'border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400' : 'border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400';
                 return (
-                  <TableRow key={product.id} className="group cursor-pointer hover:bg-muted/40 transition-colors" onClick={() => { setSelectedProduct(product); setIsDetailOpen(true); }}>
+                  <TableRow
+                    key={product.id}
+                    tabIndex={0}
+                    className="group cursor-pointer hover:bg-muted/40 transition-colors focus-visible:outline-2 focus-visible:outline-primary"
+                    onClick={() => { setDetailTab('overview'); setSelectedProduct(product); setIsDetailOpen(true); }}
+                    onKeyDown={(e) => {
+                      if (e.target !== e.currentTarget) return;
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        setDetailTab('overview');
+                        setSelectedProduct(product);
+                        setIsDetailOpen(true);
+                      }
+                    }}
+                  >
                     <TableCell className="w-10 text-center font-mono text-xs text-muted-foreground px-2 py-2">
                       {(safeCurrentPage - 1) * pageSize + index + 1}
                     </TableCell>
@@ -1303,24 +1453,26 @@ export function Inventory() {
                       onClick={(event) => event.stopPropagation()}
                     >
                       <div className="flex justify-center gap-1">
-                        <Button variant="outline" size="icon" className="h-8 w-8" title="View product" onClick={() => { setSelectedProduct(product); setIsDetailOpen(true); }}>
+                        <Button type="button" variant="outline" size="icon" className="h-8 w-8" title="View product" aria-label={`View ${cleanItemName(product.name)}`} onClick={() => { setSelectedProduct(product); setIsDetailOpen(true); }}>
                           <Eye className="h-3.5 w-3.5" />
                         </Button>
                         {isAdmin && (
-                          <Button variant="outline" size="icon" className="h-8 w-8" title="Edit product" onClick={() => setEditingProduct(product)}>
+                          <Button type="button" variant="outline" size="icon" className="h-8 w-8" title="Edit product" aria-label={`Edit ${cleanItemName(product.name)}`} onClick={() => setEditingProduct(product)}>
                             <Pencil className="h-3.5 w-3.5" />
                           </Button>
                         )}
                         {isAdmin && (
-                          <Button variant="outline" size="icon" className="h-8 w-8 text-red-500 hover:text-red-600 hover:bg-red-50 hover:border-red-200" title="Delete product" onClick={() => setProductToDelete(product)}>
+                          <Button type="button" variant="outline" size="icon" className="h-8 w-8 text-red-500 hover:text-red-600 hover:bg-red-50 hover:border-red-200" title="Delete product" aria-label={`Delete ${cleanItemName(product.name)}`} onClick={() => setProductToDelete(product)}>
                             <Trash2 className="h-3.5 w-3.5" />
                           </Button>
                         )}
                         <Button
+                          type="button"
                           variant="outline"
                           size="icon"
                           className="h-8 w-8"
                           title={product.hasVariations ? "Variant QR labels" : "QR Label"}
+                          aria-label={product.hasVariations ? `Variant QR labels for ${cleanItemName(product.name)}` : `QR label for ${cleanItemName(product.name)}`}
                           onClick={() => {
                             if (product.hasVariations) {
                               setSelectedProduct(product);
@@ -1334,7 +1486,7 @@ export function Inventory() {
                           <QrCode className="h-3.5 w-3.5" />
                         </Button>
                         {canAdjustStock && (
-                          <Button variant="outline" size="icon" className="h-8 w-8" title="Adjust stock" onClick={() => { setSelectedProduct(product); setIsStockUpdateOpen(true); }}>
+                          <Button type="button" variant="outline" size="icon" className="h-8 w-8" title="Adjust stock" aria-label={`Adjust stock for ${cleanItemName(product.name)}`} onClick={() => { setSelectedProduct(product); setIsStockUpdateOpen(true); }}>
                             <SlidersHorizontal className="h-3.5 w-3.5" />
                           </Button>
                         )}
@@ -1404,7 +1556,7 @@ export function Inventory() {
         </div>
       </div>
 
-      <Dialog open={isAddProductOpen} onOpenChange={(open) => { setIsAddProductOpen(open); if (!open) setProductImage(null); }}>
+      <Dialog open={isAddProductOpen} onOpenChange={(open) => { if (!open && isSubmittingProduct) return; setIsAddProductOpen(open); if (!open) setProductImage(null); }}>
         <DialogContent className={`max-h-[90vh] w-[95vw] min-w-0 overflow-x-hidden overflow-y-auto ${addVariations.enabled ? 'sm:max-w-7xl' : 'sm:max-w-4xl'}`}><DialogHeader><DialogTitle>New Configuration Item (Product)</DialogTitle><DialogDescription>Register a new bicycle component into the service catalog.</DialogDescription></DialogHeader>
           <form onSubmit={handleAddProduct} className="min-w-0 space-y-5 pt-2">
             <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
@@ -1462,9 +1614,11 @@ export function Inventory() {
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="category">Category</Label>
-                    <Select name="category" value={categoryOptions.includes(addCategory) ? addCategory : 'custom'} onValueChange={(val) => setAddCategory(val === 'custom' ? '' : val)}>
+                    <Select name="category" value={categoryOptions.includes(addCategory) ? addCategory : 'custom'} onValueChange={(val) => { if (val !== null) setAddCategory(val === 'custom' ? '' : val); }}>
                       <SelectTrigger id="category">
-                        <SelectValue placeholder="Select category" />
+                        <SelectValue placeholder="Select category">
+                          {categoryOptions.includes(addCategory) ? addCategory : '+ Add new category'}
+                        </SelectValue>
                       </SelectTrigger>
                       <SelectContent className="max-h-60 overflow-y-auto">
                         {categoryOptions.filter(c => c !== 'Uncategorized').map(category => (
@@ -1477,6 +1631,7 @@ export function Inventory() {
                     </Select>
                     {!categoryOptions.includes(addCategory) && (
                       <Input
+                        required
                         placeholder="Enter new category name..."
                         value={addCategory}
                         onChange={(e) => setAddCategory(e.target.value)}
@@ -1487,9 +1642,11 @@ export function Inventory() {
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="supplier">Preferred Supplier</Label>
-                    <Select name="supplier" value={supplierOptions.includes(addSupplier) ? addSupplier : 'custom'} onValueChange={(val) => setAddSupplier(val === 'custom' ? '' : val)}>
+                    <Select name="supplier" value={supplierOptions.includes(addSupplier) ? addSupplier : 'custom'} onValueChange={(val) => { if (val !== null) setAddSupplier(val === 'custom' ? '' : val); }}>
                       <SelectTrigger id="supplier">
-                        <SelectValue placeholder="Select supplier" />
+                        <SelectValue placeholder="Select supplier">
+                          {supplierOptions.includes(addSupplier) ? addSupplier : '+ Add new supplier'}
+                        </SelectValue>
                       </SelectTrigger>
                       <SelectContent className="max-h-60 overflow-y-auto">
                         {supplierOptions.filter(s => s !== 'N/A').map(supplier => (
@@ -1502,6 +1659,7 @@ export function Inventory() {
                     </Select>
                     {!supplierOptions.includes(addSupplier) && (
                       <Input
+                        required
                         placeholder="Enter new supplier name..."
                         value={addSupplier}
                         onChange={(e) => setAddSupplier(e.target.value)}
@@ -1568,7 +1726,7 @@ export function Inventory() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={isImportOpen} onOpenChange={(open) => { setIsImportOpen(open); if (!open) { setImportPreview([]); setImportFileName(''); } }}>
+      <Dialog open={isImportOpen} onOpenChange={(open) => { if (!open && isImporting) return; setIsImportOpen(open); if (!open) { setImportPreview([]); setImportFileName(''); } }}>
         <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-5xl">
           <DialogHeader><DialogTitle>Import Products</DialogTitle><DialogDescription>Download the template, upload the completed Excel file, review validation results, then confirm to add products to Inventory.</DialogDescription></DialogHeader>
           <div className="flex flex-wrap gap-2"><Button type="button" variant="outline" onClick={handleDownloadProductTemplate}><Download className="mr-2 h-4 w-4" />Download Excel Template</Button><label htmlFor="inventoryImportFile" className="inline-flex h-10 cursor-pointer items-center rounded-md bg-[#101d33] px-4 text-sm font-medium text-white"><Upload className="mr-2 h-4 w-4" />Upload Excel File</label><Input id="inventoryImportFile" type="file" accept=".xlsx,.xls" onChange={handleProductImportFile} className="sr-only" /></div>
@@ -1578,7 +1736,7 @@ export function Inventory() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={Boolean(editingProduct)} onOpenChange={(open) => { if (!open) { setEditingProduct(null); setEditProductImage(null); setEditProductImagePreview(''); } }}>
+      <Dialog open={Boolean(editingProduct)} onOpenChange={(open) => { if (!open && !isSubmittingProduct) { setEditingProduct(null); setEditProductImage(null); setEditProductImagePreview(''); } }}>
         <DialogContent className={`max-h-[90vh] w-[95vw] min-w-0 overflow-x-hidden overflow-y-auto ${editVariations.enabled ? 'sm:max-w-7xl' : 'sm:max-w-4xl'}`}>
           <DialogHeader>
             <DialogTitle>Edit Product</DialogTitle>
@@ -1664,54 +1822,60 @@ export function Inventory() {
 
                     <div className="space-y-2">
                       <Label htmlFor="edit-category">Category</Label>
-                      <Select name="category" value={categoryOptions.includes(editCategory) ? editCategory : 'custom'} onValueChange={(val) => setEditCategory(val === 'custom' ? '' : val)}>
-                        <SelectTrigger id="edit-category">
-                          <SelectValue placeholder="Select category" />
-                        </SelectTrigger>
-                        <SelectContent className="max-h-60 overflow-y-auto">
-                          {categoryOptions.filter(c => c !== 'Uncategorized').map(category => (
-                            <SelectItem key={category} value={category}>{category}</SelectItem>
-                          ))}
-                          <div className="my-1 h-px bg-muted" />
-                          <SelectItem value="Uncategorized" className="italic text-muted-foreground">Uncategorized</SelectItem>
-                          <SelectItem value="custom" className="font-bold text-[#101d33]">+ Add new category</SelectItem>
-                        </SelectContent>
-                      </Select>
-                      {!categoryOptions.includes(editCategory) && (
-                        <Input
-                          placeholder="Enter new category name..."
-                          value={editCategory}
-                          onChange={(e) => setEditCategory(e.target.value)}
-                          className="mt-2"
-                          autoFocus
-                        />
-                      )}
-                    </div>
+                      <Select name="category" value={categoryOptions.includes(editCategory) ? editCategory : 'custom'} onValueChange={(val) => { if (val !== null) setEditCategory(val === 'custom' ? '' : val); }}>
+                      <SelectTrigger id="edit-category">
+                        <SelectValue placeholder="Select category">
+                          {categoryOptions.includes(editCategory) ? editCategory : '+ Add new category'}
+                        </SelectValue>
+                      </SelectTrigger>
+                      <SelectContent className="max-h-60 overflow-y-auto">
+                        {categoryOptions.filter(c => c !== 'Uncategorized').map(category => (
+                          <SelectItem key={category} value={category}>{category}</SelectItem>
+                        ))}
+                        <div className="my-1 h-px bg-muted" />
+                        <SelectItem value="Uncategorized" className="italic text-muted-foreground">Uncategorized</SelectItem>
+                        <SelectItem value="custom" className="font-bold text-[#101d33]">+ Add new category</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    {!categoryOptions.includes(editCategory) && (
+                      <Input
+                        required
+                        placeholder="Enter new category name..."
+                        value={editCategory}
+                        onChange={(e) => setEditCategory(e.target.value)}
+                        className="mt-2"
+                        autoFocus
+                      />
+                    )}
+                  </div>
 
-                    <div className="space-y-2">
-                      <Label htmlFor="edit-supplier">Supplier Name</Label>
-                      <Select name="supplier" value={supplierOptions.includes(editSupplier) ? editSupplier : 'custom'} onValueChange={(val) => setEditSupplier(val === 'custom' ? '' : val)}>
-                        <SelectTrigger id="edit-supplier">
-                          <SelectValue placeholder="Select supplier" />
-                        </SelectTrigger>
-                        <SelectContent className="max-h-60 overflow-y-auto">
-                          {supplierOptions.filter(s => s !== 'N/A').map(supplier => (
-                            <SelectItem key={supplier} value={supplier}>{supplier}</SelectItem>
-                          ))}
-                          <div className="my-1 h-px bg-muted" />
-                          <SelectItem value="N/A" className="italic text-muted-foreground">N/A</SelectItem>
-                          <SelectItem value="custom" className="font-bold text-[#101d33]">+ Add new supplier</SelectItem>
-                        </SelectContent>
-                      </Select>
-                      {!supplierOptions.includes(editSupplier) && (
-                        <Input
-                          placeholder="Enter new supplier name..."
-                          value={editSupplier}
-                          onChange={(e) => setEditSupplier(e.target.value)}
-                          className="mt-2"
-                          autoFocus
-                        />
-                      )}
+                  <div className="space-y-2">
+                    <Label htmlFor="edit-supplier">Supplier Name</Label>
+                    <Select name="supplier" value={supplierOptions.includes(editSupplier) ? editSupplier : 'custom'} onValueChange={(val) => { if (val !== null) setEditSupplier(val === 'custom' ? '' : val); }}>
+                      <SelectTrigger id="edit-supplier">
+                        <SelectValue placeholder="Select supplier">
+                          {supplierOptions.includes(editSupplier) ? editSupplier : '+ Add new supplier'}
+                        </SelectValue>
+                      </SelectTrigger>
+                      <SelectContent className="max-h-60 overflow-y-auto">
+                        {supplierOptions.filter(s => s !== 'N/A').map(supplier => (
+                          <SelectItem key={supplier} value={supplier}>{supplier}</SelectItem>
+                        ))}
+                        <div className="my-1 h-px bg-muted" />
+                        <SelectItem value="N/A" className="italic text-muted-foreground">N/A</SelectItem>
+                        <SelectItem value="custom" className="font-bold text-[#101d33]">+ Add new supplier</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    {!supplierOptions.includes(editSupplier) && (
+                      <Input
+                        required
+                        placeholder="Enter new supplier name..."
+                        value={editSupplier}
+                        onChange={(e) => setEditSupplier(e.target.value)}
+                        className="mt-2"
+                        autoFocus
+                      />
+                    )}
                     </div>
                     <div className="space-y-2">
                       <Label htmlFor="edit-locationAisle">Aisle Location</Label>
@@ -1787,7 +1951,7 @@ export function Inventory() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={Boolean(productToDelete)} onOpenChange={(open) => !open && setProductToDelete(null)}>
+      <Dialog open={Boolean(productToDelete)} onOpenChange={(open) => { if (!open && !isDeletingProduct) setProductToDelete(null); }}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle className="text-red-600 flex items-center gap-2">
@@ -1799,7 +1963,7 @@ export function Inventory() {
             </DialogDescription>
           </DialogHeader>
           <DialogFooter className="mt-4">
-            <Button variant="outline" onClick={() => setProductToDelete(null)}>Cancel</Button>
+            <Button variant="outline" disabled={isDeletingProduct} onClick={() => setProductToDelete(null)}>Cancel</Button>
             <Button variant="destructive" onClick={handleDeleteProduct} disabled={isDeletingProduct}>
               {isDeletingProduct ? 'Deleting...' : 'Yes, Delete Product'}
             </Button>
@@ -1808,7 +1972,7 @@ export function Inventory() {
       </Dialog>
 
       {/* Stock Update Dialog */}
-      <Dialog open={isStockUpdateOpen} onOpenChange={setIsStockUpdateOpen}>
+      <Dialog open={isStockUpdateOpen} onOpenChange={(open) => { if (!open && isAdjusting) return; setIsStockUpdateOpen(open); }}>
         <DialogContent className="sm:max-w-xl max-h-[92vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Manual Stock Adjustment</DialogTitle>
@@ -1851,7 +2015,7 @@ export function Inventory() {
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-0.5">
-                {warehouses.map((wh) => {
+                {visibleWarehouses.map((wh) => {
                   const whCount = adjustmentProduct ? getStockCount(adjustmentProduct.id, wh.id) : 0;
                   const isSelected = selectedWarehouseId === wh.id;
                   return (
@@ -1984,7 +2148,7 @@ export function Inventory() {
       </Dialog>
 
       {/* Redesigned product detail dialog */}
-      <Dialog open={isDetailOpen} onOpenChange={setIsDetailOpen}>
+      <Dialog open={isDetailOpen} onOpenChange={(open) => { setIsDetailOpen(open); if (!open) { setDetailTab('overview'); } }}>
         <DialogContent className="max-h-[95vh] w-[96vw] min-w-0 max-w-[96vw] overflow-y-auto rounded-2xl p-0 sm:max-w-7xl">
           <DialogHeader className="border-b border-border px-6 pb-4 pt-5 text-left">
             <DialogTitle className="text-2xl font-black tracking-tight">Configuration Item</DialogTitle>
@@ -2006,14 +2170,14 @@ export function Inventory() {
                     )}
                   </div>
                   <div className="min-w-0">
-                    <div className="mb-2 flex flex-wrap items-center gap-2"><Badge className="rounded-md border border-emerald-200 bg-emerald-50 px-3 uppercase text-emerald-700 hover:bg-emerald-50"><span className="mr-2 h-2 w-2 rounded-full bg-emerald-500" />Active</Badge><Badge variant="outline" className="rounded-md px-3">{selectedProduct.category || 'Uncategorized'}</Badge></div>
+                    <div className="mb-2 flex flex-wrap items-center gap-2"><Badge className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 uppercase text-emerald-700 dark:text-emerald-300 hover:bg-emerald-500/15"><span className="mr-2 h-2 w-2 rounded-full bg-emerald-500" />Active</Badge><Badge variant="outline" className="rounded-md px-3">{selectedProduct.category || 'Uncategorized'}</Badge></div>
                     <h2 className="truncate text-4xl font-black tracking-tight">{cleanItemName(selectedProduct.name)}</h2>
                     <div className="mt-1 text-sm font-semibold tracking-wide text-muted-foreground">{selectedProduct.sku}</div>
                   </div>
                 </div>
                 <div className="flex shrink-0 flex-col items-start gap-3 sm:items-end">
-                  <div className="text-left sm:text-right"><p className="text-xs font-bold uppercase tracking-[0.18em] text-muted-foreground">Total Stock</p><p className="text-4xl font-black">{totalStock.toLocaleString()}</p><p className="text-xs text-muted-foreground">units across {warehouses.length} warehouses</p></div>
-                  <div className="flex flex-wrap gap-2">{isAdmin && <Button variant="outline" className="h-10 rounded-lg px-4 font-bold" onClick={() => { setIsDetailOpen(false); setEditingProduct(selectedProduct); }}><Pencil className="mr-2 h-4 w-4" />Edit Product</Button>}{canAdjustStock && <Button className="h-10 rounded-lg bg-[#101d33] px-4 font-bold text-white hover:bg-[#172842]" onClick={() => { setIsDetailOpen(false); setIsStockUpdateOpen(true); }}><Package className="mr-2 h-4 w-4" />Adjust Stock</Button>}</div>
+                  <div className="text-left sm:text-right"><p className="text-xs font-bold uppercase tracking-[0.18em] text-muted-foreground">Total Stock</p><p className="text-4xl font-black">{totalStock.toLocaleString()}</p><p className="text-xs text-muted-foreground">units across {visibleWarehouses.length} {visibleWarehouses.length === 1 ? 'warehouse' : 'warehouses'}</p></div>
+                  <div className="flex flex-wrap gap-2">{isAdmin && <Button variant="outline" className="h-10 rounded-lg px-4 font-bold" onClick={() => { setIsDetailOpen(false); setEditingProduct(selectedProduct); }}><Pencil className="mr-2 h-4 w-4" />Edit Product</Button>}{canAdjustStock && <Button className="h-10 rounded-lg bg-primary px-4 font-bold text-primary-foreground hover:bg-primary/90" onClick={() => { setIsDetailOpen(false); setIsStockUpdateOpen(true); }}><Package className="mr-2 h-4 w-4" />Adjust Stock</Button>}</div>
                 </div>
               </section>
 
@@ -2045,10 +2209,10 @@ export function Inventory() {
 
                   <section className="rounded-xl border border-border/80 p-4 shadow-sm">
                     <div className="flex items-center gap-3 border-b border-border pb-3"><span className="font-mono text-sm font-black text-muted-foreground">03</span><Package className="h-5 w-5" /><h3 className="text-base font-bold uppercase tracking-wider">Inventory</h3></div>
-                    <div className="flex items-center justify-between py-3"><h4 className="font-bold">Warehouse Stock</h4><span className="text-xs font-semibold text-muted-foreground">All Warehouses</span></div>
+                    <div className="flex items-center justify-between py-3"><h4 className="font-bold">Warehouse Stock</h4><span className="text-xs font-semibold text-muted-foreground">{allowedWarehouseIds ? 'Permitted Warehouses' : 'All Warehouses'}</span></div>
                     <div className="overflow-hidden rounded-lg border border-border">
-                      {warehouses.map((warehouse, index) => { const count = getStockCount(selectedProduct.id, warehouse.id); return <div key={warehouse.id} className={`flex items-center justify-between px-4 py-3 text-sm ${index ? 'border-t border-border' : ''}`}><div className="flex items-center gap-3"><WarehouseIcon className="h-4 w-4 text-muted-foreground" /><span className="font-medium">{warehouse.name}</span></div><span className={`font-bold ${count < 0 ? 'text-red-600' : ''}`}>{count.toLocaleString()} units</span></div>; })}
-                      <div className="flex items-center justify-between border-t border-border bg-emerald-50 px-4 py-3 text-sm"><span className="font-bold">Total Stock (All Warehouses)</span><span className="font-black">{totalStock.toLocaleString()} units</span></div>
+                      {visibleWarehouses.map((warehouse, index) => { const count = getStockCount(selectedProduct.id, warehouse.id); return <div key={warehouse.id} className={`flex items-center justify-between px-4 py-3 text-sm ${index ? 'border-t border-border' : ''}`}><div className="flex items-center gap-3"><WarehouseIcon className="h-4 w-4 text-muted-foreground" /><span className="font-medium">{warehouse.name}</span></div><span className={`font-bold ${count < 0 ? 'text-red-600' : ''}`}>{count.toLocaleString()} units</span></div>; })}
+                      <div className="flex items-center justify-between border-t border-border bg-emerald-500/10 px-4 py-3 text-sm text-emerald-700 dark:text-emerald-300"><span className="font-bold">{allowedWarehouseIds ? 'Total Stock (Permitted Warehouses)' : 'Total Stock (All Warehouses)'}</span><span className="font-black">{totalStock.toLocaleString()} units</span></div>
                     </div>
                     <div className="mt-4 flex items-center gap-3 border-y border-border py-3"><span className="font-mono text-sm font-black text-muted-foreground">04</span><BarChart3 className="h-5 w-5" /><h3 className="text-base font-bold uppercase tracking-wider">Stock Controls</h3></div>
                     <dl className="grid grid-cols-[1fr_auto] gap-x-5 gap-y-3 pt-3 text-sm">
@@ -2101,141 +2265,6 @@ export function Inventory() {
           )}
         </DialogContent>
       </Dialog>
-      {/* Previous product detail layout retained temporarily for reference */}
-      {false && (
-        <Dialog open={isDetailOpen} onOpenChange={setIsDetailOpen}>
-          <DialogContent className="max-w-[95vw] sm:max-w-5xl w-full rounded-[2rem]">
-            <DialogHeader className="pb-4 border-b border-border">
-              <div className="flex items-center gap-3 mb-2">
-                <div className="flex h-9 w-9 items-center justify-center overflow-hidden rounded-xl bg-primary">
-                  {selectedProduct?.photoUrl ? (
-                    <img src={selectedProduct.photoUrl} alt={selectedProduct?.name} className="h-full w-full object-cover" />
-                  ) : (
-                    <Package className="w-5 h-5 text-primary-foreground" />
-                  )}
-                </div>
-                <div>
-                  <DialogTitle className="text-2xl font-black uppercase tracking-tighter">Configuration Item: {selectedProduct?.name}</DialogTitle>
-                  <DialogDescription className="text-muted-foreground font-medium">Service catalog specification and inventory node status.</DialogDescription>
-                </div>
-              </div>
-            </DialogHeader>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-8 py-6">
-              <div className="space-y-6">
-                <div>
-                  <Label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground mb-2 block">Technical Specifications</Label>
-                  <div className="bg-muted rounded-2xl p-4 border border-border space-y-3">
-                    <div className="flex justify-between items-center text-sm">
-                      <span className="text-muted-foreground font-medium">SKU Node</span>
-                      <span className="font-mono font-bold text-foreground">{selectedProduct?.sku}</span>
-                    </div>
-                    <div className="flex justify-between items-center text-sm">
-                      <span className="text-muted-foreground font-medium">Classification</span>
-                      <Badge variant="outline" className="font-black uppercase text-[9px] tracking-widest py-0 h-5">{selectedProduct?.category || 'Accessories'}</Badge>
-                    </div>
-                    <div className="flex justify-between items-center text-sm">
-                      <span className="text-muted-foreground font-medium">Supplier</span>
-                      <span className="font-bold bg-[#FF2D20]/10 text-[#FF2D20] px-2.5 py-0.5 rounded-full text-xs">
-                        {selectedProduct?.supplier || 'Supplier'}
-                      </span>
-                    </div>
-                    <div className="flex justify-between items-center text-sm">
-                      <span className="text-muted-foreground font-medium">Min Threshold</span>
-                      <span className="font-bold text-foreground">{selectedProduct?.minStockLevel || 0} units</span>
-                    </div>
-                    <div className="flex justify-between items-center text-sm">
-                      <span className="text-muted-foreground font-medium">Reorder Point</span>
-                      <span className="font-bold text-foreground">{selectedProduct?.reorderPoint || 0} units</span>
-                    </div>
-                  </div>
-                </div>
-
-                <div>
-                  <Label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground mb-2 block">Pricing Tiers (₱)</Label>
-                  <div className="bg-muted rounded-2xl p-4 border border-border text-foreground space-y-3">
-                    <div className="flex justify-between items-center text-sm">
-                      <span className="text-muted-foreground font-medium">Base Price / Retail</span>
-                      <span className="font-black">₱{(selectedProduct?.basePrice || 0).toLocaleString()}</span>
-                    </div>
-                    <div className="flex justify-between items-center text-sm">
-                      <span className="text-muted-foreground font-medium">MM Rate</span>
-                      <span className="font-black text-emerald-400">₱{((selectedProduct?.mmPrice ?? selectedProduct?.wholesalePrice) || 0).toLocaleString()}</span>
-                    </div>
-                    <div className="flex justify-between items-center text-sm">
-                      <span className="text-muted-foreground font-medium">Provincial Rate</span>
-                      <span className="font-black text-blue-400">₱{((selectedProduct?.provincialPrice ?? selectedProduct?.dealerPrice) || 0).toLocaleString()}</span>
-                    </div>
-                    <div className="flex justify-between items-center text-sm">
-                      <span className="text-muted-foreground font-medium">Cost</span>
-                      <span className="font-black text-zinc-400">₱{(selectedProduct?.costPrice || 0).toLocaleString()}</span>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div className="space-y-6">
-                <div>
-                  <Label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground mb-2 block">Warehouse Deployment</Label>
-                  <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
-                    {warehouses.map(wh => {
-                      const count = getStockCount(selectedProduct?.id || '', wh.id);
-                      return (
-                        <div key={wh.id} className="flex items-center justify-between p-3 bg-muted rounded-xl border border-border hover:border-foreground/20 transition-colors">
-                          <div className="flex items-center gap-2">
-                            <WarehouseIcon className="w-4 h-4 text-muted-foreground" />
-                            <span className="text-xs font-bold text-foreground">{wh.name}</span>
-                          </div>
-                          <Badge variant="secondary" className="font-black rounded-lg">{count} units</Badge>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                <div className="pt-4 border-t border-dashed border-border">
-                  <div className="flex items-center justify-between mb-4">
-                    <span className="text-xs font-black uppercase tracking-widest text-foreground">Aggregate Global Inventory</span>
-                    <Badge className="bg-emerald-500 font-black h-8 px-4 rounded-xl">
-                      {getStockCount(selectedProduct?.id || '')} UNITS TOTAL
-                    </Badge>
-                  </div>
-
-                  <div className="flex items-center gap-3">
-                    <div className="p-3 bg-muted rounded-xl">
-                      <QrCode className="w-8 h-8 text-zinc-400" />
-                    </div>
-                    <div className="flex-1">
-                      <p className="text-[10px] font-black uppercase text-zinc-500 mb-1">Asset Traceability</p>
-                      <p className="text-[10px] text-zinc-400 font-medium italic">Unique node ID: {selectedProduct?.id}</p>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <DialogFooter className="pt-4 border-t border-border">
-              <Button
-                variant="outline"
-                onClick={() => setIsDetailOpen(false)}
-                className="h-12 px-8 rounded-xl font-black uppercase tracking-widest text-[10px]"
-              >
-                Close
-              </Button>
-              {canAdjustStock && (
-                <Button
-                  onClick={() => {
-                    setIsDetailOpen(false);
-                    setIsStockUpdateOpen(true);
-                  }}
-                  className="h-12 px-8 bg-[#1A2332] text-white rounded-xl font-black uppercase tracking-widest text-[10px]"
-                >
-                  Adjust Stock <Plus className="ml-2 w-3 h-3" />
-                </Button>
-              )}
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>)}
 
       <DefectiveStockModal
         open={isDefectiveModalOpen}
@@ -2244,6 +2273,8 @@ export function Inventory() {
         inventory={inventory}
         warehouses={warehouses}
         profile={profile}
+        canAdjustStock={canAdjustStock}
+        allowedWarehouseIds={allowedWarehouseIds}
         onSuccess={() => setDefectiveTickets(getLocalDefectiveTickets())}
       />
     </div>

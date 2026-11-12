@@ -1,6 +1,8 @@
 import { db } from './supabaseAdapter';
-import { collection, addDoc, getDoc, updateDoc, doc, serverTimestamp } from './supabaseAdapter';
+import { collection, getDoc, getDocs, updateDoc, setDoc, deleteDoc, addDoc, doc, serverTimestamp } from './supabaseAdapter';
+import { getRegionalSlaDays } from '../constants/deliveryLocations';
 import type { Order, ITILIncident, DefectiveStockTicket, UserProfile, InventoryItem } from '../types';
+import { escapeCsvCell } from './exportUtils';
 
 const ITIL_INCIDENTS_STORAGE_KEY = 'activepro_db_itil_incidents';
 const DEFECTIVE_TICKETS_STORAGE_KEY = 'activepro_db_defective_tickets';
@@ -9,7 +11,9 @@ export function getLocalIncidents(): ITILIncident[] {
   if (typeof window === 'undefined' || !window.localStorage) return [];
   try {
     const raw = localStorage.getItem(ITIL_INCIDENTS_STORAGE_KEY);
-    return raw ? JSON.parse(raw) : [];
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
   } catch {
     return [];
   }
@@ -29,7 +33,9 @@ export function getLocalDefectiveTickets(): DefectiveStockTicket[] {
   if (typeof window === 'undefined' || !window.localStorage) return [];
   try {
     const raw = localStorage.getItem(DEFECTIVE_TICKETS_STORAGE_KEY);
-    return raw ? JSON.parse(raw) : [];
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
   } catch {
     return [];
   }
@@ -45,26 +51,54 @@ export function saveLocalDefectiveTickets(tickets: DefectiveStockTicket[]) {
   }
 }
 
+function toMillis(value: unknown): number | null {
+  if (!value) return null;
+  if (typeof value === 'object' && value !== null && 'toDate' in value && typeof (value as { toDate?: unknown }).toDate === 'function') {
+    const ms = (value as { toDate: () => Date }).toDate().getTime();
+    return Number.isFinite(ms) ? ms : null;
+  }
+  const ms = new Date(value as string | number | Date).getTime();
+  return Number.isFinite(ms) ? ms : null;
+}
+
 /**
  * FR-06: Evaluates active orders and auto-generates ITIL Incident tickets for SLA breaches.
- * Baseline: 7 days for Metro Manila, 14 days for Mindanao / Provincial.
+ * Baseline: 7 days for Metro Manila, 10 days for Luzon, 14 days for Visayas / Mindanao.
  */
 export async function evaluateAndSyncSLAIncidents(
   orders: Order[],
   currentUser?: UserProfile | null
 ): Promise<ITILIncident[]> {
-  const currentIncidents = getLocalIncidents();
-  const incidentsMap = new Map<string, ITILIncident>(currentIncidents.map((inc) => [inc.id, inc]));
+  const localIncidents = getLocalIncidents();
+  let hasRemoteMerge = false;
+  const incidentsMap = new Map<string, ITILIncident>(localIncidents.map((inc) => [inc.id, inc]));
+
+  try {
+    const remoteSnap = await getDocs(collection(db, 'itil_incidents'));
+    if (remoteSnap && Array.isArray(remoteSnap.docs)) {
+      for (const d of remoteSnap.docs) {
+        const remoteInc: ITILIncident = { ...(d.data() as ITILIncident), id: d.id };
+        const existingLocal = incidentsMap.get(remoteInc.id);
+        if (!existingLocal || String(remoteInc.updatedAt || '') >= String(existingLocal.updatedAt || '')) {
+          incidentsMap.set(remoteInc.id, remoteInc);
+          hasRemoteMerge = true;
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('Failed to fetch remote ITIL incidents; using local cache:', e);
+  }
+
   const orderIncidentMap = new Map<string, ITILIncident>();
 
-  for (const inc of currentIncidents) {
+  for (const inc of incidentsMap.values()) {
     if (inc.orderId && inc.incidentType === 'SLA_BREACH') {
       orderIncidentMap.set(inc.orderId, inc);
     }
   }
 
   const now = Date.now();
-  let hasChanges = false;
+  let hasChanges = hasRemoteMerge;
 
   for (const order of orders) {
     // Only check active orders
@@ -72,27 +106,36 @@ export async function evaluateAndSyncSLAIncidents(
       // If order was resolved/completed, auto-resolve any open SLA incident
       const existingInc = orderIncidentMap.get(order.id);
       if (existingInc && existingInc.status !== 'RESOLVED' && existingInc.status !== 'CLOSED') {
+        const nowIso = new Date().toISOString();
         const resolvedInc: ITILIncident = {
           ...existingInc,
           status: 'RESOLVED',
-          resolvedAt: new Date().toISOString(),
+          resolvedAt: nowIso,
+          updatedAt: nowIso,
           resolutionNotes: `Auto-resolved upon order fulfillment (${order.status}).`,
         };
         incidentsMap.set(resolvedInc.id, resolvedInc);
         hasChanges = true;
+        try {
+          await updateDoc(doc(db, 'itil_incidents', resolvedInc.id), {
+            status: 'RESOLVED',
+            resolvedAt: resolvedInc.resolvedAt,
+            updatedAt: resolvedInc.updatedAt,
+            resolutionNotes: resolvedInc.resolutionNotes,
+          });
+        } catch (e) {
+          console.warn('Failed to sync auto-resolved ITIL incident to Supabase:', e);
+        }
       }
       continue;
     }
 
     // Determine deadline
-    let deadlineMs: number;
-    if (order.deliveryDeadline) {
-      deadlineMs = typeof order.deliveryDeadline?.toDate === 'function'
-        ? order.deliveryDeadline.toDate().getTime()
-        : new Date(order.deliveryDeadline).getTime();
-    } else {
-      const createdMs = order.createdAt ? new Date(order.createdAt).getTime() : now;
-      const slaDays = order.deliveryRegion === 'Metro Manila' ? 7 : 14;
+    let deadlineMs = toMillis(order.deliveryDeadline);
+    if (deadlineMs === null) {
+      const createdMs = toMillis(order.createdAt);
+      if (createdMs === null) continue;
+      const slaDays = getRegionalSlaDays(order.deliveryRegion);
       deadlineMs = createdMs + slaDays * 24 * 60 * 60 * 1000;
     }
 
@@ -102,7 +145,8 @@ export async function evaluateAndSyncSLAIncidents(
 
       if (!existingInc) {
         // Auto-generate brand new ITIL incident record (FR-06)
-        const newTicketNumber = `INC-SLA-${order.orderNumber.replace(/[^A-Za-z0-9]/g, '')}`;
+        const safeOrderNum = String(order.orderNumber || order.id || 'UNKNOWN').trim();
+        const newTicketNumber = `INC-SLA-${safeOrderNum.replace(/[^A-Za-z0-9]/g, '') || order.id}`;
         const newIncident: ITILIncident = {
           id: `inc-sla-${order.id}`,
           ticketNumber: newTicketNumber,
@@ -110,7 +154,7 @@ export async function evaluateAndSyncSLAIncidents(
           severity: daysOverdue >= 3 ? 'CRITICAL' : 'HIGH',
           status: 'ESCALATED',
           orderId: order.id,
-          orderNumber: order.orderNumber,
+          orderNumber: safeOrderNum,
           clientId: order.clientId,
           clientName: order.clientName,
           deliveryLocation: order.deliveryRegion || 'Unspecified',
@@ -128,23 +172,30 @@ export async function evaluateAndSyncSLAIncidents(
 
         // Try pushing to Supabase itil_incidents
         try {
-          await addDoc(collection(db, 'itil_incidents'), {
-            ...newIncident,
-            serverTimestamp: serverTimestamp(),
-          });
+          await setDoc(doc(db, 'itil_incidents', newIncident.id), newIncident);
         } catch (e) {
           console.warn('Supabase itil_incidents write fallback to local storage:', e);
         }
-      } else if (existingInc.daysOverdue !== daysOverdue && existingInc.status !== 'RESOLVED') {
+      } else if (existingInc.daysOverdue !== daysOverdue && existingInc.status !== 'RESOLVED' && existingInc.status !== 'CLOSED') {
         // Update days overdue and elevate severity if >= 3 days
+        const updatedAt = new Date().toISOString();
         const updatedInc: ITILIncident = {
           ...existingInc,
           daysOverdue,
           severity: daysOverdue >= 3 ? 'CRITICAL' : existingInc.severity,
-          updatedAt: new Date().toISOString(),
+          updatedAt,
         };
         incidentsMap.set(updatedInc.id, updatedInc);
         hasChanges = true;
+        try {
+          await updateDoc(doc(db, 'itil_incidents', updatedInc.id), {
+            daysOverdue: updatedInc.daysOverdue,
+            severity: updatedInc.severity,
+            updatedAt,
+          });
+        } catch (e) {
+          console.warn('Failed to sync escalated ITIL incident to Supabase:', e);
+        }
       }
     }
   }
@@ -175,23 +226,44 @@ export async function logDefectiveStockException(params: {
   notes?: string;
   inventory: InventoryItem[];
 }): Promise<{ ticket: DefectiveStockTicket; incident: ITILIncident }> {
-  // 0. Validate stock availability in origin warehouse first
-  const targetItem = params.inventory.find(
-    (i) => i.productId === params.productId && i.warehouseId === params.warehouseId
+  if (!Number.isInteger(params.quantity) || params.quantity <= 0) {
+    throw new Error('Quarantine quantity must be a positive whole number.');
+  }
+
+  // 0. Validate stock availability across all matching inventory batches in origin warehouse
+  const candidateRows = params.inventory.filter(
+    (i) => i.productId === params.productId && i.warehouseId === params.warehouseId && i.id
   );
-  if (!targetItem || targetItem.quantity < params.quantity) {
+  if (candidateRows.length === 0) {
     throw new Error(
-      `Cannot quarantine ${params.quantity} unit(s) of ${params.productName}. Only ${targetItem?.quantity ?? 0} available in ${params.warehouseName}.`
+      `Cannot quarantine ${params.quantity} unit(s) of ${params.productName}. No inventory record found in ${params.warehouseName}.`
+    );
+  }
+
+  const liveRows = await Promise.all(
+    candidateRows.map(async (row) => {
+      const freshSnap = await getDoc(doc(db, 'inventory', row.id)).catch(() => null);
+      if (freshSnap?.exists()) {
+        return { ...row, ...(freshSnap.data() as InventoryItem) };
+      }
+      return row;
+    })
+  );
+  const availableQty = liveRows.reduce((sum, row) => sum + Math.max(0, Number(row.quantity || 0)), 0);
+  if (availableQty < params.quantity) {
+    throw new Error(
+      `Cannot quarantine ${params.quantity} unit(s) of ${params.productName}. Only ${availableQty} available in ${params.warehouseName}.`
     );
   }
 
   const timestamp = new Date().toISOString();
-  const ticketSuffix = Math.floor(1000 + Math.random() * 9000);
-  const defTicketNumber = `DEF-2026-${ticketSuffix}`;
+  const uuid = crypto.randomUUID();
+  const ticketSuffix = uuid.slice(0, 8).toUpperCase();
+  const defTicketNumber = `DEF-${new Date().getFullYear()}-${ticketSuffix}`;
   const incTicketNumber = `INC-DEF-${ticketSuffix}`;
 
-  const incidentId = `inc-def-${Date.now()}`;
-  const ticketId = `ticket-def-${Date.now()}`;
+  const incidentId = `inc-def-${uuid}`;
+  const ticketId = `ticket-def-${uuid}`;
 
   // 1. Create Defective Stock Ticket (for supplier return)
   const defectiveTicket: DefectiveStockTicket = {
@@ -240,53 +312,31 @@ export async function logDefectiveStockException(params: {
     updatedAt: timestamp,
   };
 
-  // 3. Update local storage for incidents and tickets
-  const currentIncidents = getLocalIncidents();
-  saveLocalIncidents([incident, ...currentIncidents]);
-
-  const currentTickets = getLocalDefectiveTickets();
-  saveLocalDefectiveTickets([defectiveTicket, ...currentTickets]);
-
-  // 4. Update warehouse stock: segregate from available quantity into quarantineQuantity
-  let currentTarget = targetItem;
-  if (targetItem?.id) {
-    try {
-      const freshSnap = await getDoc(doc(db, 'inventory', targetItem.id));
-      if (freshSnap?.exists()) {
-        currentTarget = { ...targetItem, ...(freshSnap.data() as InventoryItem) };
-      }
-    } catch {}
-  }
-
-  const newQty = Math.max(0, currentTarget.quantity - params.quantity);
-  const newQuarantineQty = (currentTarget.quarantineQuantity || 0) + params.quantity;
+  // 3. Persist inventory quarantine shift and related records atomically
+  const updatedInventoryRows: { id: string; prevQty: number; prevQuarantineQty: number }[] = [];
+  let createdAdjustmentId: string | null = null;
+  let incidentCreated = false;
+  let ticketCreated = false;
 
   try {
-    await updateDoc(doc(db, 'inventory', currentTarget.id), {
-      quantity: newQty,
-      quarantineQuantity: newQuarantineQty,
-      lastUpdated: serverTimestamp(),
-    });
-  } catch (e) {
-      console.warn('Inventory quarantine update fallback to local:', e);
-      // Update local storage representation of inventory
-      try {
-        const rawInv = localStorage.getItem('activepro_db_inventory');
-        if (rawInv) {
-          const invList: InventoryItem[] = JSON.parse(rawInv);
-          const idx = invList.findIndex((i) => i.id === targetItem.id);
-          if (idx >= 0) {
-            invList[idx].quantity = newQty;
-            invList[idx].quarantineQuantity = newQuarantineQty;
-            localStorage.setItem('activepro_db_inventory', JSON.stringify(invList));
-          }
-        }
-      } catch {}
+    let remainingToQuarantine = params.quantity;
+    for (const row of liveRows) {
+      if (remainingToQuarantine <= 0) break;
+      const rowAvail = Math.max(0, Number(row.quantity || 0));
+      if (rowAvail <= 0) continue;
+      const take = Math.min(rowAvail, remainingToQuarantine);
+      const prevQty = Number(row.quantity || 0);
+      const prevQuarantineQty = Number(row.quarantineQuantity || 0);
+      await updateDoc(doc(db, 'inventory', row.id), {
+        quantity: prevQty - take,
+        quarantineQuantity: prevQuarantineQty + take,
+        lastUpdated: serverTimestamp(),
+      });
+      updatedInventoryRows.push({ id: row.id, prevQty, prevQuarantineQty });
+      remainingToQuarantine -= take;
     }
 
-  // 5. Log audit trail entry in stockAdjustments
-  try {
-    await addDoc(collection(db, 'stockAdjustments'), {
+    const adjRef = await addDoc(collection(db, 'stockAdjustments'), {
       productId: params.productId,
       warehouseId: params.warehouseId,
       adjustmentAmount: -params.quantity,
@@ -294,17 +344,39 @@ export async function logDefectiveStockException(params: {
       recordedBy: params.loggedBy,
       timestamp: serverTimestamp(),
     });
-  } catch (e) {
-    console.warn('Audit trail write error:', e);
+    createdAdjustmentId = adjRef?.id || null;
+
+    await setDoc(doc(db, 'itil_incidents', incident.id), incident);
+    incidentCreated = true;
+
+    await setDoc(doc(db, 'defective_tickets', defectiveTicket.id), defectiveTicket);
+    ticketCreated = true;
+  } catch (err) {
+    if (ticketCreated) {
+      await deleteDoc(doc(db, 'defective_tickets', defectiveTicket.id)).catch(() => {});
+    }
+    if (incidentCreated) {
+      await deleteDoc(doc(db, 'itil_incidents', incident.id)).catch(() => {});
+    }
+    if (createdAdjustmentId) {
+      await deleteDoc(doc(db, 'stockAdjustments', createdAdjustmentId)).catch(() => {});
+    }
+    for (const prev of updatedInventoryRows) {
+      await updateDoc(doc(db, 'inventory', prev.id), {
+        quantity: prev.prevQty,
+        quarantineQuantity: prev.prevQuarantineQty,
+        lastUpdated: serverTimestamp(),
+      }).catch(() => {});
+    }
+    throw err;
   }
 
-  // 6. Push to remote database tables if available
-  try {
-    await addDoc(collection(db, 'itil_incidents'), incident);
-    await addDoc(collection(db, 'defective_tickets'), defectiveTicket);
-  } catch (e) {
-    console.warn('Remote sync error for ITIL tickets:', e);
-  }
+  // 4. Sync local caches after confirmed persistence
+  const currentIncidents = getLocalIncidents();
+  saveLocalIncidents([incident, ...currentIncidents]);
+
+  const currentTickets = getLocalDefectiveTickets();
+  saveLocalDefectiveTickets([defectiveTicket, ...currentTickets]);
 
   return { ticket: defectiveTicket, incident };
 }
@@ -317,28 +389,43 @@ export async function resolveITILIncident(
   resolutionNotes: string,
   resolvedByName: string
 ): Promise<ITILIncident | null> {
-  const incidents = getLocalIncidents();
-  const idx = incidents.findIndex((i) => i.id === incidentId);
-  if (idx < 0) return null;
+  const incidentsBefore = getLocalIncidents();
+  let idx = incidentsBefore.findIndex((i) => i.id === incidentId);
+  let targetIncident: ITILIncident | undefined = idx >= 0 ? incidentsBefore[idx] : undefined;
 
+  if (!targetIncident) {
+    const remoteSnap = await getDoc(doc(db, 'itil_incidents', incidentId)).catch(() => null);
+    if (remoteSnap?.exists()) {
+      targetIncident = { ...(remoteSnap.data() as ITILIncident), id: incidentId };
+    }
+  }
+  if (!targetIncident) return null;
+
+  const nowIso = new Date().toISOString();
   const updated: ITILIncident = {
-    ...incidents[idx],
+    ...targetIncident,
     status: 'RESOLVED',
     resolutionNotes: `Resolved by ${resolvedByName}: ${resolutionNotes}`,
-    resolvedAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
+    resolvedAt: nowIso,
+    updatedAt: nowIso,
   };
 
-  incidents[idx] = updated;
-  saveLocalIncidents(incidents);
+  const nextIncidents = idx >= 0
+    ? incidentsBefore.map((item, i) => (i === idx ? updated : item))
+    : [updated, ...incidentsBefore];
+  saveLocalIncidents(nextIncidents);
 
   try {
     await updateDoc(doc(db, 'itil_incidents', incidentId), {
       status: 'RESOLVED',
       resolutionNotes: updated.resolutionNotes,
       resolvedAt: updated.resolvedAt,
+      updatedAt: updated.updatedAt,
     });
-  } catch {}
+  } catch (err) {
+    saveLocalIncidents(incidentsBefore);
+    throw err;
+  }
 
   return updated;
 }
@@ -351,25 +438,106 @@ export async function updateDefectiveTicketStatus(
   newStatus: DefectiveStockTicket['status'],
   notes?: string
 ): Promise<DefectiveStockTicket | null> {
-  const tickets = getLocalDefectiveTickets();
-  const idx = tickets.findIndex((t) => t.id === ticketId);
-  if (idx < 0) return null;
+  const ticketsBefore = getLocalDefectiveTickets();
+  let idx = ticketsBefore.findIndex((t) => t.id === ticketId);
+  let targetTicket: DefectiveStockTicket | undefined = idx >= 0 ? ticketsBefore[idx] : undefined;
+
+  if (!targetTicket) {
+    const remoteSnap = await getDoc(doc(db, 'defective_tickets', ticketId)).catch(() => null);
+    if (remoteSnap?.exists()) {
+      targetTicket = { ...(remoteSnap.data() as DefectiveStockTicket), id: ticketId };
+    }
+  }
+  if (!targetTicket) return null;
+
+  const nowIso = new Date().toISOString();
+  const prevNotes = targetTicket.resolutionNotes;
+  const mergedNotes = notes ? (prevNotes ? `${prevNotes} | ${notes}` : notes) : prevNotes;
 
   const updated: DefectiveStockTicket = {
-    ...tickets[idx],
+    ...targetTicket,
     status: newStatus,
-    resolutionNotes: notes ? `${tickets[idx].resolutionNotes || ''} | ${notes}` : tickets[idx].resolutionNotes,
+    resolutionNotes: mergedNotes,
   };
 
-  tickets[idx] = updated;
-  saveLocalDefectiveTickets(tickets);
+  const nextTickets = idx >= 0
+    ? ticketsBefore.map((item, i) => (i === idx ? updated : item))
+    : [updated, ...ticketsBefore];
+  saveLocalDefectiveTickets(nextTickets);
+
+  const incidentsBefore = getLocalIncidents();
+  let nextIncidents: ITILIncident[] | null = null;
+  let linkedIncidentUpdate: {
+    id: string;
+    status: ITILIncident['status'];
+    updatedAt: string;
+    resolvedAt?: string;
+    resolutionNotes?: string;
+  } | null = null;
+
+  if (updated.incidentId) {
+    let incIdx = incidentsBefore.findIndex((inc) => inc.id === updated.incidentId);
+    let targetInc: ITILIncident | undefined = incIdx >= 0 ? incidentsBefore[incIdx] : undefined;
+    if (!targetInc) {
+      const incSnap = await getDoc(doc(db, 'itil_incidents', updated.incidentId)).catch(() => null);
+      if (incSnap?.exists()) {
+        targetInc = { ...(incSnap.data() as ITILIncident), id: updated.incidentId };
+      }
+    }
+    if (targetInc) {
+      const mappedStatus: ITILIncident['status'] =
+        newStatus === 'REPLACED' || newStatus === 'WRITTEN_OFF'
+          ? 'RESOLVED'
+          : newStatus === 'RETURN_IN_PROGRESS'
+            ? 'INVESTIGATING'
+            : 'OPEN';
+      const resolvedAt = mappedStatus === 'RESOLVED' ? nowIso : targetInc.resolvedAt;
+      const resolutionNotes =
+        mappedStatus === 'RESOLVED'
+          ? `Defective stock ticket ${updated.ticketNumber} finalized (${newStatus.replace('_', ' ')}).`
+          : targetInc.resolutionNotes;
+      const updatedInc: ITILIncident = {
+        ...targetInc,
+        status: mappedStatus,
+        updatedAt: nowIso,
+        resolvedAt,
+        resolutionNotes,
+      };
+      nextIncidents = incIdx >= 0
+        ? incidentsBefore.map((item, i) => (i === incIdx ? updatedInc : item))
+        : [updatedInc, ...incidentsBefore];
+      linkedIncidentUpdate = {
+        id: updated.incidentId,
+        status: mappedStatus,
+        updatedAt: nowIso,
+        ...(resolvedAt ? { resolvedAt } : {}),
+        ...(resolutionNotes ? { resolutionNotes } : {}),
+      };
+      saveLocalIncidents(nextIncidents);
+    }
+  }
 
   try {
     await updateDoc(doc(db, 'defective_tickets', ticketId), {
       status: newStatus,
       resolutionNotes: updated.resolutionNotes,
+      updatedAt: nowIso,
     });
-  } catch {}
+    if (linkedIncidentUpdate) {
+      await updateDoc(doc(db, 'itil_incidents', linkedIncidentUpdate.id), {
+        status: linkedIncidentUpdate.status,
+        updatedAt: linkedIncidentUpdate.updatedAt,
+        ...(linkedIncidentUpdate.resolvedAt ? { resolvedAt: linkedIncidentUpdate.resolvedAt } : {}),
+        ...(linkedIncidentUpdate.resolutionNotes ? { resolutionNotes: linkedIncidentUpdate.resolutionNotes } : {}),
+      });
+    }
+  } catch (err) {
+    saveLocalDefectiveTickets(ticketsBefore);
+    if (nextIncidents) {
+      saveLocalIncidents(incidentsBefore);
+    }
+    throw err;
+  }
 
   return updated;
 }
@@ -391,24 +559,26 @@ export function exportIncidentsCSV(incidents: ITILIncident[]) {
     'Resolved At',
     'Description',
     'Resolution Notes',
-  ];
+  ].map(escapeCsvCell);
 
-  const rows = incidents.map((inc) => [
-    `"${inc.ticketNumber || ''}"`,
-    `"${inc.incidentType || ''}"`,
-    `"${inc.severity || ''}"`,
-    `"${inc.status || ''}"`,
-    `"${inc.orderNumber || ''}"`,
-    `"${(inc.clientName || '').replace(/"/g, '""')}"`,
-    `"${inc.deliveryLocation || ''}"`,
-    inc.daysOverdue ?? 0,
-    `"${inc.createdAt || ''}"`,
-    `"${inc.resolvedAt || ''}"`,
-    `"${(inc.description || '').replace(/"/g, '""')}"`,
-    `"${(inc.resolutionNotes || '').replace(/"/g, '""')}"`,
-  ]);
+  const rows = incidents.map((inc) =>
+    [
+      inc.ticketNumber || '',
+      inc.incidentType || '',
+      inc.severity || '',
+      inc.status || '',
+      inc.orderNumber || '',
+      inc.clientName || '',
+      inc.deliveryLocation || '',
+      inc.daysOverdue ?? 0,
+      inc.createdAt || '',
+      inc.resolvedAt || '',
+      inc.description || '',
+      inc.resolutionNotes || '',
+    ].map(escapeCsvCell)
+  );
 
-  const csvContent = [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
+  const csvContent = '\uFEFF' + [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
   const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
@@ -417,6 +587,7 @@ export function exportIncidentsCSV(incidents: ITILIncident[]) {
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 /**
@@ -436,24 +607,26 @@ export function exportDefectiveProductsReportCSV(tickets: DefectiveStockTicket[]
     'Date Logged',
     'Status',
     'Notes',
-  ];
+  ].map(escapeCsvCell);
 
-  const rows = tickets.map((t) => [
-    `"${t.ticketNumber}"`,
-    `"${t.sku}"`,
-    `"${t.productName.replace(/"/g, '""')}"`,
-    `"${t.brand || ''}"`,
-    `"${t.warehouseName}"`,
-    t.quantity,
-    `"${t.defectReason}"`,
-    `"${(t.supplierName || '').replace(/"/g, '""')}"`,
-    `"${t.loggedByName}"`,
-    `"${t.createdAt}"`,
-    `"${t.status}"`,
-    `"${(t.resolutionNotes || '').replace(/"/g, '""')}"`,
-  ]);
+  const rows = tickets.map((t) =>
+    [
+      t.ticketNumber,
+      t.sku,
+      t.productName,
+      t.brand || '',
+      t.warehouseName,
+      t.quantity,
+      t.defectReason,
+      t.supplierName || '',
+      t.loggedByName,
+      t.createdAt,
+      t.status,
+      t.resolutionNotes || '',
+    ].map(escapeCsvCell)
+  );
 
-  const csvContent = [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
+  const csvContent = '\uFEFF' + [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
   const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
@@ -462,4 +635,5 @@ export function exportDefectiveProductsReportCSV(tickets: DefectiveStockTicket[]
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }

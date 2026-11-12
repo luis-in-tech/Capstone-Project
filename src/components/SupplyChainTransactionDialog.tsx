@@ -19,11 +19,12 @@ interface Props {
   products: Product[];
   warehouses: Warehouse[];
   inventory: InventoryItem[];
+  maxRefundAmount?: number;
   onClose: () => void;
   onPreview: (entry: ChainTransaction) => void;
 }
 
-export function SupplyChainTransactionDialog({ view, action, transaction, products, warehouses, inventory, onClose, onPreview }: Props) {
+export function SupplyChainTransactionDialog({ view, action, transaction, products, warehouses, inventory, maxRefundAmount, onClose, onPreview }: Props) {
   const [method, setMethod] = useState('Cash');
   const [withItems, setWithItems] = useState(true);
   const [amount, setAmount] = useState('');
@@ -56,14 +57,15 @@ export function SupplyChainTransactionDialog({ view, action, transaction, produc
   const lines = physical ? options.filter(item => (quantities[item.id] ?? 0) > 0).map(item => ({ ...item, quantity: quantities[item.id], warehouseId })) : [];
   const value = Number(amount);
   const resulting = projectBalance(transaction.remaining, value);
-  const cashRefund = !payment && transaction.remaining !== null ? Math.max(0, value - transaction.remaining) : 0;
+  const cashRefund = !payment && transaction.remaining !== null ? Math.round(Math.max(0, value - transaction.remaining) * 100) / 100 : 0;
   const methodLabel = method === 'Item' && !customer ? 'Item / XDeal' : method === 'Online Banking' ? 'Online Banking (Bank Transfer / GCash)' : method;
   const title = payment ? customer ? 'Receive payment' : 'Pay supplier' : customer ? 'Customer refund' : 'Purchase refund';
 
   const validate = () => {
     if (!Number.isFinite(value) || value <= 0 || Math.abs(value * 100 - Math.round(value * 100)) > 0.0001) return 'Enter an amount greater than zero with at most two decimal places.';
     if (payment && transaction.remaining !== null && value > transaction.remaining) return 'Payment cannot exceed the remaining balance.';
-    if (!payment && value > (transaction.amount ?? 0)) return 'Refund cannot exceed the original transaction amount.';
+    const maxRefund = maxRefundAmount !== undefined ? Math.min(transaction.amount ?? 0, Math.max(0, maxRefundAmount)) : (transaction.amount ?? 0);
+    if (!payment && value > maxRefund + 0.0001) return `Refund cannot exceed the remaining refundable amount (${chainMoney(maxRefund)}).`;
     if (payment && method === 'Cheque' && (!bank.trim() || !chequeDate || !reference.trim())) return 'Complete the bank, cheque date, and reference number.';
     if (payment && method === 'Online Banking' && !reference.trim()) return 'Enter the reference or transaction number for Online Banking.';
     if (physical && !warehouses.some(w => w.id === warehouseId && w.active !== false)) return 'Choose an active warehouse.';
@@ -102,7 +104,7 @@ export function SupplyChainTransactionDialog({ view, action, transaction, produc
         <DialogTitle className="flex items-center gap-2"><CreditCard className="size-5 text-primary" />{review ? 'Review transaction' : title}</DialogTitle>
         <DialogDescription>{transaction.reference} · {payment ? 'Settle' : 'Credit'} {customer ? 'customer receivables' : 'supplier payables'}</DialogDescription>
       </DialogHeader>
-      <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-100"><Info className="mr-1 inline size-4" />Preview only. This workflow is not connected to a payment/refund ledger. No money or inventory will be posted. Previews clear when you leave Supply Chain.</div>
+      <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-100"><Info className="mr-1 inline size-4" />Staged preview. Nothing is posted to Finance, balances, or Inventory until you click &quot;Commit Previews to Ledger&quot; in Supply Chain.</div>
       {!review ? <div className="space-y-5">
         <div className="grid grid-cols-2 gap-3 rounded-xl bg-muted/40 p-4"><div><p className="text-xs text-muted-foreground">Original amount</p><p className="font-semibold">{chainMoney(transaction.amount)}</p></div><div><p className="text-xs text-muted-foreground">Remaining balance</p><p className="font-semibold">{chainMoney(transaction.remaining)}</p></div></div>
         <fieldset className="space-y-2"><legend className="mb-2 text-sm font-semibold">{payment ? 'Payment method' : 'Return type'}</legend><div className={`grid gap-2 ${payment ? 'grid-cols-2 sm:grid-cols-4' : 'grid-cols-2'}`}>

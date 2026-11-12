@@ -12,7 +12,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { useStaffAccess } from '../hooks/useStaffAccess';
 import { useAuth } from '../hooks/useAuth';
-import { collection, db, onSnapshot } from '../lib/supabaseAdapter';
+import { collection, db, isMissingRpcError, onSnapshot } from '../lib/supabaseAdapter';
 import { supabase } from '../lib/supabase';
 import { createClient } from '@supabase/supabase-js';
 import { defaultPermissions, rolePermissions, movementOptions, priceAccessOptions, financialsAccessOptions, normalizePermissions, resolvePermissions, getSupplyChainViews, supplyChainViews, hasAdminRole, canCreateAdmin, canManageUser, permissionsWithin } from '../lib/staffPermissions';
@@ -61,7 +61,7 @@ export function DelegationPanel() {
     if (!canManage) return;
     setLoaded([]); setErrors({});
     const watch = <T,>(table: string, update: (rows: T[]) => void) => onSnapshot(collection(db, table), snap => {
-      update(snap.docs.map(d => ({ id: d.id, ...d.data() } as T)));
+      update(snap.docs.map((d: any) => ({ id: d.id, ...d.data() } as T)));
       setLoaded(current => [...new Set([...current, table])]);
       setErrors(current => { const next = { ...current }; delete next[table]; return next; });
     }, () => setErrors(current => ({ ...current, [table]: `Could not load ${table === 'delegations' ? 'permissions' : table}.` })));
@@ -82,8 +82,8 @@ export function DelegationPanel() {
   const patch = (value: Partial<StaffPermissions>) => { setDirty(true); setFormError(''); setDraft(prev => normalizePermissions({ ...prev, ...value })); };
   const startEdit = (user: UserProfile | 'new') => {
     const saved = user === 'new' ? undefined : delegationFor(user);
-    // Restore the saved settings for review instead of the effective deactivated access.
-    setSelectedRole('');
+    // Restore the saved settings for review instead of the effective deactivated access, preserving the existing role tag.
+    setSelectedRole(user === 'new' ? '' : user.role);
     setEditor(user); setDraft(user === 'new' ? rolePermissions('agent') : resolvePermissions(user, saved ? { ...saved, active: true } : undefined));
     setName(''); setEmail(''); setPassword(''); setWarehouseSearch(''); setFormError(''); setDirty(false);
   };
@@ -100,8 +100,20 @@ export function DelegationPanel() {
     if (permissions.warehouseAccess === 'selected' && (!permissions.warehouseIds.length || permissions.warehouseIds.some(id => !warehouses.some(w => w.id === id)))) {
       setFormError('Select at least one existing warehouse. Remove any unavailable selections.'); return;
     }
-    if (editor === 'new' && users.some(user => user.email.toLowerCase() === email.trim().toLowerCase())) {
-      setFormError('This email already has an account. Edit its permissions in Users & Permissions.'); return;
+    const cleanEmail = email.trim().toLowerCase();
+    const cleanName = name.trim();
+    if (editor === 'new') {
+      if (!cleanName || !cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+        setFormError('Please enter a valid full name and email address.'); return;
+      }
+      if (password.length < 12) {
+        setFormError('Initial password must be at least 12 characters.'); return;
+      }
+      if (users.some(user => user.email.toLowerCase() === cleanEmail)) {
+        setFormError('This email already has an account. Edit its permissions in Users & Permissions.'); return;
+      }
+    } else if (!editor.uid || !editor.email) {
+      setFormError('Selected user account record is incomplete.'); return;
     }
     setSaving(true); setFormError('');
     try {
@@ -109,73 +121,89 @@ export function DelegationPanel() {
         let createdUser: any = null;
         let createdDelegation: any = null;
         let edgeSuccess = false;
+        let edgeErrorMsg = '';
         try {
-          const { data, error } = await supabase.functions.invoke('create-staff-user', { body: { email: email.trim().toLowerCase(), name: name.trim(), password, permissions, role: targetRole } });
+          const { data, error } = await supabase.functions.invoke('create-staff-user', { body: { email: cleanEmail, name: cleanName, password, permissions, role: targetRole } });
           if (!error && !data?.error && data?.user) {
             createdUser = data.user;
             createdDelegation = data.delegation;
             edgeSuccess = true;
+          } else if (data?.error) {
+            edgeErrorMsg = String(data.error);
           }
         } catch (edgeErr) {
           console.warn('Edge function invoke exception, attempting fallback:', edgeErr);
         }
+        if (edgeErrorMsg) throw new Error(edgeErrorMsg);
 
         if (!edgeSuccess) {
+          const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
+          const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
+          if (!supabaseUrl || !supabaseAnonKey) {
+            throw new Error('Supabase configuration is unavailable.');
+          }
           // Direct fallback using an isolated client that does not persist session
           // This prevents the currently authenticated administrator from being logged out
           const tempClient = createClient(
-            import.meta.env.VITE_SUPABASE_URL || '',
-            import.meta.env.VITE_SUPABASE_ANON_KEY || '',
+            supabaseUrl,
+            supabaseAnonKey,
             { auth: { persistSession: false, autoRefreshToken: false } }
           );
           const { data: authData, error: authErr } = await tempClient.auth.signUp({
-            email: email.trim().toLowerCase(),
+            email: cleanEmail,
             password,
             options: {
-              data: { name: name.trim(), role: targetRole }
+              data: { name: cleanName, role: targetRole }
             }
           });
+          await tempClient.auth.signOut().catch(() => {});
           if (authErr) {
             throw new Error(authErr.message);
           }
-          const newUid = authData.user?.id || crypto.randomUUID();
+          const newUid = authData.user?.id;
+          if (!newUid) {
+            throw new Error('User authentication succeeded without returning a user ID.');
+          }
           createdUser = {
             uid: newUid,
-            email: email.trim().toLowerCase(),
-            displayName: name.trim(),
+            email: cleanEmail,
+            displayName: cleanName,
             role: targetRole,
           };
           createdDelegation = {
             id: crypto.randomUUID(),
             agentId: profile?.uid || 'admin',
-            staffEmail: email.trim().toLowerCase(),
+            staffEmail: cleanEmail,
             canAdjustInventory: permissions.inventory === 'adjust',
             canAdjustPricelist: permissions.pricelist === 'edit',
             permissions,
             active: true,
             createdAt: new Date().toISOString()
           };
-          try {
-            await supabase.from('users').upsert([createdUser]);
-          } catch (uErr) {
-            console.warn('Direct users upsert error:', uErr);
+          const { error: uErr } = await supabase.from('users').upsert([createdUser]);
+          if (uErr) {
+            throw new Error(`Auth account created, but saving profile failed: ${uErr.message}`);
           }
-          try {
-            await supabase.from('delegations').upsert([createdDelegation]);
-          } catch (dErr) {
-            console.warn('Direct delegations upsert error:', dErr);
+          const { error: dErr } = await supabase.from('delegations').upsert([createdDelegation]);
+          if (dErr) {
+            try { await supabase.from('users').delete().eq('uid', newUid); } catch { /* ignore cleanup error */ }
+            throw new Error(`Failed to save permissions for the new account: ${dErr.message}`);
           }
         }
 
         if (createdUser) setUsers(current => [...current.filter(user => user.uid !== createdUser.uid), createdUser]);
         if (createdDelegation) setDelegations(current => [...current.filter(d => d.id !== createdDelegation.id), createdDelegation]);
+        window.dispatchEvent(new CustomEvent('activepro_db_changed', { detail: { path: 'users' } }));
+        window.dispatchEvent(new CustomEvent('activepro_db_changed', { detail: { path: 'delegations' } }));
         toast.success('User account created', { description: 'The staff member can sign in with their email and password.' });
       } else {
         let updatedDelegation: any = null;
         const { data, error } = await supabase.rpc('set_staff_role_access', { p_uid: editor.uid, p_role: targetRole, p_permissions: permissions });
         if (error) {
-          console.warn('set_staff_role_access RPC error, updating Supabase users and delegations directly:', error);
-          await supabase.from('users').update({ role: targetRole }).eq('uid', editor.uid);
+          if (!isMissingRpcError(error)) throw error;
+          console.warn('set_staff_role_access RPC unavailable, updating Supabase users and delegations directly:', error);
+          const { error: uErr } = await supabase.from('users').update({ role: targetRole }).eq('uid', editor.uid);
+          if (uErr) throw uErr;
           const existing = delegations.find(d => d.staffEmail.toLowerCase() === editor.email.toLowerCase());
           const payload = {
             id: existing?.id || crypto.randomUUID(),
@@ -187,10 +215,10 @@ export function DelegationPanel() {
             active: true,
             createdAt: existing?.createdAt || new Date().toISOString(),
           };
-          try {
-            await supabase.from('delegations').upsert([payload]);
-          } catch (delErr) {
-            console.warn('Delegations table write bypassed by RLS policy:', delErr);
+          const { error: delErr } = await supabase.from('delegations').upsert([payload]);
+          if (delErr) {
+            try { await supabase.from('users').update({ role: editor.role }).eq('uid', editor.uid); } catch { /* ignore cleanup error */ }
+            throw delErr;
           }
           updatedDelegation = payload;
         } else {
@@ -199,6 +227,8 @@ export function DelegationPanel() {
 
         setDelegations(current => [...current.filter(d => d.staffEmail.toLowerCase() !== editor.email.toLowerCase()), updatedDelegation as StaffDelegation]);
         setUsers(current => current.map(user => user.uid === editor.uid ? { ...user, role: targetRole } : user));
+        window.dispatchEvent(new CustomEvent('activepro_db_changed', { detail: { path: 'users' } }));
+        window.dispatchEvent(new CustomEvent('activepro_db_changed', { detail: { path: 'delegations' } }));
         toast.success(currentDelegation?.active === false ? 'Access restored' : 'Permissions saved');
       }
       setEditor(null); setPassword(''); setDirty(false);
@@ -210,27 +240,37 @@ export function DelegationPanel() {
 
   async function revoke() {
     if (!deactivate || saving || !canManage || !canManageUser(profile, deactivate)) return;
+    if (!deactivate.uid || !deactivate.email) {
+      setActionError('Selected user account record is incomplete.');
+      return;
+    }
     setSaving(true); setActionError('');
     try {
+      const existing = delegationFor(deactivate);
+      const resolvedPerms = resolvePermissions(deactivate, existing);
       let updatedDelegation: any = null;
-      const { data, error } = await supabase.rpc('set_staff_access', { p_uid: deactivate.uid, p_permissions: resolvePermissions(deactivate, delegationFor(deactivate)), p_active: false });
+      const { data, error } = await supabase.rpc('set_staff_access', { p_uid: deactivate.uid, p_permissions: resolvedPerms, p_active: false });
       if (error) {
-        console.warn('set_staff_access RPC error, updating Supabase delegations directly:', error);
-        const existing = delegationFor(deactivate);
+        if (!isMissingRpcError(error)) throw error;
+        console.warn('set_staff_access RPC unavailable, updating Supabase delegations directly:', error);
         const payload = {
           id: existing?.id || crypto.randomUUID(),
           agentId: profile?.uid || 'admin',
           staffEmail: deactivate.email.toLowerCase(),
+          canAdjustInventory: resolvedPerms.inventory === 'adjust',
+          canAdjustPricelist: resolvedPerms.pricelist === 'edit',
           active: false,
-          permissions: resolvePermissions(deactivate, existing),
+          permissions: resolvedPerms,
           createdAt: existing?.createdAt || new Date().toISOString(),
         };
-        await supabase.from('delegations').upsert([payload]);
+        const { error: delErr } = await supabase.from('delegations').upsert([payload]);
+        if (delErr) throw delErr;
         updatedDelegation = payload;
       } else {
         updatedDelegation = data;
       }
       setDelegations(current => [...current.filter(d => d.staffEmail.toLowerCase() !== deactivate.email.toLowerCase()), updatedDelegation as StaffDelegation]);
+      window.dispatchEvent(new CustomEvent('activepro_db_changed', { detail: { path: 'delegations' } }));
       toast.success('Access deactivated'); setDeactivate(null);
     } catch { setActionError('Access could not be deactivated. Please retry.'); }
     finally { setSaving(false); }
@@ -247,11 +287,11 @@ export function DelegationPanel() {
       <Table><TableHeader className="bg-muted/40"><TableRow><TableHead className="pl-5">User</TableHead><TableHead>Status</TableHead><TableHead className="min-w-72">Permissions</TableHead><TableHead className="min-w-44">Warehouse access</TableHead><TableHead className="px-5 text-center">Actions</TableHead></TableRow></TableHeader><TableBody>
         {ready && rows.map(user => {
           const delegation = delegationFor(user); const permissions = resolvePermissions(user, delegation); const disabled = inactive(user); const protectedAccount = !disabled && user.role === 'admin'; const editable = canManageUser(profile, user);
-          return <TableRow key={user.uid}><TableCell className="py-5 pl-5 align-top"><div className="flex items-center gap-3"><div className="flex size-9 shrink-0 items-center justify-center rounded-full bg-muted text-sm font-semibold">{(user.displayName || user.email).slice(0, 1).toUpperCase()}</div><div><p className="font-semibold">{user.displayName || 'Unnamed user'}</p><p className="mt-0.5 text-xs text-muted-foreground">{user.email}</p><p className="mt-1 text-[11px] capitalize text-muted-foreground">{user.role}{user.uid === profile.uid ? ' · You' : ''}</p></div></div></TableCell>
+          return <TableRow key={user.uid}><TableCell className="py-5 pl-5 align-top"><div className="flex items-center gap-3"><div className="flex size-9 shrink-0 items-center justify-center rounded-full bg-muted text-sm font-semibold">{(user.displayName || user.email).slice(0, 1).toUpperCase()}</div><div><p className="font-semibold">{user.displayName || 'Unnamed user'}</p><p className="mt-0.5 text-xs text-muted-foreground">{user.email}</p><p className="mt-1 text-[11px] capitalize text-muted-foreground">{user.role}{user.uid === profile?.uid ? ' · You' : ''}</p></div></div></TableCell>
             <TableCell className="align-top py-5"><Badge variant={disabled ? 'outline' : 'secondary'}>{disabled ? 'Deactivated' : 'Active'}</Badge></TableCell>
             <TableCell className="py-5 align-top">{protectedAccount ? <span className="inline-flex items-center gap-1.5 text-sm font-medium"><ShieldCheck className="size-4 text-primary" />Full administrator access</span> : disabled ? <p className="text-sm text-muted-foreground">Access deactivated</p> : <div className="space-y-2">{!delegation && <Badge variant="outline" className="border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">No Permissions Assigned</Badge>}<div className="grid gap-x-4 gap-y-1 whitespace-normal text-xs sm:grid-cols-2"><span><span className="text-muted-foreground">Inventory:</span> {permissions.inventory === 'adjust' ? 'Can adjust' : 'View only'}</span><span><span className="text-muted-foreground">Pricelist:</span> {permissions.pricelist === 'edit' ? 'Can edit' : 'View only'}</span><span><span className="text-muted-foreground">Orders:</span> {orderLabels[permissions.orders]}</span><span><span className="text-muted-foreground">Supply Chain:</span> {supplySummary(permissions.supplyChain)}</span><span><span className="text-muted-foreground">Movement view:</span> {movementLabel(permissions.movementView)}</span><span><span className="text-muted-foreground">Movement create:</span> {movementLabel(permissions.movementCreate)}</span><span><span className="text-muted-foreground">Price access:</span> {permissions.priceAccess === 'main_only' ? 'Main price only' : permissions.priceAccess === 'selling_no_cost' ? 'Selling (no cost)' : 'All prices'}</span><span><span className="text-muted-foreground">Financials:</span> {permissions.financials === 'full' ? 'Full Access' : permissions.financials === 'expense_only' ? 'Expense Entry Only' : 'No Access'}</span></div>{!delegation && <p className="text-[11px] text-muted-foreground">Current role defaults shown. Assign permissions to customize access.</p>}</div>}</TableCell>
             <TableCell className="max-w-60 py-5 align-top text-xs">{disabled ? <span className="text-muted-foreground">No access</span> : permissions.warehouseAccess === 'all' ? <span className="inline-flex items-center gap-1.5"><WarehouseIcon className="size-3.5 text-muted-foreground" />All warehouses</span> : <div><p className="mb-1 font-medium">{permissions.warehouseIds.length} selected</p><p className="text-muted-foreground">{permissions.warehouseIds.map(id => warehouses.find(w => w.id === id)?.name || 'Unavailable warehouse').join(', ') || 'No warehouses'}</p></div>}</TableCell>
-            <TableCell className="py-5 px-5 align-top"><div className="flex flex-col items-center justify-center gap-1.5">{!editable ? <span className="text-xs text-muted-foreground">{protectedAccount ? 'Protected (Admin)' : user.uid === profile.uid ? 'Your account' : 'Admin managed'}</span> : <><Button variant="outline" size="sm" className="w-32 justify-center text-xs" onClick={() => startEdit(user)}><Pencil className="size-3.5" />{disabled ? 'Restore access' : 'Edit permission'}</Button>{!disabled && <Button variant="ghost" size="sm" className="w-32 justify-center text-xs text-destructive hover:text-destructive hover:bg-destructive/10" onClick={() => { setDeactivate(user); setActionError(''); }}>Deactivate</Button>}</>}</div></TableCell></TableRow>;
+            <TableCell className="py-5 px-5 align-top"><div className="flex flex-col items-center justify-center gap-1.5">{!editable ? <span className="text-xs text-muted-foreground">{protectedAccount ? 'Protected (Admin)' : user.uid === profile?.uid ? 'Your account' : 'Admin managed'}</span> : <><Button variant="outline" size="sm" className="w-32 justify-center text-xs" onClick={() => startEdit(user)}><Pencil className="size-3.5" />{disabled ? 'Restore access' : 'Edit permission'}</Button>{!disabled && <Button variant="ghost" size="sm" className="w-32 justify-center text-xs text-destructive hover:text-destructive hover:bg-destructive/10" onClick={() => { setDeactivate(user); setActionError(''); }}>Deactivate</Button>}</>}</div></TableCell></TableRow>;
         })}
         {(!ready || !rows.length) && <TableRow><TableCell colSpan={5} className="h-52 text-center"><div className="mx-auto flex max-w-sm flex-col items-center gap-2">{!ready && !Object.keys(errors).length ? <Loader2 className="size-6 animate-spin text-muted-foreground" /> : <Users className="size-8 text-muted-foreground" />}<p className="font-medium">{!ready ? Object.keys(errors).length ? 'Accounts unavailable' : 'Loading accounts…' : 'No accounts found'}</p><p className="text-xs text-muted-foreground">{!ready ? 'User accounts and permissions must both load before making changes.' : search || status !== 'active' || roleFilter !== 'all' ? 'Try another search or account status.' : 'Add a staff account to get started.'}</p></div></TableCell></TableRow>}
       </TableBody></Table><div className="border-t bg-muted/20 px-5 py-3 text-xs text-muted-foreground">{ready ? `Showing ${rows.length} of ${users.length} user accounts` : 'Loading user directory'} · Accounts appear here even without assigned permissions.</div>

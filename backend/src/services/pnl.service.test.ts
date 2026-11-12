@@ -189,4 +189,53 @@ describe('Real-Time P&L Service', () => {
       expect(mockWs.send).toHaveBeenCalled();
     });
   });
+
+  describe('Validation & Date/Scale Parity Guards', () => {
+    it('rejects non-finite amounts, invalid dates, and unsupported timeframes', async () => {
+      await expect(
+        pnlService.recordExpense({ category: 'Travel', amount: Infinity, description: 'Invalid' })
+      ).rejects.toThrow('A valid expense amount is required');
+
+      await expect(
+        pnlService.recordExpense({ category: 'Travel', amount: 100, description: 'Bad date', date: 'not-a-date' })
+      ).rejects.toThrow('Expense date is invalid');
+
+      await expect(pnlService.listExpenses({ startDate: 'bad-date' })).rejects.toThrow('Invalid startDate filter');
+      await expect(pnlService.getPnLSummary('invalid' as any)).rejects.toThrow('Invalid timeframe');
+    });
+
+    it('aggregates post-Q1-2025 and multi-year months dynamically and excludes cancelled orders from order counts', async () => {
+      const beforeSummary = await pnlService.getPnLSummary('all');
+      const { order: cancelledOrder } = await ordersService.createOrder({
+        clientName: 'Cancelled Exclusion Co',
+        address: '10 EDSA, Makati',
+        deliveryRegion: 'Metro Manila',
+        paymentTerms: 'COD',
+        items: [{ productId: 'p-c1', warehouseId: 'wh-1', sku: 'C-1', name: 'Item', quantity: 1, unitPrice: 999 }],
+      });
+      await ordersService.cancelOrder(cancelledOrder.id, { cancellationReason: 'Voided test' });
+
+      const afterSummary = await pnlService.getPnLSummary('all');
+      expect(afterSummary.totalOrders).toBe(beforeSummary.totalOrders);
+
+      await pnlService.recordExpense({
+        category: 'Office Supplies',
+        amount: 750,
+        description: 'April 2025 ledger entry',
+        date: '2025-04-15',
+      });
+      await pnlService.recordExpense({
+        category: 'Office Supplies',
+        amount: 1250,
+        description: 'Multi-year Jan 2026 entry',
+        date: '2026-01-20',
+      });
+
+      const breakdown = await pnlService.getPerformanceBreakdown();
+      const apr25 = breakdown.find((b) => b.name === 'Apr 25');
+      const jan26 = breakdown.find((b) => b.name === 'Jan 26');
+      expect(apr25?.Expenses).toBeCloseTo(750, 2);
+      expect(jan26?.Expenses).toBeCloseTo(1250, 2);
+    });
+  });
 });
