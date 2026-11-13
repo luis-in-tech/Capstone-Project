@@ -263,6 +263,38 @@ function deleteLocalDoc(path: string, docId: string) {
   }
 }
 
+const MISSING_RPC_CODES = new Set(['PGRST202', '42883', '42P01', 'PGRST205']);
+
+export function isMissingRpcError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const err = error as { code?: unknown; message?: unknown; status?: unknown };
+  const code = typeof err.code === 'string' ? err.code : '';
+  if (MISSING_RPC_CODES.has(code)) return true;
+  const msg = typeof err.message === 'string' ? err.message.toLowerCase() : '';
+  return (
+    (msg.includes('could not find the function') && msg.includes('schema cache')) ||
+    (msg.includes('function') && msg.includes('does not exist'))
+  );
+}
+
+export function clearLocalCaches() {
+  if (typeof window === 'undefined' || !window.localStorage) return;
+  try {
+    const keysToRemove: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith('activepro_')) {
+        keysToRemove.push(key);
+      }
+    }
+    for (const key of keysToRemove) {
+      localStorage.removeItem(key);
+    }
+  } catch {
+    // Ignore storage access failures during logout cleanup
+  }
+}
+
 export function serverTimestamp() {
   return new Date().toISOString();
 }
