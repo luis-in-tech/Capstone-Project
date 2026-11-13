@@ -3,7 +3,7 @@ import { supabase } from './supabase';
 export const db = {};
 export const storage = supabase.storage;
 
-export function collection(db: any, path: string, ...rest: string[]) {
+export function collection(_db: any, path: string, ...rest: string[]) {
   let fullPath = path;
   if (rest.length > 0) {
     fullPath = [path, ...rest].join('/');
@@ -607,12 +607,12 @@ export async function setDoc(docRef: any, data: any) {
   }
 }
 
-export function ref(storage: any, path: string) { 
+export function ref(_storage: any, path: string) { 
   return { path }; 
 }
 
 export async function uploadBytes(ref: any, file: File) {
-  const { data, error } = await supabase.storage.from('activepro_assets').upload(ref.path, file, { upsert: true });
+  const { error } = await supabase.storage.from('activepro_assets').upload(ref.path, file, { upsert: true });
   if (error) throw error;
   return { ref };
 }
@@ -622,7 +622,7 @@ export async function getDownloadURL(ref: any) {
   return data.publicUrl;
 }
 
-export function writeBatch(db: any) {
+export function writeBatch(_db: any) {
   const operations: any[] = [];
   return {
     set: (ref: any, data: any) => operations.push({ type: 'set', ref, data }),
