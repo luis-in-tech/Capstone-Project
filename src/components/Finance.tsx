@@ -887,7 +887,7 @@ export function Finance() {
   }, [filteredOrders, selectedPeriod]);
 
   const displayExpenses = React.useMemo(() => {
-    const totalExp = filteredExpenses.reduce((sum, e) => sum + (e.amount || 0), 0);
+    const totalExp = filteredExpenses.filter(e => (e as any).type !== 'income').reduce((sum, e) => sum + (e.amount || 0), 0);
     // If Supabase has expense records for this period, compute dynamically
     if (totalExp > 0) return totalExp;
     // Fallback baseline only if database has zero records and 2025 audited period is selected

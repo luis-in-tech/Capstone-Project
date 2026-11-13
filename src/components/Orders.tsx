@@ -24,6 +24,9 @@ import {
   WarningCircleIcon as AlertCircle,
   WarningIcon as AlertTriangle,
   CaretRightIcon as ChevronRight,
+  CaretUpIcon as ChevronUp,
+  CaretDownIcon as ChevronDown,
+  ArrowsDownUpIcon as ArrowUpDown,
   FileTextIcon as FileText,
   EyeIcon as Eye,
   CalendarIcon as Calendar,
@@ -60,6 +63,29 @@ import { compressImage } from '../lib/imageCompressor';
 
 import { ITILIncidentConsole } from './ITILIncidentConsole';
 
+type OrderSortKey = 'orderNumber' | 'clientName' | 'status' | 'deadline' | 'amount';
+type SortDirection = 'asc' | 'desc';
+
+const ORDER_SORT_COLUMNS: Array<{
+  key: OrderSortKey;
+  label: string;
+  align: 'left' | 'center' | 'right';
+  headClass: string;
+}> = [
+  { key: 'orderNumber', label: 'Order ID', align: 'left', headClass: 'min-w-30' },
+  { key: 'clientName', label: 'Client Name', align: 'left', headClass: 'min-w-37.5' },
+  { key: 'status', label: 'Status', align: 'left', headClass: 'min-w-30' },
+  { key: 'deadline', label: 'Deadline', align: 'center', headClass: 'min-w-30 text-center' },
+  { key: 'amount', label: 'Amount', align: 'right', headClass: 'min-w-25 text-right' },
+];
+
+const toTimeMs = (value: any): number => {
+  if (!value) return 0;
+  if (typeof value?.toDate === 'function') return value.toDate().getTime();
+  const parsed = new Date(value).getTime();
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+
 export function Orders() {
   const { profile } = useAuth();
   const { permissions } = useStaffAccess();
@@ -92,6 +118,8 @@ export function Orders() {
   const [isIncidentsDialogOpen, setIsIncidentsDialogOpen] = useState(false);
   const [incidentFilter, setIncidentFilter] = useState<'all' | 'SLA_BREACH' | 'DEFECTIVE_ASSET'>('all');
   const [orderViewMode, setOrderViewMode] = useState<'all' | 'fifo_queue'>('all');
+  const [sortKey, setSortKey] = useState<OrderSortKey | null>(null);
+  const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
   const [customOrderIds, setCustomOrderIds] = useState<string[]>(() => {
     try {
       const stored = localStorage.getItem('activepro_custom_order_ids');
@@ -112,6 +140,8 @@ export function Orders() {
   const [editingPendingOrder, setEditingPendingOrder] = useState<ReceiptOrder | null>(null);
   const [editOrderItems, setEditOrderItems] = useState<ReceiptItem[]>([]);
   const [isSavingEditOrder, setIsSavingEditOrder] = useState(false);
+  const [editAddSearch, setEditAddSearch] = useState('');
+  const [isAddDropdownOpen, setIsAddDropdownOpen] = useState(false);
 
   const filteredOrders = orders.filter(order => {
     const queryStr = searchQuery.toLowerCase();
@@ -137,30 +167,63 @@ export function Orders() {
     }
   };
 
+  const toggleSort = (key: OrderSortKey) => {
+    setOrderViewMode('all');
+    if (sortKey === key) {
+      setSortDirection(prev => (prev === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setSortKey(key);
+      setSortDirection('asc');
+    }
+  };
+
   const statusChronologicalOrders = React.useMemo(() => {
     return [...filteredOrders].sort((a, b) => {
       const rankA = statusGroupRank(a.status);
       const rankB = statusGroupRank(b.status);
       if (rankA !== rankB) return rankA - rankB;
-      const timeA = new Date(a.createdAt || 0).getTime();
-      const timeB = new Date(b.createdAt || 0).getTime();
-      return timeB - timeA;
+      return toTimeMs(b.createdAt) - toTimeMs(a.createdAt);
     });
   }, [filteredOrders]);
 
   const fulfillmentStrategy = (localStorage.getItem('activepro.fulfillment_strategy') as 'FIFO'|'LIFO') || 'FIFO';
 
-  // System-wide unified ordering: Combines Canva Status Grouping, In-place Row Stability, and Manual Drag & Drop
+  // System-wide unified ordering: Supports column sorting, Status Grouping, In-place Row Stability, and Manual Drag & Drop
   const displayOrders = React.useMemo(() => {
     if (orderViewMode === 'fifo_queue') {
       return prioritizeOrderQueue(filteredOrders, fulfillmentStrategy);
+    }
+
+    if (sortKey) {
+      const dir = sortDirection === 'asc' ? 1 : -1;
+      return [...filteredOrders].sort((a, b) => {
+        let diff = 0;
+        if (sortKey === 'orderNumber') {
+          diff = (a.orderNumber || '').localeCompare(b.orderNumber || '', undefined, { numeric: true, sensitivity: 'base' }) * dir;
+        } else if (sortKey === 'clientName') {
+          diff = (a.clientName || '').localeCompare(b.clientName || '', undefined, { sensitivity: 'base' }) * dir;
+        } else if (sortKey === 'status') {
+          diff = (statusGroupRank(a.status) - statusGroupRank(b.status)) * dir;
+        } else if (sortKey === 'deadline') {
+          const dA = toTimeMs(a.deliveryDeadline);
+          const dB = toTimeMs(b.deliveryDeadline);
+          if (dA === 0 && dB === 0) diff = 0;
+          else if (dA === 0) return 1;
+          else if (dB === 0) return -1;
+          else diff = (dA - dB) * dir;
+        } else if (sortKey === 'amount') {
+          diff = (Number(a.totalAmount || 0) - Number(b.totalAmount || 0)) * dir;
+        }
+        if (diff !== 0) return diff;
+        return toTimeMs(b.createdAt) - toTimeMs(a.createdAt);
+      });
     }
 
     if (!customOrderIds.length) {
       return statusChronologicalOrders;
     }
 
-    // Preserve custom drag-and-drop / in-place stability
+    // Preserve custom drag-and-drop / in-place stability while placing newly created orders on top
     const orderMap = new Map(filteredOrders.map(o => [o.id, o]));
     const arranged: Order[] = [];
     for (const id of customOrderIds) {
@@ -170,15 +233,15 @@ export function Orders() {
         orderMap.delete(id);
       }
     }
-    // Append any newly added orders using statusChronological order
+    const unarranged: Order[] = [];
     for (const order of statusChronologicalOrders) {
       if (orderMap.has(order.id)) {
-        arranged.push(order);
+        unarranged.push(order);
         orderMap.delete(order.id);
       }
     }
-    return arranged;
-  }, [filteredOrders, customOrderIds, statusChronologicalOrders, orderViewMode, fulfillmentStrategy]);
+    return [...unarranged, ...arranged];
+  }, [filteredOrders, customOrderIds, statusChronologicalOrders, orderViewMode, fulfillmentStrategy, sortKey, sortDirection]);
 
   const handleDragStart = (e: React.DragEvent, id: string) => {
     setDraggedOrderId(id);
@@ -213,6 +276,7 @@ export function Orders() {
     const [moved] = updated.splice(fromIndex, 1);
     updated.splice(toIndex, 0, moved);
 
+    setSortKey(null);
     setCustomOrderIds(updated);
     localStorage.setItem('activepro_custom_order_ids', JSON.stringify(updated));
     setDraggedOrderId(null);
@@ -504,6 +568,8 @@ export function Orders() {
   const handleStartEditPendingOrder = async (order: Order) => {
     setEditingPendingOrder(order as ReceiptOrder);
     setEditOrderItems([]);
+    setEditAddSearch('');
+    setIsAddDropdownOpen(false);
     setIsLoadingItems(true);
     try {
       const itemsSnap = await getDocs(collection(db, 'orders', order.id, 'items'));
@@ -542,7 +608,9 @@ export function Orders() {
         const oldQty = orig ? Number(orig.quantity) : 0;
         const delta = Number(item.quantity) - oldQty;
         if (delta > 0) {
-          let inv = inventory.find(i => i.productId === item.productId && (!item.warehouseId || i.warehouseId === item.warehouseId));
+          let inv = inventory.find(i => i.productId === item.productId && (!item.warehouseId || i.warehouseId === item.warehouseId))
+            || inventory.find(i => i.productId === item.productId && Number(i.quantity) > 0)
+            || inventory.find(i => i.productId === item.productId);
           if (inv?.id) {
             try {
               const freshSnap = await getDoc(doc(db, 'inventory', inv.id));
@@ -566,7 +634,8 @@ export function Orders() {
       for (const orig of origItems) {
         const stillPresent = editOrderItems.find(item => item.id === orig.id);
         if (!stillPresent) {
-          let inv = inventory.find(i => i.productId === orig.productId && (!orig.warehouseId || i.warehouseId === orig.warehouseId));
+          let inv = inventory.find(i => i.productId === orig.productId && (!orig.warehouseId || i.warehouseId === orig.warehouseId))
+            || inventory.find(i => i.productId === orig.productId);
           if (inv?.id) {
             try {
               const freshSnap = await getDoc(doc(db, 'inventory', inv.id));
@@ -595,13 +664,16 @@ export function Orders() {
         }
       }
 
-      // 2. Process modified items: adjust inventory delta & update line item
-      for (const item of editOrderItems) {
+      // 2. Process modified or newly added items: adjust inventory delta & update/insert line item
+      for (let idx = 0; idx < editOrderItems.length; idx++) {
+        const item = editOrderItems[idx];
         const orig = origItems.find(o => o.id === item.id);
         const oldQty = orig ? Number(orig.quantity) : 0;
         const delta = Number(item.quantity) - oldQty;
+        let inv = inventory.find(i => i.productId === item.productId && (!item.warehouseId || i.warehouseId === item.warehouseId))
+          || inventory.find(i => i.productId === item.productId && Number(i.quantity) > 0)
+          || inventory.find(i => i.productId === item.productId);
         if (delta !== 0) {
-          let inv = inventory.find(i => i.productId === item.productId && (!item.warehouseId || i.warehouseId === item.warehouseId));
           if (inv?.id) {
             try {
               const freshSnap = await getDoc(doc(db, 'inventory', inv.id));
@@ -620,7 +692,9 @@ export function Orders() {
                 productId: item.productId,
                 warehouseId: item.warehouseId || inv.warehouseId,
                 adjustmentAmount: -delta,
-                reason: `Order ${editingPendingOrder.orderNumber} edited: ${item.name} qty changed from ${oldQty} to ${item.quantity}`,
+                reason: orig
+                  ? `Order ${editingPendingOrder.orderNumber} edited: ${item.name} qty changed from ${oldQty} to ${item.quantity}`
+                  : `Order ${editingPendingOrder.orderNumber} edited: added ${item.name} (qty ${item.quantity})`,
                 recordedBy: profile?.uid || 'staff',
                 timestamp: serverTimestamp()
               });
@@ -628,11 +702,26 @@ export function Orders() {
           }
         }
         const newSubtotal = roundMoney(Number(item.quantity) * Number(item.unitPrice || 0));
-        await updateDoc(doc(db, 'order_items', item.id), {
-          quantity: Number(item.quantity),
-          subtotal: newSubtotal,
-          updatedAt: serverTimestamp()
-        });
+        if (orig) {
+          await updateDoc(doc(db, 'order_items', item.id), {
+            quantity: Number(item.quantity),
+            subtotal: newSubtotal,
+            updatedAt: serverTimestamp()
+          });
+        } else {
+          await addDoc(collection(db, 'orders', editingPendingOrder.id, 'items'), {
+            ...item,
+            orderId: editingPendingOrder.id,
+            warehouseId: item.warehouseId || inv?.warehouseId,
+            quantity: Number(item.quantity),
+            unitPrice: Number(item.unitPrice || 0),
+            subtotal: newSubtotal,
+            entryDetails: {
+              ...(item.entryDetails || {}),
+              position: idx,
+            },
+          });
+        }
       }
 
       // 3. Recalculate order totals
@@ -653,6 +742,7 @@ export function Orders() {
       };
 
       await updateDoc(doc(db, 'orders', editingPendingOrder.id), updatedOrder);
+      saveOrderOverride(editingPendingOrder.id, updatedOrder);
 
       // Update local states
       setOrders(prev => prev.map(o => o.id === editingPendingOrder.id ? { ...o, ...updatedOrder } : o));
@@ -808,6 +898,13 @@ export function Orders() {
         {profile && canCreate && <OrderEntry key={`${profile.uid}:${orderEntryKey}`} open={isNewOrderOpen} onClose={() => setIsNewOrderOpen(false)} orders={orders} products={products} inventory={inventory} profile={profile} onSaved={(order, items) => {
           saveOrderOverride(order.id, order);
           setOrders(current => [order, ...current.filter(item => item.id !== order.id)]);
+          setSortKey(null);
+          setOrderViewMode('all');
+          if (customOrderIds.length > 0) {
+            const nextIds = [order.id, ...customOrderIds.filter(id => id !== order.id)];
+            setCustomOrderIds(nextIds);
+            localStorage.setItem('activepro_custom_order_ids', JSON.stringify(nextIds));
+          }
           setIsNewOrderOpen(false);
           setOrderEntryKey(value => value + 1);
           setReceiptItems(items);
@@ -1185,7 +1282,7 @@ export function Orders() {
                 Edit Pending Order: {editingPendingOrder?.orderNumber}
               </DialogTitle>
               <DialogDescription>
-                Modify quantities or remove unavailable/damaged items before order preparation. Stock reservations are automatically reconciled.
+                Add items, modify quantities, or remove unavailable/damaged items before order preparation. Stock reservations are automatically reconciled.
               </DialogDescription>
             </DialogHeader>
 
@@ -1201,6 +1298,123 @@ export function Orders() {
                     <span className="font-medium">{editingPendingOrder?.deliveryCity || editingPendingOrder?.deliveryRegion || 'Metro Manila'}</span>
                   </div>
                 </div>
+              </div>
+
+              <div className="rounded-xl border bg-card p-3 space-y-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <Label className="text-xs font-bold">Add Another Item</Label>
+                  <span className="text-[11px] text-muted-foreground">Select from dropdown or search by name / SKU</span>
+                </div>
+                <div className="relative">
+                  <Input
+                    placeholder="Select or search product name / SKU to add…"
+                    className="h-9 pr-9 text-xs"
+                    value={editAddSearch}
+                    onFocus={() => setIsAddDropdownOpen(true)}
+                    onClick={() => setIsAddDropdownOpen(true)}
+                    onChange={(e) => {
+                      setEditAddSearch(e.target.value);
+                      setIsAddDropdownOpen(true);
+                    }}
+                  />
+                  <button
+                    type="button"
+                    aria-label="Toggle product dropdown"
+                    className="absolute right-1.5 top-1/2 -translate-y-1/2 flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+                    onClick={() => setIsAddDropdownOpen(prev => !prev)}
+                  >
+                    <ChevronRight className={`w-3.5 h-3.5 transition-transform ${isAddDropdownOpen ? '-rotate-90' : 'rotate-90'}`} />
+                  </button>
+                </div>
+                {isAddDropdownOpen && (
+                  <div className="max-h-48 overflow-y-auto rounded-lg border divide-y bg-background shadow-xs">
+                    {products
+                      .filter(p => !p.hasVariations && p.variantEnabled !== false && (!editAddSearch.trim() || `${p.name} ${p.sku}`.toLowerCase().includes(editAddSearch.trim().toLowerCase())))
+                      .sort((a, b) => {
+                        const stockA = inventory.filter(i => i.productId === a.id).reduce((s, i) => s + Math.max(0, Number(i.quantity) || 0), 0);
+                        const stockB = inventory.filter(i => i.productId === b.id).reduce((s, i) => s + Math.max(0, Number(i.quantity) || 0), 0);
+                        if ((stockA > 0) !== (stockB > 0)) return stockB > 0 ? 1 : -1;
+                        return (a.name || '').localeCompare(b.name || '');
+                      })
+                      .slice(0, 50)
+                      .map(p => {
+                        const prodInvs = inventory.filter(i => i.productId === p.id);
+                        const bestInv = prodInvs.filter(i => Number(i.quantity) > 0).sort((a, b) => Number(b.quantity) - Number(a.quantity))[0] || prodInvs[0];
+                        const totalStock = prodInvs.reduce((sum, i) => sum + Math.max(0, Number(i.quantity) || 0), 0);
+                        const defaultPrice = Number(p.basePrice || p.mmPrice || p.wholesalePrice || 0);
+                        return (
+                          <div key={p.id} className="flex items-center justify-between gap-3 px-3 py-2 hover:bg-muted/40 text-xs">
+                            <div className="min-w-0 flex-1">
+                              <p className="font-semibold truncate">{p.name}</p>
+                              <p className="text-[10px] text-muted-foreground">
+                                <span className="font-mono">{p.sku}</span> ·{' '}
+                                <span className={totalStock <= 0 ? 'text-destructive font-semibold' : ''}>
+                                  {totalStock > 0 ? `${totalStock} available` : 'Out of stock'}
+                                </span>
+                              </p>
+                            </div>
+                            <div className="text-right font-semibold shrink-0">{money(defaultPrice)}</div>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              className="h-7 px-2.5 text-xs shrink-0"
+                              disabled={totalStock <= 0}
+                              onClick={() => {
+                                const existingIdx = editOrderItems.findIndex(it => it.productId === p.id);
+                                if (existingIdx >= 0) {
+                                  setEditOrderItems(prev => prev.map((it, i) => {
+                                    if (i !== existingIdx) return it;
+                                    const nextQty = Number(it.quantity) + 1;
+                                    return { ...it, quantity: nextQty, subtotal: roundMoney(nextQty * Number(it.unitPrice || 0)) };
+                                  }));
+                                  toast.success(`Increased quantity of ${p.name}`);
+                                } else {
+                                  const unit = p.unit || (typeof p.units === 'string' && isNaN(Number(p.units)) ? p.units : 'pc');
+                                  const newItem: ReceiptItem = {
+                                    id: typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `item-${editingPendingOrder?.id}-${Date.now()}`,
+                                    orderId: editingPendingOrder?.id || '',
+                                    productId: p.id,
+                                    warehouseId: bestInv?.warehouseId,
+                                    sku: p.sku,
+                                    name: p.name,
+                                    unit,
+                                    quantity: 1,
+                                    unitPrice: defaultPrice,
+                                    subtotal: roundMoney(defaultPrice),
+                                    locationAisle: p.locationAisle,
+                                    locationBin: p.locationBin,
+                                    entryDetails: {
+                                      priceType: 'regular',
+                                      prices: {
+                                        regular: p.basePrice ?? null,
+                                        mm: p.mmPrice ?? p.wholesalePrice ?? null,
+                                        provincial: p.provincialPrice ?? p.dealerPrice ?? null,
+                                        promo: p.promoPrice ?? null,
+                                        cost: p.costPrice ?? null,
+                                      },
+                                      variation: '',
+                                      unit,
+                                      position: editOrderItems.length,
+                                    },
+                                  };
+                                  setEditOrderItems(prev => [...prev, newItem]);
+                                  toast.success(`Added ${p.name} to order`);
+                                }
+                                setEditAddSearch('');
+                                setIsAddDropdownOpen(false);
+                              }}
+                            >
+                              <Plus className="w-3.5 h-3.5 mr-1" /> Add
+                            </Button>
+                          </div>
+                        );
+                      })}
+                    {products.filter(p => !p.hasVariations && p.variantEnabled !== false && (!editAddSearch.trim() || `${p.name} ${p.sku}`.toLowerCase().includes(editAddSearch.trim().toLowerCase()))).length === 0 && (
+                      <div className="p-3 text-center text-xs text-muted-foreground">No matching products found.</div>
+                    )}
+                  </div>
+                )}
               </div>
 
               {isLoadingItems ? (
@@ -1324,12 +1538,23 @@ export function Orders() {
           />
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          {sortKey && orderViewMode === 'all' && (
+            <button
+              type="button"
+              className="text-[11px] font-medium text-muted-foreground hover:text-foreground px-2.5 py-1 rounded-lg border border-border bg-card hover:bg-muted transition-colors shadow-xs"
+              onClick={() => setSortKey(null)}
+              title="Clear column sort and return to newest / status order"
+            >
+              Clear Sort
+            </button>
+          )}
           {customOrderIds.length > 0 && orderViewMode === 'all' && (
             <button
               type="button"
               className="text-[11px] font-medium text-muted-foreground hover:text-foreground px-2.5 py-1 rounded-lg border border-border bg-card hover:bg-muted transition-colors shadow-xs"
               onClick={() => {
                 setCustomOrderIds([]);
+                setSortKey(null);
                 localStorage.removeItem('activepro_custom_order_ids');
                 toast.info('Orders reset to default status grouping.');
               }}
@@ -1370,6 +1595,29 @@ export function Orders() {
 
       {/* Mobile Card View */}
       <div className="lg:hidden space-y-3">
+        <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border bg-card p-2.5">
+          <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground px-1">Sort by</span>
+          <div className="flex flex-wrap gap-1.5 flex-1">
+            {ORDER_SORT_COLUMNS.map(col => {
+              const active = orderViewMode === 'all' && sortKey === col.key;
+              return (
+                <button
+                  key={col.key}
+                  type="button"
+                  onClick={() => toggleSort(col.key)}
+                  className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-xs font-medium transition-colors ${
+                    active
+                      ? 'border-primary/40 bg-primary/10 text-foreground font-semibold'
+                      : 'border-border bg-background text-muted-foreground hover:text-foreground'
+                  }`}
+                >
+                  <span>{col.label}</span>
+                  {active ? (sortDirection === 'asc' ? <ChevronUp className="size-3" /> : <ChevronDown className="size-3" />) : <ArrowUpDown className="size-3 opacity-40" />}
+                </button>
+              );
+            })}
+          </div>
+        </div>
         {displayOrders.map(order => {
           const deadlineDate = typeof order.deliveryDeadline?.toDate === 'function' ? order.deliveryDeadline.toDate() : order.deliveryDeadline ? new Date(order.deliveryDeadline) : null;
           const isOverdue = deadlineDate && deadlineDate < new Date() && !['delivered', 'completed', 'cancelled', 'escalated'].includes(order.status);
@@ -1507,11 +1755,30 @@ export function Orders() {
             <TableHeader className="bg-muted/50">
               <TableRow>
                 <TableHead className="w-9 px-2 text-center"><span className="sr-only">Reorder</span></TableHead>
-                <TableHead className="text-[10px] font-bold uppercase tracking-widest min-w-30">Order ID</TableHead>
-                <TableHead className="text-[10px] font-bold uppercase tracking-widest min-w-37.5">Client Name</TableHead>
-                <TableHead className="text-[10px] font-bold uppercase tracking-widest min-w-30">Status</TableHead>
-                <TableHead className="text-[10px] font-bold uppercase tracking-widest text-center min-w-30">Deadline</TableHead>
-                <TableHead className="text-[10px] font-bold uppercase tracking-widest text-right min-w-25">Amount</TableHead>
+                {ORDER_SORT_COLUMNS.map(col => {
+                  const active = orderViewMode === 'all' && sortKey === col.key;
+                  const justifyClass = col.align === 'right' ? 'justify-end' : col.align === 'center' ? 'justify-center' : 'justify-start';
+                  return (
+                    <TableHead
+                      key={col.key}
+                      aria-sort={active ? (sortDirection === 'asc' ? 'ascending' : 'descending') : 'none'}
+                      className={`text-[10px] font-bold uppercase tracking-widest p-0 ${col.headClass}`}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => toggleSort(col.key)}
+                        className={`flex w-full items-center gap-1 px-2 py-2.5 hover:bg-muted/80 hover:text-foreground transition-colors cursor-pointer ${justifyClass} ${active ? 'text-foreground' : ''}`}
+                      >
+                        <span>{col.label}</span>
+                        {active ? (
+                          sortDirection === 'asc' ? <ChevronUp className="size-3.5 shrink-0" /> : <ChevronDown className="size-3.5 shrink-0" />
+                        ) : (
+                          <ArrowUpDown className="size-3 shrink-0 opacity-40" />
+                        )}
+                      </button>
+                    </TableHead>
+                  );
+                })}
                 <TableHead className="text-[10px] font-bold uppercase tracking-widest text-center min-w-35">Actions</TableHead>
               </TableRow>
             </TableHeader>
