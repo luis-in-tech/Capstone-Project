@@ -1,4 +1,4 @@
-import React, { useRef } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { PrinterIcon as Printer } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import {
@@ -15,6 +15,44 @@ import {
   type ReceiptItem,
   type ReceiptOrder,
 } from "../lib/orderEntry";
+
+type ReceiptTemplate = {
+  docSubtitle: string;
+  docTitle: string;
+  footerHeading: string;
+  remarks: string;
+  note: string;
+  footerNote: string;
+};
+
+const DEFAULT_TEMPLATE: ReceiptTemplate = {
+  docSubtitle: "DELIVERY DOCUMENT",
+  docTitle: "DELIVERY RECEIPT",
+  footerHeading: "PACKING LIST / ACKNOWLEDGEMENT",
+  remarks: "",
+  note: "",
+  footerNote: "",
+};
+
+const DR_TEMPLATE_STORAGE_KEY = "activepro_dr_template";
+
+const loadTemplate = (): ReceiptTemplate => {
+  try {
+    const raw = localStorage.getItem(DR_TEMPLATE_STORAGE_KEY);
+    if (!raw) return DEFAULT_TEMPLATE;
+    const parsed = JSON.parse(raw);
+    return {
+      docSubtitle: typeof parsed.docSubtitle === "string" && parsed.docSubtitle.trim() ? parsed.docSubtitle : DEFAULT_TEMPLATE.docSubtitle,
+      docTitle: typeof parsed.docTitle === "string" && parsed.docTitle.trim() ? parsed.docTitle : DEFAULT_TEMPLATE.docTitle,
+      footerHeading: typeof parsed.footerHeading === "string" && parsed.footerHeading.trim() ? parsed.footerHeading : DEFAULT_TEMPLATE.footerHeading,
+      remarks: typeof parsed.remarks === "string" ? parsed.remarks : "",
+      note: typeof parsed.note === "string" ? parsed.note : "",
+      footerNote: typeof parsed.footerNote === "string" ? parsed.footerNote : "",
+    };
+  } catch {
+    return DEFAULT_TEMPLATE;
+  }
+};
 
 const printStyles = `
   @page { size: A4 portrait; margin: 12mm; }
@@ -38,6 +76,7 @@ const printStyles = `
   .dr-signatures { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
   .dr-signatures div { border-bottom: 1px solid #94a3b8; min-height: 48px; }
   .dr-footer p { margin-top: 20px; }
+  .dr-bottom-note { margin-top: 16px; padding-top: 10px; border-top: 1px dashed #cbd5e1; text-align: center; font-size: 11px; font-style: italic; font-weight: 600; color: #1e293b; white-space: pre-line; }
   .dr-page-number { margin-top: 20px; text-align: right; font-size: 10px; color: #64748b; }
   @media print { body { margin: 0; } .dr-page { padding: 0; margin: 0; break-after: page; } .dr-page:last-child { break-after: auto; } .dr-footer, .dr-totals, .dr-page tr { break-inside: avoid; } }
 `;
@@ -52,6 +91,19 @@ export function DeliveryReceipt({
   onClose: () => void;
 }) {
   const content = useRef<HTMLDivElement>(null);
+  const [template, setTemplate] = useState<ReceiptTemplate>(() => loadTemplate());
+
+  useEffect(() => {
+    const syncTemplate = () => setTemplate(loadTemplate());
+    syncTemplate();
+    window.addEventListener("activepro_dr_template_changed", syncTemplate);
+    window.addEventListener("storage", syncTemplate);
+    return () => {
+      window.removeEventListener("activepro_dr_template_changed", syncTemplate);
+      window.removeEventListener("storage", syncTemplate);
+    };
+  }, [order?.id]);
+
   if (!order) return null;
   type Row = { item: ReceiptItem; number: number } | { discount: GroupDiscountResult };
   const rows: Row[] = items.flatMap((item, position) => [
@@ -59,7 +111,13 @@ export function DeliveryReceipt({
     ...(order.receiptDetails?.groupDiscounts || []).filter(d => d.afterPosition === position).map(discount => ({ discount })),
   ]);
   const pages = receiptPages(rows);
-  const details = order.receiptDetails;
+  const details = order.receiptDetails as (typeof order.receiptDetails & Partial<ReceiptTemplate>) | undefined;
+  const displaySubtitle = details?.docSubtitle || template.docSubtitle || DEFAULT_TEMPLATE.docSubtitle;
+  const displayTitle = details?.docTitle || template.docTitle || DEFAULT_TEMPLATE.docTitle;
+  const displayFooterHeading = details?.footerHeading || template.footerHeading || DEFAULT_TEMPLATE.footerHeading;
+  const displayRemarks = details?.remarks || template.remarks;
+  const displayNote = details?.note || template.note;
+  const displayFooterNote = details?.footerNote !== undefined ? details.footerNote : template.footerNote;
   const date = order.createdAt?.toDate
     ? order.createdAt.toDate()
     : new Date(order.createdAt);
@@ -118,8 +176,8 @@ export function DeliveryReceipt({
               <section className="dr-page shadow-sm" key={index}>
                 <div className="dr-heading">
                   <div>
-                    <div className="dr-muted">DELIVERY DOCUMENT</div>
-                    <h2>DELIVERY RECEIPT</h2>
+                    <div className="dr-muted">{displaySubtitle}</div>
+                    <h2>{displayTitle}</h2>
                   </div>
                   <div>
                     <div className="dr-muted">Order Number</div>
@@ -204,7 +262,7 @@ export function DeliveryReceipt({
                       </div>
                     </div>
                     <footer className="dr-footer">
-                      <h3>PACKING LIST / ACKNOWLEDGEMENT</h3>
+                      <h3>{displayFooterHeading}</h3>
                       <div className="dr-signatures">
                         <div>
                           Prepared By
@@ -232,12 +290,16 @@ export function DeliveryReceipt({
                             __________________
                           </p>
                           <p>
-                            Remarks:
-                            __________________________________________________________________
+                            Remarks:{" "}
+                            {displayRemarks
+                              ? displayRemarks
+                              : "__________________________________________________________________"}
                           </p>
                           <p>
-                            Note:
-                            ______________________________________________________________________
+                            Note:{" "}
+                            {displayNote
+                              ? displayNote
+                              : "______________________________________________________________________"}
                           </p>
                         </div>
                         {order.photoValidationUrl && (
@@ -247,6 +309,11 @@ export function DeliveryReceipt({
                           </div>
                         )}
                       </div>
+                      {!!displayFooterNote?.trim() && (
+                        <div className="dr-bottom-note">
+                          NOTE: {displayFooterNote.trim()}
+                        </div>
+                      )}
                     </footer>
                   </>
                 ) : (

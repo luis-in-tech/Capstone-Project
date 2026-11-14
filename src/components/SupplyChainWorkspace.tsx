@@ -9,7 +9,7 @@ import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { db, collection, onSnapshot, addDoc, updateDoc, setDoc, doc, serverTimestamp } from '../lib/supabaseAdapter';
+import { db, collection, onSnapshot, addDoc, updateDoc, setDoc, deleteDoc, doc, serverTimestamp } from '../lib/supabaseAdapter';
 import type { InventoryItem, Order, OrderItem, Product, Transfer, Warehouse } from '../types';
 import type { InventoryMovementRecord } from '../lib/inventoryMovement';
 import { dateValue, isOverdue, orderBalance, supportsAction, type ChainTransaction, type SupplyView } from '../lib/supplyChain';
@@ -65,7 +65,14 @@ export function SupplyChainWorkspace({ sourceLoading, sourceError, onRetrySource
   const [search, setSearch] = useState('');
   const [typeFilter, setTypeFilter] = useState('All');
   const [selectedId, setSelectedId] = useState('');
-  const [orders, setOrders] = useState<SourceOrder[]>([]);
+  const [orders, setOrders] = useState<SourceOrder[]>(() => {
+    try {
+      const stored = localStorage.getItem('activepro_supply_chain_orders') || localStorage.getItem('activepro_db_orders');
+      return stored ? JSON.parse(stored) : [];
+    } catch {
+      return [];
+    }
+  });
   const [orderItems, setOrderItems] = useState<OrderItem[]>([]);
   const [movements, setMovements] = useState<InventoryMovementRecord[]>([]);
   const [transfers, setTransfers] = useState<Transfer[]>([]);
@@ -151,20 +158,25 @@ export function SupplyChainWorkspace({ sourceLoading, sourceError, onRetrySource
       setErrors(current => ({ ...current, [table]: false }));
     }, () => { setErrors(current => ({ ...current, [table]: true })); setLoaded(current => ({ ...current, [table]: true })); });
     const stops = [
-      watch('orders', setOrders),
+      watch('orders', (records: SourceOrder[]) => {
+        setOrders(records);
+        try {
+          localStorage.setItem('activepro_supply_chain_orders', JSON.stringify(records));
+          localStorage.setItem('activepro_db_orders', JSON.stringify(records));
+        } catch {}
+      }),
       watch('order_items', setOrderItems),
       watch('inventory_movements', setMovements),
       watch('transfers', setTransfers),
       watch('customers', (dbCustomers: Entity[]) => {
         if (Array.isArray(dbCustomers) && dbCustomers.length > 0) {
-          setCustomerDrafts(prev => {
-            const merged = [...prev];
-            for (const c of dbCustomers) {
-              const idx = merged.findIndex(m => m.id === c.id || m.name.toLowerCase() === c.name.toLowerCase());
-              if (idx >= 0) merged[idx] = { ...merged[idx], ...c };
-              else merged.push(c);
-            }
-            return merged;
+          setCustomerDrafts(dbCustomers);
+          try { localStorage.setItem('activepro_supply_chain_customers', JSON.stringify(dbCustomers)); } catch {}
+          const activeIds = new Set(dbCustomers.map(c => c.id || `customer:${(c.name || '').trim().toLowerCase()}`));
+          setHiddenCustomers(prev => {
+            const next = prev.filter(id => !activeIds.has(id));
+            try { localStorage.setItem('activepro_supply_chain_hidden_customers', JSON.stringify(next)); } catch {}
+            return next;
           });
         }
       })
@@ -197,7 +209,7 @@ export function SupplyChainWorkspace({ sourceLoading, sourceError, onRetrySource
   }
   const customers = Array.from(customerMap.values());
   const baseEntities: Entity[] = view === 'customers' ? customers.filter(c => !hiddenCustomers.includes(c.id)) : view === 'suppliers' ? suppliers : warehouses.map(w => ({ ...w, address: w.location }));
-  const entities = baseEntities.map(entity => ({ ...entity, ...metadata[`${view}:${entity.id}`] })).sort((a, b) => a.name.localeCompare(b.name));
+  const entities = baseEntities.map(entity => (view === 'customers' ? { ...metadata[`${view}:${entity.id}`], ...entity } : { ...entity, ...metadata[`${view}:${entity.id}`] })).sort((a, b) => a.name.localeCompare(b.name));
   const visibleEntities = entities.filter(entity => `${entity.name} ${entity.address || ''} ${entity.contact || ''}`.toLowerCase().includes(directorySearch.toLowerCase()));
   const current = entities.find(entity => entity.id === entityId) ?? visibleEntities[0];
   const warehouse = view === 'warehouses';
@@ -218,7 +230,7 @@ export function SupplyChainWorkspace({ sourceLoading, sourceError, onRetrySource
       direction: order.status === 'cancelled' ? undefined : 'out',
     };
   });
-  const customerOrders: ChainTransaction[] = orderRows.filter(row => row.status === 'completed');
+  const customerOrders: ChainTransaction[] = orderRows.filter(row => !['cancelled', 'escalated'].includes(row.status));
 
   const purchaseRows: ChainTransaction[] = movements.filter(m => m.type === 'external').map(movement => {
     const matchedSupplier = suppliers.find(s => s.id === movement.supplierId || s.name === movement.supplierName || s.name === movement.supplierId);
@@ -390,6 +402,7 @@ export function SupplyChainWorkspace({ sourceLoading, sourceError, onRetrySource
             try { localStorage.setItem('activepro_supply_chain_hidden_customers', JSON.stringify(next)); } catch {}
             return next;
           });
+          deleteDoc(doc(db, 'customers', oldKey)).catch(() => {});
 
           // Sync past orders to new customer name
           if (oldName) {
@@ -705,6 +718,7 @@ export function SupplyChainWorkspace({ sourceLoading, sourceError, onRetrySource
         window.dispatchEvent(new CustomEvent('activepro_customers_changed'));
         return next;
       });
+      deleteDoc(doc(db, 'customers', current.id)).catch(() => {});
       setEntityId('');
     } else if (warehouse) { const record = warehouses.find(w => w.id === current.id); if (record) onRemoveWarehouse(record); } else onRemoveSupplier(current.name); setRemoving(false); }}>{customer ? 'Remove customer' : 'Continue'}</Button></div></DialogContent></Dialog>
   </>}

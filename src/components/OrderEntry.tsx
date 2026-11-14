@@ -84,7 +84,26 @@ export function OrderEntry({
   onSaved: (order: ReceiptOrder, items: ReceiptItem[]) => void;
 }) {
   const [requestId, setRequestId] = useState(() => crypto.randomUUID());
-  const orderNumber = `ORD-${requestId.toUpperCase()}`;
+  const orderNumber = React.useMemo(() => {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: "Asia/Manila",
+      year: "2-digit",
+      month: "2-digit",
+      day: "2-digit",
+    }).formatToParts(new Date());
+    const get = (type: string) => parts.find((p) => p.type === type)?.value || "00";
+    const datePrefix = `${get("year")}${get("month")}${get("day")}`;
+    const pattern = new RegExp(`^ORD-${datePrefix}(\\d{4})$`, "i");
+    let maxSeq = 0;
+    for (const o of orders) {
+      const match = (o.orderNumber || "").match(pattern);
+      if (match) {
+        const seq = parseInt(match[1], 10);
+        if (seq > maxSeq) maxSeq = seq;
+      }
+    }
+    return `ORD-${datePrefix}${String(maxSeq + 1).padStart(4, "0")}`;
+  }, [orders]);
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
   const [warehouseError, setWarehouseError] = useState(false);
   const [customerName, setCustomerName] = useState("");
@@ -660,9 +679,11 @@ export function OrderEntry({
                   </Label>
                   <Input
                     id="entry-number"
-                    className="mt-1.5 font-mono text-xs bg-muted/40"
+                    className="mt-1.5 font-mono text-xs bg-muted/40 pointer-events-none select-none cursor-default focus-visible:ring-0 focus-visible:border-input"
                     value={orderNumber}
                     readOnly
+                    tabIndex={-1}
+                    onFocus={(e) => e.currentTarget.blur()}
                   />
                 </div>
                 <div className="grid gap-4 sm:grid-cols-2">
@@ -1398,13 +1419,13 @@ export function OrderEntry({
                     <Input
                       autoFocus
                       id="item-quantity"
-                      type="number"
-                      min="1"
-                      step="1"
+                      type="text"
+                      inputMode="numeric"
+                      pattern="[0-9]*"
                       required
                       value={draft.quantity}
                       onChange={(e) =>
-                        setDraft({ ...draft, quantity: e.target.value })
+                        setDraft({ ...draft, quantity: e.target.value.replace(/\D/g, "") })
                       }
                     />
                   </div>

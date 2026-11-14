@@ -269,41 +269,66 @@ export function serverTimestamp() {
 
 export async function getDocs(q: any) {
   let remoteData: any[] = [];
+  let remoteSuccess = false;
+  const hasLimitOp = Boolean(q.ops?.some((op: any) => op.type === 'limit'));
+  const hasWhereOp = Boolean(q.isSubcollection || q.ops?.some((op: any) => op.type === 'where'));
   try {
-    let builder: any = supabase.from(q.path).select('*');
-    if (q.isSubcollection && q.parentField && q.parentId) {
-      builder = builder.eq(q.parentField, q.parentId);
-    }
-    if (q.ops) {
-      for (const op of q.ops) {
-        if (op.type === 'where') {
-          if (op.op === '==') builder = builder.eq(op.field, op.value);
-          if (op.op === '!=') builder = builder.neq(op.field, op.value);
-          if (op.op === '>') builder = builder.gt(op.field, op.value);
-          if (op.op === '>=') builder = builder.gte(op.field, op.value);
-          if (op.op === '<') builder = builder.lt(op.field, op.value);
-          if (op.op === '<=') builder = builder.lte(op.field, op.value);
-          if (op.op === 'in') builder = builder.in(op.field, op.value);
-          if (op.op === 'array-contains') builder = builder.contains(op.field, [op.value]);
-        }
-        if (op.type === 'orderBy') {
-          builder = builder.order(op.field, { ascending: op.dir === 'asc' });
-        }
-        if (op.type === 'limit') {
-          builder = builder.limit(op.n);
+    const PAGE_SIZE = 1000;
+    let offset = 0;
+    while (true) {
+      let builder: any = supabase.from(q.path).select('*');
+      if (q.isSubcollection && q.parentField && q.parentId) {
+        builder = builder.eq(q.parentField, q.parentId);
+      }
+      if (q.ops) {
+        for (const op of q.ops) {
+          if (op.type === 'where') {
+            if (op.op === '==') builder = builder.eq(op.field, op.value);
+            if (op.op === '!=') builder = builder.neq(op.field, op.value);
+            if (op.op === '>') builder = builder.gt(op.field, op.value);
+            if (op.op === '>=') builder = builder.gte(op.field, op.value);
+            if (op.op === '<') builder = builder.lt(op.field, op.value);
+            if (op.op === '<=') builder = builder.lte(op.field, op.value);
+            if (op.op === 'in') builder = builder.in(op.field, op.value);
+            if (op.op === 'array-contains') builder = builder.contains(op.field, [op.value]);
+          }
+          if (op.type === 'orderBy') {
+            builder = builder.order(op.field, { ascending: op.dir === 'asc' });
+          }
+          if (op.type === 'limit') {
+            builder = builder.limit(op.n);
+          }
         }
       }
-    }
-    const { data, error } = await builder;
-    if (!error && Array.isArray(data)) {
-      remoteData = data;
+      if (!hasLimitOp) {
+        builder = builder.range(offset, offset + PAGE_SIZE - 1);
+      }
+      const { data, error } = await builder;
+      if (error || !Array.isArray(data)) {
+        break;
+      }
+      remoteSuccess = true;
+      remoteData.push(...data);
+      if (hasLimitOp || data.length < PAGE_SIZE) {
+        break;
+      }
+      offset += PAGE_SIZE;
     }
   } catch (err) {
     console.warn(`Supabase fetch failed for ${q.path}, utilizing local persistent records:`, err);
   }
 
-  // Merge remote data with local persistent cache (server data authoritative)
-  const localItems = getLocalCollection(q.path);
+  // Overwrite stale local cache when full remote collection fetch succeeds (server data authoritative)
+  const keepLocalSeeds = ['expenses', 'expenseCategories', 'orders'].includes(q.path);
+  if (remoteSuccess && !hasWhereOp && !hasLimitOp && !keepLocalSeeds) {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      try {
+        localStorage.setItem(`activepro_db_${q.path}`, JSON.stringify(remoteData));
+      } catch {}
+    }
+  }
+
+  const localItems = (remoteSuccess && !keepLocalSeeds) ? [] : getLocalCollection(q.path);
   const mergedMap = new Map<string, any>();
 
   for (const item of localItems) {
