@@ -143,6 +143,57 @@ export function Orders() {
   const [editAddSearch, setEditAddSearch] = useState('');
   const [isAddDropdownOpen, setIsAddDropdownOpen] = useState(false);
 
+  // Admin OR / Delivery Receipt Template State
+  const [isOrEditorOpen, setIsOrEditorOpen] = useState(false);
+  const [orDocSubtitle, setOrDocSubtitle] = useState('DELIVERY DOCUMENT');
+  const [orDocTitle, setOrDocTitle] = useState('DELIVERY RECEIPT');
+  const [orFooterHeading, setOrFooterHeading] = useState('PACKING LIST / ACKNOWLEDGEMENT');
+  const [orRemarks, setOrRemarks] = useState('');
+  const [orNote, setOrNote] = useState('');
+  const [orFooterNote, setOrFooterNote] = useState('');
+
+  const openOrEditor = () => {
+    try {
+      const raw = localStorage.getItem('activepro_dr_template');
+      const parsed = raw ? JSON.parse(raw) : {};
+      setOrDocSubtitle(typeof parsed.docSubtitle === 'string' && parsed.docSubtitle.trim() ? parsed.docSubtitle : 'DELIVERY DOCUMENT');
+      setOrDocTitle(typeof parsed.docTitle === 'string' && parsed.docTitle.trim() ? parsed.docTitle : 'DELIVERY RECEIPT');
+      setOrFooterHeading(typeof parsed.footerHeading === 'string' && parsed.footerHeading.trim() ? parsed.footerHeading : 'PACKING LIST / ACKNOWLEDGEMENT');
+      setOrRemarks(typeof parsed.remarks === 'string' ? parsed.remarks : '');
+      setOrNote(typeof parsed.note === 'string' ? parsed.note : '');
+      setOrFooterNote(typeof parsed.footerNote === 'string' ? parsed.footerNote : '');
+    } catch {
+      setOrDocSubtitle('DELIVERY DOCUMENT');
+      setOrDocTitle('DELIVERY RECEIPT');
+      setOrFooterHeading('PACKING LIST / ACKNOWLEDGEMENT');
+      setOrRemarks('');
+      setOrNote('');
+      setOrFooterNote('');
+    }
+    setIsOrEditorOpen(true);
+  };
+
+  const handleSaveOrTemplate = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!hasAdminRole(profile)) return;
+    const nextTemplate = {
+      docSubtitle: orDocSubtitle.trim() || 'DELIVERY DOCUMENT',
+      docTitle: orDocTitle.trim() || 'DELIVERY RECEIPT',
+      footerHeading: orFooterHeading.trim() || 'PACKING LIST / ACKNOWLEDGEMENT',
+      remarks: orRemarks.trim(),
+      note: orNote.trim(),
+      footerNote: orFooterNote.trim(),
+    };
+    try {
+      localStorage.setItem('activepro_dr_template', JSON.stringify(nextTemplate));
+      window.dispatchEvent(new CustomEvent('activepro_dr_template_changed'));
+      toast.success('OR / Delivery Receipt content updated.');
+      setIsOrEditorOpen(false);
+    } catch {
+      toast.error('Failed to save OR template.');
+    }
+  };
+
   const filteredOrders = orders.filter(order => {
     const queryStr = searchQuery.toLowerCase();
     const matchesSku = order.skus?.some(sku => sku.toLowerCase().includes(queryStr));
@@ -876,6 +927,16 @@ export function Orders() {
       <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3">
         <PageHeading title="Order Entry" subtitle="Create orders and track items, deliveries, and fulfillment status." />
         <div className="flex items-center gap-2">
+          {hasAdminRole(profile) && (
+            <Button
+              variant="outline"
+              className="gap-1.5 text-xs font-semibold"
+              onClick={openOrEditor}
+            >
+              <FileText className="size-4 shrink-0" />
+              <span>Edit OR</span>
+            </Button>
+          )}
           <Button
             variant="outline"
             className={`gap-1.5 text-xs font-semibold ${
@@ -911,6 +972,104 @@ export function Orders() {
           setReceiptOrder(order);
         }} />}
         <DeliveryReceipt order={receiptOrder} items={receiptItems} onClose={() => setReceiptOrder(null)} />
+
+        {hasAdminRole(profile) && (
+          <Dialog open={isOrEditorOpen} onOpenChange={setIsOrEditorOpen}>
+            <DialogContent className="sm:max-w-xl w-[95vw]">
+              <DialogHeader>
+                <DialogTitle>Edit OR / Delivery Receipt Content</DialogTitle>
+                <DialogDescription>
+                  Customize the receipt header, default remarks/note lines, and the bottom footer note shown on printed receipts.
+                </DialogDescription>
+              </DialogHeader>
+              <form onSubmit={handleSaveOrTemplate} className="space-y-4">
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="space-y-1">
+                    <Label htmlFor="or-edit-subtitle" className="text-xs">Header Subtitle</Label>
+                    <Input
+                      id="or-edit-subtitle"
+                      value={orDocSubtitle}
+                      onChange={(e) => setOrDocSubtitle(e.target.value)}
+                      placeholder="DELIVERY DOCUMENT"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label htmlFor="or-edit-title" className="text-xs">Document Title</Label>
+                    <Input
+                      id="or-edit-title"
+                      value={orDocTitle}
+                      onChange={(e) => setOrDocTitle(e.target.value)}
+                      placeholder="DELIVERY RECEIPT"
+                    />
+                  </div>
+                </div>
+                <div className="space-y-1">
+                  <Label htmlFor="or-edit-footer-heading" className="text-xs">Footer Section Heading</Label>
+                  <Input
+                    id="or-edit-footer-heading"
+                    value={orFooterHeading}
+                    onChange={(e) => setOrFooterHeading(e.target.value)}
+                    placeholder="PACKING LIST / ACKNOWLEDGEMENT"
+                  />
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="space-y-1">
+                    <Label htmlFor="or-edit-remarks" className="text-xs">Default Remarks Line</Label>
+                    <Input
+                      id="or-edit-remarks"
+                      value={orRemarks}
+                      onChange={(e) => setOrRemarks(e.target.value)}
+                      placeholder="Leave blank for handwritten line"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label htmlFor="or-edit-note" className="text-xs">Default Note Line</Label>
+                    <Input
+                      id="or-edit-note"
+                      value={orNote}
+                      onChange={(e) => setOrNote(e.target.value)}
+                      placeholder="Leave blank for handwritten line"
+                    />
+                  </div>
+                </div>
+                <div className="space-y-1">
+                  <Label htmlFor="or-edit-bottom-note" className="text-xs">Bottom Footer Note</Label>
+                  <textarea
+                    id="or-edit-bottom-note"
+                    rows={3}
+                    className="w-full rounded-lg border border-input bg-transparent px-2.5 py-1.5 text-sm outline-none transition-colors placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 dark:bg-input/30"
+                    value={orFooterNote}
+                    onChange={(e) => setOrFooterNote(e.target.value)}
+                    placeholder="e.g. After receiving the items, if there are any complaints, report immediately. No return, No exchange after 7 days. / Merry Christmas!"
+                  />
+                </div>
+                <DialogFooter className="flex flex-wrap items-center justify-between gap-2 pt-2">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      setOrDocSubtitle('DELIVERY DOCUMENT');
+                      setOrDocTitle('DELIVERY RECEIPT');
+                      setOrFooterHeading('PACKING LIST / ACKNOWLEDGEMENT');
+                      setOrRemarks('');
+                      setOrNote('');
+                      setOrFooterNote('');
+                    }}
+                  >
+                    Reset Defaults
+                  </Button>
+                  <div className="flex items-center gap-2">
+                    <Button type="button" variant="outline" onClick={() => setIsOrEditorOpen(false)}>
+                      Cancel
+                    </Button>
+                    <Button type="submit">Save OR Content</Button>
+                  </div>
+                </DialogFooter>
+              </form>
+            </DialogContent>
+          </Dialog>
+        )}
 
         <ITILIncidentConsole
           open={isIncidentsDialogOpen}
