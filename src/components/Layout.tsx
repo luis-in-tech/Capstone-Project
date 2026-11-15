@@ -179,7 +179,7 @@ function SidebarContent({
           {!isCollapsed && (
             <div className="flex flex-col">
               <span style={{ fontFamily: "'Anton', sans-serif" }} className="text-xl tracking-tight text-sidebar-foreground leading-none italic">
-                Active <span className="text-amber-700 dark:text-[#fdd001]">Pro</span>
+                Active <span className="text-[#fdd001]">Pro</span>
               </span>
             </div>
           )}
@@ -214,7 +214,7 @@ function SidebarContent({
                     }`}
                     title={isCollapsed ? (showNotifBadge ? `${item.name} (${unreadCount} unread)` : item.name) : undefined}
                   >
-                    <item.icon className={`w-4 h-4 shrink-0 ${isActive ? 'text-amber-700 dark:text-[#fdd001]' : 'text-sidebar-foreground/60 group-hover:text-sidebar-foreground'}`} />
+                    <item.icon className={`w-4 h-4 shrink-0 ${isActive ? 'text-[#fdd001]' : 'text-sidebar-foreground/60 group-hover:text-sidebar-foreground'}`} />
                     {!isCollapsed && <span className="flex-1 truncate">{item.name}</span>}
                     {showNotifBadge && !isCollapsed && (
                       <span className="px-1.5 py-0.5 rounded-full bg-primary text-primary-foreground text-[9px] font-black leading-none">
@@ -267,7 +267,7 @@ function SidebarContent({
               <span className="text-xs font-bold text-sidebar-foreground truncate tracking-tight">
                 {profile?.displayName || 'User'}
               </span>
-              <span className="text-[9px] text-amber-700 dark:text-[#fdd001] uppercase font-bold tracking-widest mt-0.5">
+              <span className="text-[9px] text-[#fdd001] uppercase font-bold tracking-widest mt-0.5">
                 {profile?.role} PORTAL
               </span>
             </div>
@@ -368,7 +368,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
           {/* Page title */}
           <div className="flex flex-col">
             <span style={{ fontFamily: "'Anton', sans-serif" }} className="text-base tracking-tight text-foreground leading-none italic">
-              Active <span className="text-amber-700 dark:text-[#fdd001]">Pro</span>
+              Active <span className="text-[#fdd001]">Pro</span>
             </span>
             <span className="text-[9px] uppercase font-black tracking-widest text-muted-foreground mt-0.5">
               {filteredNavigation.find(item => item.href === location.pathname)?.name || 'Portal'}
