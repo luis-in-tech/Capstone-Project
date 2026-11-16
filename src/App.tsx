@@ -114,14 +114,17 @@ function AppContent() {
   const access = useStaffAccess();
   const warehousesSeededForUidRef = useRef<string | null>(null);
 
-  // Seed initial warehouses if empty
+  // Seed initial warehouses if empty (checked at most once per browser session)
   useEffect(() => {
     const seedWarehouses = async () => {
       if (!user || !profile || access.loading || access.revoked || access.error || !hasAdminRole(profile)) return;
       if (warehousesSeededForUidRef.current === profile.uid) return;
       warehousesSeededForUidRef.current = profile.uid;
       try {
-        const { data: snap, error } = await supabase.from('warehouses').select('id');
+        if (typeof window !== 'undefined' && window.sessionStorage?.getItem('activepro_warehouses_checked') === '1') {
+          return;
+        }
+        const { data: snap, error } = await supabase.from('warehouses').select('id').limit(1);
         if (error) throw error;
         if (!snap || snap.length === 0) {
           const { error: insertError } = await supabase.from('warehouses').insert([
@@ -129,6 +132,9 @@ function AppContent() {
             { name: 'Valenzuela B (Sub)', location: 'Hub 2' },
           ]);
           if (insertError) throw insertError;
+        }
+        if (typeof window !== 'undefined') {
+          window.sessionStorage?.setItem('activepro_warehouses_checked', '1');
         }
       } catch (e) {
         warehousesSeededForUidRef.current = null;

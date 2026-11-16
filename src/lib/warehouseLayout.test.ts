@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { warehouseQuantity, zoneQuantity, type ZoneAllocation } from './warehouseLayout';
+import { defaultZoneBox, pickDefaultWarehouse, sortWarehousesForLayout, warehouseQuantity, zoneQuantity, type ZoneAllocation } from './warehouseLayout';
 
 const inventory = [
   { id: 'i1', warehouseId: 'w1', productId: 'p1', quantity: 60, lastUpdated: '' },
@@ -37,4 +37,30 @@ test('receipts without a zone increase Unassigned without changing other allocat
 test('missing products have zero stock and quantities never leak between products', () => {
   assert.equal(zoneQuantity(allocations, inventory, 'w1', 'p2', 'z1'), 0);
   assert.equal(zoneQuantity(allocations, inventory, 'w1', 'p2', 'unassigned'), 0);
+});
+
+test('Main Warehouse (Manila) is prioritized as the default warehouse layout selection', () => {
+  const list = [
+    { id: 'w-cebu', name: 'Cebu Distribution Hub' },
+    { id: 'w-davao', name: 'Davao Branch' },
+    { id: 'w-manila', name: 'Main Warehouse (Manila)' },
+  ];
+  assert.equal(pickDefaultWarehouse(list)?.id, 'w-manila');
+  assert.deepEqual(sortWarehousesForLayout(list).map(w => w.id), ['w-manila', 'w-cebu', 'w-davao']);
+});
+
+test('defaultZoneBox lays out zones within bounds without overlapping even above 6 zones', () => {
+  for (const total of [5, 12, 16]) {
+    const boxes = Array.from({ length: total }, (_, idx) => defaultZoneBox(idx, total));
+    for (let i = 0; i < boxes.length; i++) {
+      const a = boxes[i];
+      assert.ok(a.x >= 0 && a.y >= 0 && a.w >= 6 && a.h >= 6);
+      assert.ok(a.x + a.w <= 100 && a.y + a.h <= 100);
+      for (let j = i + 1; j < boxes.length; j++) {
+        const b = boxes[j];
+        const overlaps = a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+        assert.equal(overlaps, false);
+      }
+    }
+  }
 });

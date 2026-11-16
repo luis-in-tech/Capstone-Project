@@ -19,6 +19,7 @@ import { useAuth } from '../hooks/useAuth';
 import { supabase } from '../lib/supabase';
 import { addDoc, collection, db, deleteDoc, doc, getDocs, isMissingRpcError, onSnapshot, setDoc, updateDoc } from '../lib/supabaseAdapter';
 import { availableStock, newMovementDraft, purchaseTotal, validateMovement, type InventoryMovementRecord, type MovementDraft, type MovementLine } from '../lib/inventoryMovement';
+import { matchesMovementNotificationParam } from '../lib/notificationLinks';
 import type { InventoryItem, Product, Warehouse } from '../types';
 import { Transfers } from './Transfers';
 import { zoneQuantity, type WarehouseZone, type ZoneAllocation } from '../lib/warehouseLayout';
@@ -221,6 +222,9 @@ function normalizeMovementRecord(
 export function InventoryMovement() {
   const [searchParams, setSearchParams] = useSearchParams();
   const batchId = searchParams.get('batch');
+  const movementIdParam = searchParams.get('movementId');
+  const legacyParam = searchParams.get('legacy');
+  const transferIdParam = searchParams.get('transferId');
   const { profile } = useAuth();
   const { permissions } = useStaffAccess();
 
@@ -269,16 +273,40 @@ export function InventoryMovement() {
   const [selected, setSelected] = useState<InventoryMovementRecord | null>(null);
   const canManage = permissions.movementCreate !== 'none';
   const ready = loadedReferences.length === 4 && !Object.keys(referenceErrors).length;
+  const lastAppliedMovementParamRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (!batchId || loading || loadError) return;
-    const receipt = movements.find(m => (m.items || []).some(item => item.batchId === batchId));
-    if (receipt) setSelected(receipt);
-  }, [batchId, movements, loading, loadError]);
+    if ((legacyParam === '1' || !!transferIdParam) && (hasAdminRole(profile) || profile?.role === 'secretary')) {
+      setLegacy(true);
+    }
+  }, [legacyParam, transferIdParam, profile]);
+
+  useEffect(() => {
+    const key = batchId ? `batch:${batchId}` : movementIdParam ? `movement:${movementIdParam}` : null;
+    if (!key) {
+      lastAppliedMovementParamRef.current = null;
+      return;
+    }
+    if (loading || loadError || lastAppliedMovementParamRef.current === key) return;
+    const receipt = batchId
+      ? movements.find(m => (m.items || []).some(item => item.batchId === batchId))
+      : movements.find(m => matchesMovementNotificationParam(m, movementIdParam));
+    if (receipt) {
+      lastAppliedMovementParamRef.current = key;
+      setLegacy(false);
+      setSelected(receipt);
+    }
+  }, [batchId, movementIdParam, movements, loading, loadError]);
 
   function closeReceipt() {
     setSelected(null);
-    if (batchId) { const next = new URLSearchParams(searchParams); next.delete('batch'); setSearchParams(next, { replace: true }); }
+    lastAppliedMovementParamRef.current = null;
+    if (batchId || movementIdParam) {
+      const next = new URLSearchParams(searchParams);
+      next.delete('batch');
+      next.delete('movementId');
+      setSearchParams(next, { replace: true });
+    }
   }
 
   useEffect(() => {
@@ -871,7 +899,16 @@ export function InventoryMovement() {
       ].map(stat => <div key={stat.label} className="flex items-start gap-4 rounded-xl border bg-card p-5"><div className={`rounded-xl p-2.5 ${stat.style}`}><stat.icon className="size-5" /></div><div><p className="text-xs font-medium text-muted-foreground">{stat.label}</p><p className="mt-1 text-2xl font-semibold tracking-tight">{loading || loadError ? '—' : stat.value}</p><p className="mt-1 text-xs text-muted-foreground">{stat.note}</p></div></div>)}
     </div>
 
-    <div className="flex flex-wrap items-center justify-between gap-2 border-b pb-3"><h2 className="flex items-center gap-2 text-sm font-semibold"><History className="size-4" /> Movement history</h2>{(hasAdminRole(profile) || profile?.role === 'secretary') && <Button variant="ghost" size="sm" onClick={() => setLegacy(!legacy)}>{legacy ? 'Back to movements' : 'Earlier transport records'}<ArrowRight className="size-3.5" /></Button>}</div>
+    <div className="flex flex-wrap items-center justify-between gap-2 border-b pb-3"><h2 className="flex items-center gap-2 text-sm font-semibold"><History className="size-4" /> Movement history</h2>{(hasAdminRole(profile) || profile?.role === 'secretary') && <Button variant="ghost" size="sm" onClick={() => {
+      const nextLegacy = !legacy;
+      setLegacy(nextLegacy);
+      if (!nextLegacy && (searchParams.has('legacy') || searchParams.has('transferId'))) {
+        const next = new URLSearchParams(searchParams);
+        next.delete('legacy');
+        next.delete('transferId');
+        setSearchParams(next, { replace: true });
+      }
+    }}>{legacy ? 'Back to movements' : 'Earlier transport records'}<ArrowRight className="size-3.5" /></Button>}</div>
     {legacy ? <div className="space-y-4"><div className="rounded-xl border bg-muted/40 p-4 text-sm"><p className="font-semibold">Earlier transport records</p><p className="mt-1 text-muted-foreground">View and complete transport requests created before Inventory Movement. Their original IDs and statuses are preserved.</p></div><Transfers historyOnly /></div> : <>
       {(loadError || Object.keys(referenceErrors).length > 0) && <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm"><span>{loadError || Object.values(referenceErrors).join(' ')}</span><Button variant="outline" size="sm" onClick={() => setReload(value => value + 1)}>Retry</Button></div>}
       <div className="overflow-hidden rounded-xl border bg-card">

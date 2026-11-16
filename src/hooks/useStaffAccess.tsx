@@ -1,7 +1,9 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 import { useAuth } from './useAuth';
 import { collection, db, limit, onSnapshot, orderBy, query, where } from '../lib/supabaseAdapter';
+import { buildNotificationHref } from '../lib/notificationLinks';
 import { hasAdminRole, resolvePermissions } from '../lib/staffPermissions';
 import type { Order, StaffDelegation, Transfer } from '../types';
 
@@ -28,6 +30,7 @@ export interface AdminNotificationItem {
 
 interface DispatchTripDoc {
   id: string;
+  route_id?: string;
   vehicle_name?: string;
   driver?: string;
   plate?: string;
@@ -419,7 +422,7 @@ function AdminNotificationsProvider({ children }: { children: React.ReactNode })
                 ? 'bg-red-500/10 text-red-600 border-red-500/20'
                 : 'bg-amber-500/10 text-amber-600 border-amber-500/20',
         meta: o.deliveryCity ? `Delivery: ${o.deliveryCity}` : undefined,
-        href: '/orders',
+        href: buildNotificationHref({ kind: 'order', id: o.id }),
       });
     });
 
@@ -435,7 +438,7 @@ function AdminNotificationsProvider({ children }: { children: React.ReactNode })
         statusBadge: t.status || 'in_transit',
         statusColor: 'bg-indigo-500/10 text-indigo-600 border-indigo-500/20',
         meta: `Savings: ${savingsFormatted}`,
-        href: '/logistics',
+        href: buildNotificationHref({ kind: 'logistics', id: t.id, routeId: t.route_id, region: t.region }),
       });
     });
 
@@ -455,7 +458,7 @@ function AdminNotificationsProvider({ children }: { children: React.ReactNode })
               ? 'bg-sky-500/10 text-sky-600 border-sky-500/20'
               : 'bg-amber-500/10 text-amber-600 border-amber-500/20',
         meta: tr.status === 'in_transit' ? 'In Transit' : tr.status === 'received' ? 'Received' : 'Pending',
-        href: '/transfers',
+        href: buildNotificationHref({ kind: 'transfer', id: tr.id }),
       });
     });
 
@@ -477,7 +480,7 @@ function AdminNotificationsProvider({ children }: { children: React.ReactNode })
           ? 'bg-blue-500/10 text-blue-600 border-blue-500/20'
           : 'bg-purple-500/10 text-purple-600 border-purple-500/20',
         meta: valFormatted ? `Purchase Value: ${valFormatted} • Recorded by ${m.recordedByName || 'Staff'}` : `Recorded by ${m.recordedByName || 'Staff'}`,
-        href: '/transfers',
+        href: buildNotificationHref({ kind: 'movement', id: m.id }),
       });
     });
 
@@ -495,7 +498,7 @@ function AdminNotificationsProvider({ children }: { children: React.ReactNode })
             ? 'bg-amber-500/10 text-amber-600 border-amber-500/20'
             : 'bg-emerald-500/10 text-emerald-600 border-emerald-500/20',
         meta: 'Supply Chain Infrastructure',
-        href: '/supply-chain',
+        href: buildNotificationHref({ kind: 'warehouse', id: w.id }),
       });
     });
 
@@ -513,7 +516,7 @@ function AdminNotificationsProvider({ children }: { children: React.ReactNode })
             ? 'bg-red-500/10 text-red-600 border-red-500/20'
             : 'bg-emerald-500/10 text-emerald-600 border-emerald-500/20',
         meta: 'Security & Key Personnel Access',
-        href: '/delegation',
+        href: buildNotificationHref({ kind: 'delegation', id: del.id, email: del.staffEmail, active: del.active }),
       });
     });
 
@@ -535,24 +538,7 @@ function AdminNotificationsProvider({ children }: { children: React.ReactNode })
     });
   }, [compiledNotifications, prefs]);
 
-  // Fire live toast notifications globally across any admin route for items arriving after initial source snapshots
-  useEffect(() => {
-    if (!isAdmin) return;
-    const allIds = compiledNotifications.map((item) => item.id);
-    const enabledIds = new Set(allNotifications.map((item) => item.id));
-    const newlyArrived = allNotifications.filter(
-      (item) => enabledIds.has(item.id) && !seenRawIdsRef.current.has(item.id) && !readIdsRef.current.has(item.id),
-    );
-    allIds.forEach((id) => seenRawIdsRef.current.add(id));
-
-    if (prefs.toastAlerts && newlyArrived.length > 0) {
-      if (newlyArrived.length === 1) {
-        toast.info(newlyArrived[0].title, { description: newlyArrived[0].description });
-      } else {
-        toast.info(`${newlyArrived.length} new system activity alerts`, { description: newlyArrived[0].title });
-      }
-    }
-  }, [compiledNotifications, allNotifications, isAdmin, prefs.toastAlerts]);
+  const navigate = useNavigate();
 
   const unreadCount = useMemo(
     () => allNotifications.filter((item) => !readIds.has(item.id)).length,
@@ -567,6 +553,44 @@ function AdminNotificationsProvider({ children }: { children: React.ReactNode })
     setReadIds(nextSet);
     safeWriteStorage(notifReadKey, JSON.stringify(Array.from(nextSet)));
   }, [notifReadKey]);
+
+  // Fire live toast notifications globally across any admin route for items arriving after initial source snapshots
+  useEffect(() => {
+    if (!isAdmin) return;
+    const allIds = compiledNotifications.map((item) => item.id);
+    const enabledIds = new Set(allNotifications.map((item) => item.id));
+    const newlyArrived = allNotifications.filter(
+      (item) => enabledIds.has(item.id) && !seenRawIdsRef.current.has(item.id) && !readIdsRef.current.has(item.id),
+    );
+    allIds.forEach((id) => seenRawIdsRef.current.add(id));
+
+    if (prefs.toastAlerts && newlyArrived.length > 0) {
+      const target = newlyArrived[0];
+      if (newlyArrived.length === 1) {
+        toast.info(target.title, {
+          description: target.description,
+          action: {
+            label: 'View',
+            onClick: () => {
+              markItemAsRead(target.id);
+              navigate(target.href);
+            },
+          },
+        });
+      } else {
+        toast.info(`${newlyArrived.length} new system activity alerts`, {
+          description: target.title,
+          action: {
+            label: 'View latest',
+            onClick: () => {
+              markItemAsRead(target.id);
+              navigate(target.href);
+            },
+          },
+        });
+      }
+    }
+  }, [compiledNotifications, allNotifications, isAdmin, prefs.toastAlerts, markItemAsRead, navigate]);
 
   const markAllAsRead = useCallback(() => {
     const nextSet = new Set([...readIdsRef.current, ...allNotifications.map((item) => item.id)]);

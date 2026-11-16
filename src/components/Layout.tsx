@@ -24,9 +24,10 @@ import {
   BellIcon as Bell,
   ChecksIcon as CheckCheck,
 } from '@phosphor-icons/react';
-import { useState } from 'react';
+import { lazy, Suspense, useState } from 'react';
 import { useAuth } from '../hooks/useAuth';
 import { useTheme } from './ThemeProvider';
+import { preloadRoute } from '../lib/routePrefetch';
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from '@/components/ui/sheet';
 import {
   DropdownMenu,
@@ -36,9 +37,11 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { motion, AnimatePresence } from 'motion/react';
-import { TutorialOverlay } from './TutorialOverlay';
 import { SidebarCollapsedContext } from './PageHeading';
+
+const TutorialOverlay = lazy(() =>
+  import('./TutorialOverlay').then((m) => ({ default: m.TutorialOverlay })),
+);
 
 const navigation = [
   { name: 'Overview', href: '/admin', icon: SquaresFourIcon, roles: ['admin'], section: 'OVERVIEW & ANALYTICS' },
@@ -207,6 +210,8 @@ function SidebarContent({
                     key={item.name}
                     to={item.href}
                     onClick={onCloseMobile}
+                    onMouseEnter={() => preloadRoute(item.href)}
+                    onFocus={() => preloadRoute(item.href)}
                     className={`relative flex items-center ${isCollapsed ? 'justify-center px-0 h-9' : 'gap-2.5 px-2.5 h-8.5'} text-xs font-semibold transition-all group ${
                       isActive
                         ? 'bg-neutral-100 dark:bg-white/10 text-neutral-900 dark:text-white border-l-[3px] border-[#fdd001] rounded-r-sm rounded-l-none pl-2 font-bold shadow-none'
@@ -315,6 +320,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const location = useLocation();
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isTutorialOpen, setIsTutorialOpen] = useState(false);
+  const [hasOpenedTutorial, setHasOpenedTutorial] = useState(false);
   const [isCollapsed, setIsCollapsed] = useState(false);
 
   const isDark = theme === 'dark';
@@ -335,13 +341,20 @@ export function Layout({ children }: { children: React.ReactNode }) {
     unreadCount,
     onCollapseToggle: () => setIsCollapsed(prev => !prev),
     onCloseMobile: () => setIsMobileMenuOpen(false),
-    onOpenTutorial: () => setIsTutorialOpen(true),
+    onOpenTutorial: () => {
+      setHasOpenedTutorial(true);
+      setIsTutorialOpen(true);
+    },
     onLogout: logout,
   };
 
   return (
     <div className="min-h-screen bg-background flex w-full overflow-x-hidden">
-      <TutorialOverlay open={isTutorialOpen} onOpenChange={setIsTutorialOpen} />
+      {hasOpenedTutorial && (
+        <Suspense fallback={null}>
+          <TutorialOverlay open={isTutorialOpen} onOpenChange={setIsTutorialOpen} />
+        </Suspense>
+      )}
 
       {/* Desktop Sidebar */}
       <aside className={`hidden lg:block fixed inset-y-0 z-50 border-r border-sidebar-border bg-sidebar transition-all duration-200 ${isCollapsed ? 'w-16' : 'w-60'}`}>
@@ -392,19 +405,9 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
         {/* Page Content */}
         <main className="flex-1 w-full min-w-0 p-4 lg:p-6 overflow-x-hidden">
-          <AnimatePresence mode="wait">
-            <motion.div
-              key={location.pathname}
-              initial={{ opacity: 0, y: 6 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -6 }}
-              transition={{ duration: 0.15 }}
-            >
-              <SidebarCollapsedContext.Provider value={isCollapsed}>
-                {children}
-              </SidebarCollapsedContext.Provider>
-            </motion.div>
-          </AnimatePresence>
+          <SidebarCollapsedContext.Provider value={isCollapsed}>
+            {children}
+          </SidebarCollapsedContext.Provider>
         </main>
       </div>
     </div>

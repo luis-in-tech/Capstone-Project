@@ -1,7 +1,8 @@
 import { SearchBar } from '@/components/ui/search-bar';
-import { useEffect, useRef, useState } from 'react';
-import { WarehouseFloorplan } from './WarehouseFloorplan';
-import { ArrowLeftIcon as ArrowLeft, ArrowRightIcon as ArrowRight, ArrowsLeftRightIcon as ArrowsLeftRight, SquaresFourIcon as Grid2X2, InfoIcon as Info, SpinnerGapIcon as Loader2, PackageIcon as Package, WarehouseIcon } from '@phosphor-icons/react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { WarehouseFloorplan, type PendingZoneConversion } from './WarehouseFloorplan';
+import { ArrowLeftIcon as ArrowLeft, ArrowRightIcon as ArrowRight, ArrowsLeftRightIcon as ArrowsLeftRight, SquaresFourIcon as Grid2X2, InfoIcon as Info, SpinnerGapIcon as Loader2, PackageIcon as Package, PlusIcon as Plus, WarehouseIcon } from '@phosphor-icons/react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -12,18 +13,36 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { useStaffAccess } from '../hooks/useStaffAccess';
 import { useAuth } from '../hooks/useAuth';
+import { hasAdminRole } from '../lib/staffPermissions';
 import { assignLocalQuantity, localLayoutKey, readLocalLayout, validLocalAllocations } from '../lib/warehouseLayoutLocal';
+import { boxPropsFromShape, suggestZoneNameFromShape, type FloorplanShape } from '../lib/warehouseFloorplan';
 import { supabase } from '../lib/supabase';
-import { zoneQuantity, type WarehouseZone, type ZoneAllocation } from '../lib/warehouseLayout';
+import { pickDefaultWarehouse, sortWarehousesForLayout, type WarehouseZone, type ZoneAllocation } from '../lib/warehouseLayout';
 import type { Product, InventoryItem, Warehouse } from '../types';
+
+const ZONE_TABLE_PAGE_SIZE = 50;
+const EMPTY_SUMMARY = { units: 0, products: 0 };
 
 export function WarehouseLayout({ warehouses, products, inventory }: { warehouses: Warehouse[]; products: Product[]; inventory: InventoryItem[] }) {
   const access = useStaffAccess();
   const { profile } = useAuth();
+  const navigate = useNavigate();
+  const isAdmin = hasAdminRole(profile);
   const [temporary, setTemporary] = useState(false);
-  const allowed = warehouses.filter(w => access.permissions.warehouseAccess === 'all' || access.permissions.warehouseIds.includes(w.id));
+  const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
+  const [clearingMap, setClearingMap] = useState(false);
+  const [mapResetKey, setMapResetKey] = useState(0);
+  const warehouseAccess = access.permissions.warehouseAccess;
+  const warehouseIds = access.permissions.warehouseIds;
+  const allowed = useMemo(
+    () => sortWarehousesForLayout(
+      warehouses.filter(w => warehouseAccess === 'all' || warehouseIds.includes(w.id)),
+    ),
+    [warehouses, warehouseAccess, warehouseIds],
+  );
   const [warehouseId, setWarehouseId] = useState('');
-  const warehouse = allowed.find(w => w.id === warehouseId) || allowed[0];
+  const defaultWarehouse = useMemo(() => pickDefaultWarehouse(allowed), [allowed]);
+  const warehouse = allowed.find(w => w.id === warehouseId) || defaultWarehouse;
   const id = warehouse?.id || '';
   const storageKey = localLayoutKey(import.meta.env.VITE_SUPABASE_URL || '', profile?.uid || '', id);
   const canEdit = access.permissions.inventory === 'adjust' && !access.loading && !access.error && !access.revoked && !!id;
@@ -31,11 +50,16 @@ export function WarehouseLayout({ warehouses, products, inventory }: { warehouse
   const [allocations, setAllocations] = useState<ZoneAllocation[]>([]);
   const [selected, setSelected] = useState('');
   const [search, setSearch] = useState('');
+  const [tablePage, setTablePage] = useState(1);
+  const [mapSearch, setMapSearch] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [reload, setReload] = useState(0);
   const [saving, setSaving] = useState(false);
-  const [editor, setEditor] = useState<{ mode: 'add' | 'rename' | 'delete'; zone?: WarehouseZone } | null>(null);
+  const [editor, setEditor] = useState<{ mode: 'add' | 'rename' | 'delete'; zone?: WarehouseZone; fromShape?: FloorplanShape } | null>(null);
+  const [pendingZoneConversion, setPendingZoneConversion] = useState<PendingZoneConversion | null>(null);
+  const [floorplanDirty, setFloorplanDirty] = useState(false);
+  const [pendingLeaveAction, setPendingLeaveAction] = useState<{ kind: 'warehouse'; id: string } | { kind: 'add-warehouse' } | null>(null);
   const [name, setName] = useState('');
   const [formError, setFormError] = useState('');
 
@@ -49,18 +73,22 @@ export function WarehouseLayout({ warehouses, products, inventory }: { warehouse
   const [assignSaving, setAssignSaving] = useState(false);
   const [assignError, setAssignError] = useState('');
   const lastLoadAtRef = useRef(0);
+  const inventoryRef = useRef(inventory);
+  inventoryRef.current = inventory;
 
   useEffect(() => {
     setSelectedProductIds([]);
+    setTablePage(1);
   }, [search]);
 
   useEffect(() => {
     setSelectedProductIds([]);
     setBulkZoneId('');
     setAssignTarget(null);
+    setTablePage(1);
   }, [selected, id]);
 
-  useEffect(() => { setSelected(''); setSearch(''); setEditor(null); setLoading(true); setZones([]); setAllocations([]); setTemporary(false); }, [id, storageKey]);
+  useEffect(() => { setSelected(''); setSearch(''); setMapSearch(''); setEditor(null); setLoading(true); setZones([]); setAllocations([]); setTemporary(false); }, [id, storageKey]);
   useEffect(() => {
     let active = true;
     setError('');
@@ -78,7 +106,7 @@ export function WarehouseLayout({ warehouses, products, inventory }: { warehouse
         ].filter(result => result.error);
         if (failures.length && failures.every(({ error }) => error && ['PGRST205', '42P01'].includes(error.code))) {
           const saved = readLocalLayout(localStorage, storageKey, id);
-          const pruned = validLocalAllocations(saved, inventory, id);
+          const pruned = validLocalAllocations(saved, inventoryRef.current, id);
           if (pruned.length !== saved.allocations.length) {
             localStorage.setItem(storageKey, JSON.stringify({ ...saved, allocations: pruned }));
           }
@@ -109,7 +137,21 @@ export function WarehouseLayout({ warehouses, products, inventory }: { warehouse
       if (active) lastLoadAtRef.current = Date.now();
     });
     return () => { active = false; };
-  }, [id, reload, inventory, storageKey]);
+  }, [id, reload, storageKey]);
+
+  useEffect(() => {
+    if (!temporary || !id) return;
+    try {
+      const saved = readLocalLayout(localStorage, storageKey, id);
+      const pruned = validLocalAllocations(saved, inventory, id);
+      if (pruned.length !== saved.allocations.length) {
+        localStorage.setItem(storageKey, JSON.stringify({ ...saved, allocations: pruned }));
+      }
+      setAllocations(pruned);
+    } catch {
+      // Ignore malformed local layout on background inventory updates
+    }
+  }, [temporary, id, storageKey, inventory]);
 
   useEffect(() => {
     const refresh = (event: StorageEvent) => { if (event.key === storageKey || event.key === null) setReload(n => n + 1); };
@@ -127,37 +169,186 @@ export function WarehouseLayout({ warehouses, products, inventory }: { warehouse
     };
   }, [storageKey]);
 
+  const layoutQuantities = useMemo(() => {
+    const stockByProduct = new Map<string, number>();
+    const allocatedTotalByProduct = new Map<string, number>();
+    const zoneProductQty = new Map<string, Map<string, number>>();
+    const zoneSummaries = new Map<string, { units: number; products: number }>();
+
+    if (id) {
+      for (const row of inventory) {
+        if (row.warehouseId !== id) continue;
+        stockByProduct.set(row.productId, (stockByProduct.get(row.productId) || 0) + Number(row.quantity || 0));
+      }
+
+      for (const row of allocations) {
+        if (row.warehouseId !== id) continue;
+        const qty = Number(row.quantity);
+        allocatedTotalByProduct.set(row.productId, (allocatedTotalByProduct.get(row.productId) || 0) + qty);
+        let prodMap = zoneProductQty.get(row.zoneId);
+        if (!prodMap) {
+          prodMap = new Map<string, number>();
+          zoneProductQty.set(row.zoneId, prodMap);
+        }
+        prodMap.set(row.productId, (prodMap.get(row.productId) || 0) + qty);
+      }
+    }
+
+    let unassignedUnits = 0;
+    let unassignedProducts = 0;
+    for (const p of products) {
+      const whQty = stockByProduct.get(p.id) || 0;
+      const allocQty = allocatedTotalByProduct.get(p.id) || 0;
+      const unQty = whQty - allocQty;
+      unassignedUnits += unQty;
+      if (unQty !== 0) {
+        unassignedProducts++;
+      }
+    }
+    zoneSummaries.set('unassigned', { units: unassignedUnits, products: unassignedProducts });
+
+    for (const [zId, prodMap] of zoneProductQty.entries()) {
+      let units = 0;
+      let prodCount = 0;
+      for (const p of products) {
+        const qty = prodMap.get(p.id) || 0;
+        if (qty !== 0) {
+          units += qty;
+          prodCount++;
+        }
+      }
+      zoneSummaries.set(zId, { units, products: prodCount });
+    }
+
+    return { stockByProduct, allocatedTotalByProduct, zoneProductQty, zoneSummaries };
+  }, [allocations, id, inventory, products]);
+
+  const count = useCallback((product: string, zone: string) => {
+    if (!id || !zone) return 0;
+    if (zone === 'unassigned') {
+      return (layoutQuantities.stockByProduct.get(product) || 0) - (layoutQuantities.allocatedTotalByProduct.get(product) || 0);
+    }
+    return layoutQuantities.zoneProductQty.get(zone)?.get(product) || 0;
+  }, [id, layoutQuantities]);
+
+  const summaries = useCallback((zone: string) => {
+    return layoutQuantities.zoneSummaries.get(zone) ?? EMPTY_SUMMARY;
+  }, [layoutQuantities]);
+
+  const rows = useMemo(() => {
+    if (!selected) return [];
+    const term = search.trim().toLowerCase();
+    return products.filter(p => {
+      if (count(p.id, selected) === 0) return false;
+      if (!term) return true;
+      return `${p.sku} ${p.name} ${p.category} ${p.supplier || ''}`.toLowerCase().includes(term);
+    });
+  }, [count, products, search, selected]);
+
   const selectedZone = zones.find(z => z.id === selected);
   const selectedName = selected === 'unassigned' ? 'Unassigned' : selectedZone?.name;
-  const count = (product: string, zone: string) => zoneQuantity(allocations, inventory, id, product, zone);
-  const summaries = (zone: string) => products.reduce((sum, p) => ({ units: sum.units + count(p.id, zone), products: sum.products + (count(p.id, zone) !== 0 ? 1 : 0) }), { units: 0, products: 0 });
-  const rows = products.filter(p => count(p.id, selected) !== 0 && `${p.sku} ${p.name} ${p.category} ${p.supplier || ''}`.toLowerCase().includes(search.trim().toLowerCase()));
-  const nextName = () => { let n = 1; while (zones.some(z => z.name.toLowerCase() === `zone ${n}`)) n++; return `Zone ${n}`; };
 
   async function saveZone() {
     if (!editor || !canEdit || saving) return;
     setSaving(true); setFormError('');
     try {
+      const trimmed = name.trim();
+      let createdZoneId: string | null = null;
       if (temporary) {
         const saved = readLocalLayout(localStorage, storageKey, id);
-        const trimmed = name.trim();
         if (editor.mode !== 'delete') {
           if (!trimmed || trimmed.length > 60) throw new Error('Enter a zone name between 1 and 60 characters.');
           if (saved.zones.some(z => z.id !== editor.zone?.id && z.name.toLowerCase() === trimmed.toLowerCase())) throw new Error('A zone with this name already exists in this warehouse.');
         }
         if (editor.mode !== 'add' && !saved.zones.some(z => z.id === editor.zone?.id)) throw new Error('Zone no longer exists. Refresh the layout.');
-        if (editor.mode === 'add') saved.zones.push({ id: crypto.randomUUID(), warehouseId: id, name: trimmed, sortOrder: Math.max(-1, ...saved.zones.map(z => z.sortOrder)) + 1 });
+        if (editor.mode === 'add') {
+          createdZoneId = crypto.randomUUID();
+          saved.zones.push({ id: createdZoneId, warehouseId: id, name: trimmed, sortOrder: Math.max(-1, ...saved.zones.map(z => z.sortOrder)) + 1 });
+        }
         else if (editor.mode === 'rename') saved.zones = saved.zones.map(z => z.id === editor.zone?.id ? { ...z, name: trimmed } : z);
         else { saved.zones = saved.zones.filter(z => z.id !== editor.zone?.id); saved.allocations = saved.allocations.filter(a => a.zoneId !== editor.zone?.id); }
         localStorage.setItem(storageKey, JSON.stringify(saved));
       } else {
-        const { error } = await supabase.rpc('manage_warehouse_zone', { p_warehouse: id, p_zone: editor.zone?.id || null, p_action: editor.mode, p_name: name.trim() });
+        const { error } = await supabase.rpc('manage_warehouse_zone', { p_warehouse: id, p_zone: editor.zone?.id || null, p_action: editor.mode, p_name: trimmed });
         if (error) throw error;
+        if (editor.mode === 'add' && editor.fromShape) {
+          const { data: fetchedZones } = await supabase.from('warehouse_zones').select('id, name').eq('warehouseId', id);
+          const matched = (fetchedZones ?? []).find(z => String(z.name || '').trim().toLowerCase() === trimmed.toLowerCase());
+          createdZoneId = matched?.id ?? null;
+        }
+      }
+      if (editor.mode === 'add' && editor.fromShape && createdZoneId) {
+        const sourceShape = editor.fromShape;
+        const convertedBox = boxPropsFromShape(sourceShape);
+        setPendingZoneConversion(prev => ({
+          seq: (prev?.seq ?? 0) + 1,
+          sourceShapeId: sourceShape.id,
+          zoneId: createdZoneId!,
+          box: convertedBox,
+        }));
       }
       if (editor.mode === 'delete' && selected === editor.zone?.id) setSelected('unassigned');
-      setEditor(null); setReload(n => n + 1); toast.success(editor.mode === 'delete' ? 'Zone deleted. Its stock is now Unassigned.' : 'Zone saved');
+      setEditor(null); setReload(n => n + 1);
+      toast.success(
+        editor.mode === 'delete'
+          ? 'Zone deleted. Its stock is now Unassigned.'
+          : editor.fromShape && createdZoneId
+            ? `Converted box to zone "${trimmed}"`
+            : 'Zone saved',
+      );
     } catch (e) { setFormError((e as Error).message || 'Unable to save zone.'); }
     finally { setSaving(false); }
+  }
+
+  async function handleClearMap() {
+    if (!canEdit || clearingMap || !id) return;
+    setClearingMap(true);
+    try {
+      if (temporary) {
+        const saved = readLocalLayout(localStorage, storageKey, id);
+        saved.zones = [];
+        saved.allocations = [];
+        localStorage.setItem(storageKey, JSON.stringify(saved));
+      } else {
+        for (const z of zones) {
+          const { error: rpcErr } = await supabase.rpc('manage_warehouse_zone', {
+            p_warehouse: id,
+            p_zone: z.id,
+            p_action: 'delete',
+            p_name: z.name,
+          });
+          if (rpcErr) throw rpcErr;
+        }
+      }
+      const emptyPlan = { boxes: {}, doors: [{ id: 'entrance', edge: 'bottom', offset: 50 }], shapes: [] };
+      try {
+        window.localStorage.setItem(`${storageKey}:floorplan`, JSON.stringify(emptyPlan));
+        window.localStorage.removeItem(`${storageKey}:floorplan:draft`);
+      } catch {
+        // ignore localStorage quota errors
+      }
+      if (!temporary) {
+        const { error: floorErr } = await supabase
+          .from('warehouse_floorplans')
+          .upsert({ warehouseId: id, layout: emptyPlan }, { onConflict: 'warehouseId' });
+        if (floorErr && !['PGRST205', '42P01'].includes(floorErr.code || '')) {
+          throw floorErr;
+        }
+      }
+      setSelected('');
+      setClearConfirmOpen(false);
+      setMapResetKey(n => n + 1);
+      setReload(n => n + 1);
+      toast.success(
+        zones.length > 0
+          ? `Cleared all zones in ${warehouse?.name || 'warehouse'}. Map is now empty.`
+          : `Cleared floorplan layout in ${warehouse?.name || 'warehouse'}. Map is now empty.`,
+      );
+    } catch (e) {
+      toast.error((e as Error).message || 'Unable to clear map zones.');
+    } finally {
+      setClearingMap(false);
+    }
   }
 
   async function executeDbZoneMoves(
@@ -330,37 +521,214 @@ export function WarehouseLayout({ warehouses, products, inventory }: { warehouse
 
   const selectedSummary = summaries(selected);
   const unassignedSummary = summaries('unassigned');
-  const allVisibleSelected = rows.length > 0 && rows.every(p => selectedProductIds.includes(p.id));
-  const someVisibleSelected = rows.some(p => selectedProductIds.includes(p.id)) && !allVisibleSelected;
-  const totalSelectedUnits = rows.filter(p => selectedProductIds.includes(p.id)).reduce((sum, p) => sum + count(p.id, selected), 0);
-  const destinationOptions = selected === 'unassigned'
-    ? zones.map(z => ({ value: z.id, label: z.name }))
-    : [
-        ...zones.filter(z => z.id !== selected).map(z => ({ value: z.id, label: z.name })),
-        { value: 'unassigned', label: 'Unassigned Stock (Return to unallocated)' }
-      ];
+  const selectedProductIdSet = useMemo(() => new Set(selectedProductIds), [selectedProductIds]);
+  const allVisibleSelected = useMemo(
+    () => rows.length > 0 && rows.every(p => selectedProductIdSet.has(p.id)),
+    [rows, selectedProductIdSet],
+  );
+  const someVisibleSelected = useMemo(
+    () => rows.some(p => selectedProductIdSet.has(p.id)) && !allVisibleSelected,
+    [allVisibleSelected, rows, selectedProductIdSet],
+  );
+  const totalSelectedUnits = useMemo(
+    () => rows.reduce((sum, p) => (selectedProductIdSet.has(p.id) ? sum + count(p.id, selected) : sum), 0),
+    [count, rows, selected, selectedProductIdSet],
+  );
+  const totalPages = Math.max(1, Math.ceil(rows.length / ZONE_TABLE_PAGE_SIZE));
+  const currentPage = Math.min(tablePage, totalPages);
+  const pageStart = (currentPage - 1) * ZONE_TABLE_PAGE_SIZE;
+  const pagedRows = useMemo(
+    () => rows.slice(pageStart, pageStart + ZONE_TABLE_PAGE_SIZE),
+    [pageStart, rows],
+  );
+  const destinationOptions = useMemo(() => (
+    selected === 'unassigned'
+      ? zones.map(z => ({ value: z.id, label: z.name }))
+      : [
+          ...zones.filter(z => z.id !== selected).map(z => ({ value: z.id, label: z.name })),
+          { value: 'unassigned', label: 'Unassigned Stock (Return to unallocated)' }
+        ]
+  ), [selected, zones]);
+
+  const mapSearchMatches = useMemo(() => {
+    const q = mapSearch.trim().toLowerCase();
+    if (!q || !id) {
+      return {
+        active: false,
+        matchingProductsCount: 0,
+        highlightedZones: undefined as Record<string, { units: number; products: number }> | undefined,
+        unassignedUnits: 0,
+        zoneUnitsTotal: 0,
+      };
+    }
+    const matchingProducts = products.filter(p =>
+      `${p.sku} ${p.name} ${p.category || ''} ${p.supplier || ''}`.toLowerCase().includes(q),
+    );
+    const highlightedZones: Record<string, { units: number; products: number }> = {};
+    let zoneUnitsTotal = 0;
+    let unassignedUnits = 0;
+
+    for (const p of matchingProducts) {
+      const u = count(p.id, 'unassigned');
+      if (u > 0) unassignedUnits += u;
+      for (const z of zones) {
+        const qty = count(p.id, z.id);
+        if (qty > 0) {
+          const cur = highlightedZones[z.id] ?? { units: 0, products: 0 };
+          highlightedZones[z.id] = { units: cur.units + qty, products: cur.products + 1 };
+          zoneUnitsTotal += qty;
+        }
+      }
+    }
+    return {
+      active: true,
+      matchingProductsCount: matchingProducts.length,
+      highlightedZones,
+      unassignedUnits,
+      zoneUnitsTotal,
+    };
+  }, [mapSearch, id, products, zones, count]);
+
+  const handleFloorplanSelect = useCallback((zoneId: string) => {
+    setSelected(zoneId);
+    setSearch('');
+    setMapSearch('');
+  }, []);
+
+  const handleZoneAction = useCallback((mode: 'add' | 'rename' | 'delete', zone?: WarehouseZone, fromShape?: FloorplanShape) => {
+    let defaultZoneNumber = 1;
+    while (zones.some(z => z.name.toLowerCase() === `zone ${defaultZoneNumber}`)) {
+      defaultZoneNumber++;
+    }
+    setEditor({ mode, zone, fromShape });
+    setName(
+      fromShape
+        ? suggestZoneNameFromShape(fromShape.label, zones.map(z => z.name))
+        : zone?.name || `Zone ${defaultZoneNumber}`,
+    );
+    setFormError('');
+  }, [zones]);
+
+  const handleClearAllZones = useCallback(() => {
+    setClearConfirmOpen(true);
+  }, []);
 
   function floorplan(compact = false) {
     return <WarehouseFloorplan key={`${storageKey}:${compact}`} warehouseId={id} storageKey={storageKey} zones={zones}
-      canEdit={canEdit && !compact} compact={compact} selected={selected} summary={summaries}
-      onSelect={zoneId => { setSelected(zoneId); setSearch(''); }}
-      onZoneAction={(mode, zone) => { setEditor({ mode, zone }); setName(zone?.name || nextName()); setFormError(''); }} />;
+      canEdit={canEdit && !compact} compact={compact} selected={selected} resetKey={mapResetKey} summary={summaries}
+      highlightedZones={!compact ? mapSearchMatches.highlightedZones : undefined}
+      pendingZoneConversion={!compact ? pendingZoneConversion : undefined}
+      onDirtyChange={!compact ? setFloorplanDirty : undefined}
+      onSelect={handleFloorplanSelect}
+      onZoneAction={handleZoneAction}
+      onClearAllZones={handleClearAllZones} />;
   }
 
   function unassignedCard() {
-    return <button type="button" onClick={() => { setSelected('unassigned'); setSearch(''); }} aria-pressed={selected === 'unassigned'}
-      className="flex w-full items-center gap-3 rounded-xl border bg-muted/30 p-4 text-left transition hover:bg-muted/60 focus-visible:outline-2 focus-visible:outline-ring">
-      <Package className="size-5 shrink-0 text-muted-foreground" /><div><p className="text-sm font-semibold">Unassigned Stock</p><p className="mt-1 text-xs text-muted-foreground">{unassignedSummary.units.toLocaleString()} units · {unassignedSummary.products.toLocaleString()} products</p><p className="mt-1 text-xs text-muted-foreground">Stock not yet allocated to a zone.</p></div>
+    const matchedUnassigned = mapSearchMatches.active ? mapSearchMatches.unassignedUnits : 0;
+    return <button type="button" onClick={() => { setSelected('unassigned'); setSearch(''); setMapSearch(''); }} aria-pressed={selected === 'unassigned'}
+      className={`flex w-full items-center justify-between gap-3 rounded-xl border bg-muted/30 p-4 text-left transition hover:bg-muted/60 focus-visible:outline-2 focus-visible:outline-ring ${matchedUnassigned > 0 ? 'ring-2 ring-gold' : ''}`}>
+      <div className="flex items-center gap-3">
+        <Package className="size-5 shrink-0 text-muted-foreground" />
+        <div>
+          <p className="text-sm font-semibold">Unassigned Stock</p>
+          <p className="mt-1 text-xs text-muted-foreground">{unassignedSummary.units.toLocaleString()} units · {unassignedSummary.products.toLocaleString()} products</p>
+          <p className="mt-1 text-xs text-muted-foreground">Stock not yet allocated to a zone.</p>
+        </div>
+      </div>
+      {matchedUnassigned > 0 && (
+        <span className="shrink-0 rounded-full bg-gold px-2.5 py-1 text-xs font-bold text-foreground">
+          {matchedUnassigned.toLocaleString()} matched
+        </span>
+      )}
     </button>;
   }
 
   return <div className="space-y-5">
     <div className="flex flex-wrap items-center gap-3"><h2 className="text-xl font-bold">{selectedName ? 'Zone Inventory' : 'Warehouse Layout'}</h2><Badge variant="outline" className="gap-1.5"><Grid2X2 className="size-3" />Not to Scale</Badge></div>
     {temporary && !error && <div role="status" className="flex items-start gap-2 rounded-lg border border-gold/30 bg-gold/10 px-3 py-2 text-xs"><Info className="mt-0.5 size-4 shrink-0" /><div><p className="font-medium">Temporary layout · Saved in this browser</p><p className="mt-1 text-muted-foreground">Zones and allocations are local to your account in this browser; they do not sync with Inventory Movement.</p><details className="mt-1 text-muted-foreground"><summary className="w-fit cursor-pointer">Storage details</summary><p className="mt-1">Clearing browser data removes this layout. If stock falls below temporary allocations, that product appears as Unassigned. Temporary data is not automatically imported when database storage becomes available.</p></details></div></div>}
-    <div className="flex flex-wrap items-end gap-3">
-      <div className="w-full space-y-2 sm:w-72"><Label htmlFor="layout-warehouse">Warehouse</Label><Select value={id} onValueChange={v => setWarehouseId(v || '')}><SelectTrigger id="layout-warehouse" className="w-full bg-card"><SelectValue placeholder="Select warehouse">{warehouse?.name || 'Select warehouse'}</SelectValue></SelectTrigger><SelectContent>{allowed.map(w => <SelectItem key={w.id} value={w.id}>{w.name}</SelectItem>)}</SelectContent></Select></div>
+    <div className="flex min-h-17 flex-wrap items-end justify-between gap-3">
+      <div className="flex w-full flex-col gap-2 sm:w-auto">
+        <Label htmlFor="layout-warehouse">Warehouse</Label>
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="min-w-0 flex-1 sm:w-72 sm:flex-none">
+            <Select
+              value={id}
+              onValueChange={v => {
+                const nextId = v || '';
+                if (floorplanDirty && nextId && nextId !== id) {
+                  setPendingLeaveAction({ kind: 'warehouse', id: nextId });
+                  return;
+                }
+                setWarehouseId(nextId);
+              }}
+            >
+              <SelectTrigger id="layout-warehouse" className="w-full bg-card"><SelectValue placeholder="Select warehouse">{warehouse?.name || 'Select warehouse'}</SelectValue></SelectTrigger>
+              <SelectContent>{allowed.map(w => <SelectItem key={w.id} value={w.id}>{w.name}</SelectItem>)}</SelectContent>
+            </Select>
+          </div>
+          {isAdmin && !selectedName && (
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                if (floorplanDirty) {
+                  setPendingLeaveAction({ kind: 'add-warehouse' });
+                  return;
+                }
+                navigate('/supply-chain?view=warehouses&action=add');
+              }}
+            >
+              <Plus className="size-4" />
+              Add Warehouse
+            </Button>
+          )}
+        </div>
+      </div>
+      {!selectedName && !error && warehouse && (
+        <div className="flex w-full flex-col gap-2 sm:w-80">
+          <Label htmlFor="map-sku-finder">Find Product / SKU on Map</Label>
+          <SearchBar
+            id="map-sku-finder"
+            aria-label="Find product or SKU on map"
+            placeholder="Search SKU, item name, or category..."
+            value={mapSearch}
+            disabled={loading}
+            onValueChange={setMapSearch}
+          />
+        </div>
+      )}
     </div>
-    {!warehouse ? <div className="rounded-2xl border p-12 text-center text-muted-foreground">No warehouses are available for your account.</div> : loading ? <div role="status" className="flex justify-center gap-2 p-12 text-muted-foreground"><Loader2 className="size-5 animate-spin" />Loading warehouse layout...</div> : error ? <div role="alert" className="rounded-xl border p-6"><p>{error}</p><Button variant="outline" className="mt-3" onClick={() => setReload(n => n + 1)}>Retry</Button></div> : selectedName ? <div className="grid items-start gap-5 lg:grid-cols-4">
+    {!selectedName && !loading && !error && mapSearchMatches.active && (
+      <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-gold/40 bg-gold/10 px-3.5 py-2 text-xs">
+        <span>
+          {mapSearchMatches.matchingProductsCount === 0
+            ? `No products matching "${mapSearch.trim()}".`
+            : `Found ${mapSearchMatches.matchingProductsCount} matching SKU(s): ${mapSearchMatches.zoneUnitsTotal.toLocaleString()} units in ${Object.keys(mapSearchMatches.highlightedZones ?? {}).length} zone(s)${mapSearchMatches.unassignedUnits > 0 ? `, ${mapSearchMatches.unassignedUnits.toLocaleString()} in Unassigned` : ''}.`}
+        </span>
+        <Button type="button" size="sm" variant="ghost" className="h-6 px-2 text-xs" onClick={() => setMapSearch('')}>
+          Clear
+        </Button>
+      </div>
+    )}
+    {!warehouse ? <div className="rounded-2xl border p-12 text-center text-muted-foreground">No warehouses are available for your account.</div> : loading ? (
+      <div className="space-y-5">
+        <section aria-busy="true" className="rounded-2xl border bg-card p-5 sm:p-6">
+          <div className="mb-5 flex items-center gap-3">
+            <div className="size-10 rounded-xl bg-gold/20" />
+            <div className="space-y-1.5">
+              <div className="h-4 w-44 rounded bg-muted" />
+              <div className="h-3 w-32 rounded bg-muted/70" />
+            </div>
+          </div>
+          <div role="status" className="flex h-130 items-center justify-center rounded-lg border bg-muted/15 text-sm text-muted-foreground">
+            <Loader2 className="mr-2 size-5 animate-spin" />Loading warehouse layout...
+          </div>
+          <div className="mt-5 h-4 w-80 max-w-full rounded bg-muted/60" />
+        </section>
+        <div className="h-22 rounded-xl border bg-muted/30" />
+      </div>
+    ) : error ? <div role="alert" className="rounded-xl border p-6"><p>{error}</p><Button variant="outline" className="mt-3" onClick={() => setReload(n => n + 1)}>Retry</Button></div> : selectedName ? <div className="grid items-start gap-5 lg:grid-cols-4">
       <aside className="min-w-0 space-y-4">
         <Button variant="ghost" className="h-auto whitespace-normal px-0 text-left" onClick={() => { setSelected(''); setSearch(''); }}><ArrowLeft className="size-4 shrink-0" />Back to Warehouse Layout</Button>
         <section className="rounded-2xl border bg-card p-5">
@@ -429,9 +797,9 @@ export function WarehouseLayout({ warehouses, products, inventory }: { warehouse
           <TableHead>Supplier</TableHead>
           <TableHead className="text-right">{selectedZone ? 'Stock Qty in Zone' : 'Unassigned Qty'}</TableHead>
           {canEdit && <TableHead className="w-36 pr-5 text-right">Actions</TableHead>}
-        </TableRow></TableHeader><TableBody>{rows.map(p => {
+        </TableRow></TableHeader><TableBody>{pagedRows.map(p => {
           const qty = count(p.id, selected);
-          const isSelected = selectedProductIds.includes(p.id);
+          const isSelected = selectedProductIdSet.has(p.id);
           return <TableRow key={p.id} className={isSelected ? 'bg-primary/5' : undefined}>
             {canEdit && zones.length > 0 && (
               <TableCell className="w-10 pl-4">
@@ -441,7 +809,7 @@ export function WarehouseLayout({ warehouses, products, inventory }: { warehouse
                   className="size-4 rounded accent-primary cursor-pointer"
                   checked={isSelected}
                   onChange={e => {
-                    if (e.target.checked) setSelectedProductIds(prev => [...prev, p.id]);
+                    if (e.target.checked) setSelectedProductIds(prev => (prev.includes(p.id) ? prev : [...prev, p.id]));
                     else setSelectedProductIds(prev => prev.filter(pid => pid !== p.id));
                   }}
                 />
@@ -474,7 +842,42 @@ export function WarehouseLayout({ warehouses, products, inventory }: { warehouse
           </TableRow>;
         })}</TableBody></Table>
         {!rows.length && <div className="p-12 text-center"><Package className="mx-auto mb-3 size-8 text-muted-foreground/50" /><p className="font-medium">{search ? 'No matching products' : 'No stock recorded here yet'}</p><p className="mt-1 text-sm text-muted-foreground">{search ? 'Try another SKU or item name.' : 'Products appear here when stock is allocated to this location.'}</p></div>}
-        <div className="border-t bg-muted/20 px-5 py-3 text-xs text-muted-foreground">{rows.length} products shown · Quantities are included in the existing warehouse total.</div>
+        <div className="flex flex-wrap items-center justify-between gap-2 border-t bg-muted/20 px-5 py-3 text-xs text-muted-foreground">
+          <span>
+            {totalPages > 1
+              ? `Showing ${pageStart + 1}–${Math.min(pageStart + ZONE_TABLE_PAGE_SIZE, rows.length)} of ${rows.length.toLocaleString()} products · Quantities are included in the existing warehouse total.`
+              : `${rows.length} products shown · Quantities are included in the existing warehouse total.`}
+          </span>
+          {totalPages > 1 && (
+            <div className="flex items-center gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-7 gap-1 px-2 text-xs"
+                disabled={currentPage <= 1}
+                onClick={() => setTablePage(p => Math.max(1, p - 1))}
+              >
+                <ArrowLeft className="size-3" />
+                Prev
+              </Button>
+              <span className="tabular-nums font-medium text-foreground">
+                Page {currentPage} of {totalPages}
+              </span>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-7 gap-1 px-2 text-xs"
+                disabled={currentPage >= totalPages}
+                onClick={() => setTablePage(p => Math.min(totalPages, p + 1))}
+              >
+                Next
+                <ArrowRight className="size-3" />
+              </Button>
+            </div>
+          )}
+        </div>
       </section>
     </div> : <>
       <section aria-label="Warehouse Zone Layout" className="rounded-2xl border bg-card p-5 sm:p-6">
@@ -484,8 +887,8 @@ export function WarehouseLayout({ warehouses, products, inventory }: { warehouse
       </section>
       {unassignedCard()}
     </>}
-    <Dialog open={!!editor} onOpenChange={open => { if (!open && !saving) setEditor(null); }}><DialogContent><DialogHeader><DialogTitle>{editor?.mode === 'delete' ? 'Delete zone?' : editor?.mode === 'rename' ? 'Rename zone' : 'Add zone'}</DialogTitle><DialogDescription>{editor?.mode === 'delete' ? `Stock recorded in ${editor.zone?.name} will become Unassigned. Warehouse totals stay the same.` : 'Create or rename a zone, then arrange it in Edit Layout.'}</DialogDescription></DialogHeader>
-      {editor?.mode !== 'delete' && <div className="space-y-2"><Label htmlFor="zone-name">Zone name</Label><Input id="zone-name" autoFocus maxLength={60} value={name} onChange={e => setName(e.target.value)} /></div>}{formError && <p role="alert" className="text-sm text-destructive">{formError}</p>}<DialogFooter><Button variant="outline" disabled={saving} onClick={() => setEditor(null)}>Cancel</Button><Button disabled={saving || (editor?.mode !== 'delete' && !name.trim())} variant={editor?.mode === 'delete' ? 'destructive' : 'default'} onClick={saveZone}>{saving ? 'Saving…' : editor?.mode === 'delete' ? 'Delete zone' : 'Save zone'}</Button></DialogFooter></DialogContent></Dialog>
+    <Dialog open={!!editor} onOpenChange={open => { if (!open && !saving) setEditor(null); }}><DialogContent><DialogHeader><DialogTitle>{editor?.mode === 'delete' ? 'Delete zone?' : editor?.mode === 'rename' ? 'Rename zone' : editor?.fromShape ? 'Convert box to inventory zone' : 'Add zone'}</DialogTitle><DialogDescription>{editor?.mode === 'delete' ? `Stock recorded in ${editor.zone?.name} will become Unassigned. Warehouse totals stay the same.` : editor?.fromShape ? 'Creates a trackable inventory zone at this box’s exact position and removes the decorative box.' : 'Create or rename a zone, then arrange it in Edit Layout.'}</DialogDescription></DialogHeader>
+      {editor?.mode !== 'delete' && <div className="space-y-2"><Label htmlFor="zone-name">Zone name</Label><Input id="zone-name" autoFocus maxLength={60} value={name} onChange={e => setName(e.target.value)} /></div>}{formError && <p role="alert" className="text-sm text-destructive">{formError}</p>}<DialogFooter><Button variant="outline" disabled={saving} onClick={() => setEditor(null)}>Cancel</Button><Button disabled={saving || (editor?.mode !== 'delete' && !name.trim())} variant={editor?.mode === 'delete' ? 'destructive' : 'default'} onClick={saveZone}>{saving ? 'Saving…' : editor?.mode === 'delete' ? 'Delete zone' : editor?.fromShape ? 'Convert to Zone' : 'Save zone'}</Button></DialogFooter></DialogContent></Dialog>
 
     <Dialog open={!!assignTarget} onOpenChange={open => { if (!open && !assignSaving) setAssignTarget(null); }}><DialogContent className="sm:max-w-md"><DialogHeader><DialogTitle>{assignTarget?.currentZoneId === 'unassigned' ? 'Assign Stock to Zone' : 'Reassign Stock Location'}</DialogTitle><DialogDescription>{assignTarget?.product.name} ({assignTarget?.product.sku})</DialogDescription></DialogHeader>
       <div className="space-y-4 py-2">
@@ -549,5 +952,52 @@ export function WarehouseLayout({ warehouses, products, inventory }: { warehouse
         </Button>
       </DialogFooter>
     </DialogContent></Dialog>
+
+    <Dialog open={clearConfirmOpen} onOpenChange={open => { if (!open && !clearingMap) setClearConfirmOpen(false); }}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>{zones.length > 0 ? 'Clear all zones on map?' : 'Clear floorplan layout?'}</DialogTitle>
+          <DialogDescription>
+            {zones.length > 0
+              ? `This removes all ${zones.length} zones in ${warehouse?.name || 'this warehouse'} and resets the floorplan to an empty map. Existing stock quantities stay intact and return to Unassigned Stock.`
+              : `This clears all drawn shapes, labels, lines, and doors in ${warehouse?.name || 'this warehouse'} and resets the floorplan to an empty map.`}
+          </DialogDescription>
+        </DialogHeader>
+        <DialogFooter className="gap-2 sm:gap-0">
+          <Button variant="outline" disabled={clearingMap} onClick={() => setClearConfirmOpen(false)}>Cancel</Button>
+          <Button variant="destructive" disabled={clearingMap} onClick={handleClearMap}>
+            {clearingMap && <Loader2 className="size-4 animate-spin" />}
+            {clearingMap ? 'Clearing…' : 'Clear Map'}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
+    <Dialog open={!!pendingLeaveAction} onOpenChange={open => { if (!open) setPendingLeaveAction(null); }}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>
+            {pendingLeaveAction?.kind === 'add-warehouse' ? 'Leave Warehouse Layout with unsaved edits?' : 'Switch warehouse with unsaved edits?'}
+          </DialogTitle>
+          <DialogDescription>
+            You have unsaved floorplan changes in {warehouse?.name || 'this warehouse'}. Leaving now will keep a local recovery draft, or you can stay and save first.
+          </DialogDescription>
+        </DialogHeader>
+        <DialogFooter className="gap-2 sm:gap-0">
+          <Button variant="outline" onClick={() => setPendingLeaveAction(null)}>Stay Here</Button>
+          <Button
+            variant="destructive"
+            onClick={() => {
+              const target = pendingLeaveAction;
+              setPendingLeaveAction(null);
+              if (target?.kind === 'warehouse') setWarehouseId(target.id);
+              else if (target?.kind === 'add-warehouse') navigate('/supply-chain?view=warehouses&action=add');
+            }}
+          >
+            {pendingLeaveAction?.kind === 'add-warehouse' ? 'Go to Add Warehouse' : 'Switch Warehouse'}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   </div>;
 }

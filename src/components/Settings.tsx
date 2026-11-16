@@ -30,9 +30,8 @@ import {
   FileXlsIcon as FileSpreadsheet,
   SpinnerGapIcon as Loader2
 } from '@phosphor-icons/react';
-import * as XLSX from 'xlsx';
 import { cn } from '@/lib/utils';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { useTheme } from './ThemeProvider';
 import { useAuth } from '../hooks/useAuth';
 import { formatNotificationRelativeTime, useAdminNotifications } from '../hooks/useStaffAccess';
@@ -255,6 +254,7 @@ export function Settings() {
         const exp = serializeCollection(expSnap, ['id', 'category', 'amount', 'description', 'date', 'type']);
         const trf = serializeCollection(trfSnap, ['id', 'manifestId', 'sourceWarehouseId', 'destinationWarehouseId', 'productId', 'quantity', 'status']);
 
+        const XLSX = await import('xlsx');
         const wb = XLSX.utils.book_new();
         XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(prod.rawData, { header: prod.headers }), 'Products CMDB');
         XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(ord.rawData, { header: ord.headers }), 'Orders Ledger');
@@ -304,6 +304,8 @@ export function Settings() {
     markAllAsRead,
     togglePref,
   } = useAdminNotifications();
+
+  const navigate = useNavigate();
 
   // Filter and preference panel states
   const [activeFilter, setActiveFilter] = useState<'all' | 'order' | 'logistics' | 'transfer' | 'movement' | 'supply_chain'>('all');
@@ -635,7 +637,11 @@ export function Settings() {
                       <div className="flex items-start justify-between gap-3">
                         <button
                           type="button"
-                          onClick={() => markItemAsRead(item.id)}
+                          onClick={() => {
+                            markItemAsRead(item.id);
+                            navigate(item.href);
+                          }}
+                          title="Open related record"
                           className="flex items-start gap-3 min-w-0 flex-1 text-left cursor-pointer"
                         >
                           <div className={`p-2 rounded-xl shrink-0 mt-0.5 ${item.type === 'order'

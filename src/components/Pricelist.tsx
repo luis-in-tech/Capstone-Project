@@ -1,9 +1,21 @@
 import { PageHeading } from './PageHeading';
 import { SearchBar } from '@/components/ui/search-bar';
-import { PricelistBuilder } from './PricelistBuilder';
 import { PriceType, PricelistItem, SavedPricelist, sectionsFor } from '../lib/pricelistSections';
 import { useStaffAccess } from '../hooks/useStaffAccess';
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+
+const loadPricelistBuilderModule = () => import('./PricelistBuilder');
+const PricelistBuilderLazy = lazy(() =>
+  loadPricelistBuilderModule().then(m => ({ default: m.PricelistBuilder })),
+);
+
+function useMountedOnce(active: boolean): boolean {
+  const [mounted, setMounted] = useState(active);
+  useEffect(() => {
+    if (active) setMounted(true);
+  }, [active]);
+  return active || mounted;
+}
 import { addDoc, collection, db, deleteDoc, doc, getDocs, onSnapshot, serverTimestamp, setDoc, updateDoc } from '../lib/supabaseAdapter';
 import { Product, Warehouse } from '../types';
 import { handleSupabaseError, OperationType } from '../lib/supabaseErrorHandler';
@@ -395,9 +407,13 @@ export function Pricelist() {
       return p.name.toLowerCase().includes(search.toLowerCase()) && dateOk && (typeFilter === 'all' || listType(p) === typeFilter) && (pdfFilter === 'all' || (pdfFilter === 'exported' && !!p.lastPdfGeneratedAt) || (pdfFilter === 'never' && !p.lastPdfGeneratedAt));
     }).sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
   }, [saved, search, dateFilter, typeFilter, pdfFilter, from, to]);
-  const view = saved.find(p => p.id === viewId);
-  const closeCreate = () => { setCreateOpen(false); setEditing(undefined); };
-  const saveBuilder = async (list: SavedPricelist, draft: boolean) => {
+  const view = useMemo(() => saved.find(p => p.id === viewId), [saved, viewId]);
+  const mountViewDialog = useMountedOnce(Boolean(view));
+  const mountScanDialog = useMountedOnce(Boolean(scanItems));
+  const mountDeleteDialog = useMountedOnce(Boolean(pricelistToDelete));
+  const handleOpenCreate = useCallback(() => setCreateOpen(true), []);
+  const closeCreate = useCallback(() => { setCreateOpen(false); setEditing(undefined); }, []);
+  const saveBuilder = useCallback(async (list: SavedPricelist, draft: boolean) => {
     await setDoc(doc(db, 'pricelists', list.id), JSON.parse(JSON.stringify(list)));
     setSaved(previous => {
       const next = [list, ...previous.filter(p => p.id !== list.id)];
@@ -406,7 +422,7 @@ export function Pricelist() {
     });
     closeCreate();
     toast.success(draft ? 'Pricelist saved as draft' : 'Pricelist saved');
-  };
+  }, [closeCreate]);
   const generatePdf = (target = view, recordExport = canEdit) => {
     if (!target) return;
     let tableRows = '';
@@ -660,6 +676,80 @@ export function Pricelist() {
   };
   const cancelScan = () => { if (syncing) return; setScanItems(null); setScanPreviewUrl(''); setScanName(''); };
 
+  const generatePdfRef = useRef(generatePdf);
+  generatePdfRef.current = generatePdf;
+  const previewBuilder = useCallback((list: SavedPricelist) => {
+    generatePdfRef.current(list, false);
+  }, []);
+
+  const savedTableContent = useMemo(() => (
+    <div className="overflow-x-auto rounded-2xl border">
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead className="w-12" />
+            <TableHead>Name</TableHead>
+            <TableHead>Type</TableHead>
+            <TableHead>Items</TableHead>
+            <TableHead>Date Created</TableHead>
+            <TableHead>Last PDF Generated</TableHead>
+            <TableHead className="text-right">Actions</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {filtered.map(p => (
+            <TableRow key={p.id}>
+              <TableCell>
+                <input
+                  type="checkbox"
+                  aria-label={`Select ${p.name} for PDF`}
+                  checked={selectedPdfId === p.id}
+                  onChange={e => setSelectedPdfId(e.target.checked ? p.id : '')}
+                />
+              </TableCell>
+              <TableCell>
+                <span className="flex items-center gap-2 font-bold">
+                  <FileText className="h-5 w-5" />{p.name}
+                </span>
+              </TableCell>
+              <TableCell>{listType(p)}</TableCell>
+              <TableCell>{p.items.length}</TableCell>
+              <TableCell>{dateLabel(p.createdAt)}</TableCell>
+              <TableCell>{dateLabel(p.lastPdfGeneratedAt)}</TableCell>
+              <TableCell>
+                <div className="flex justify-end gap-2">
+                  <Icon title="View" onClick={() => setViewId(p.id)}><Eye /></Icon>
+                  {canEdit && (
+                    <>
+                      <Button
+                        variant="outline"
+                        size="icon"
+                        title="Edit pricelist"
+                        onMouseEnter={() => { void loadPricelistBuilderModule(); }}
+                        onFocus={() => { void loadPricelistBuilderModule(); }}
+                        onClick={() => { setEditing(p); setCreateOpen(true); }}
+                      >
+                        <Pencil className="h-4 w-4" />
+                      </Button>
+                      <Icon title="Delete" danger onClick={() => remove(p)}><Trash2 /></Icon>
+                    </>
+                  )}
+                </div>
+              </TableCell>
+            </TableRow>
+          ))}
+          {!filtered.length && (
+            <TableRow>
+              <TableCell colSpan={7} className="h-40 text-center text-muted-foreground">
+                No saved pricelists match the selected filters.
+              </TableCell>
+            </TableRow>
+          )}
+        </TableBody>
+      </Table>
+    </div>
+  ), [filtered, selectedPdfId, canEdit]);
+
   if (loading) return <div className="flex min-h-100 items-center justify-center"><Loader2 className="h-8 w-8 animate-spin"/></div>;
   return (
     <div className="space-y-5 pb-20">
@@ -672,7 +762,13 @@ export function Pricelist() {
               <Button variant="outline" onClick={handleScanClick} disabled={scanning}>
                 {scanning ? <><Loader2 className="mr-2 h-4 w-4 animate-spin"/>Scanning...</> : <><ScanLine className="mr-2 h-4 w-4"/>Scan Image</>}
               </Button>
-              <Button onClick={() => setCreateOpen(true)}><Plus className="mr-2 h-4 w-4"/>Create Pricelist</Button>
+              <Button
+                onMouseEnter={() => { void loadPricelistBuilderModule(); }}
+                onFocus={() => { void loadPricelistBuilderModule(); }}
+                onClick={handleOpenCreate}
+              >
+                <Plus className="mr-2 h-4 w-4"/>Create Pricelist
+              </Button>
             </>
           )}
         </div>
@@ -683,10 +779,13 @@ export function Pricelist() {
 
       <div className="rounded-2xl border bg-card p-4"><div className="grid gap-3 md:grid-cols-4"><div><label className="text-xs invisible select-none block">Search</label><div className="relative mt-1"><SearchBar className="pl-9" placeholder="Search by pricelist name..." value={search} onValueChange={setSearch}/></div></div><Filter label="Date Created" value={dateFilter} set={setDateFilter} options={[["all","All Dates"],["today","Today"],["week","This Week"],["month","This Month"],["custom","Custom Date Range"]]}/><Filter label="Pricelist Type" value={typeFilter} set={setTypeFilter} options={[["all","All Types"],["Regular","Regular"],["Metro Manila","Metro Manila"],["Provincial","Provincial"],["Promo","Promo"],["Mixed","Mixed"]]}/><Filter label="PDF Status" value={pdfFilter} set={setPdfFilter} options={[["all","All Statuses"],["never","Never Exported"],["exported","Exported"]]}/></div>{dateFilter === 'custom' && <div className="mt-3 grid grid-cols-2 gap-3"><Field label="From" value={from} set={setFrom}/><Field label="To" value={to} set={setTo}/></div>}</div>
 
-      <div className="overflow-x-auto rounded-2xl border"><Table><TableHeader><TableRow><TableHead className="w-12"/><TableHead>Name</TableHead><TableHead>Type</TableHead><TableHead>Items</TableHead><TableHead>Date Created</TableHead><TableHead>Last PDF Generated</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader><TableBody>{filtered.map(p => <TableRow key={p.id}><TableCell><input type="checkbox" aria-label={`Select ${p.name} for PDF`} checked={selectedPdfId === p.id} onChange={e => setSelectedPdfId(e.target.checked ? p.id : '')}/></TableCell><TableCell><span className="flex items-center gap-2 font-bold"><FileText className="h-5 w-5"/>{p.name}</span></TableCell><TableCell>{listType(p)}</TableCell><TableCell>{p.items.length}</TableCell><TableCell>{dateLabel(p.createdAt)}</TableCell><TableCell>{dateLabel(p.lastPdfGeneratedAt)}</TableCell><TableCell><div className="flex justify-end gap-2"><Icon title="View" onClick={() => setViewId(p.id)}><Eye/></Icon>{canEdit && <><Icon title="Edit pricelist" onClick={() => { setEditing(p); setCreateOpen(true); }}><Pencil/></Icon><Icon title="Delete" danger onClick={() => remove(p)}><Trash2/></Icon></>}</div></TableCell></TableRow>)}{!filtered.length && <TableRow><TableCell colSpan={7} className="h-40 text-center text-muted-foreground">No saved pricelists match the selected filters.</TableCell></TableRow>}</TableBody></Table></div>
+      {savedTableContent}
 
-      <Dialog open={!!view} onOpenChange={o => !o && setViewId('')}><DialogContent className="max-h-[94vh] w-[96vw] max-w-[96vw] overflow-y-auto sm:max-w-[96vw]! lg:max-w-[96vw]!"><DialogHeader><DialogTitle>{view?.name}</DialogTitle><DialogDescription>{view && `${view.items.length} items - Created ${dateLabel(view.createdAt)}`}</DialogDescription></DialogHeader><Items items={view?.items || []} sections={view?.sections} stockMap={stockMap}/><DialogFooter><Button variant="outline" onClick={() => setViewId('')}>Close</Button><Button onClick={() => generatePdf()}><Download className="mr-2 h-4 w-4"/>Generate PDF</Button></DialogFooter></DialogContent></Dialog>
+      {mountViewDialog && (
+        <Dialog open={!!view} onOpenChange={o => !o && setViewId('')}><DialogContent className="max-h-[94vh] w-[96vw] max-w-[96vw] overflow-y-auto sm:max-w-[96vw]! lg:max-w-[96vw]!"><DialogHeader><DialogTitle>{view?.name}</DialogTitle><DialogDescription>{view && `${view.items.length} items - Created ${dateLabel(view.createdAt)}`}</DialogDescription></DialogHeader><Items items={view?.items || []} sections={view?.sections} stockMap={stockMap}/><DialogFooter><Button variant="outline" onClick={() => setViewId('')}>Close</Button><Button onClick={() => generatePdf()}><Download className="mr-2 h-4 w-4"/>Generate PDF</Button></DialogFooter></DialogContent></Dialog>
+      )}
 
+      {mountScanDialog && (
       <Dialog open={!!scanItems} onOpenChange={o => !o && !syncing && cancelScan()}>
         <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-5xl">
           <DialogHeader>
@@ -833,20 +932,27 @@ export function Pricelist() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      )}
 
-      {createOpen && canEdit && <PricelistBuilder initial={editing} products={products} stockMap={stockMap} close={closeCreate} save={saveBuilder} preview={list => generatePdf(list, false)} />}
+      {createOpen && canEdit && (
+        <Suspense fallback={null}>
+          <PricelistBuilderLazy initial={editing} products={products} stockMap={stockMap} close={closeCreate} save={saveBuilder} preview={previewBuilder} />
+        </Suspense>
+      )}
 
-      <ConfirmDialog
-        open={!!pricelistToDelete}
-        title="Delete pricelist"
-        description={`Delete "${pricelistToDelete?.name ?? ''}"? This action cannot be undone.`}
-        confirmLabel="Delete"
-        destructive
-        onOpenChange={open => { if (!open) setPricelistToDelete(null); }}
-        onConfirm={async () => {
-          if (pricelistToDelete) await executeRemove(pricelistToDelete);
-        }}
-      />
+      {mountDeleteDialog && (
+        <ConfirmDialog
+          open={!!pricelistToDelete}
+          title="Delete pricelist"
+          description={`Delete "${pricelistToDelete?.name ?? ''}"? This action cannot be undone.`}
+          confirmLabel="Delete"
+          destructive
+          onOpenChange={open => { if (!open) setPricelistToDelete(null); }}
+          onConfirm={async () => {
+            if (pricelistToDelete) await executeRemove(pricelistToDelete);
+          }}
+        />
+      )}
     </div>
   );
 }

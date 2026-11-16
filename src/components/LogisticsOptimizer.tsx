@@ -1,5 +1,7 @@
 import { PageHeading } from './PageHeading';
 import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { useSearchParams } from 'react-router-dom';
+import { routeMatchesNotificationParam } from '../lib/notificationLinks';
 import {
   TruckIcon as Truck,
   TrendUpIcon as TrendingUp,
@@ -85,7 +87,23 @@ const DEFAULT_TRAFFIC_INCIDENTS: TrafficIncident[] = [
   }
 ];
 
+interface DispatchTripRecord {
+  id: string;
+  route_id?: string;
+  region?: string;
+  vehicle_name?: string;
+  truckId?: string;
+  driver?: string;
+  plate?: string;
+  total_units?: number;
+  savings_php?: number;
+  status?: string;
+  dispatched_at?: string;
+}
+
 export function LogisticsOptimizer() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const lastAppliedLogisticsKeyRef = useRef('');
   const { profile } = useAuth();
   const { permissions } = useStaffAccess();
   const actionLockRef = useRef(false);
@@ -94,6 +112,7 @@ export function LogisticsOptimizer() {
   const [activeTab, setActiveTab] = useState<'consolidation' | 'load_balancing' | 'traffic_rerouting'>('consolidation');
 
   const [selectedRouteId, setSelectedRouteId] = useState<string | null>(null);
+  const [dispatchTrips, setDispatchTrips] = useState<DispatchTripRecord[]>([]);
   const [selectedStockAlert, setSelectedStockAlert] = useState<string | null>(null);
   const [selectedIncidentId, setSelectedIncidentId] = useState<string | null>(null);
 
@@ -179,7 +198,8 @@ export function LogisticsOptimizer() {
 
     // Subscriptions to dispatch_trips to keep active dispatched routes synchronized
     const unsubDispatch = onSnapshot(collection(db, 'dispatch_trips'), (snap) => {
-      const trips = snap.docs.map((d: any) => ({ id: d.id, ...d.data() }));
+      const trips = snap.docs.map((d: any) => ({ id: d.id, ...d.data() })) as DispatchTripRecord[];
+      setDispatchTrips(trips);
       const next: Record<string, { truckId: string; plate: string; driver: string; timestamp: string }> = {};
       for (const trip of trips) {
         const key = (trip.route_id as string) || (trip.region as string);
@@ -299,6 +319,44 @@ export function LogisticsOptimizer() {
   const optimizationResult: OptimizationResult = useMemo(() => {
     return calculateOptimalLogisticsRoutes(effectivePendingOrders, DEFAULT_DEPOT);
   }, [effectivePendingOrders]);
+
+  const tripIdParam = searchParams.get('tripId');
+  const routeIdParam = searchParams.get('routeId');
+  const regionParam = searchParams.get('region');
+  const tabParam = searchParams.get('tab');
+  const focusedTrip = useMemo(
+    () => (tripIdParam ? dispatchTrips.find(t => t.id === tripIdParam) ?? null : null),
+    [dispatchTrips, tripIdParam],
+  );
+
+  useEffect(() => {
+    if (!tabParam && !tripIdParam && !routeIdParam && !regionParam) {
+      lastAppliedLogisticsKeyRef.current = '';
+      return;
+    }
+    const targetTab =
+      tabParam === 'load_balancing' || tabParam === 'traffic_rerouting' || tabParam === 'consolidation'
+        ? tabParam
+        : 'consolidation';
+    const resolvedRouteParam = routeIdParam || focusedTrip?.route_id || null;
+    const resolvedRegionParam = regionParam || focusedTrip?.region || null;
+    const key = `${targetTab}:${tripIdParam || ''}:${resolvedRouteParam || ''}:${resolvedRegionParam || ''}`;
+    if (lastAppliedLogisticsKeyRef.current === key) return;
+    setActiveTab(targetTab);
+    if (resolvedRouteParam || resolvedRegionParam) {
+      const matchedRoute = optimizationResult.routes.find(route =>
+        routeMatchesNotificationParam(route, getRouteDispatchKey(route), resolvedRouteParam, resolvedRegionParam),
+      );
+      if (matchedRoute) {
+        setSelectedRouteId(matchedRoute.routeId);
+        lastAppliedLogisticsKeyRef.current = key;
+      } else if (optimizationResult.routes.length > 0) {
+        lastAppliedLogisticsKeyRef.current = key;
+      }
+    } else {
+      lastAppliedLogisticsKeyRef.current = key;
+    }
+  }, [tabParam, tripIdParam, routeIdParam, regionParam, focusedTrip, optimizationResult.routes]);
 
   const handleDispatchConsolidatedTruck = async (routeId: string, truckName: string, orderCount: number, route?: OptimizedRoute) => {
     const dispatchKey = route ? getRouteDispatchKey(route) : routeId;
@@ -840,6 +898,34 @@ export function LogisticsOptimizer() {
       </div>
 
       {/* Main 3 Core Feature Tabs */}
+      {focusedTrip && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-indigo-500/30 bg-indigo-500/10 px-4 py-3 text-sm">
+          <div className="space-y-0.5">
+            <p className="font-semibold text-foreground">
+              Focused Dispatch Trip: {focusedTrip.vehicle_name || 'Delivery Truck'}{focusedTrip.plate ? ` (${focusedTrip.plate})` : ''}
+            </p>
+            <p className="text-xs text-muted-foreground">
+              Driver: {focusedTrip.driver || 'Assigned Driver'} · Region: {focusedTrip.region || 'Metro Manila'} · {focusedTrip.total_units || 0} units · Status: {(focusedTrip.status || 'in_transit').replace(/_/g, ' ')}
+              {typeof focusedTrip.savings_php === 'number' && focusedTrip.savings_php > 0 ? ` · Savings: ₱${focusedTrip.savings_php.toLocaleString()}` : ''}
+            </p>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              lastAppliedLogisticsKeyRef.current = '';
+              const next = new URLSearchParams(searchParams);
+              next.delete('tripId');
+              next.delete('routeId');
+              next.delete('region');
+              next.delete('tab');
+              setSearchParams(next, { replace: true });
+            }}
+          >
+            Dismiss
+          </Button>
+        </div>
+      )}
       <Tabs value={activeTab} onValueChange={v => setActiveTab(v as any)} className="w-full space-y-4">
         <TabsList variant="line" className="w-full justify-start gap-2 border-b border-border p-0 sm:gap-6">
           <TabsTrigger value="consolidation" className="flex-none rounded-none px-4 py-4 text-sm after:bottom-0 data-active:font-semibold">Routes</TabsTrigger>

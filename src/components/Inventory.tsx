@@ -1,6 +1,6 @@
 import { hasAdminRole } from '../lib/staffPermissions';
 import { useStaffAccess } from '../hooks/useStaffAccess';
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { lazy, Suspense, useCallback, useState, useEffect, useMemo, useRef } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { db, storage, collection, onSnapshot, addDoc, getDoc, updateDoc, doc, serverTimestamp, deleteDoc, ref, uploadBytes, getDownloadURL } from '../lib/supabaseAdapter';
 import { supabase } from '../lib/supabase';
@@ -19,15 +19,18 @@ import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useAuth } from '../hooks/useAuth';
 import { toast } from 'sonner';
-import * as XLSX from 'xlsx';
 import { WarehouseLayout } from './WarehouseLayout';
 import { ProductVariationEditor } from './ProductVariationEditor';
 import { emptyVariations, variationDraft, validateVariations, variantLabel, variantFields } from '../lib/productVariations';
 import { saveProductVariations } from '../lib/saveProductVariations';
-import { DefectiveStockModal } from './DefectiveStockModal';
 import { QuarantineLedger } from './QuarantineLedger';
 import { getLocalDefectiveTickets } from '../lib/itilService';
 import type { DefectiveStockTicket } from '../types';
+
+const loadDefectiveStockModalModule = () => import('./DefectiveStockModal');
+const DefectiveStockModalLazy = lazy(() =>
+  loadDefectiveStockModalModule().then((m) => ({ default: m.DefectiveStockModal })),
+);
 
 const PRODUCT_TEMPLATE_HEADERS = ['SKU Code', 'Item Name', 'Category', 'Supplier Name', 'Base Price / Retail Price', 'Metro Manila Price', 'Provincial Price', 'Cost', 'Minimum Stock Level', 'Reorder Point', 'Unit'];
 type ImportRow = Record<string, string | number | undefined>;
@@ -45,6 +48,216 @@ export const cleanItemName = (name: string): string => {
     .trim();
 };
 
+function useMountedOnce(active: boolean): boolean {
+  const [mounted, setMounted] = useState(active);
+  useEffect(() => {
+    if (active) setMounted(true);
+  }, [active]);
+  return active || mounted;
+}
+
+const ROW_ACTION_BTN_CLASS =
+  'inline-flex shrink-0 items-center justify-center rounded-lg border border-border bg-background text-sm font-medium whitespace-nowrap transition-colors outline-none select-none hover:bg-muted hover:text-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 dark:border-input dark:bg-input/30 dark:hover:bg-input/50 h-8 w-8';
+const ROW_DELETE_BTN_CLASS =
+  'inline-flex shrink-0 items-center justify-center rounded-lg border border-border bg-background text-sm font-medium whitespace-nowrap transition-colors outline-none select-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 dark:border-input dark:bg-input/30 h-8 w-8 text-red-500 hover:text-red-600 hover:bg-red-50 hover:border-red-200';
+const ROW_PILL_BASE_CLASS =
+  'inline-flex h-5 w-fit shrink-0 items-center justify-center gap-1 overflow-hidden rounded-full border font-medium whitespace-nowrap';
+
+interface InventoryRowSummary {
+  displayName: string;
+  stock: number;
+  status: 'in' | 'low' | 'out';
+  enabledVariantCount: number;
+  variantPriceRows: Array<{ key: string; label: string; range: string }>;
+  costText: string;
+}
+
+interface InventoryProductRowProps {
+  rowNumber: number;
+  product: Product;
+  summary: InventoryRowSummary;
+  isAdmin: boolean;
+  canAdjustStock: boolean;
+  canViewWholesale: boolean;
+  onView: (product: Product) => void;
+  onEdit: (product: Product) => void;
+  onDelete: (product: Product) => void;
+  onQr: (product: Product) => void;
+  onAdjust: (product: Product) => void;
+}
+
+const InventoryProductRow = React.memo(function InventoryProductRow({
+  rowNumber,
+  product,
+  summary,
+  isAdmin,
+  canAdjustStock,
+  canViewWholesale,
+  onView,
+  onEdit,
+  onDelete,
+  onQr,
+  onAdjust,
+}: InventoryProductRowProps) {
+  const { displayName, stock, status, enabledVariantCount, variantPriceRows, costText } = summary;
+  const statusClass =
+    status === 'out'
+      ? 'border-red-500/30 bg-red-500/10 text-red-600 dark:text-red-400'
+      : status === 'low'
+        ? 'border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400'
+        : 'border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400';
+
+  return (
+    <tr
+      data-slot="table-row"
+      tabIndex={0}
+      className="group cursor-pointer border-b transition-colors hover:bg-muted/40 focus-visible:outline-2 focus-visible:outline-primary"
+      onClick={() => onView(product)}
+      onKeyDown={(e) => {
+        if (e.target !== e.currentTarget) return;
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onView(product);
+        }
+      }}
+    >
+      <td className="w-10 text-center align-middle whitespace-nowrap font-mono text-xs text-muted-foreground px-2 py-2">
+        {rowNumber}
+      </td>
+      <td className="w-28 align-middle whitespace-nowrap font-mono text-xs text-muted-foreground px-2 py-2 truncate" title={product.sku}>
+        {product.sku}
+      </td>
+      <td className="min-w-47.5 max-w-65 align-middle whitespace-nowrap px-2 py-2">
+        <div className="flex items-center gap-2.5">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-border bg-muted">
+            {product.photoUrl ? (
+              <img src={product.photoUrl} alt={displayName} width={40} height={40} loading="lazy" decoding="async" className="h-full w-full object-cover" />
+            ) : (
+              <Package className="h-4 w-4 text-muted-foreground" />
+            )}
+          </div>
+          <div className="min-w-0">
+            <p className="truncate text-xs font-bold" title={displayName}>{displayName}</p>
+            {product.hasVariations && (
+              <span className="inline-flex w-fit shrink-0 items-center justify-center rounded-4xl border border-transparent bg-secondary text-secondary-foreground font-medium whitespace-nowrap my-0.5 text-[9px] px-1.5 py-0 h-4">
+                {enabledVariantCount} Variants
+              </span>
+            )}
+            <p className="truncate text-[11px] text-muted-foreground">{product.category || 'Uncategorized'}</p>
+          </div>
+        </div>
+      </td>
+      <td className="w-32 align-middle whitespace-nowrap px-2 py-2">
+        {product.hasVariations ? (
+          <div className="space-y-0.5 text-[11px]">
+            {variantPriceRows.map((row) => (
+              <p key={row.key} className="truncate">
+                <span className="text-muted-foreground">{row.label}: </span>
+                <strong>{row.range}</strong>
+              </p>
+            ))}
+          </div>
+        ) : (
+          <div className="grid grid-cols-[2.4rem_auto] text-[11px] leading-tight">
+            <span className="text-muted-foreground">Retail:</span><strong>₱{(product.basePrice || 0).toLocaleString()}</strong>
+            {canViewWholesale && (
+              <>
+                <span className="text-muted-foreground">MM:</span><strong>₱{(product.mmPrice ?? product.wholesalePrice ?? 0).toLocaleString()}</strong>
+                <span className="text-muted-foreground">Prov.:</span><strong>₱{(product.provincialPrice ?? product.dealerPrice ?? 0).toLocaleString()}</strong>
+              </>
+            )}
+          </div>
+        )}
+      </td>
+      <td className="w-20 align-middle whitespace-nowrap px-2 py-2 text-xs font-semibold">
+        {costText}
+      </td>
+      <td className="w-24 align-middle whitespace-nowrap px-2 py-2 text-center">
+        <span className={`${ROW_PILL_BASE_CLASS} px-2.5 py-0.5 text-[11px] ${statusClass}`}>
+          {stock.toLocaleString()} units
+        </span>
+      </td>
+      <td className="w-24 align-middle whitespace-nowrap px-2 py-2">
+        {product.hasVariations ? (
+          <span className="text-[11px] text-muted-foreground">Per variant</span>
+        ) : (
+          <div className="text-[11px] space-y-0.5">
+            <p><span className="text-muted-foreground">Min:</span> <strong>{product.minStockLevel || 0}</strong></p>
+            <p><span className="text-muted-foreground">Reorder:</span> <strong>{product.reorderPoint || 0}</strong></p>
+          </div>
+        )}
+      </td>
+      <td className="w-28 align-middle whitespace-nowrap px-2 py-2">
+        <p className="truncate text-xs font-bold" title={product.supplier || 'Supplier'}>{product.supplier || 'Supplier'}</p>
+        <p className="truncate text-[10px] text-muted-foreground">Main Supplier</p>
+      </td>
+      <td className="w-24 align-middle whitespace-nowrap px-2 py-2 text-center">
+        <span className={`${ROW_PILL_BASE_CLASS} text-[10px] py-0.5 px-2 ${statusClass}`}>
+          {status === 'out' ? '● Out of Stock' : status === 'low' ? '● Low Stock' : '● In Stock'}
+        </span>
+      </td>
+      <td
+        className="w-45 align-middle whitespace-nowrap text-center px-3 py-2"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="flex justify-center gap-1">
+          <button
+            type="button"
+            className={ROW_ACTION_BTN_CLASS}
+            title="View product"
+            aria-label={`View ${displayName}`}
+            onClick={() => onView(product)}
+          >
+            <Eye className="h-3.5 w-3.5 pointer-events-none" />
+          </button>
+          {isAdmin && (
+            <button
+              type="button"
+              className={ROW_ACTION_BTN_CLASS}
+              title="Edit product"
+              aria-label={`Edit ${displayName}`}
+              onClick={() => onEdit(product)}
+            >
+              <Pencil className="h-3.5 w-3.5 pointer-events-none" />
+            </button>
+          )}
+          {isAdmin && (
+            <button
+              type="button"
+              className={ROW_DELETE_BTN_CLASS}
+              title="Delete product"
+              aria-label={`Delete ${displayName}`}
+              onClick={() => onDelete(product)}
+            >
+              <Trash2 className="h-3.5 w-3.5 pointer-events-none" />
+            </button>
+          )}
+          <button
+            type="button"
+            className={ROW_ACTION_BTN_CLASS}
+            title={product.hasVariations ? 'Variant QR labels' : 'QR Label'}
+            aria-label={product.hasVariations ? `Variant QR labels for ${displayName}` : `QR label for ${displayName}`}
+            onClick={() => onQr(product)}
+          >
+            <QrCode className="h-3.5 w-3.5 pointer-events-none" />
+          </button>
+          {canAdjustStock && (
+            <button
+              type="button"
+              className={ROW_ACTION_BTN_CLASS}
+              title="Adjust stock"
+              aria-label={`Adjust stock for ${displayName}`}
+              onClick={() => onAdjust(product)}
+            >
+              <SlidersHorizontal className="h-3.5 w-3.5 pointer-events-none" />
+            </button>
+          )}
+        </div>
+      </td>
+    </tr>
+  );
+});
+
 export function Inventory() {
   const { profile } = useAuth();
   const { permissions } = useStaffAccess();
@@ -54,6 +267,7 @@ export function Inventory() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const [products, setProducts] = useState<Product[]>([]);
+  const [hasLoadedProducts, setHasLoadedProducts] = useState(false);
   const [addVariations, setAddVariations] = useState(emptyVariations);
   const [editVariations, setEditVariations] = useState(emptyVariations);
   const [selectedVariantId, setSelectedVariantId] = useState('');
@@ -128,6 +342,7 @@ export function Inventory() {
     const next = new URLSearchParams(searchParams);
     if (category !== null) {
       setCategoryFilter(category || 'all');
+      setCurrentPage(1);
       next.delete('category');
     }
     if (product) {
@@ -192,7 +407,7 @@ export function Inventory() {
     return map;
   }, [products]);
 
-  const childrenOf = (id: string) => childrenMap.get(id) || [];
+  const childrenOf = useCallback((id: string) => childrenMap.get(id) || [], [childrenMap]);
 
   const parentProducts = useMemo(() => {
     return products
@@ -274,7 +489,9 @@ export function Inventory() {
         } as Product;
       });
       setProducts(mapped);
+      setHasLoadedProducts(true);
     }, (error) => {
+      setHasLoadedProducts(true);
       handleSupabaseError(error, OperationType.GET, 'products');
     });
     const unsubInventory = onSnapshot(collection(db, 'inventory'), (snap) => {
@@ -495,7 +712,8 @@ export function Inventory() {
     }
   };
 
-  const handleDownloadProductTemplate = () => {
+  const handleDownloadProductTemplate = async () => {
+    const XLSX = await import('xlsx');
     const sheet = XLSX.utils.aoa_to_sheet([PRODUCT_TEMPLATE_HEADERS]);
     sheet['!cols'] = PRODUCT_TEMPLATE_HEADERS.map((header) => ({ wch: Math.max(header.length + 2, 16) }));
     const workbook = XLSX.utils.book_new();
@@ -507,6 +725,7 @@ export function Inventory() {
     const file = event.target.files?.[0];
     if (!file) return;
     try {
+      const XLSX = await import('xlsx');
       const workbook = XLSX.read(await file.arrayBuffer(), { type: 'array' });
       const sheet = workbook.Sheets[workbook.SheetNames[0]];
       if (!sheet) throw new Error('The workbook does not contain a worksheet.');
@@ -845,7 +1064,7 @@ export function Inventory() {
     return map;
   }, [inventory, allowedWarehouseIds]);
 
-  const getStockCount = (productId: string, warehouseId?: string) => {
+  const getStockCount = useCallback((productId: string, warehouseId?: string) => {
     const targetWh = !warehouseId || warehouseId === 'all' ? 'all' : warehouseId;
     const children = childrenMap.get(productId);
     if (children && children.length > 0) {
@@ -858,18 +1077,55 @@ export function Inventory() {
       return sum;
     }
     return stockMap.get(`${productId}:${targetWh}`) || 0;
-  };
+  }, [stockMap, childrenMap]);
 
-  const activeWarehouseObj = warehouses.find(w => w.id === warehouseFilter);
+  const activeWarehouseObj = useMemo(
+    () => warehouses.find(w => w.id === warehouseFilter),
+    [warehouses, warehouseFilter],
+  );
   const activeWarehouseLabel = warehouseFilter === 'all'
     ? 'All Warehouses'
     : (activeWarehouseObj?.name || 'Warehouse Filter');
 
-  const categories = Array.from(new Set([...managedCategories.map(item => item.name), ...products.map(product => product.category).filter(Boolean)])).sort();
-  const suppliers = Array.from(new Set([...managedSuppliers.map(item => item.name), ...products.map(product => product.supplier).filter(Boolean) as string[]])).sort();
-  const inactiveCategoryNames = new Set(managedCategories.filter(item => item.active === false).map(item => item.name));
-  const categoryOptions = Array.from(new Set(['Uncategorized', ...categories])).filter(name => name && !inactiveCategoryNames.has(name)).sort();
-  const supplierOptions = Array.from(new Set(['N/A', ...suppliers])).filter(Boolean).sort();
+  const categories = useMemo(
+    () => Array.from(new Set([...managedCategories.map(item => item.name), ...products.map(product => product.category).filter(Boolean)])).sort(),
+    [managedCategories, products],
+  );
+  const suppliers = useMemo(
+    () => Array.from(new Set([...managedSuppliers.map(item => item.name), ...products.map(product => product.supplier).filter(Boolean) as string[]])).sort(),
+    [managedSuppliers, products],
+  );
+  const inactiveCategoryNames = useMemo(
+    () => new Set(managedCategories.filter(item => item.active === false).map(item => item.name)),
+    [managedCategories],
+  );
+  const categoryOptions = useMemo(
+    () => Array.from(new Set(['Uncategorized', ...categories])).filter(name => name && !inactiveCategoryNames.has(name)).sort(),
+    [categories, inactiveCategoryNames],
+  );
+  const supplierOptions = useMemo(
+    () => Array.from(new Set(['N/A', ...suppliers])).filter(Boolean).sort(),
+    [suppliers],
+  );
+  const layoutProducts = useMemo(
+    () => products.filter(p => !p.hasVariations && p.variantEnabled !== false),
+    [products],
+  );
+  const quarantinedTicketCount = useMemo(
+    () => defectiveTickets.filter(t => t.status === 'QUARANTINED').length,
+    [defectiveTickets],
+  );
+  const mountAddProductDialog = useMountedOnce(isAddProductOpen);
+  const mountImportDialog = useMountedOnce(isImportOpen);
+  const mountEditDialog = useMountedOnce(Boolean(editingProduct));
+  const mountDeleteDialog = useMountedOnce(Boolean(productToDelete));
+  const mountStockUpdateDialog = useMountedOnce(isStockUpdateOpen);
+  const mountDetailDialog = useMountedOnce(isDetailOpen);
+  const mountQrDialog = useMountedOnce(Boolean(qrProduct));
+  const mountDefectiveModal = useMountedOnce(isDefectiveModalOpen);
+  const handleOpenDefectiveModal = useCallback(() => setIsDefectiveModalOpen(true), []);
+  const handleCloseDefectiveModal = useCallback(() => setIsDefectiveModalOpen(false), []);
+  const handleDefectiveSuccess = useCallback(() => setDefectiveTickets(getLocalDefectiveTickets()), []);
 
   const isAddSkuDuplicate = Boolean(
     addSku.trim() && products.some(p => (p.sku || '').trim().toLowerCase() === addSku.trim().toLowerCase())
@@ -887,49 +1143,99 @@ export function Inventory() {
     products.some(p => p.id !== editingProduct.id && (p.name || '').trim().toLowerCase() === cleanItemName(editName).trim().toLowerCase())
   );
 
-  const getProductStatus = (product: Product, stock: number, _checkWarehouseId?: string): 'in' | 'low' | 'out' => {
-    if (product.hasVariations) {
-      const variants = childrenOf(product.id).filter(p => p.variantEnabled !== false);
-      const statuses = variants.map(p => getProductStatus(p, getStockCount(p.id, _checkWarehouseId), _checkWarehouseId));
-      if (!statuses.length || statuses.every(s => s === 'out')) return 'out';
-      return statuses.some(s => s !== 'in') ? 'low' : 'in';
+  const getProductStatus = useCallback((product: Product, stock: number, _checkWarehouseId?: string): 'in' | 'low' | 'out' => {
+    const resolveStatus = (item: Product, qty: number): 'in' | 'low' | 'out' => {
+      if (item.hasVariations) {
+        const variants = childrenOf(item.id).filter(p => p.variantEnabled !== false);
+        const statuses = variants.map(p => resolveStatus(p, getStockCount(p.id, _checkWarehouseId)));
+        if (!statuses.length || statuses.every(s => s === 'out')) return 'out';
+        return statuses.some(s => s !== 'in') ? 'low' : 'in';
+      }
+      if (qty <= 0) return 'out';
+      const threshold = item.reorderPoint || item.minStockLevel || 0;
+      if (qty <= threshold) return 'low';
+      return 'in';
+    };
+    return resolveStatus(product, stock);
+  }, [childrenOf, getStockCount]);
+
+  const variantRange = useCallback((product: Product, key: typeof variantFields[number][0]) => {
+    const values = childrenOf(product.id).filter(p => p.variantEnabled !== false && (key !== 'promoPrice' || p.promoPrice != null)).map(p => Number(p[key] || 0));
+    if (!values.length) return '—';
+    const min = Math.min(...values), max = Math.max(...values);
+    return min === max ? `₱${min.toLocaleString()}` : `₱${min.toLocaleString()}–₱${max.toLocaleString()}`;
+  }, [childrenOf]);
+
+  const productSearchTextMap = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const product of parentProducts) {
+      const childParts = (childrenMap.get(product.id) || []).flatMap(p => [p.sku, variantLabel(p)]);
+      map.set(
+        product.id,
+        [product.name, product.sku, product.category, product.supplier, ...childParts]
+          .filter(Boolean)
+          .join('\0')
+          .toLowerCase(),
+      );
     }
-    if (stock <= 0) return 'out';
-    const threshold = product.reorderPoint || product.minStockLevel || 0;
-    if (stock <= threshold) return 'low';
-    return 'in';
-  };
+    return map;
+  }, [parentProducts, childrenMap]);
+
+  const productRowMetaMap = useMemo(() => {
+    const map = new Map<string, InventoryRowSummary>();
+    const activeVariantCols = canViewWholesale ? variantFields.slice(0, 3) : variantFields.slice(0, 1);
+    for (const product of parentProducts) {
+      const stock = getStockCount(product.id, warehouseFilter);
+      const status = getProductStatus(product, stock, warehouseFilter);
+      const enabledVariantCount = product.hasVariations
+        ? childrenOf(product.id).filter(v => v.variantEnabled !== false).length
+        : 0;
+      const variantPriceRows = product.hasVariations
+        ? activeVariantCols.map(([key, label]) => ({
+            key,
+            label,
+            range: variantRange(product, key),
+          }))
+        : [];
+      const costText = canViewCost
+        ? (product.hasVariations ? variantRange(product, 'costPrice') : `₱${(product.costPrice || 0).toLocaleString()}`)
+        : '—';
+      map.set(product.id, {
+        displayName: cleanItemName(product.name),
+        stock,
+        status,
+        enabledVariantCount,
+        variantPriceRows,
+        costText,
+      });
+    }
+    return map;
+  }, [parentProducts, warehouseFilter, getStockCount, getProductStatus, childrenOf, variantRange, canViewWholesale, canViewCost]);
 
   const filteredProducts = useMemo(() => {
     const term = searchTerm.trim().toLowerCase();
     return parentProducts.filter(product => {
-      const stock = getStockCount(product.id, warehouseFilter);
-      const matchesSearch = !term || [
-        product.name,
-        product.sku,
-        product.category,
-        product.supplier,
-        ...(childrenMap.get(product.id) || []).flatMap(p => [p.sku, variantLabel(p)])
-      ].some(value => (value || '').toLowerCase().includes(term));
+      const meta = productRowMetaMap.get(product.id);
+      const stock = meta ? meta.stock : 0;
+      const status = meta ? meta.status : 'out';
+      const matchesSearch = !term || (productSearchTextMap.get(product.id) || '').includes(term);
 
       return matchesSearch
         && (categoryFilter === 'all' || (product.category || 'Uncategorized') === categoryFilter)
         && (supplierFilter === 'all' || (product.supplier || 'N/A') === supplierFilter)
-        && (stockFilter === 'all' || getProductStatus(product, stock, warehouseFilter) === stockFilter)
+        && (stockFilter === 'all' || status === stockFilter)
         && (!hideZeroStock || stock > 0);
     });
-  }, [parentProducts, searchTerm, warehouseFilter, categoryFilter, supplierFilter, stockFilter, hideZeroStock, stockMap, childrenMap]);
+  }, [parentProducts, searchTerm, categoryFilter, supplierFilter, stockFilter, hideZeroStock, productRowMetaMap, productSearchTextMap]);
 
   const totalProducts = parentProducts.length;
 
   const { lowStockProducts, outOfStockProducts, inventoryValue } = useMemo(() => {
     let low = 0;
     let out = 0;
-    for (const product of parentProducts) {
-      const stock = getStockCount(product.id, warehouseFilter);
-      const status = getProductStatus(product, stock, warehouseFilter);
-      if (status === 'low') low++;
-      else if (status === 'out') out++;
+    for (const summary of productRowMetaMap.values()) {
+      if (summary.status === 'low') low++;
+      else if (summary.status === 'out') out++;
     }
 
     let totalVal = 0;
@@ -944,15 +1250,36 @@ export function Inventory() {
       outOfStockProducts: out,
       inventoryValue: totalVal
     };
-  }, [parentProducts, products, warehouseFilter, stockMap, childrenMap]);
+  }, [productRowMetaMap, products, warehouseFilter, getStockCount]);
 
   // Pagination state for rapid DOM rendering (50 rows/page)
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState<number>(50);
 
-  useEffect(() => {
+  const handleSearchTermChange = useCallback((value: string) => {
+    setSearchTerm(value);
     setCurrentPage(1);
-  }, [searchTerm, warehouseFilter, categoryFilter, supplierFilter, stockFilter, hideZeroStock, pageSize]);
+  }, []);
+  const handleWarehouseFilterChange = useCallback((value: string | null) => {
+    setWarehouseFilter(value ?? 'all');
+    setCurrentPage(1);
+  }, []);
+  const handleCategoryFilterChange = useCallback((value: string | null) => {
+    setCategoryFilter(value ?? 'all');
+    setCurrentPage(1);
+  }, []);
+  const handleSupplierFilterChange = useCallback((value: string | null) => {
+    setSupplierFilter(value ?? 'all');
+    setCurrentPage(1);
+  }, []);
+  const handleStockFilterChange = useCallback((value: string | null) => {
+    setStockFilter(value ?? 'all');
+    setCurrentPage(1);
+  }, []);
+  const handleHideZeroStockChange = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
+    setHideZeroStock(event.target.checked);
+    setCurrentPage(1);
+  }, []);
 
   const totalPages = Math.max(1, Math.ceil(filteredProducts.length / pageSize));
   const safeCurrentPage = Math.min(currentPage, totalPages);
@@ -962,12 +1289,30 @@ export function Inventory() {
     return filteredProducts.slice(start, start + pageSize);
   }, [filteredProducts, safeCurrentPage, pageSize]);
 
-  const variantRange = (product: Product, key: typeof variantFields[number][0]) => {
-    const values = childrenOf(product.id).filter(p => p.variantEnabled !== false && (key !== 'promoPrice' || p.promoPrice != null)).map(p => Number(p[key] || 0));
-    if (!values.length) return '—';
-    const min = Math.min(...values), max = Math.max(...values);
-    return min === max ? `₱${min.toLocaleString()}` : `₱${min.toLocaleString()}–₱${max.toLocaleString()}`;
-  };
+  const handleViewRow = useCallback((product: Product) => {
+    setDetailTab('overview');
+    setSelectedProduct(product);
+    setIsDetailOpen(true);
+  }, []);
+  const handleEditRow = useCallback((product: Product) => {
+    setEditingProduct(product);
+  }, []);
+  const handleDeleteRow = useCallback((product: Product) => {
+    setProductToDelete(product);
+  }, []);
+  const handleQrRow = useCallback((product: Product) => {
+    if (product.hasVariations) {
+      setSelectedProduct(product);
+      setIsDetailOpen(true);
+      setDetailTab('variants');
+    } else {
+      setQrProduct(product);
+    }
+  }, []);
+  const handleAdjustRow = useCallback((product: Product) => {
+    setSelectedProduct(product);
+    setIsStockUpdateOpen(true);
+  }, []);
 
   const allowedVariantFields = useMemo(() => {
     return variantFields.filter(([key]) => {
@@ -1152,7 +1497,7 @@ export function Inventory() {
   };
 
 
-  const exportMultiWarehouseLedger = () => {
+  const exportMultiWarehouseLedger = useCallback(() => {
     const activeWhs = visibleWarehouses.filter(w => w.active !== false);
     const exportWarehouses = activeWhs.length > 0 ? activeWhs : visibleWarehouses;
     const header = [
@@ -1168,58 +1513,83 @@ export function Inventory() {
     ];
     const csvRows = [header.map(escapeCsvCell).join(',')];
 
-    const sumWarehouseQty = (productId: string, warehouseId: string) =>
-      inventory
-        .filter(i => i.productId === productId && i.warehouseId === warehouseId)
-        .reduce((sum, i) => sum + Math.max(0, Number(i.quantity || 0)), 0);
-
-    const sumQuarantineQty = (productId: string) =>
-      inventory
-        .filter(i => i.productId === productId && (!allowedWarehouseIds || allowedWarehouseIds.includes(i.warehouseId)))
-        .reduce((sum, i) => sum + Math.max(0, Number(i.quarantineQuantity || 0)), 0);
-
-    products.filter(p => !p.parentProductId).forEach(p => {
-      if (p.hasVariations) {
-        const variants = childrenOf(p.id).filter(v => v.variantEnabled !== false);
-        variants.forEach(v => {
-          const whStocks = exportWarehouses.map(w => sumWarehouseQty(v.id, w.id));
-          const quarantine = sumQuarantineQty(v.id);
-          const totalUnits = whStocks.reduce((a, b) => a + b, 0) + quarantine;
-          const costNum = v.costPrice ?? p.costPrice ?? 0;
-          const cost = canViewCost ? costNum : 'N/A';
-          const totalValue = canViewCost ? totalUnits * (Number(costNum) || 0) : 'N/A';
-          csvRows.push([
-            escapeCsvCell(v.sku || ''),
-            escapeCsvCell(`${p.name} - ${variantLabel(v)}`),
-            escapeCsvCell(p.supplier || 'N/A'),
-            escapeCsvCell(p.category || 'N/A'),
-            escapeCsvCell(`${p.locationAisle || ''}/${p.locationBin || ''}`),
-            ...whStocks.map(q => escapeCsvCell(q)),
-            escapeCsvCell(quarantine),
-            escapeCsvCell(cost),
-            escapeCsvCell(totalValue),
-          ].join(','));
-        });
-      } else {
-        const whStocks = exportWarehouses.map(w => sumWarehouseQty(p.id, w.id));
-        const quarantine = sumQuarantineQty(p.id);
-        const totalUnits = whStocks.reduce((a, b) => a + b, 0) + quarantine;
-        const costNum = p.costPrice || 0;
-        const cost = canViewCost ? costNum : 'N/A';
-        const totalValue = canViewCost ? totalUnits * (Number(costNum) || 0) : 'N/A';
-        csvRows.push([
-          escapeCsvCell(p.sku || ''),
-          escapeCsvCell(p.name),
-          escapeCsvCell(p.supplier || 'N/A'),
-          escapeCsvCell(p.category || 'N/A'),
-          escapeCsvCell(`${p.locationAisle || ''}/${p.locationBin || ''}`),
-          ...whStocks.map(q => escapeCsvCell(q)),
-          escapeCsvCell(quarantine),
-          escapeCsvCell(cost),
-          escapeCsvCell(totalValue),
-        ].join(','));
+    const allowedWhSet = allowedWarehouseIds ? new Set(allowedWarehouseIds) : null;
+    const warehouseQtyMap = new Map<string, number>();
+    const quarantineQtyMap = new Map<string, number>();
+    for (const item of inventory) {
+      const qty = Math.max(0, Number(item.quantity || 0));
+      if (qty > 0) {
+        const key = `${item.productId}\0${item.warehouseId}`;
+        warehouseQtyMap.set(key, (warehouseQtyMap.get(key) ?? 0) + qty);
       }
-    });
+      const qQty = Math.max(0, Number(item.quarantineQuantity || 0));
+      if (qQty > 0 && (!allowedWhSet || allowedWhSet.has(item.warehouseId))) {
+        quarantineQtyMap.set(item.productId, (quarantineQtyMap.get(item.productId) ?? 0) + qQty);
+      }
+    }
+
+    const appendCsvRow = (
+      itemId: string,
+      sku: string,
+      itemName: string,
+      supplier: string,
+      category: string,
+      aisleBin: string,
+      costNum: number,
+    ) => {
+      let totalWhUnits = 0;
+      const whStocks = exportWarehouses.map(w => {
+        const qty = warehouseQtyMap.get(`${itemId}\0${w.id}`) ?? 0;
+        totalWhUnits += qty;
+        return qty;
+      });
+      const quarantine = quarantineQtyMap.get(itemId) ?? 0;
+      const totalUnits = totalWhUnits + quarantine;
+      const cost = canViewCost ? costNum : 'N/A';
+      const totalValue = canViewCost ? totalUnits * (Number(costNum) || 0) : 'N/A';
+      csvRows.push([
+        escapeCsvCell(sku),
+        escapeCsvCell(itemName),
+        escapeCsvCell(supplier),
+        escapeCsvCell(category),
+        escapeCsvCell(aisleBin),
+        ...whStocks.map(q => escapeCsvCell(q)),
+        escapeCsvCell(quarantine),
+        escapeCsvCell(cost),
+        escapeCsvCell(totalValue),
+      ].join(','));
+    };
+
+    for (const p of products) {
+      if (p.parentProductId) continue;
+      const supplier = p.supplier || 'N/A';
+      const category = p.category || 'N/A';
+      const aisleBin = `${p.locationAisle || ''}/${p.locationBin || ''}`;
+      if (p.hasVariations) {
+        for (const v of childrenOf(p.id)) {
+          if (v.variantEnabled === false) continue;
+          appendCsvRow(
+            v.id,
+            v.sku || '',
+            `${p.name} - ${variantLabel(v)}`,
+            supplier,
+            category,
+            aisleBin,
+            v.costPrice ?? p.costPrice ?? 0,
+          );
+        }
+      } else {
+        appendCsvRow(
+          p.id,
+          p.sku || '',
+          p.name,
+          supplier,
+          category,
+          aisleBin,
+          p.costPrice || 0,
+        );
+      }
+    }
 
     const blob = new Blob([csvRows.join('\n')], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
@@ -1229,62 +1599,42 @@ export function Inventory() {
     link.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
     toast.success('Multi-Warehouse Ledger exported successfully');
-  };
+  }, [visibleWarehouses, inventory, allowedWarehouseIds, products, childrenOf, canViewCost]);
 
-  const inventoryNavigation = <div className="flex gap-1 rounded-xl bg-muted/60 p-1 w-fit" aria-label="Inventory views">
+  const inventoryNavigation = useMemo(() => <div className="flex gap-1 rounded-xl bg-muted/60 p-1 w-fit" aria-label="Inventory views">
     <Button variant={inventoryView === 'stock' ? 'default' : 'ghost'} aria-pressed={inventoryView === 'stock'} onClick={() => setInventoryView('stock')}><Package className="size-4" />Products & Stock</Button>
     <Button variant={inventoryView === 'layout' ? 'default' : 'ghost'} aria-pressed={inventoryView === 'layout'} onClick={() => setInventoryView('layout')}><WarehouseIcon className="size-4" />Warehouse Layout</Button>
-    <Button variant={inventoryView === 'quarantine' ? 'default' : 'ghost'} aria-pressed={inventoryView === 'quarantine'} onClick={() => setInventoryView('quarantine')}>
+    <Button
+      variant={inventoryView === 'quarantine' ? 'default' : 'ghost'}
+      aria-pressed={inventoryView === 'quarantine'}
+      onMouseEnter={() => { void loadDefectiveStockModalModule(); }}
+      onFocus={() => { void loadDefectiveStockModalModule(); }}
+      onClick={() => setInventoryView('quarantine')}
+    >
       <AlertTriangle className="size-4 text-amber-500" />
       <span>Quarantine & Returns</span>
-      {defectiveTickets.filter(t => t.status === 'QUARANTINED').length > 0 && (
+      {quarantinedTicketCount > 0 && (
         <Badge variant="destructive" className="ml-1 h-4 px-1 text-[9px] font-bold">
-          {defectiveTickets.filter(t => t.status === 'QUARANTINED').length}
+          {quarantinedTicketCount}
         </Badge>
       )}
     </Button>
-  </div>;
+  </div>, [inventoryView, quarantinedTicketCount]);
 
-  if (inventoryView === 'layout') return <div className="space-y-5 pb-20">{inventoryNavigation}<WarehouseLayout warehouses={warehouses} products={products.filter(p => !p.hasVariations && p.variantEnabled !== false)} inventory={inventory} /></div>;
-  if (inventoryView === 'quarantine') return (
-    <div className="space-y-5 pb-20">
-      {inventoryNavigation}
-      <QuarantineLedger
-        tickets={defectiveTickets}
-        inventory={inventory}
-        profile={profile}
-        canAdjustStock={canAdjustStock}
-        allowedWarehouseIds={allowedWarehouseIds}
-        onOpenLogModal={() => setIsDefectiveModalOpen(true)}
-        onRefresh={() => setDefectiveTickets(getLocalDefectiveTickets())}
-      />
-      <DefectiveStockModal
-        open={isDefectiveModalOpen}
-        onClose={() => setIsDefectiveModalOpen(false)}
-        products={products}
-        inventory={inventory}
-        warehouses={warehouses}
-        profile={profile}
-        canAdjustStock={canAdjustStock}
-        allowedWarehouseIds={allowedWarehouseIds}
-        onSuccess={() => setDefectiveTickets(getLocalDefectiveTickets())}
-      />
-    </div>
-  );
-
-  return (
-    <div className="space-y-5 pb-20">
-      {inventoryNavigation}
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+  const stockTopAndKpis = useMemo(() => (
+    <>
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between min-h-11">
         <div className="min-w-0 flex-1">
-          <p className="mt-1 text-sm text-muted-foreground">Manage products, stock levels, suppliers, and warehouse inventory.</p>
+          <p className="mt-1 text-sm text-muted-foreground min-h-10 lg:min-h-11 flex items-center">Manage products, stock levels, suppliers, and warehouse inventory.</p>
         </div>
-        <div className="flex max-w-full flex-nowrap gap-2 overflow-x-auto lg:shrink-0 [&>button]:shrink-0">
+        <div className="flex max-w-full min-h-11 items-center flex-nowrap gap-2 overflow-x-auto lg:shrink-0 [&>button]:shrink-0">
           {canAdjustStock && (
             <Button
               type="button"
               variant="outline"
-              onClick={() => setIsDefectiveModalOpen(true)}
+              onMouseEnter={() => { void loadDefectiveStockModalModule(); }}
+              onFocus={() => { void loadDefectiveStockModalModule(); }}
+              onClick={handleOpenDefectiveModal}
               className="h-11 gap-2 rounded-xl border-amber-300 bg-amber-50/70 text-amber-800 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-800 px-4 font-bold shadow-sm hover:bg-amber-100"
             >
               <AlertTriangle className="h-4 w-4 text-amber-600" /> Log Damaged Stock
@@ -1316,25 +1666,71 @@ export function Inventory() {
           </Card>
         ))}
       </div>
+    </>
+  ), [
+    canAdjustStock,
+    navigate,
+    exportMultiWarehouseLedger,
+    handleOpenDefectiveModal,
+    isAdmin,
+    totalProducts,
+    lowStockProducts,
+    outOfStockProducts,
+    canViewCost,
+    inventoryValue,
+    activeWarehouseLabel,
+  ]);
 
+  const warehouseFilterSelect = useMemo(() => (
+    <div className="space-y-1.5"><Label className="text-xs font-semibold">Warehouse</Label><Select value={warehouseFilter} onValueChange={handleWarehouseFilterChange}><SelectTrigger className="h-10 rounded-xl"><SelectValue>{warehouseFilter === 'all' ? 'All Warehouses' : activeWarehouseObj?.name}</SelectValue></SelectTrigger><SelectContent><SelectItem value="all">All Warehouses</SelectItem>{visibleWarehouses.map(warehouse => <SelectItem key={warehouse.id} value={warehouse.id}>{warehouse.name}</SelectItem>)}</SelectContent></Select></div>
+  ), [warehouseFilter, handleWarehouseFilterChange, activeWarehouseObj, visibleWarehouses]);
+
+  const categoryFilterSelect = useMemo(() => (
+    <div className="space-y-1.5"><Label className="text-xs font-semibold">Category</Label><Select value={categoryFilter} onValueChange={handleCategoryFilterChange}><SelectTrigger className="h-10 rounded-xl"><SelectValue>{categoryFilter === 'all' ? 'All Categories' : categoryFilter}</SelectValue></SelectTrigger><SelectContent><SelectItem value="all">All Categories</SelectItem>{categories.filter(c => c !== 'Uncategorized').map(category => <SelectItem key={category} value={category}>{category}</SelectItem>)}<div className="my-1 h-px bg-muted" /><SelectItem value="Uncategorized" className="italic text-muted-foreground">Uncategorized</SelectItem></SelectContent></Select></div>
+  ), [categoryFilter, handleCategoryFilterChange, categories]);
+
+  const supplierFilterSelect = useMemo(() => (
+    <div className="space-y-1.5"><Label className="text-xs font-semibold">Supplier</Label><Select value={supplierFilter} onValueChange={handleSupplierFilterChange}><SelectTrigger className="h-10 rounded-xl"><SelectValue>{supplierFilter === 'all' ? 'All Suppliers' : supplierFilter}</SelectValue></SelectTrigger><SelectContent><SelectItem value="all">All Suppliers</SelectItem>{suppliers.filter(s => s !== 'N/A').map(supplier => <SelectItem key={supplier} value={supplier}>{supplier}</SelectItem>)}<div className="my-1 h-px bg-muted" /><SelectItem value="N/A" className="italic text-muted-foreground">N/A</SelectItem></SelectContent></Select></div>
+  ), [supplierFilter, handleSupplierFilterChange, suppliers]);
+
+  const stockFilterSelect = useMemo(() => (
+    <div className="space-y-1.5"><Label className="text-xs font-semibold">Stock Status</Label><Select value={stockFilter} onValueChange={handleStockFilterChange}><SelectTrigger className="h-10 rounded-xl"><SelectValue>{stockFilter === 'all' ? 'All Statuses' : stockFilter === 'in' ? 'In Stock' : stockFilter === 'low' ? 'Low Stock' : 'Out of Stock'}</SelectValue></SelectTrigger><SelectContent><SelectItem value="all">All Statuses</SelectItem><SelectItem value="in">In Stock</SelectItem><SelectItem value="low">Low Stock</SelectItem><SelectItem value="out">Out of Stock</SelectItem></SelectContent></Select></div>
+  ), [stockFilter, handleStockFilterChange]);
+
+  const stockControlsHeader = useMemo(() => (
+    <>
+      {stockTopAndKpis}
       <Card className="overflow-hidden rounded-2xl border-border/70 shadow-sm">
         <CardContent className="p-0">
           <div className="border-b border-border p-4">
             <div className="relative max-w-xl">
               <Search className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-              <Input value={searchTerm} onChange={(event) => setSearchTerm(event.target.value)} placeholder="Search products, SKU, category, or supplier..." className="h-11 rounded-xl bg-background pl-10" />
+              <Input value={searchTerm} onChange={(event) => handleSearchTermChange(event.target.value)} placeholder="Search products, SKU, category, or supplier..." className="h-11 rounded-xl bg-background pl-10" />
             </div>
           </div>
           <div className="grid grid-cols-1 gap-3 p-4 sm:grid-cols-2 xl:grid-cols-[1fr_1fr_1fr_1fr_auto] xl:items-end">
-            <div className="space-y-1.5"><Label className="text-xs font-semibold">Warehouse</Label><Select value={warehouseFilter} onValueChange={(value) => setWarehouseFilter(value ?? 'all')}><SelectTrigger className="h-10 rounded-xl"><SelectValue>{warehouseFilter === 'all' ? 'All Warehouses' : activeWarehouseObj?.name}</SelectValue></SelectTrigger><SelectContent><SelectItem value="all">All Warehouses</SelectItem>{visibleWarehouses.map(warehouse => <SelectItem key={warehouse.id} value={warehouse.id}>{warehouse.name}</SelectItem>)}</SelectContent></Select></div>
-            <div className="space-y-1.5"><Label className="text-xs font-semibold">Category</Label><Select value={categoryFilter} onValueChange={(value) => setCategoryFilter(value ?? 'all')}><SelectTrigger className="h-10 rounded-xl"><SelectValue>{categoryFilter === 'all' ? 'All Categories' : categoryFilter}</SelectValue></SelectTrigger><SelectContent><SelectItem value="all">All Categories</SelectItem>{categories.filter(c => c !== 'Uncategorized').map(category => <SelectItem key={category} value={category}>{category}</SelectItem>)}<div className="my-1 h-px bg-muted" /><SelectItem value="Uncategorized" className="italic text-muted-foreground">Uncategorized</SelectItem></SelectContent></Select></div>
-            <div className="space-y-1.5"><Label className="text-xs font-semibold">Supplier</Label><Select value={supplierFilter} onValueChange={(value) => setSupplierFilter(value ?? 'all')}><SelectTrigger className="h-10 rounded-xl"><SelectValue>{supplierFilter === 'all' ? 'All Suppliers' : supplierFilter}</SelectValue></SelectTrigger><SelectContent><SelectItem value="all">All Suppliers</SelectItem>{suppliers.filter(s => s !== 'N/A').map(supplier => <SelectItem key={supplier} value={supplier}>{supplier}</SelectItem>)}<div className="my-1 h-px bg-muted" /><SelectItem value="N/A" className="italic text-muted-foreground">N/A</SelectItem></SelectContent></Select></div>
-            <div className="space-y-1.5"><Label className="text-xs font-semibold">Stock Status</Label><Select value={stockFilter} onValueChange={(value) => setStockFilter(value ?? 'all')}><SelectTrigger className="h-10 rounded-xl"><SelectValue>{stockFilter === 'all' ? 'All Statuses' : stockFilter === 'in' ? 'In Stock' : stockFilter === 'low' ? 'Low Stock' : 'Out of Stock'}</SelectValue></SelectTrigger><SelectContent><SelectItem value="all">All Statuses</SelectItem><SelectItem value="in">In Stock</SelectItem><SelectItem value="low">Low Stock</SelectItem><SelectItem value="out">Out of Stock</SelectItem></SelectContent></Select></div>
-            <label className="flex h-10 cursor-pointer items-center justify-between gap-3 whitespace-nowrap rounded-xl border border-border px-3 text-xs font-medium">Hide zero-stock<input type="checkbox" checked={hideZeroStock} onChange={(event) => setHideZeroStock(event.target.checked)} className="h-4 w-4 accent-[#101d33]" /></label>
+            {warehouseFilterSelect}
+            {categoryFilterSelect}
+            {supplierFilterSelect}
+            {stockFilterSelect}
+            <label className="flex h-10 cursor-pointer items-center justify-between gap-3 whitespace-nowrap rounded-xl border border-border px-3 text-xs font-medium">Hide zero-stock<input type="checkbox" checked={hideZeroStock} onChange={handleHideZeroStockChange} className="h-4 w-4 accent-[#101d33]" /></label>
           </div>
         </CardContent>
       </Card>
+    </>
+  ), [
+    stockTopAndKpis,
+    searchTerm,
+    handleSearchTermChange,
+    warehouseFilterSelect,
+    categoryFilterSelect,
+    supplierFilterSelect,
+    stockFilterSelect,
+    hideZeroStock,
+    handleHideZeroStockChange,
+  ]);
 
+  const stockTableCard = useMemo(() => (
       <div className="overflow-hidden rounded-2xl border border-border/70 bg-card shadow-sm">
         <div className="overflow-x-auto">
           <Table>
@@ -1354,148 +1750,35 @@ export function Inventory() {
             </TableHeader>
             <TableBody>
               {paginatedProducts.map((product, index) => {
-                const stock = getStockCount(product.id, warehouseFilter);
-                const status = getProductStatus(product, stock, warehouseFilter);
-                const statusClass = status === 'out' ? 'border-red-500/30 bg-red-500/10 text-red-600 dark:text-red-400' : status === 'low' ? 'border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400' : 'border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400';
+                const summary = productRowMetaMap.get(product.id);
+                if (!summary) return null;
                 return (
-                  <TableRow
+                  <InventoryProductRow
                     key={product.id}
-                    tabIndex={0}
-                    className="group cursor-pointer hover:bg-muted/40 transition-colors focus-visible:outline-2 focus-visible:outline-primary"
-                    onClick={() => { setDetailTab('overview'); setSelectedProduct(product); setIsDetailOpen(true); }}
-                    onKeyDown={(e) => {
-                      if (e.target !== e.currentTarget) return;
-                      if (e.key === 'Enter' || e.key === ' ') {
-                        e.preventDefault();
-                        setDetailTab('overview');
-                        setSelectedProduct(product);
-                        setIsDetailOpen(true);
-                      }
-                    }}
-                  >
-                    <TableCell className="w-10 text-center font-mono text-xs text-muted-foreground px-2 py-2">
-                      {(safeCurrentPage - 1) * pageSize + index + 1}
-                    </TableCell>
-                    <TableCell className="w-28 font-mono text-xs text-muted-foreground px-2 py-2 truncate" title={product.sku}>
-                      {product.sku}
-                    </TableCell>
-                    <TableCell className="min-w-47.5 max-w-65 px-2 py-2">
-                      <div className="flex items-center gap-2.5">
-                        <div className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-border bg-muted">
-                          {product.photoUrl ? (
-                            <img src={product.photoUrl} alt={cleanItemName(product.name)} className="h-full w-full object-cover" />
-                          ) : (
-                            <Package className="h-4 w-4 text-muted-foreground" />
-                          )}
-                        </div>
-                        <div className="min-w-0">
-                          <p className="truncate text-xs font-bold" title={cleanItemName(product.name)}>{cleanItemName(product.name)}</p>
-                          {product.hasVariations && (
-                            <Badge variant="secondary" className="my-0.5 text-[9px] px-1.5 py-0 h-4">
-                              {childrenOf(product.id).filter(v => v.variantEnabled !== false).length} Variants
-                            </Badge>
-                          )}
-                          <p className="truncate text-[11px] text-muted-foreground">{product.category || 'Uncategorized'}</p>
-                        </div>
-                      </div>
-                    </TableCell>
-                    <TableCell className="w-32 px-2 py-2">
-                      {product.hasVariations ? (
-                        <div className="space-y-0.5 text-[11px]">
-                          {(canViewWholesale ? variantFields.slice(0, 3) : variantFields.slice(0, 1)).map(([key, label]) => (
-                            <p key={key} className="truncate">
-                              <span className="text-muted-foreground">{label}: </span>
-                              <strong>{variantRange(product, key)}</strong>
-                            </p>
-                          ))}
-                        </div>
-                      ) : (
-                        <div className="grid grid-cols-[2.4rem_auto] text-[11px] leading-tight">
-                          <span className="text-muted-foreground">Retail:</span><strong>₱{(product.basePrice || 0).toLocaleString()}</strong>
-                          {canViewWholesale && (
-                            <>
-                              <span className="text-muted-foreground">MM:</span><strong>₱{(product.mmPrice ?? product.wholesalePrice ?? 0).toLocaleString()}</strong>
-                              <span className="text-muted-foreground">Prov.:</span><strong>₱{(product.provincialPrice ?? product.dealerPrice ?? 0).toLocaleString()}</strong>
-                            </>
-                          )}
-                        </div>
-                      )}
-                    </TableCell>
-                    <TableCell className="w-20 px-2 py-2 text-xs font-semibold">
-                      {canViewCost ? (product.hasVariations ? variantRange(product, 'costPrice') : `₱${(product.costPrice || 0).toLocaleString()}`) : '—'}
-                    </TableCell>
-                    <TableCell className="w-24 px-2 py-2 text-center">
-                      <Badge variant="outline" className={'rounded-full px-2.5 py-0.5 text-[11px] ' + statusClass}>
-                        {stock.toLocaleString()} units
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="w-24 px-2 py-2">
-                      {product.hasVariations ? (
-                        <span className="text-[11px] text-muted-foreground">Per variant</span>
-                      ) : (
-                        <div className="text-[11px] space-y-0.5">
-                          <p><span className="text-muted-foreground">Min:</span> <strong>{product.minStockLevel || 0}</strong></p>
-                          <p><span className="text-muted-foreground">Reorder:</span> <strong>{product.reorderPoint || 0}</strong></p>
-                        </div>
-                      )}
-                    </TableCell>
-                    <TableCell className="w-28 px-2 py-2">
-                      <p className="truncate text-xs font-bold" title={product.supplier || 'Supplier'}>{product.supplier || 'Supplier'}</p>
-                      <p className="truncate text-[10px] text-muted-foreground">Main Supplier</p>
-                    </TableCell>
-                    <TableCell className="w-24 px-2 py-2 text-center">
-                      <Badge variant="outline" className={'rounded-full text-[10px] py-0.5 px-2 ' + statusClass}>
-                        {status === 'out' ? '● Out of Stock' : status === 'low' ? '● Low Stock' : '● In Stock'}
-                      </Badge>
-                    </TableCell>
-                    <TableCell
-                      className="w-45 text-center px-3 py-2"
-                      onClick={(event) => event.stopPropagation()}
-                    >
-                      <div className="flex justify-center gap-1">
-                        <Button type="button" variant="outline" size="icon" className="h-8 w-8" title="View product" aria-label={`View ${cleanItemName(product.name)}`} onClick={() => { setSelectedProduct(product); setIsDetailOpen(true); }}>
-                          <Eye className="h-3.5 w-3.5" />
-                        </Button>
-                        {isAdmin && (
-                          <Button type="button" variant="outline" size="icon" className="h-8 w-8" title="Edit product" aria-label={`Edit ${cleanItemName(product.name)}`} onClick={() => setEditingProduct(product)}>
-                            <Pencil className="h-3.5 w-3.5" />
-                          </Button>
-                        )}
-                        {isAdmin && (
-                          <Button type="button" variant="outline" size="icon" className="h-8 w-8 text-red-500 hover:text-red-600 hover:bg-red-50 hover:border-red-200" title="Delete product" aria-label={`Delete ${cleanItemName(product.name)}`} onClick={() => setProductToDelete(product)}>
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </Button>
-                        )}
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="icon"
-                          className="h-8 w-8"
-                          title={product.hasVariations ? "Variant QR labels" : "QR Label"}
-                          aria-label={product.hasVariations ? `Variant QR labels for ${cleanItemName(product.name)}` : `QR label for ${cleanItemName(product.name)}`}
-                          onClick={() => {
-                            if (product.hasVariations) {
-                              setSelectedProduct(product);
-                              setIsDetailOpen(true);
-                              setDetailTab('variants');
-                            } else {
-                              setQrProduct(product);
-                            }
-                          }}
-                        >
-                          <QrCode className="h-3.5 w-3.5" />
-                        </Button>
-                        {canAdjustStock && (
-                          <Button type="button" variant="outline" size="icon" className="h-8 w-8" title="Adjust stock" aria-label={`Adjust stock for ${cleanItemName(product.name)}`} onClick={() => { setSelectedProduct(product); setIsStockUpdateOpen(true); }}>
-                            <SlidersHorizontal className="h-3.5 w-3.5" />
-                          </Button>
-                        )}
-                      </div>
-                    </TableCell>
-                  </TableRow>
+                    rowNumber={(safeCurrentPage - 1) * pageSize + index + 1}
+                    product={product}
+                    summary={summary}
+                    isAdmin={isAdmin}
+                    canAdjustStock={canAdjustStock}
+                    canViewWholesale={canViewWholesale}
+                    onView={handleViewRow}
+                    onEdit={handleEditRow}
+                    onDelete={handleDeleteRow}
+                    onQr={handleQrRow}
+                    onAdjust={handleAdjustRow}
+                  />
                 );
               })}
-              {filteredProducts.length === 0 && (
+              {!hasLoadedProducts && filteredProducts.length === 0 && (
+                Array.from({ length: 12 }).map((_, skeletonIdx) => (
+                  <TableRow key={`skeleton-${skeletonIdx}`} className="h-14">
+                    <TableCell colSpan={10} className="px-4 py-2">
+                      <div className="h-6 w-full animate-pulse rounded-md bg-muted/60" />
+                    </TableCell>
+                  </TableRow>
+                ))
+              )}
+              {hasLoadedProducts && filteredProducts.length === 0 && (
                 <TableRow>
                   <TableCell colSpan={10} className="h-36 text-center text-sm text-muted-foreground">
                     No products match the current filters.
@@ -1515,7 +1798,10 @@ export function Inventory() {
               <span className="text-[11px]">Rows:</span>
               <select
                 value={pageSize}
-                onChange={(e) => setPageSize(Number(e.target.value))}
+                onChange={(e) => {
+                  setPageSize(Number(e.target.value));
+                  setCurrentPage(1);
+                }}
                 className="h-7 rounded border border-border bg-background px-1.5 text-xs font-semibold text-foreground focus:outline-none focus:ring-1 focus:ring-primary cursor-pointer"
               >
                 <option value={25}>25</option>
@@ -1555,7 +1841,48 @@ export function Inventory() {
           </div>
         </div>
       </div>
+  ), [
+    canAdjustStock,
+    canViewWholesale,
+    filteredProducts.length,
+    handleAdjustRow,
+    handleDeleteRow,
+    handleEditRow,
+    handleQrRow,
+    handleViewRow,
+    hasLoadedProducts,
+    isAdmin,
+    pageSize,
+    paginatedProducts,
+    parentProducts.length,
+    productRowMetaMap,
+    safeCurrentPage,
+    totalPages,
+  ]);
 
+  return (
+    <div className="space-y-5 pb-20">
+      {inventoryNavigation}
+      {inventoryView === 'layout' && (
+        <WarehouseLayout warehouses={warehouses} products={layoutProducts} inventory={inventory} />
+      )}
+      {inventoryView === 'quarantine' && (
+        <QuarantineLedger
+          tickets={defectiveTickets}
+          inventory={inventory}
+          profile={profile}
+          canAdjustStock={canAdjustStock}
+          allowedWarehouseIds={allowedWarehouseIds}
+          onOpenLogModal={handleOpenDefectiveModal}
+          onRefresh={handleDefectiveSuccess}
+        />
+      )}
+      <div className={inventoryView === 'stock' ? 'space-y-5' : 'hidden'}>
+        {stockControlsHeader}
+        {stockTableCard}
+      </div>
+
+      {mountAddProductDialog && (
       <Dialog open={isAddProductOpen} onOpenChange={(open) => { if (!open && isSubmittingProduct) return; setIsAddProductOpen(open); if (!open) setProductImage(null); }}>
         <DialogContent className={`max-h-[90vh] w-[95vw] min-w-0 overflow-x-hidden overflow-y-auto ${addVariations.enabled ? 'sm:max-w-7xl' : 'sm:max-w-4xl'}`}><DialogHeader><DialogTitle>New Configuration Item (Product)</DialogTitle><DialogDescription>Register a new bicycle component into the service catalog.</DialogDescription></DialogHeader>
           <form onSubmit={handleAddProduct} className="min-w-0 space-y-5 pt-2">
@@ -1725,7 +2052,9 @@ export function Inventory() {
           </form>
         </DialogContent>
       </Dialog>
+      )}
 
+      {mountImportDialog && (
       <Dialog open={isImportOpen} onOpenChange={(open) => { if (!open && isImporting) return; setIsImportOpen(open); if (!open) { setImportPreview([]); setImportFileName(''); } }}>
         <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-5xl">
           <DialogHeader><DialogTitle>Import Products</DialogTitle><DialogDescription>Download the template, upload the completed Excel file, review validation results, then confirm to add products to Inventory.</DialogDescription></DialogHeader>
@@ -1735,7 +2064,9 @@ export function Inventory() {
           <DialogFooter><Button type="button" variant="outline" onClick={() => setIsImportOpen(false)}>Cancel</Button><Button type="button" onClick={handleConfirmImport} disabled={isImporting || !importPreview.length || importPreview.some(row => row.errors.length > 0)}>{isImporting ? 'Importing...' : `Confirm Import${importPreview.length ? ` (${importPreview.length})` : ''}`}</Button></DialogFooter>
         </DialogContent>
       </Dialog>
+      )}
 
+      {mountEditDialog && (
       <Dialog open={Boolean(editingProduct)} onOpenChange={(open) => { if (!open && !isSubmittingProduct) { setEditingProduct(null); setEditProductImage(null); setEditProductImagePreview(''); } }}>
         <DialogContent className={`max-h-[90vh] w-[95vw] min-w-0 overflow-x-hidden overflow-y-auto ${editVariations.enabled ? 'sm:max-w-7xl' : 'sm:max-w-4xl'}`}>
           <DialogHeader>
@@ -1950,7 +2281,9 @@ export function Inventory() {
           )}
         </DialogContent>
       </Dialog>
+      )}
 
+      {mountDeleteDialog && (
       <Dialog open={Boolean(productToDelete)} onOpenChange={(open) => { if (!open && !isDeletingProduct) setProductToDelete(null); }}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
@@ -1970,8 +2303,10 @@ export function Inventory() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      )}
 
       {/* Stock Update Dialog */}
+      {mountStockUpdateDialog && (
       <Dialog open={isStockUpdateOpen} onOpenChange={(open) => { if (!open && isAdjusting) return; setIsStockUpdateOpen(open); }}>
         <DialogContent className="sm:max-w-xl max-h-[92vh] overflow-y-auto">
           <DialogHeader>
@@ -2146,8 +2481,10 @@ export function Inventory() {
           </form>
         </DialogContent>
       </Dialog>
+      )}
 
       {/* Redesigned product detail dialog */}
+      {mountDetailDialog && (
       <Dialog open={isDetailOpen} onOpenChange={(open) => { setIsDetailOpen(open); if (!open) { setDetailTab('overview'); } }}>
         <DialogContent className="max-h-[95vh] w-[96vw] min-w-0 max-w-[96vw] overflow-y-auto rounded-2xl p-0 sm:max-w-7xl">
           <DialogHeader className="border-b border-border px-6 pb-4 pt-5 text-left">
@@ -2240,7 +2577,9 @@ export function Inventory() {
           <DialogFooter className="border-t border-border bg-muted/20 px-6 py-4"><Button variant="outline" onClick={() => setIsDetailOpen(false)} className="h-11 min-w-28 rounded-lg px-8 font-bold">Close</Button></DialogFooter>
         </DialogContent>
       </Dialog>
+      )}
 
+      {mountQrDialog && (
       <Dialog open={!!qrProduct} onOpenChange={open => !open && setQrProduct(null)}>
         <DialogContent className="sm:max-w-sm">
           <DialogHeader>
@@ -2265,18 +2604,23 @@ export function Inventory() {
           )}
         </DialogContent>
       </Dialog>
+      )}
 
-      <DefectiveStockModal
-        open={isDefectiveModalOpen}
-        onClose={() => setIsDefectiveModalOpen(false)}
-        products={products}
-        inventory={inventory}
-        warehouses={warehouses}
-        profile={profile}
-        canAdjustStock={canAdjustStock}
-        allowedWarehouseIds={allowedWarehouseIds}
-        onSuccess={() => setDefectiveTickets(getLocalDefectiveTickets())}
-      />
+      {mountDefectiveModal && (
+        <Suspense fallback={null}>
+          <DefectiveStockModalLazy
+            open={isDefectiveModalOpen}
+            onClose={handleCloseDefectiveModal}
+            products={products}
+            inventory={inventory}
+            warehouses={warehouses}
+            profile={profile}
+            canAdjustStock={canAdjustStock}
+            allowedWarehouseIds={allowedWarehouseIds}
+            onSuccess={handleDefectiveSuccess}
+          />
+        </Suspense>
+      )}
     </div>
   );
 }

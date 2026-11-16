@@ -6,6 +6,18 @@ import { escapeCsvCell } from './exportUtils';
 
 const ITIL_INCIDENTS_STORAGE_KEY = 'activepro_db_itil_incidents';
 const DEFECTIVE_TICKETS_STORAGE_KEY = 'activepro_db_defective_tickets';
+const SLA_SYNC_CACHE_TTL_MS = 30_000;
+
+let inFlightSlaSync: Promise<ITILIncident[]> | null = null;
+let lastSlaSignature = '';
+let lastSlaSyncAt = 0;
+let lastSlaResult: ITILIncident[] | null = null;
+
+function buildOrdersSlaSignature(orders: Order[]): string {
+  return orders
+    .map((o) => `${o.id}:${o.status}:${String(o.deliveryDeadline ?? '')}:${String(o.createdAt ?? '')}:${o.deliveryRegion ?? ''}`)
+    .join('|');
+}
 
 export function getLocalIncidents(): ITILIncident[] {
   if (typeof window === 'undefined' || !window.localStorage) return [];
@@ -20,6 +32,7 @@ export function getLocalIncidents(): ITILIncident[] {
 }
 
 export function saveLocalIncidents(incidents: ITILIncident[]) {
+  lastSlaResult = incidents;
   if (typeof window === 'undefined' || !window.localStorage) return;
   try {
     localStorage.setItem(ITIL_INCIDENTS_STORAGE_KEY, JSON.stringify(incidents));
@@ -69,142 +82,167 @@ export async function evaluateAndSyncSLAIncidents(
   orders: Order[],
   currentUser?: UserProfile | null
 ): Promise<ITILIncident[]> {
-  const localIncidents = getLocalIncidents();
-  let hasRemoteMerge = false;
-  const incidentsMap = new Map<string, ITILIncident>(localIncidents.map((inc) => [inc.id, inc]));
+  const signature = buildOrdersSlaSignature(orders);
+  const nowTs = Date.now();
+  if (lastSlaResult && signature === lastSlaSignature && nowTs - lastSlaSyncAt < SLA_SYNC_CACHE_TTL_MS) {
+    return lastSlaResult;
+  }
+  if (inFlightSlaSync && signature === lastSlaSignature) {
+    return inFlightSlaSync;
+  }
+
+  lastSlaSignature = signature;
+  inFlightSlaSync = (async () => {
+    const localIncidents = getLocalIncidents();
+    let hasRemoteMerge = false;
+    const incidentsMap = new Map<string, ITILIncident>(localIncidents.map((inc) => [inc.id, inc]));
+
+    try {
+      const remoteSnap = await getDocs(collection(db, 'itil_incidents'));
+      if (remoteSnap && Array.isArray(remoteSnap.docs)) {
+        for (const d of remoteSnap.docs) {
+          const remoteInc: ITILIncident = { ...(d.data() as ITILIncident), id: d.id };
+          const existingLocal = incidentsMap.get(remoteInc.id);
+          if (!existingLocal || String(remoteInc.updatedAt || '') >= String(existingLocal.updatedAt || '')) {
+            incidentsMap.set(remoteInc.id, remoteInc);
+            hasRemoteMerge = true;
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('Failed to fetch remote ITIL incidents; using local cache:', e);
+    }
+
+    const orderIncidentMap = new Map<string, ITILIncident>();
+
+    for (const inc of incidentsMap.values()) {
+      if (inc.orderId && inc.incidentType === 'SLA_BREACH') {
+        orderIncidentMap.set(inc.orderId, inc);
+      }
+    }
+
+    const now = Date.now();
+    let hasChanges = hasRemoteMerge;
+    const syncTasks: Promise<void>[] = [];
+
+    for (const order of orders) {
+      // Only check active orders
+      if (['delivered', 'completed', 'cancelled'].includes(order.status)) {
+        // If order was resolved/completed, auto-resolve any open SLA incident
+        const existingInc = orderIncidentMap.get(order.id);
+        if (existingInc && existingInc.status !== 'RESOLVED' && existingInc.status !== 'CLOSED') {
+          const nowIso = new Date().toISOString();
+          const resolvedInc: ITILIncident = {
+            ...existingInc,
+            status: 'RESOLVED',
+            resolvedAt: nowIso,
+            updatedAt: nowIso,
+            resolutionNotes: `Auto-resolved upon order fulfillment (${order.status}).`,
+          };
+          incidentsMap.set(resolvedInc.id, resolvedInc);
+          hasChanges = true;
+          syncTasks.push(
+            updateDoc(doc(db, 'itil_incidents', resolvedInc.id), {
+              status: 'RESOLVED',
+              resolvedAt: resolvedInc.resolvedAt,
+              updatedAt: resolvedInc.updatedAt,
+              resolutionNotes: resolvedInc.resolutionNotes,
+            }).catch((e) => {
+              console.warn('Failed to sync auto-resolved ITIL incident to Supabase:', e);
+            }),
+          );
+        }
+        continue;
+      }
+
+      // Determine deadline
+      let deadlineMs = toMillis(order.deliveryDeadline);
+      if (deadlineMs === null) {
+        const createdMs = toMillis(order.createdAt);
+        if (createdMs === null) continue;
+        const slaDays = getRegionalSlaDays(order.deliveryRegion);
+        deadlineMs = createdMs + slaDays * 24 * 60 * 60 * 1000;
+      }
+
+      if (now > deadlineMs) {
+        const daysOverdue = Math.max(1, Math.floor((now - deadlineMs) / (24 * 60 * 60 * 1000)));
+        const existingInc = orderIncidentMap.get(order.id);
+
+        if (!existingInc) {
+          // Auto-generate brand new ITIL incident record (FR-06)
+          const safeOrderNum = String(order.orderNumber || order.id || 'UNKNOWN').trim();
+          const newTicketNumber = `INC-SLA-${safeOrderNum.replace(/[^A-Za-z0-9]/g, '') || order.id}`;
+          const newIncident: ITILIncident = {
+            id: `inc-sla-${order.id}`,
+            ticketNumber: newTicketNumber,
+            incidentType: 'SLA_BREACH',
+            severity: daysOverdue >= 3 ? 'CRITICAL' : 'HIGH',
+            status: 'ESCALATED',
+            orderId: order.id,
+            orderNumber: safeOrderNum,
+            clientId: order.clientId,
+            clientName: order.clientName,
+            deliveryLocation: order.deliveryRegion || 'Unspecified',
+            daysOverdue,
+            assignedAgentId: order.agentId,
+            assignedAgentName: currentUser?.displayName || 'Assigned Field Agent',
+            description: `ITIL SLA Breach: Fulfillment target exceeded for ${order.deliveryRegion || 'destination'}. Order is ${daysOverdue} day(s) overdue.`,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          };
+
+          incidentsMap.set(newIncident.id, newIncident);
+          orderIncidentMap.set(order.id, newIncident);
+          hasChanges = true;
+
+          // Push to Supabase itil_incidents concurrently
+          syncTasks.push(
+            setDoc(doc(db, 'itil_incidents', newIncident.id), newIncident).catch((e) => {
+              console.warn('Supabase itil_incidents write fallback to local storage:', e);
+            }),
+          );
+        } else if (existingInc.daysOverdue !== daysOverdue && existingInc.status !== 'RESOLVED' && existingInc.status !== 'CLOSED') {
+          // Update days overdue and elevate severity if >= 3 days
+          const updatedAt = new Date().toISOString();
+          const updatedInc: ITILIncident = {
+            ...existingInc,
+            daysOverdue,
+            severity: daysOverdue >= 3 ? 'CRITICAL' : existingInc.severity,
+            updatedAt,
+          };
+          incidentsMap.set(updatedInc.id, updatedInc);
+          hasChanges = true;
+          syncTasks.push(
+            updateDoc(doc(db, 'itil_incidents', updatedInc.id), {
+              daysOverdue: updatedInc.daysOverdue,
+              severity: updatedInc.severity,
+              updatedAt,
+            }).catch((e) => {
+              console.warn('Failed to sync escalated ITIL incident to Supabase:', e);
+            }),
+          );
+        }
+      }
+    }
+
+    if (syncTasks.length > 0) {
+      await Promise.allSettled(syncTasks);
+    }
+
+    const updatedList = Array.from(incidentsMap.values());
+    if (hasChanges) {
+      saveLocalIncidents(updatedList);
+    }
+    lastSlaResult = updatedList;
+    lastSlaSyncAt = Date.now();
+    return updatedList;
+  })();
 
   try {
-    const remoteSnap = await getDocs(collection(db, 'itil_incidents'));
-    if (remoteSnap && Array.isArray(remoteSnap.docs)) {
-      for (const d of remoteSnap.docs) {
-        const remoteInc: ITILIncident = { ...(d.data() as ITILIncident), id: d.id };
-        const existingLocal = incidentsMap.get(remoteInc.id);
-        if (!existingLocal || String(remoteInc.updatedAt || '') >= String(existingLocal.updatedAt || '')) {
-          incidentsMap.set(remoteInc.id, remoteInc);
-          hasRemoteMerge = true;
-        }
-      }
-    }
-  } catch (e) {
-    console.warn('Failed to fetch remote ITIL incidents; using local cache:', e);
+    return await inFlightSlaSync;
+  } finally {
+    inFlightSlaSync = null;
   }
-
-  const orderIncidentMap = new Map<string, ITILIncident>();
-
-  for (const inc of incidentsMap.values()) {
-    if (inc.orderId && inc.incidentType === 'SLA_BREACH') {
-      orderIncidentMap.set(inc.orderId, inc);
-    }
-  }
-
-  const now = Date.now();
-  let hasChanges = hasRemoteMerge;
-
-  for (const order of orders) {
-    // Only check active orders
-    if (['delivered', 'completed', 'cancelled'].includes(order.status)) {
-      // If order was resolved/completed, auto-resolve any open SLA incident
-      const existingInc = orderIncidentMap.get(order.id);
-      if (existingInc && existingInc.status !== 'RESOLVED' && existingInc.status !== 'CLOSED') {
-        const nowIso = new Date().toISOString();
-        const resolvedInc: ITILIncident = {
-          ...existingInc,
-          status: 'RESOLVED',
-          resolvedAt: nowIso,
-          updatedAt: nowIso,
-          resolutionNotes: `Auto-resolved upon order fulfillment (${order.status}).`,
-        };
-        incidentsMap.set(resolvedInc.id, resolvedInc);
-        hasChanges = true;
-        try {
-          await updateDoc(doc(db, 'itil_incidents', resolvedInc.id), {
-            status: 'RESOLVED',
-            resolvedAt: resolvedInc.resolvedAt,
-            updatedAt: resolvedInc.updatedAt,
-            resolutionNotes: resolvedInc.resolutionNotes,
-          });
-        } catch (e) {
-          console.warn('Failed to sync auto-resolved ITIL incident to Supabase:', e);
-        }
-      }
-      continue;
-    }
-
-    // Determine deadline
-    let deadlineMs = toMillis(order.deliveryDeadline);
-    if (deadlineMs === null) {
-      const createdMs = toMillis(order.createdAt);
-      if (createdMs === null) continue;
-      const slaDays = getRegionalSlaDays(order.deliveryRegion);
-      deadlineMs = createdMs + slaDays * 24 * 60 * 60 * 1000;
-    }
-
-    if (now > deadlineMs) {
-      const daysOverdue = Math.max(1, Math.floor((now - deadlineMs) / (24 * 60 * 60 * 1000)));
-      const existingInc = orderIncidentMap.get(order.id);
-
-      if (!existingInc) {
-        // Auto-generate brand new ITIL incident record (FR-06)
-        const safeOrderNum = String(order.orderNumber || order.id || 'UNKNOWN').trim();
-        const newTicketNumber = `INC-SLA-${safeOrderNum.replace(/[^A-Za-z0-9]/g, '') || order.id}`;
-        const newIncident: ITILIncident = {
-          id: `inc-sla-${order.id}`,
-          ticketNumber: newTicketNumber,
-          incidentType: 'SLA_BREACH',
-          severity: daysOverdue >= 3 ? 'CRITICAL' : 'HIGH',
-          status: 'ESCALATED',
-          orderId: order.id,
-          orderNumber: safeOrderNum,
-          clientId: order.clientId,
-          clientName: order.clientName,
-          deliveryLocation: order.deliveryRegion || 'Unspecified',
-          daysOverdue,
-          assignedAgentId: order.agentId,
-          assignedAgentName: currentUser?.displayName || 'Assigned Field Agent',
-          description: `ITIL SLA Breach: Fulfillment target exceeded for ${order.deliveryRegion || 'destination'}. Order is ${daysOverdue} day(s) overdue.`,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        };
-
-        incidentsMap.set(newIncident.id, newIncident);
-        orderIncidentMap.set(order.id, newIncident);
-        hasChanges = true;
-
-        // Try pushing to Supabase itil_incidents
-        try {
-          await setDoc(doc(db, 'itil_incidents', newIncident.id), newIncident);
-        } catch (e) {
-          console.warn('Supabase itil_incidents write fallback to local storage:', e);
-        }
-      } else if (existingInc.daysOverdue !== daysOverdue && existingInc.status !== 'RESOLVED' && existingInc.status !== 'CLOSED') {
-        // Update days overdue and elevate severity if >= 3 days
-        const updatedAt = new Date().toISOString();
-        const updatedInc: ITILIncident = {
-          ...existingInc,
-          daysOverdue,
-          severity: daysOverdue >= 3 ? 'CRITICAL' : existingInc.severity,
-          updatedAt,
-        };
-        incidentsMap.set(updatedInc.id, updatedInc);
-        hasChanges = true;
-        try {
-          await updateDoc(doc(db, 'itil_incidents', updatedInc.id), {
-            daysOverdue: updatedInc.daysOverdue,
-            severity: updatedInc.severity,
-            updatedAt,
-          });
-        } catch (e) {
-          console.warn('Failed to sync escalated ITIL incident to Supabase:', e);
-        }
-      }
-    }
-  }
-
-  const updatedList = Array.from(incidentsMap.values());
-  if (hasChanges) {
-    saveLocalIncidents(updatedList);
-  }
-  return updatedList;
 }
 
 /**

@@ -95,7 +95,7 @@ export function SupplyChain() {
     };
   }, [sourceReload]);
 
-  const handleDeleteWarehouse = (warehouse: Warehouse) => {
+  const handleDeleteWarehouse = React.useCallback((warehouse: Warehouse) => {
     if (!isAdmin) {
       toast.error('Administrator access required to delete warehouses.');
       return;
@@ -107,7 +107,7 @@ export function SupplyChain() {
       ? `This warehouse still contains ${stockCount.toLocaleString()} units. Deleting it will also remove those inventory records. Continue?`
       : `Delete "${warehouse.name}"? This will also remove its inventory records.`;
     setWarehouseToDelete({ warehouse, warning, warehouseInventory });
-  };
+  }, [isAdmin, warehouseActionId, inventory]);
 
   const executeDeleteWarehouse = async ({ warehouse, warehouseInventory }: { warehouse: Warehouse; warehouseInventory: InventoryItem[] }) => {
     setWarehouseActionId(warehouse.id);
@@ -232,8 +232,14 @@ export function SupplyChain() {
     }
   };
 
-  const categories = Array.from(new Set([...managedCategories.map(item => item.name), ...products.map(product => product.category).filter(Boolean)])).sort();
-  const suppliers = Array.from(new Set([...managedSuppliers.map(item => item.name), ...products.map(product => product.supplier).filter(Boolean) as string[]])).sort();
+  const categories = React.useMemo(
+    () => Array.from(new Set([...managedCategories.map(item => item.name), ...products.map(product => product.category).filter(Boolean)])).sort(),
+    [managedCategories, products]
+  );
+  const suppliers = React.useMemo(
+    () => Array.from(new Set([...managedSuppliers.map(item => item.name), ...products.map(product => product.supplier).filter(Boolean) as string[]])).sort(),
+    [managedSuppliers, products]
+  );
 
   const combinedSuppliers: NamedOption[] = React.useMemo(() => {
     const list = [...managedSuppliers];
@@ -248,28 +254,53 @@ export function SupplyChain() {
     return list.sort((a, b) => a.name.localeCompare(b.name));
   }, [managedSuppliers, products]);
 
+  const sourcesLoading = React.useMemo(
+    () => ['products', 'inventory', 'warehouses', 'suppliers'].some(table => !sourceLoaded[table]),
+    [sourceLoaded]
+  );
+  const sourcesError = React.useMemo(
+    () => Object.values(sourceErrors).some(Boolean),
+    [sourceErrors]
+  );
+  const handleRetrySources = React.useCallback(() => setSourceReload(value => value + 1), []);
+  const handleRemoveSupplier = React.useCallback((name: string) => {
+    if (!isAdmin) {
+      toast.error('Administrator access required to delete suppliers.');
+      return;
+    }
+    const affected = products.filter(product => product.supplier === name);
+    setDeletingReference({ name, type: 'supplier', affectedCount: affected.length, affectedItems: affected });
+  }, [isAdmin, products]);
+  const categoriesContent = React.useMemo(
+    () => (
+      <CategoryWorkspace
+        products={products}
+        inventory={inventory}
+        warehouses={warehouses}
+        suppliers={combinedSuppliers}
+        loading={sourcesLoading}
+        error={sourcesError}
+        onRetry={handleRetrySources}
+      />
+    ),
+    [products, inventory, warehouses, combinedSuppliers, sourcesLoading, sourcesError, handleRetrySources]
+  );
+
   if (!getSupplyChainViews(permissions.supplyChain).length) return null;
 
   return (
     <div className="space-y-5 pb-20">
       <SupplyChainWorkspace
-        sourceLoading={['products', 'inventory', 'warehouses', 'suppliers'].some(table => !sourceLoaded[table])}
-        sourceError={Object.values(sourceErrors).some(Boolean)}
-        onRetrySources={() => setSourceReload(value => value + 1)}
+        sourceLoading={sourcesLoading}
+        sourceError={sourcesError}
+        onRetrySources={handleRetrySources}
         products={products}
         inventory={inventory}
         warehouses={warehouses}
         suppliers={combinedSuppliers}
         onRemoveWarehouse={handleDeleteWarehouse}
-        onRemoveSupplier={(name) => {
-          if (!isAdmin) {
-            toast.error('Administrator access required to delete suppliers.');
-            return;
-          }
-          const affected = products.filter(product => product.supplier === name);
-          setDeletingReference({ name, type: 'supplier', affectedCount: affected.length, affectedItems: affected });
-        }}
-        categoriesContent={<CategoryWorkspace products={products} inventory={inventory} warehouses={warehouses} suppliers={combinedSuppliers} loading={['products', 'inventory', 'warehouses', 'suppliers'].some(table => !sourceLoaded[table])} error={Object.values(sourceErrors).some(Boolean)} onRetry={() => setSourceReload(value => value + 1)} />}
+        onRemoveSupplier={handleRemoveSupplier}
+        categoriesContent={categoriesContent}
       />
 
       <Dialog open={referenceManager !== null} onOpenChange={(open) => { if (!open) { setReferenceManager(null); setNewReferenceName(''); setEditingReferenceName(null); } }}>

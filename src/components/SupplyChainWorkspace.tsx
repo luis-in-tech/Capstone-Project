@@ -2,7 +2,8 @@ import { PageHeading } from './PageHeading';
 import { SearchBar } from '@/components/ui/search-bar';
 import { getSupplyChainViews, hasAdminRole } from '../lib/staffPermissions';
 import { useStaffAccess } from '../hooks/useStaffAccess';
-import { useEffect, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { UsersIcon as Users, TruckIcon as Truck, WarehouseIcon, PlusIcon as Plus, PencilIcon as Pencil, TrashIcon as Trash2, MapPinIcon as MapPin, PhoneIcon as Phone, UserIcon as UserRound, CalendarDotsIcon as CalendarDays, ArrowDownLeftIcon as ArrowDownLeft, ArrowUpRightIcon as ArrowUpRight, CreditCardIcon as CreditCard, ArrowCounterClockwiseIcon as RotateCcw, EyeIcon as Eye, PackageIcon as Package, SpinnerGapIcon as Loader2, WarningCircleIcon as AlertCircle, XIcon as X, EnvelopeSimpleIcon as Envelope, ChatCircleDotsIcon as ChatCircle, BankIcon as Bank, NotePencilIcon as Note, DeviceMobileIcon as DeviceMobile } from '@phosphor-icons/react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -50,20 +51,33 @@ interface Props {
 type SourceOrder = Order & { dueDate?: string; remainingBalance?: number };
 const views = [{ id: 'customers' as const, name: 'Customers', icon: Users }, { id: 'suppliers' as const, name: 'Suppliers', icon: Truck }, { id: 'warehouses' as const, name: 'Warehouses', icon: WarehouseIcon }];
 const filters = { customers: ['All', 'Order', 'Payment', 'Refund'], suppliers: ['All', 'Purchase', 'Bill Payment', 'Purchase Refund'], warehouses: ['All', 'Purchase', 'Transfer In', 'Transfer Out', 'Order', 'Purchase Refund', 'Order Refund'] };
+const HISTORY_PAGE_SIZE = 100;
 const formatDate = (value?: string) => value && dateValue(value) ? new Date(value).toLocaleDateString('en-PH', { month: 'short', day: 'numeric', year: 'numeric' }) : '—';
+const customerKey = (name: string) => `customer:${name.trim().toLowerCase()}`;
 
-export function SupplyChainWorkspace({ sourceLoading, sourceError, onRetrySources, products, inventory, warehouses, suppliers, onRemoveWarehouse, onRemoveSupplier, categoriesContent }: Props) {
+export const SupplyChainWorkspace = memo(function SupplyChainWorkspace({ sourceLoading, sourceError, onRetrySources, products, inventory, warehouses, suppliers, onRemoveWarehouse, onRemoveSupplier, categoriesContent }: Props) {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const pendingEntityIdRef = useRef<string | null>(null);
+  const pendingAddRef = useRef(false);
+  const lastAppliedSupplyKeyRef = useRef<string>('');
   const { profile } = useAuth();
-  const { permissions, hasDelegation } = useStaffAccess();
+  const { permissions } = useStaffAccess();
   const canManage = profile?.role === 'admin';
-  const allowedViews = views.filter(item => getSupplyChainViews(permissions.supplyChain).includes(item.id));
+  const allowedViews = useMemo(
+    () => views.filter(item => getSupplyChainViews(permissions.supplyChain).includes(item.id)),
+    [permissions.supplyChain]
+  );
   const canViewValuation = hasAdminRole(profile);
   const [showCategories, setShowCategories] = useState(false);
-  const [view, setView] = useState<SupplyView>(allowedViews[0]?.id || 'customers');
+  const [view, setView] = useState<SupplyView>(() => {
+    const param = searchParams.get('view') as SupplyView | null;
+    return param && allowedViews.some(item => item.id === param) ? param : (allowedViews[0]?.id || 'customers');
+  });
   const [entityId, setEntityId] = useState('');
   const [directorySearch, setDirectorySearch] = useState('');
   const [search, setSearch] = useState('');
   const [typeFilter, setTypeFilter] = useState('All');
+  const [historyPage, setHistoryPage] = useState(1);
   const [selectedId, setSelectedId] = useState('');
   const [orders, setOrders] = useState<SourceOrder[]>(() => {
     try {
@@ -153,7 +167,7 @@ export function SupplyChainWorkspace({ sourceLoading, sourceError, onRetrySource
   useEffect(() => {
     setLoaded({}); setErrors({});
     const watch = <T,>(table: string, update: (records: T[]) => void) => onSnapshot(collection(db, table), snap => {
-      update(snap.docs.map(d => ({ id: d.id, ...d.data() } as T)));
+      update(snap.docs.map((d: any) => ({ id: d.id, ...d.data() } as T)));
       setLoaded(current => ({ ...current, [table]: true }));
       setErrors(current => ({ ...current, [table]: false }));
     }, () => { setErrors(current => ({ ...current, [table]: true })); setLoaded(current => ({ ...current, [table]: true })); });
@@ -186,32 +200,55 @@ export function SupplyChainWorkspace({ sourceLoading, sourceError, onRetrySource
 
   // Orders currently create a new clientId for each order. Group the directory by
   // normalized customer name and connect with persistent supply chain customers.
-  const customerKey = (name: string) => `customer:${name.trim().toLowerCase()}`;
-  const customerMap = new Map<string, Entity>();
-  for (const order of orders) {
-    if (order.clientName?.trim()) {
-      const key = customerKey(order.clientName);
-      if (!customerMap.has(key)) {
-        customerMap.set(key, { id: key, name: order.clientName, address: order.deliveryRegion });
+  const productById = useMemo(() => new Map(products.map(p => [p.id, p])), [products]);
+  const warehouseById = useMemo(() => new Map(warehouses.map(w => [w.id, w])), [warehouses]);
+  const supplierLookups = useMemo(() => {
+    const byId = new Map<string, { id: string; name: string }>();
+    const byName = new Map<string, { id: string; name: string }>();
+    for (const supplier of suppliers) {
+      if (!byId.has(supplier.id)) byId.set(supplier.id, supplier);
+      if (!byName.has(supplier.name)) byName.set(supplier.name, supplier);
+    }
+    return { byId, byName };
+  }, [suppliers]);
+  const orderItemsByOrderId = useMemo(() => {
+    const map = new Map<string, OrderItem[]>();
+    for (const item of orderItems) {
+      let bucket = map.get(item.orderId);
+      if (!bucket) {
+        bucket = [];
+        map.set(item.orderId, bucket);
+      }
+      bucket.push(item);
+    }
+    return map;
+  }, [orderItems]);
+  const hiddenCustomerSet = useMemo(() => new Set(hiddenCustomers), [hiddenCustomers]);
+
+  const customers = useMemo(() => {
+    const customerMap = new Map<string, Entity>();
+    for (const order of orders) {
+      if (order.clientName?.trim()) {
+        const key = customerKey(order.clientName);
+        if (!customerMap.has(key)) {
+          customerMap.set(key, { id: key, name: order.clientName, address: order.deliveryRegion });
+        }
       }
     }
-  }
-  for (const draft of customerDrafts) {
-    if (draft.name?.trim()) {
-      const key = customerKey(draft.name);
-      const existing = customerMap.get(key);
-      if (!existing) {
-        customerMap.set(key, { ...draft, id: draft.id || key });
-      } else {
-        customerMap.set(key, { ...existing, ...draft, id: existing.id || draft.id || key });
+    for (const draft of customerDrafts) {
+      if (draft.name?.trim()) {
+        const key = customerKey(draft.name);
+        const existing = customerMap.get(key);
+        if (!existing) {
+          customerMap.set(key, { ...draft, id: draft.id || key });
+        } else {
+          customerMap.set(key, { ...existing, ...draft, id: existing.id || draft.id || key });
+        }
       }
     }
-  }
-  const customers = Array.from(customerMap.values());
-  const baseEntities: Entity[] = view === 'customers' ? customers.filter(c => !hiddenCustomers.includes(c.id)) : view === 'suppliers' ? suppliers : warehouses.map(w => ({ ...w, address: w.location }));
-  const entities = baseEntities.map(entity => (view === 'customers' ? { ...metadata[`${view}:${entity.id}`], ...entity } : { ...entity, ...metadata[`${view}:${entity.id}`] })).sort((a, b) => a.name.localeCompare(b.name));
-  const visibleEntities = entities.filter(entity => `${entity.name} ${entity.address || ''} ${entity.contact || ''}`.toLowerCase().includes(directorySearch.toLowerCase()));
-  const current = entities.find(entity => entity.id === entityId) ?? visibleEntities[0];
+    return Array.from(customerMap.values());
+  }, [orders, customerDrafts]);
+
   const warehouse = view === 'warehouses';
   const customer = view === 'customers';
   const singular = warehouse ? 'warehouse' : customer ? 'customer' : 'supplier';
@@ -220,86 +257,333 @@ export function SupplyChainWorkspace({ sourceLoading, sourceError, onRetrySource
   const loading = sourceLoading || requiredTables.some(table => !loaded[table]);
   const loadError = sourceError || requiredTables.some(table => errors[table]);
 
-  const orderRows: ChainTransaction[] = orders.map(order => {
-    const override = orderBalanceOverrides[order.id];
-    const remaining = override !== undefined ? override : orderBalance(order);
-    return {
-      id: order.id, entityId: customerKey(order.clientName || ''), type: 'Order', date: dateValue(order.createdAt), reference: order.orderNumber,
-      amount: Number(order.totalAmount), remaining, dueDate: dateValue(order.dueDate), status: order.status,
-      items: orderItems.filter(item => item.orderId === order.id).map(item => ({ ...item, unitPrice: Number(item.unitPrice), quantity: Number(item.quantity) })),
-      direction: order.status === 'cancelled' ? undefined : 'out',
-    };
-  });
-  const customerOrders: ChainTransaction[] = orderRows.filter(row => !['cancelled', 'escalated'].includes(row.status));
+  const entities = useMemo(() => {
+    const baseEntities: Entity[] = customer
+      ? customers.filter(c => !hiddenCustomerSet.has(c.id))
+      : warehouse
+        ? warehouses.map(w => ({ ...w, address: w.location }))
+        : suppliers;
+    return baseEntities
+      .map(entity => (customer ? { ...metadata[`${view}:${entity.id}`], ...entity } : { ...entity, ...metadata[`${view}:${entity.id}`] }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [view, customer, warehouse, customers, hiddenCustomerSet, warehouses, suppliers, metadata]);
 
-  const purchaseRows: ChainTransaction[] = movements.filter(m => m.type === 'external').map(movement => {
-    const matchedSupplier = suppliers.find(s => s.id === movement.supplierId || s.name === movement.supplierName || s.name === movement.supplierId);
-    const resolvedEntityId = matchedSupplier?.id || movement.supplierId || '';
+  const visibleEntities = useMemo(() => {
+    const query = directorySearch.toLowerCase();
+    if (!query) return entities;
+    return entities.filter(entity => `${entity.name} ${entity.address || ''} ${entity.contact || ''}`.toLowerCase().includes(query));
+  }, [entities, directorySearch]);
 
-    const originalAmount = movement.totalValue != null
-      ? Number(movement.totalValue)
-      : movement.items.reduce((sum, line) => sum + line.quantity * (line.unitCost || 0), 0);
+  const current = useMemo(
+    () => entities.find(entity => entity.id === entityId) ?? visibleEntities[0],
+    [entities, entityId, visibleEntities]
+  );
 
-    const paymentsForPurchase = committedTransactions.filter(t => t.parentId === movement.id && (t.type === 'Bill Payment' || t.type === 'Payment'));
-    const paidAmount = (movement as any).amountPaid != null && Number((movement as any).amountPaid) > 0
-      ? Number((movement as any).amountPaid)
-      : paymentsForPurchase.reduce((sum, p) => sum + (p.amount || 0), 0);
-    const remaining = (movement as any).remainingBalance != null && Number.isFinite(Number((movement as any).remainingBalance))
-      ? Number((movement as any).remainingBalance)
-      : Math.max(0, originalAmount - paidAmount);
-
-    return {
-      id: movement.id, entityId: resolvedEntityId, type: 'Purchase', date: dateValue(movement.createdAt), reference: movement.invoiceNumber || movement.movementNumber,
-      amount: originalAmount, remaining, dueDate: dateValue(movement.receivedDate || movement.createdAt),
-      status: remaining <= 0 ? 'paid' : paidAmount > 0 ? 'partially_paid' : movement.status || 'confirmed',
-      items: movement.items.map((line, i) => ({ ...line, id: `${movement.id}:${i}`, warehouseId: movement.destinationWarehouseId, unitPrice: Number(line.unitCost) })), direction: 'in',
-      notes: `Receipt ${movement.movementNumber}. Supplier: ${movement.supplierName || matchedSupplier?.name || 'Supplier'}`,
-    };
-  });
-  const warehouseRows: ChainTransaction[] = current && warehouse ? [
-    ...transfers.filter(t => t.sourceWarehouseId === current.id || t.destinationWarehouseId === current.id).map(t => {
-      const incoming = t.destinationWarehouseId === current.id;
-      const product = products.find(p => p.id === t.productId);
-      const moved = incoming ? t.status === 'received' : ['in_transit', 'received'].includes(t.status);
+  const orderRows: ChainTransaction[] = useMemo(() => {
+    if (!customer && !warehouse) return [];
+    return orders.map(order => {
+      const override = orderBalanceOverrides[order.id];
+      const remaining = override !== undefined ? override : orderBalance(order);
+      const rawItems = orderItemsByOrderId.get(order.id) || [];
       return {
-        id: `transfer:${t.id}`, entityId: current.id, type: incoming ? 'Transfer In' : 'Transfer Out',
-        date: dateValue((incoming ? t.receivedAt : t.dispatchedAt) || t.createdAt), reference: t.id,
-        amount: null, remaining: null, status: t.status,
-        direction: moved ? incoming ? 'in' as const : 'out' as const : undefined,
-        items: [{ id: t.id, productId: t.productId, name: product?.name || 'Product unavailable', sku: product?.sku || '', quantity: t.quantity, unitPrice: null, warehouseId: current.id }],
-        notes: `${warehouses.find(w => w.id === t.sourceWarehouseId)?.name || 'Source warehouse'} → ${warehouses.find(w => w.id === t.destinationWarehouseId)?.name || 'Destination warehouse'}. ${moved ? 'Stock movement recorded.' : t.status === 'cancelled' ? 'Cancelled transfer; no net stock movement.' : 'Stock has not arrived at or left this warehouse yet.'} Historical item valuation was not recorded.`,
+        id: order.id,
+        entityId: customerKey(order.clientName || ''),
+        type: 'Order',
+        date: dateValue(order.createdAt),
+        reference: order.orderNumber,
+        amount: Number(order.totalAmount),
+        remaining,
+        dueDate: dateValue(order.dueDate),
+        status: order.status,
+        items: rawItems.map(item => ({ ...item, unitPrice: Number(item.unitPrice), quantity: Number(item.quantity) })),
+        direction: order.status === 'cancelled' ? undefined : 'out',
       };
-    }),
-    ...movements.filter(m => m.sourceWarehouseId === current.id || m.destinationWarehouseId === current.id).map(m => {
-      const incoming = m.destinationWarehouseId === current.id;
-      return { id: m.id, entityId: current.id, type: m.type === 'external' ? 'Purchase' : incoming ? 'Transfer In' : 'Transfer Out', date: dateValue(m.createdAt), reference: m.movementNumber,
-        amount: m.totalValue == null ? null : Number(m.totalValue), remaining: null, status: m.status, direction: incoming ? 'in' as const : 'out' as const,
-        items: m.items.map((line, i) => ({ ...line, id: `${m.id}:${i}`, unitPrice: Number(line.unitCost), warehouseId: current.id })),
-        notes: `${m.sourceWarehouseName || m.supplierName || 'Supplier'} → ${m.destinationWarehouseName}${m.notes ? ` · ${m.notes}` : ''}` };
-    }),
-    ...orderRows.filter(row => row.status !== 'cancelled' && row.items.some(item => item.warehouseId === current.id)).map(row => {
-      const items = row.items.filter(item => item.warehouseId === current.id);
-      return { ...row, entityId: current.id, items, amount: items.reduce((sum, item) => sum + item.quantity * (item.unitPrice ?? 0), 0) };
-    }),
-    ...previews.filter(row => row.direction && row.items.some(item => item.warehouseId === current.id)).map(row => ({ ...row, type: row.type === 'Refund' ? 'Order Refund' : row.type, entityId: current.id })),
-  ] : [];
-  const rows = (warehouse ? warehouseRows : [...(customer ? customerOrders : purchaseRows), ...committedTransactions, ...previews].filter(row => row.entityId === current?.id)).sort((a, b) => b.date.localeCompare(a.date));
-  const filteredRows = rows.filter(row => (typeFilter === 'All' || row.type === typeFilter) && `${row.type} ${row.reference} ${row.status}`.toLowerCase().includes(search.toLowerCase()));
-  const selected = filteredRows.find(row => row.id === selectedId);
-  const committedRows = rows.filter(row => !row.draft && ['Order', 'Purchase'].includes(row.type));
-  const unknownBalance = committedRows.some(row => row.remaining === null);
-  const balance = committedRows.reduce((sum, row) => sum + (row.remaining ?? 0), 0);
-  const overdueCount = committedRows.filter(row => isOverdue(row)).length;
-  const stock = inventory.filter(item => item.warehouseId === current?.id);
-  const missingCosts = stock.some(item => products.find(p => p.id === item.productId)?.costPrice == null && item.quantity !== 0);
-  const valuation = stock.reduce((sum, item) => sum + item.quantity * Number(products.find(p => p.id === item.productId)?.costPrice ?? 0), 0);
-  const previewPending = previews.some(row => row.parentId === selected?.id);
+    });
+  }, [customer, warehouse, orders, orderBalanceOverrides, orderItemsByOrderId]);
+
+  const customerOrders: ChainTransaction[] = useMemo(
+    () => (customer ? orderRows.filter(row => !['cancelled', 'escalated'].includes(row.status)) : []),
+    [customer, orderRows]
+  );
+
+  const paymentSumByParentId = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const t of committedTransactions) {
+      if (t.parentId && (t.type === 'Bill Payment' || t.type === 'Payment')) {
+        map.set(t.parentId, (map.get(t.parentId) || 0) + (t.amount || 0));
+      }
+    }
+    return map;
+  }, [committedTransactions]);
+
+  const purchaseRows: ChainTransaction[] = useMemo(() => {
+    if (warehouse || customer) return [];
+    return movements.filter(m => m.type === 'external').map(movement => {
+      const matchedSupplier =
+        (movement.supplierId ? supplierLookups.byId.get(movement.supplierId) : undefined) ||
+        (movement.supplierName ? supplierLookups.byName.get(movement.supplierName) : undefined) ||
+        (movement.supplierId ? supplierLookups.byName.get(movement.supplierId) : undefined);
+      const resolvedEntityId = matchedSupplier?.id || movement.supplierId || '';
+
+      const originalAmount = movement.totalValue != null
+        ? Number(movement.totalValue)
+        : movement.items.reduce((sum, line) => sum + line.quantity * (line.unitCost || 0), 0);
+
+      const paidAmount = (movement as any).amountPaid != null && Number((movement as any).amountPaid) > 0
+        ? Number((movement as any).amountPaid)
+        : (paymentSumByParentId.get(movement.id) || 0);
+      const remaining = (movement as any).remainingBalance != null && Number.isFinite(Number((movement as any).remainingBalance))
+        ? Number((movement as any).remainingBalance)
+        : Math.max(0, originalAmount - paidAmount);
+
+      return {
+        id: movement.id, entityId: resolvedEntityId, type: 'Purchase', date: dateValue(movement.createdAt), reference: movement.invoiceNumber || movement.movementNumber,
+        amount: originalAmount, remaining, dueDate: dateValue(movement.receivedDate || movement.createdAt),
+        status: remaining <= 0 ? 'paid' : paidAmount > 0 ? 'partially_paid' : movement.status || 'confirmed',
+        items: movement.items.map((line, i) => ({ ...line, id: `${movement.id}:${i}`, warehouseId: movement.destinationWarehouseId, unitPrice: Number(line.unitCost) })), direction: 'in',
+        notes: `Receipt ${movement.movementNumber}. Supplier: ${movement.supplierName || matchedSupplier?.name || 'Supplier'}`,
+      };
+    });
+  }, [warehouse, customer, movements, supplierLookups, paymentSumByParentId]);
+
+  const warehouseHistoryById = useMemo(() => {
+    const map = new Map<string, ChainTransaction[]>();
+    if (!warehouse) return map;
+    const pushRow = (wId: string, tx: ChainTransaction) => {
+      let bucket = map.get(wId);
+      if (!bucket) {
+        bucket = [];
+        map.set(wId, bucket);
+      }
+      bucket.push(tx);
+    };
+    for (const t of transfers) {
+      const product = productById.get(t.productId);
+      const srcName = warehouseById.get(t.sourceWarehouseId)?.name || 'Source warehouse';
+      const dstName = warehouseById.get(t.destinationWarehouseId)?.name || 'Destination warehouse';
+      const addTransfer = (wId: string, incoming: boolean) => {
+        const moved = incoming ? t.status === 'received' : ['in_transit', 'received'].includes(t.status);
+        pushRow(wId, {
+          id: `transfer:${t.id}`,
+          entityId: wId,
+          type: incoming ? 'Transfer In' : 'Transfer Out',
+          date: dateValue((incoming ? t.receivedAt : t.dispatchedAt) || t.createdAt),
+          reference: t.id,
+          amount: null,
+          remaining: null,
+          status: t.status,
+          direction: moved ? incoming ? 'in' as const : 'out' as const : undefined,
+          items: [{ id: t.id, productId: t.productId, name: product?.name || 'Product unavailable', sku: product?.sku || '', quantity: t.quantity, unitPrice: null, warehouseId: wId }],
+          notes: `${srcName} → ${dstName}. ${moved ? 'Stock movement recorded.' : t.status === 'cancelled' ? 'Cancelled transfer; no net stock movement.' : 'Stock has not arrived at or left this warehouse yet.'} Historical item valuation was not recorded.`,
+        });
+      };
+      if (t.sourceWarehouseId) addTransfer(t.sourceWarehouseId, t.destinationWarehouseId === t.sourceWarehouseId);
+      if (t.destinationWarehouseId && t.destinationWarehouseId !== t.sourceWarehouseId) addTransfer(t.destinationWarehouseId, true);
+    }
+    for (const m of movements) {
+      const addMovement = (wId: string, incoming: boolean) => {
+        pushRow(wId, {
+          id: m.id,
+          entityId: wId,
+          type: m.type === 'external' ? 'Purchase' : incoming ? 'Transfer In' : 'Transfer Out',
+          date: dateValue(m.createdAt),
+          reference: m.movementNumber,
+          amount: m.totalValue == null ? null : Number(m.totalValue),
+          remaining: null,
+          status: m.status,
+          direction: incoming ? 'in' as const : 'out' as const,
+          items: m.items.map((line, i) => ({ ...line, id: `${m.id}:${i}`, unitPrice: Number(line.unitCost), warehouseId: wId })),
+          notes: `${m.sourceWarehouseName || m.supplierName || 'Supplier'} → ${m.destinationWarehouseName}${m.notes ? ` · ${m.notes}` : ''}`,
+        });
+      };
+      if (m.sourceWarehouseId) addMovement(m.sourceWarehouseId, m.destinationWarehouseId === m.sourceWarehouseId);
+      if (m.destinationWarehouseId && m.destinationWarehouseId !== m.sourceWarehouseId) addMovement(m.destinationWarehouseId, true);
+    }
+    for (const row of orderRows) {
+      if (row.status === 'cancelled') continue;
+      const itemsByWh = new Map<string, ChainTransaction['items']>();
+      for (const item of row.items) {
+        if (!item.warehouseId) continue;
+        let list = itemsByWh.get(item.warehouseId);
+        if (!list) {
+          list = [];
+          itemsByWh.set(item.warehouseId, list);
+        }
+        list.push(item);
+      }
+      for (const [wId, wItems] of itemsByWh) {
+        pushRow(wId, {
+          ...row,
+          entityId: wId,
+          items: wItems,
+          amount: wItems.reduce((sum, item) => sum + item.quantity * (item.unitPrice ?? 0), 0),
+        });
+      }
+    }
+    return map;
+  }, [warehouse, transfers, movements, orderRows, productById, warehouseById]);
+
+  const nonWarehouseRowsByEntityId = useMemo(() => {
+    const map = new Map<string, ChainTransaction[]>();
+    if (warehouse) return map;
+    const base = customer ? customerOrders : purchaseRows;
+    const pushRow = (eId: string, tx: ChainTransaction) => {
+      if (!eId) return;
+      let bucket = map.get(eId);
+      if (!bucket) {
+        bucket = [];
+        map.set(eId, bucket);
+      }
+      bucket.push(tx);
+    };
+    for (const row of base) pushRow(row.entityId, row);
+    for (const row of committedTransactions) pushRow(row.entityId, row);
+    for (const row of previews) pushRow(row.entityId, row);
+    return map;
+  }, [warehouse, customer, customerOrders, purchaseRows, committedTransactions, previews]);
+
+  const warehouseStockSummaryById = useMemo(() => {
+    const map = new Map<string, { units: number; valuation: number; missingCosts: boolean }>();
+    if (!warehouse) return map;
+    for (const item of inventory) {
+      let entry = map.get(item.warehouseId);
+      if (!entry) {
+        entry = { units: 0, valuation: 0, missingCosts: false };
+        map.set(item.warehouseId, entry);
+      }
+      entry.units += item.quantity;
+      const product = productById.get(item.productId);
+      if (product?.costPrice == null && item.quantity !== 0) {
+        entry.missingCosts = true;
+      }
+      entry.valuation += item.quantity * Number(product?.costPrice ?? 0);
+    }
+    return map;
+  }, [warehouse, inventory, productById]);
+
+  const rows = useMemo(() => {
+    const currentId = current?.id;
+    if (!currentId) return [];
+    let list: ChainTransaction[];
+    if (warehouse) {
+      const base = warehouseHistoryById.get(currentId) || [];
+      const matchingPreviews = previews.filter(
+        row => row.direction && row.items.some(item => item.warehouseId === currentId)
+      );
+      list = matchingPreviews.length > 0
+        ? [
+            ...base,
+            ...matchingPreviews.map(row => ({
+              ...row,
+              type: row.type === 'Refund' ? 'Order Refund' : row.type,
+              entityId: currentId,
+            })),
+          ]
+        : [...base];
+    } else {
+      list = [...(nonWarehouseRowsByEntityId.get(currentId) || [])];
+    }
+    list.sort((a, b) => b.date.localeCompare(a.date));
+    return list;
+  }, [current?.id, warehouse, warehouseHistoryById, nonWarehouseRowsByEntityId, previews]);
+
+  const filteredRows = useMemo(() => {
+    const query = search.toLowerCase();
+    if (typeFilter === 'All' && !query) return rows;
+    return rows.filter(
+      row =>
+        (typeFilter === 'All' || row.type === typeFilter) &&
+        (!query || `${row.type} ${row.reference} ${row.status}`.toLowerCase().includes(query))
+    );
+  }, [rows, typeFilter, search]);
+
+  const selected = useMemo(
+    () => (selectedId ? filteredRows.find(row => row.id === selectedId) : undefined),
+    [filteredRows, selectedId]
+  );
+
+  const { unknownBalance, balance, overdueCount } = useMemo(() => {
+    const committedRows = rows.filter(row => !row.draft && ['Order', 'Purchase'].includes(row.type));
+    return {
+      unknownBalance: committedRows.some(row => row.remaining === null),
+      balance: committedRows.reduce((sum, row) => sum + (row.remaining ?? 0), 0),
+      overdueCount: committedRows.filter(row => isOverdue(row)).length,
+    };
+  }, [rows]);
+
+  const stockSummary = current?.id ? warehouseStockSummaryById.get(current.id) : undefined;
+  const stockUnits = stockSummary?.units ?? 0;
+  const missingCosts = stockSummary?.missingCosts ?? false;
+  const valuation = stockSummary?.valuation ?? 0;
+  const previewPending = useMemo(
+    () => (selected ? previews.some(row => row.parentId === selected.id) : false),
+    [previews, selected]
+  );
+  const historyTotalPages = Math.max(1, Math.ceil(filteredRows.length / HISTORY_PAGE_SIZE));
+  const safeHistoryPage = Math.min(historyPage, historyTotalPages);
+  const pagedHistoryRows = useMemo(() => {
+    const start = (safeHistoryPage - 1) * HISTORY_PAGE_SIZE;
+    return filteredRows.slice(start, start + HISTORY_PAGE_SIZE);
+  }, [filteredRows, safeHistoryPage]);
+
   const canAct = (kind: 'payment' | 'refund') => canManage && !loading && !loadError && !warehouse && !previewPending && supportsAction(selected, kind);
+  const handleSelectEntity = useCallback((id: string) => {
+    setEntityId(id);
+    setSelectedId('');
+    setSearch('');
+    setHistoryPage(1);
+  }, []);
+  const handleSelectRow = useCallback((rowId: string) => setSelectedId(rowId), []);
+  const handleInspectRow = useCallback((row: ChainTransaction) => setDetails(row), []);
 
   useEffect(() => {
-    setEntityId('');
+    const viewParam = searchParams.get('view') as SupplyView | null;
+    const entityParam = searchParams.get('entityId');
+    const actionParam = searchParams.get('action');
+    if (!viewParam && !entityParam && !actionParam) {
+      lastAppliedSupplyKeyRef.current = '';
+      return;
+    }
+    const key = `${viewParam || ''}:${entityParam || ''}:${actionParam || ''}`;
+    if (lastAppliedSupplyKeyRef.current === key) return;
+    const validView = viewParam && allowedViews.some(item => item.id === viewParam) ? viewParam : null;
+    lastAppliedSupplyKeyRef.current = key;
+    setShowCategories(false);
+    const wantsAdd = actionParam === 'add' && canManage && (validView === 'warehouses' || view === 'warehouses');
+    if (validView && validView !== view) {
+      pendingEntityIdRef.current = entityParam || null;
+      pendingAddRef.current = wantsAdd;
+      setView(validView);
+    } else {
+      if (entityParam) {
+        setDirectorySearch('');
+        setEntityId(entityParam);
+      }
+      if (wantsAdd) {
+        setEditError('');
+        setEditor({ id: '', name: '', active: true });
+      }
+    }
+    if (actionParam) {
+      const nextParams = new URLSearchParams(searchParams);
+      nextParams.delete('action');
+      setSearchParams(nextParams, { replace: true });
+    }
+  }, [searchParams, allowedViews, view, canManage, setSearchParams]);
+
+  useEffect(() => {
+    const preservedEntityId = pendingEntityIdRef.current;
+    const shouldOpenAdd = pendingAddRef.current && canManage && view === 'warehouses';
+    pendingEntityIdRef.current = null;
+    pendingAddRef.current = false;
+    setEntityId(preservedEntityId || '');
     setSelectedId('');
-    setEditor(null);
+    if (shouldOpenAdd) {
+      setEditError('');
+      setEditor({ id: '', name: '', active: true });
+    } else {
+      setEditor(null);
+    }
     setEditError('');
     setAction(null);
     setDetails(null);
@@ -307,14 +591,24 @@ export function SupplyChainWorkspace({ sourceLoading, sourceError, onRetrySource
     setDirectorySearch('');
     setSearch('');
     setTypeFilter('All');
-  }, [view]);
+    setHistoryPage(1);
+  }, [view, canManage]);
 
   function switchView(next: SupplyView) {
+    lastAppliedSupplyKeyRef.current = '';
+    pendingEntityIdRef.current = null;
+    if (searchParams.has('view') || searchParams.has('entityId')) {
+      const nextParams = new URLSearchParams(searchParams);
+      nextParams.delete('view');
+      nextParams.delete('entityId');
+      setSearchParams(nextParams, { replace: true });
+    }
     setView(next);
     setEntityId('');
     setDirectorySearch('');
     setSearch('');
     setTypeFilter('All');
+    setHistoryPage(1);
     setSelectedId('');
     setAction(null);
     setEditor(null);
@@ -591,18 +885,47 @@ export function SupplyChainWorkspace({ sourceLoading, sourceError, onRetrySource
 
   return <div className="space-y-5">
     <div className="flex flex-wrap items-start justify-between gap-3"><PageHeading title="Supply Chain" subtitle="Your customers, suppliers, warehouses, and categories. Connected in one place." /></div>
-    <div className="flex flex-wrap gap-1 rounded-2xl border bg-muted/40 p-1.5" role="group" aria-label="Supply Chain views">{allowedViews.map(({ id, name, icon: Icon }) => <button key={id} type="button" aria-pressed={!showCategories && view === id} onClick={() => { setShowCategories(false); switchView(id); }} className={`flex min-w-0 flex-1 items-center justify-center gap-2 rounded-xl px-3 py-3 text-sm font-semibold transition-colors ${!showCategories && view === id ? 'bg-background text-foreground shadow-sm ring-1 ring-border' : 'text-muted-foreground hover:bg-background/60 hover:text-foreground'}`}><Icon className="size-4" />{name}</button>)}{canManage && <button type="button" aria-pressed={showCategories} onClick={() => setShowCategories(true)} className={`flex min-w-0 flex-1 items-center justify-center gap-2 rounded-xl px-3 py-3 text-sm font-semibold transition-colors ${showCategories ? 'bg-background text-foreground shadow-sm ring-1 ring-border' : 'text-muted-foreground hover:bg-background/60 hover:text-foreground'}`}><Package className="size-4" />Categories</button>}</div>
+    <div className="flex flex-wrap gap-1 rounded-2xl border bg-muted/40 p-1.5" role="group" aria-label="Supply Chain views">{allowedViews.map(({ id, name, icon: Icon }) => <button key={id} type="button" aria-pressed={!showCategories && view === id} onClick={() => { setShowCategories(false); switchView(id); }} className={`flex min-w-0 flex-1 items-center justify-center gap-2 rounded-xl px-3 py-3 text-sm font-semibold transition-colors ${!showCategories && view === id ? 'bg-background text-foreground shadow-sm ring-1 ring-border' : 'text-muted-foreground hover:bg-background/60 hover:text-foreground'}`}><Icon className="size-4 shrink-0" />{name}</button>)}{canManage && <button type="button" aria-pressed={showCategories} onClick={() => setShowCategories(true)} className={`flex min-w-0 flex-1 items-center justify-center gap-2 rounded-xl px-3 py-3 text-sm font-semibold transition-colors ${showCategories ? 'bg-background text-foreground shadow-sm ring-1 ring-border' : 'text-muted-foreground hover:bg-background/60 hover:text-foreground'}`}><Package className="size-4 shrink-0" />Categories</button>}</div>
     {showCategories ? categoriesContent : <><div className="grid items-start gap-5 xl:grid-cols-[280px_minmax(0,1fr)]">
       <aside className="overflow-hidden rounded-2xl border bg-card shadow-sm">
-        <div className="space-y-3 border-b p-4"><div className="flex items-center justify-between"><h2 className="font-semibold">{title} <span className="ml-1 text-xs font-normal text-muted-foreground">{entities.length}</span></h2>{canManage && <Button size="sm" onClick={() => { setEditError(''); setEditor({ id: '', name: '', active: true }); }}><Plus className="size-4" />Add</Button>}</div><SearchBar value={directorySearch} onValueChange={setDirectorySearch} placeholder={`Search ${title.toLowerCase()}…`} /></div>
-        <div className="max-h-64 overflow-y-auto p-2 xl:max-h-160">{visibleEntities.map(entity => <button key={entity.id} type="button" onClick={() => { setEntityId(entity.id); setSelectedId(''); setSearch(''); }} aria-pressed={current?.id === entity.id} className={`mb-1 flex w-full items-center gap-3 rounded-xl border p-3 text-left transition-colors ${current?.id === entity.id ? 'border-primary/40 bg-primary/10' : 'border-transparent hover:bg-muted/60'}`}><span className="min-w-0 flex-1"><span className="block truncate text-sm font-semibold">{entity.name}</span><span className="block truncate text-xs text-muted-foreground">{entity.draft ? 'Directory customer' : warehouse ? [entity.address, entity.active === false ? 'Inactive' : 'Active warehouse'].filter(Boolean).join(' / ') : entity.address || (customer ? 'From order records' : 'Supplier account')}</span></span></button>)}{!visibleEntities.length && <div className="p-6 text-center text-sm text-muted-foreground">{loading ? 'Loading records…' : directorySearch ? 'No matching records.' : `No ${title.toLowerCase()} yet.`}</div>}</div>
-        {customer && <p className="border-t px-4 py-3 text-xs text-muted-foreground">Customers added here can be selected when creating orders in Order Entry.</p>}
+        <div className="space-y-3 border-b p-4"><div className="flex min-h-8 items-center justify-between"><h2 className="font-semibold">{title} <span className="ml-1 inline-block min-w-4 text-xs font-normal tabular-nums text-muted-foreground">{loading && entities.length === 0 ? '—' : entities.length}</span></h2>{canManage && <Button size="sm" onClick={() => { setEditError(''); setEditor({ id: '', name: '', active: true }); }}><Plus className="size-4" />Add</Button>}</div><SearchBar value={directorySearch} onValueChange={setDirectorySearch} placeholder={`Search ${title.toLowerCase()}…`} /></div>
+        <div className="h-64 overflow-y-auto p-2 xl:h-136">
+          {loading && !visibleEntities.length ? (
+            <div aria-label={`Loading ${title.toLowerCase()}`} className="space-y-1.5">
+              {[0, 1, 2, 3].map(idx => (
+                <div key={idx} className="h-14 rounded-xl border border-transparent bg-muted/40 p-3">
+                  <div className="h-3.5 w-32 rounded bg-muted" />
+                  <div className="mt-2 h-2.5 w-44 rounded bg-muted/70" />
+                </div>
+              ))}
+            </div>
+          ) : (
+            visibleEntities.map(entity => (
+              <EntitySidebarButton
+                key={entity.id}
+                entity={entity}
+                selected={current?.id === entity.id}
+                warehouse={warehouse}
+                customer={customer}
+                onSelect={handleSelectEntity}
+              />
+            ))
+          )}
+          {!loading && !visibleEntities.length && <div className="p-6 text-center text-sm text-muted-foreground">{directorySearch ? 'No matching records.' : `No ${title.toLowerCase()} yet.`}</div>}
+        </div>
+        <p className="flex min-h-12 items-center border-t px-4 py-3 text-xs text-muted-foreground">
+          {customer
+            ? 'Customers added here can be selected when creating orders in Order Entry.'
+            : warehouse
+              ? 'Warehouses added here appear in Inventory Layout and stock records.'
+              : 'Suppliers added here can be selected when recording Item Entry receipts.'}
+        </p>
       </aside>
       <div className="min-w-0 space-y-5">
         {loadError && <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm"><span><AlertCircle className="mr-2 inline size-4" />Some records could not load. Totals and actions are unavailable.</span><Button variant="outline" size="sm" onClick={() => { setReload(n => n + 1); onRetrySources(); }}>Retry</Button></div>}
         {current ? <>
           <section className="overflow-hidden rounded-2xl border bg-card shadow-sm">
-            <div className="flex flex-wrap items-start justify-between gap-3 p-5"><div><div className="mb-2 flex items-center gap-2"><Badge variant="secondary">{warehouse ? 'Warehouse' : customer ? 'Customer account' : 'Supplier account'}</Badge>{warehouse && <Badge variant={current.active === false ? 'outline' : 'secondary'}>{current.active === false ? 'Inactive' : 'Active'}</Badge>}{current.draft && <Badge variant="outline">Preview</Badge>}</div><h2 className="text-xl font-bold">{current.name}</h2></div>{canManage && <div className="flex gap-2"><Button size="sm" variant="outline" onClick={() => { setEditError(''); setEditor({ ...current }); }}><Pencil className="size-3.5" />Edit</Button><Button size="sm" variant="ghost" className="text-destructive hover:text-destructive" onClick={() => setRemoving(true)}><Trash2 className="size-3.5" />Remove</Button></div>}</div>
+            <div className="flex min-h-20 flex-wrap items-start justify-between gap-3 p-5"><div><div className="mb-2 flex items-center gap-2"><Badge variant="secondary">{warehouse ? 'Warehouse' : customer ? 'Customer account' : 'Supplier account'}</Badge>{warehouse && <Badge variant={current.active === false ? 'outline' : 'secondary'}>{current.active === false ? 'Inactive' : 'Active'}</Badge>}{current.draft && <Badge variant="outline">Preview</Badge>}</div><h2 className="text-xl font-bold">{current.name}</h2></div>{canManage && <div className="flex gap-2"><Button size="sm" variant="outline" onClick={() => { setEditError(''); setEditor({ ...current }); }}><Pencil className="size-3.5" />Edit</Button><Button size="sm" variant="ghost" className="text-destructive hover:text-destructive" onClick={() => setRemoving(true)}><Trash2 className="size-3.5" />Remove</Button></div>}</div>
             <div className="grid gap-4 px-5 pb-5 sm:grid-cols-2">
               <InfoField icon={MapPin} label={warehouse ? "Location" : "Address"} value={current.address} />
               <InfoField icon={UserRound} label="Contact person" value={current.contact} />
@@ -641,26 +964,63 @@ export function SupplyChainWorkspace({ sourceLoading, sourceError, onRetrySource
               </div>
             )}
             {metadata[`${view}:${current.id}`] && !customer && <p className="px-5 pb-4 text-xs text-amber-700 dark:text-amber-300">Contact details and payment terms are session previews.</p>}
-            {(!warehouse || canViewValuation) && <div className="flex flex-wrap items-center justify-between gap-4 border-t bg-muted/30 px-5 py-5"><div><p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{warehouse ? 'Total Inventory Valuation' : 'Total Open Balance'}</p><p className="mt-1 text-3xl font-bold tracking-tight tabular-nums">{loading ? 'Loading…' : loadError ? 'Unavailable' : warehouse ? chainMoney(missingCosts ? null : valuation) : chainMoney(unknownBalance ? null : balance)}</p><p className="mt-1 text-xs text-muted-foreground">{warehouse ? missingCosts ? 'Some inventory items are missing cost prices.' : 'At product cost · Visible to administrators' : unknownBalance ? `Exact ${customer ? 'receivables' : 'payables'} are not available in the source records.` : customer ? 'Outstanding customer receivables' : 'Outstanding supplier payables'}</p></div>{overdueCount > 0 && <Badge variant="destructive">{overdueCount} overdue {overdueCount === 1 ? 'order' : 'orders'}</Badge>}{warehouse && <div className="text-right"><p className="text-xl font-semibold">{stock.reduce((sum, item) => sum + item.quantity, 0).toLocaleString()}</p><p className="text-xs text-muted-foreground">units on hand</p></div>}</div>}
+            {(!warehouse || canViewValuation) && <div className="flex min-h-24 flex-wrap items-center justify-between gap-4 border-t bg-muted/30 px-5 py-5"><div><p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{warehouse ? 'Total Inventory Valuation' : 'Total Open Balance'}</p><p className="mt-1 text-3xl font-bold tracking-tight tabular-nums">{loading ? 'Loading…' : loadError ? 'Unavailable' : warehouse ? chainMoney(missingCosts ? null : valuation) : chainMoney(unknownBalance ? null : balance)}</p><p className="mt-1 text-xs text-muted-foreground">{warehouse ? missingCosts ? 'Some inventory items are missing cost prices.' : 'At product cost · Visible to administrators' : unknownBalance ? `Exact ${customer ? 'receivables' : 'payables'} are not available in the source records.` : customer ? 'Outstanding customer receivables' : 'Outstanding supplier payables'}</p></div>{overdueCount > 0 && <Badge variant="destructive">{overdueCount} overdue {overdueCount === 1 ? 'order' : 'orders'}</Badge>}{warehouse && <div className="text-right"><p className="text-xl font-semibold tabular-nums">{stockUnits.toLocaleString()}</p><p className="text-xs text-muted-foreground">units on hand</p></div>}</div>}
           </section>
           <section className="overflow-hidden rounded-2xl border bg-card shadow-sm">
             <div className="flex flex-wrap items-start justify-between gap-3 border-b p-5"><div><h2 className="font-semibold">{warehouse ? 'Inventory Movement History' : 'Transaction History'}</h2><p className="mt-1 text-xs text-muted-foreground">{warehouse ? 'Track what comes in and what goes out.' : `Select ${customer ? 'an order' : 'a purchase'} to preview a payment or refund.`} Double-click a row to view details.</p></div>{canManage && !warehouse && <div className="flex gap-2"><Button size="sm" variant="outline" disabled={!canAct('refund')} onClick={() => setAction('refund')}><RotateCcw className="size-3.5" />Refund</Button><Button size="sm" disabled={!canAct('payment')} onClick={() => setAction('payment')}><CreditCard className="size-3.5" />Payment</Button></div>}</div>
-            <div className="flex flex-wrap gap-3 p-4"><div className="min-w-48 flex-1"><SearchBar value={search} onValueChange={value => { setSearch(value); setSelectedId(''); }} placeholder="Search by reference or transaction…" /></div><select aria-label="Transaction type" className="h-10 rounded-lg border bg-background px-3 text-sm" value={typeFilter} onChange={e => { setTypeFilter(e.target.value); setSelectedId(''); }}>{filters[view].map(type => <option key={type} value={type}>{type === 'All' ? 'All transaction types' : type}</option>)}</select></div>
+            <div className="flex flex-wrap gap-3 p-4"><div className="min-w-48 flex-1"><SearchBar value={search} onValueChange={value => { setSearch(value); setSelectedId(''); setHistoryPage(1); }} placeholder="Search by reference or transaction…" /></div><select aria-label="Transaction type" className="h-10 rounded-lg border bg-background px-3 text-sm" value={typeFilter} onChange={e => { setTypeFilter(e.target.value); setSelectedId(''); setHistoryPage(1); }}>{filters[view].map(type => <option key={type} value={type}>{type === 'All' ? 'All transaction types' : type}</option>)}</select></div>
             {selected && <div className="mx-4 mb-3 flex flex-wrap items-center justify-between gap-2 rounded-lg bg-primary/10 px-3 py-2 text-xs"><span className="font-medium">Selected: {selected.reference}{previewPending && ' · Preview already added'}</span><Button variant="ghost" size="sm" onClick={() => setSelectedId('')} className="h-7"><X className="size-3" />Clear</Button></div>}
-            <div className="overflow-x-auto"><Table><TableHeader><TableRow className="bg-muted/40"><TableHead>{warehouse ? 'Entry Type' : 'Type'}</TableHead><TableHead>Date</TableHead><TableHead>{warehouse ? 'Reference / Action #' : customer ? 'Order #' : 'Purchase #'}</TableHead><TableHead className="text-right">{warehouse ? 'Amount / Value' : 'Amount'}</TableHead>{warehouse ? <TableHead>Status</TableHead> : <><TableHead className="text-right">Remaining Balance</TableHead><TableHead>Due Date</TableHead></>}<TableHead><span className="sr-only">Details</span></TableHead></TableRow></TableHeader><TableBody>
-              {!loading && filteredRows.map(row => <TableRow key={row.id} tabIndex={0} aria-selected={selectedId === row.id} onClick={() => setSelectedId(row.id)} onDoubleClick={() => setDetails(row)} onKeyDown={event => { if (event.target !== event.currentTarget) return; if (event.key === 'Enter') { event.preventDefault(); setDetails(row); } if (event.key === ' ') { event.preventDefault(); setSelectedId(row.id); } }} className={`cursor-pointer focus-visible:outline-2 focus-visible:outline-primary ${selectedId === row.id ? 'bg-primary/10 hover:bg-primary/15' : ''} ${isOverdue(row) ? 'bg-red-500/5' : ''}`}><TableCell><div className="flex items-center gap-2 whitespace-nowrap">{row.direction === 'in' ? <ArrowDownLeft className="size-4 text-emerald-600" /> : row.direction === 'out' ? <ArrowUpRight className="size-4 text-orange-600" /> : <CreditCard className="size-4 text-muted-foreground" />}<span className="text-sm font-medium">{row.type}</span>{row.draft && <Badge variant="outline">Preview</Badge>}</div></TableCell><TableCell className="whitespace-nowrap text-xs text-muted-foreground">{formatDate(row.date)}</TableCell><TableCell className="font-mono text-xs">{row.reference}</TableCell><TableCell className="text-right tabular-nums">{chainMoney(row.amount)}</TableCell>{warehouse ? <TableCell><Badge variant="secondary" className="capitalize">{row.status.replaceAll('_', ' ')}</Badge></TableCell> : <><TableCell className={`text-right font-medium tabular-nums ${isOverdue(row) ? 'text-red-600' : ''}`}>{chainMoney(row.remaining)}</TableCell><TableCell className="whitespace-nowrap text-xs">{formatDate(row.dueDate)}{isOverdue(row) && <span className="mt-1 block font-semibold text-red-600">Overdue</span>}</TableCell></>}<TableCell><Button variant="ghost" size="icon" aria-label={`View ${row.reference}`} onClick={event => { event.stopPropagation(); setDetails(row); }}><Eye className="size-4" /></Button></TableCell></TableRow>)}
-              {(loading || !filteredRows.length) && <TableRow><TableCell colSpan={warehouse ? 6 : 7} className="h-56 text-center"><div className="mx-auto flex max-w-sm flex-col items-center gap-2 text-muted-foreground">{loading ? <Loader2 className="size-7 animate-spin" /> : <Package className="size-8 opacity-40" />}<p className="font-medium text-foreground">{loading ? 'Loading history…' : loadError ? 'History unavailable' : search || typeFilter !== 'All' ? 'No matching transactions' : 'No transactions yet'}</p><p className="text-xs">{loading ? 'Getting your latest records.' : search || typeFilter !== 'All' ? 'Try another search or transaction type.' : `Activity for ${current.name} will appear here.`}</p>{(search || typeFilter !== 'All') && <Button size="sm" variant="outline" onClick={() => { setSearch(''); setTypeFilter('All'); }}>Reset filters</Button>}</div></TableCell></TableRow>}
+            <div className="h-72 overflow-y-auto"><Table><TableHeader className="sticky top-0 z-10 bg-muted/95"><TableRow className="bg-muted/40"><TableHead>{warehouse ? 'Entry Type' : 'Type'}</TableHead><TableHead>Date</TableHead><TableHead>{warehouse ? 'Reference / Action #' : customer ? 'Order #' : 'Purchase #'}</TableHead><TableHead className="text-right">{warehouse ? 'Amount / Value' : 'Amount'}</TableHead>{warehouse ? <TableHead>Status</TableHead> : <><TableHead className="text-right">Remaining Balance</TableHead><TableHead>Due Date</TableHead></>}<TableHead><span className="sr-only">Details</span></TableHead></TableRow></TableHeader><TableBody>
+              {!loading && pagedHistoryRows.map(row => (
+                <HistoryRow
+                  key={row.id}
+                  row={row}
+                  warehouse={warehouse}
+                  isSelected={selectedId === row.id}
+                  onSelect={handleSelectRow}
+                  onInspect={handleInspectRow}
+                />
+              ))}
+              {(loading || !filteredRows.length) && <TableRow><TableCell colSpan={warehouse ? 6 : 7} className="h-56 text-center"><div className="mx-auto flex max-w-sm flex-col items-center gap-2 text-muted-foreground">{loading ? <Loader2 className="size-7 animate-spin" /> : <Package className="size-8 opacity-40" />}<p className="font-medium text-foreground">{loading ? 'Loading history…' : loadError ? 'History unavailable' : search || typeFilter !== 'All' ? 'No matching transactions' : 'No transactions yet'}</p><p className="text-xs">{loading ? 'Getting your latest records.' : search || typeFilter !== 'All' ? 'Try another search or transaction type.' : `Activity for ${current.name} will appear here.`}</p>{(search || typeFilter !== 'All') && <Button size="sm" variant="outline" onClick={() => { setSearch(''); setTypeFilter('All'); setHistoryPage(1); }}>Reset filters</Button>}</div></TableCell></TableRow>}
             </TableBody></Table></div>
-            <div className="flex flex-wrap items-center justify-between gap-2 border-t px-4 py-3 text-xs text-muted-foreground"><span>{filteredRows.length} {filteredRows.length === 1 ? 'entry' : 'entries'}{warehouse && ' · ↑ Outgoing  ↓ Incoming'}</span>{previews.length > 0 && <div className="flex items-center gap-2"><Button size="sm" variant="ghost" onClick={() => { setPreviews([]); setSelectedId(''); }}>Clear previews</Button><Button size="sm" onClick={handleCommitPreviews}>Commit {previews.length} Previews to Ledger</Button></div>}</div>
+            <div className="flex min-h-11 flex-wrap items-center justify-between gap-2 border-t px-4 py-3 text-xs text-muted-foreground">
+              <span>{filteredRows.length} {filteredRows.length === 1 ? 'entry' : 'entries'}{warehouse && ' · ↑ Outgoing  ↓ Incoming'}</span>
+              <div className="flex flex-wrap items-center gap-2">
+                {historyTotalPages > 1 && (
+                  <div className="flex items-center gap-1.5">
+                    <Button size="sm" variant="outline" className="h-7 px-2 text-xs" disabled={safeHistoryPage <= 1} onClick={() => setHistoryPage(p => Math.max(1, p - 1))}>Prev</Button>
+                    <span className="tabular-nums">Page {safeHistoryPage} of {historyTotalPages}</span>
+                    <Button size="sm" variant="outline" className="h-7 px-2 text-xs" disabled={safeHistoryPage >= historyTotalPages} onClick={() => setHistoryPage(p => Math.min(historyTotalPages, p + 1))}>Next</Button>
+                  </div>
+                )}
+                {previews.length > 0 && <div className="flex items-center gap-2"><Button size="sm" variant="ghost" onClick={() => { setPreviews([]); setSelectedId(''); }}>Clear previews</Button><Button size="sm" onClick={handleCommitPreviews}>Commit {previews.length} Previews to Ledger</Button></div>}
+              </div>
+            </div>
           </section>
           <p className="text-xs leading-relaxed text-muted-foreground">{warehouse ? 'History uses inventory receipts, transfers, and orders with a recorded warehouse. Financial previews do not change stock.' : 'Payments and refunds are interactive previews. Due dates appear only when recorded; delivery deadlines are not treated as payment due dates.'}</p>
-        </> : <div className="flex min-h-80 flex-col items-center justify-center rounded-2xl border border-dashed p-8 text-center"><Users className="mb-3 size-9 text-muted-foreground/40" /><h2 className="font-semibold">{loading ? 'Loading directory…' : `Select a ${singular}`}</h2><p className="mt-2 text-sm text-muted-foreground">Choose a record on the left, or add one to get started.</p></div>}
+        </> : loading ? (
+          <div aria-busy="true" className="space-y-5">
+            <div className="h-72 rounded-2xl border bg-card p-5 shadow-sm">
+              <div className="h-5 w-44 rounded bg-muted" />
+              <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                <div className="h-10 rounded bg-muted/60" />
+                <div className="h-10 rounded bg-muted/60" />
+                <div className="h-10 rounded bg-muted/60" />
+                <div className="h-10 rounded bg-muted/60" />
+              </div>
+              <div className="mt-6 h-16 rounded bg-muted/40" />
+            </div>
+            <div className="flex h-104 items-center justify-center rounded-2xl border bg-card p-5 text-sm text-muted-foreground shadow-sm">
+              <Loader2 className="mr-2 size-5 animate-spin" />Loading records…
+            </div>
+          </div>
+        ) : <div className="flex min-h-136 flex-col items-center justify-center rounded-2xl border border-dashed p-8 text-center"><Users className="mb-3 size-9 text-muted-foreground/40" /><h2 className="font-semibold">{`Select a ${singular}`}</h2><p className="mt-2 text-sm text-muted-foreground">Choose a record on the left, or add one to get started.</p></div>}
       </div>
     </div>
 
-    {action && selected && canAct(action) && <SupplyChainTransactionDialog key={`${selected.id}:${action}`} view={view} action={action} transaction={selected} products={products} warehouses={warehouses} inventory={inventory} onClose={() => setAction(null)} onPreview={entry => { setPreviews(rows => [...rows, entry]); setAction(null); setSelectedId(entry.id); setTypeFilter('All'); setSearch(''); toast.success('Preview added. No financial or inventory changes posted.'); }} />}
+    {action && selected && canAct(action) && <SupplyChainTransactionDialog key={`${selected.id}:${action}`} view={view} action={action} transaction={selected} products={products} warehouses={warehouses} inventory={inventory} onClose={() => setAction(null)} onPreview={entry => { setPreviews(rows => [...rows, entry]); setAction(null); setSelectedId(entry.id); setTypeFilter('All'); setSearch(''); setHistoryPage(1); toast.success('Preview added. No financial or inventory changes posted.'); }} />}
 
-    <Dialog open={!!details} onOpenChange={open => { if (!open) setDetails(null); }}><DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl"><DialogHeader><DialogTitle>{details?.type} details</DialogTitle><DialogDescription>{details?.reference} · {formatDate(details?.date)}</DialogDescription></DialogHeader>{details && <><div className="flex flex-wrap justify-between gap-3 rounded-xl bg-muted/40 p-4"><div><p className="text-xs text-muted-foreground">Amount / value</p><p className="text-2xl font-bold">{chainMoney(details.amount)}</p></div><Badge variant="secondary" className="h-fit capitalize">{details.status.replaceAll('_', ' ')}</Badge></div>{details.direction && <div className={`rounded-lg p-3 text-sm ${details.direction === 'in' ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' : 'bg-orange-500/10 text-orange-700 dark:text-orange-300'}`}>{details.draft ? 'Preview: inventory would ' : 'Inventory direction: '}{details.direction === 'in' ? 'increase — items received' : 'decrease — items issued'}</div>}{details.notes && <p className="text-sm text-muted-foreground">{details.notes}</p>}<Table><TableHeader><TableRow><TableHead>Item</TableHead><TableHead className="text-right">Quantity</TableHead><TableHead className="text-right">Unit value</TableHead></TableRow></TableHeader><TableBody>{details.items.map(item => <TableRow key={item.id}><TableCell><p className="font-medium">{item.name}</p><p className="text-xs text-muted-foreground">{item.sku}{item.warehouseId && ` · ${warehouses.find(w => w.id === item.warehouseId)?.name || 'Warehouse'}`}</p></TableCell><TableCell className="text-right">{item.quantity}</TableCell><TableCell className="text-right">{chainMoney(item.unitPrice)}</TableCell></TableRow>)}{!details.items.length && <TableRow><TableCell colSpan={3} className="py-8 text-center text-muted-foreground">No physical items recorded.</TableCell></TableRow>}</TableBody></Table>{details.draft && <p className="text-xs text-amber-700 dark:text-amber-300">Session preview only. No financial or inventory changes posted.</p>}<Button variant="outline" onClick={() => setDetails(null)}>Close</Button></>}</DialogContent></Dialog>
+    <Dialog open={!!details} onOpenChange={open => { if (!open) setDetails(null); }}><DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl"><DialogHeader><DialogTitle>{details?.type} details</DialogTitle><DialogDescription>{details?.reference} · {formatDate(details?.date)}</DialogDescription></DialogHeader>{details && <><div className="flex flex-wrap justify-between gap-3 rounded-xl bg-muted/40 p-4"><div><p className="text-xs text-muted-foreground">Amount / value</p><p className="text-2xl font-bold">{chainMoney(details.amount)}</p></div><Badge variant="secondary" className="h-fit capitalize">{details.status.replaceAll('_', ' ')}</Badge></div>{details.direction && <div className={`rounded-lg p-3 text-sm ${details.direction === 'in' ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' : 'bg-orange-500/10 text-orange-700 dark:text-orange-300'}`}>{details.draft ? 'Preview: inventory would ' : 'Inventory direction: '}{details.direction === 'in' ? 'increase — items received' : 'decrease — items issued'}</div>}{details.notes && <p className="text-sm text-muted-foreground">{details.notes}</p>}<Table><TableHeader><TableRow><TableHead>Item</TableHead><TableHead className="text-right">Quantity</TableHead><TableHead className="text-right">Unit value</TableHead></TableRow></TableHeader><TableBody>{details.items.map(item => <TableRow key={item.id}><TableCell><p className="font-medium">{item.name}</p><p className="text-xs text-muted-foreground">{item.sku}{item.warehouseId && ` · ${warehouseById.get(item.warehouseId)?.name || 'Warehouse'}`}</p></TableCell><TableCell className="text-right">{item.quantity}</TableCell><TableCell className="text-right">{chainMoney(item.unitPrice)}</TableCell></TableRow>)}{!details.items.length && <TableRow><TableCell colSpan={3} className="py-8 text-center text-muted-foreground">No physical items recorded.</TableCell></TableRow>}</TableBody></Table>{details.draft && <p className="text-xs text-amber-700 dark:text-amber-300">Session preview only. No financial or inventory changes posted.</p>}<Button variant="outline" onClick={() => setDetails(null)}>Close</Button></>}</DialogContent></Dialog>
 
     <Dialog open={!!editor} onOpenChange={open => { if (!open && !saving) setEditor(null); }}><DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-xl"><DialogHeader><DialogTitle>{editor?.id ? 'Edit' : 'Add'} {singular}</DialogTitle><DialogDescription>{customer ? 'Customer profiles can be used in Order Entry to create orders.' : `The ${warehouse ? 'name, location, and status' : 'name'} will be saved. Contact details${!warehouse ? ', address, and payment terms' : ''} are session previews.`}</DialogDescription></DialogHeader>{editor && <form onSubmit={event => { event.preventDefault(); void saveEntity(); }} className="space-y-4">
       <Field label="Name" id="chain-entity-name"><Input id="chain-entity-name" required value={editor.name} onChange={e => setEditor({ ...editor, name: e.target.value })} /></Field>
@@ -720,12 +1080,122 @@ export function SupplyChainWorkspace({ sourceLoading, sourceError, onRetrySource
       });
       deleteDoc(doc(db, 'customers', current.id)).catch(() => {});
       setEntityId('');
-    } else if (warehouse) { const record = warehouses.find(w => w.id === current.id); if (record) onRemoveWarehouse(record); } else onRemoveSupplier(current.name); setRemoving(false); }}>{customer ? 'Remove customer' : 'Continue'}</Button></div></DialogContent></Dialog>
+    } else if (warehouse) { const record = warehouseById.get(current.id); if (record) onRemoveWarehouse(record); } else onRemoveSupplier(current.name); setRemoving(false); }}>{customer ? 'Remove customer' : 'Continue'}</Button></div></DialogContent></Dialog>
   </>}
   </div>;
-}
+});
 
+const EntitySidebarButton = memo(function EntitySidebarButton({
+  entity,
+  selected,
+  warehouse,
+  customer,
+  onSelect,
+}: {
+  entity: Entity;
+  selected: boolean;
+  warehouse: boolean;
+  customer: boolean;
+  onSelect: (id: string) => void;
+}) {
+  const subtitle = entity.draft
+    ? 'Directory customer'
+    : warehouse
+      ? [entity.address, entity.active === false ? 'Inactive' : 'Active warehouse'].filter(Boolean).join(' / ')
+      : entity.address || (customer ? 'From order records' : 'Supplier account');
+  return (
+    <button
+      type="button"
+      onClick={() => onSelect(entity.id)}
+      aria-pressed={selected}
+      className={`mb-1 flex w-full items-center gap-3 rounded-xl border p-3 text-left transition-colors ${selected ? 'border-primary/40 bg-primary/10' : 'border-transparent hover:bg-muted/60'}`}
+    >
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-sm font-semibold">{entity.name}</span>
+        <span className="block truncate text-xs text-muted-foreground">{subtitle}</span>
+      </span>
+    </button>
+  );
+});
 
+const HistoryRow = memo(function HistoryRow({
+  row,
+  warehouse,
+  isSelected,
+  onSelect,
+  onInspect,
+}: {
+  row: ChainTransaction;
+  warehouse: boolean;
+  isSelected: boolean;
+  onSelect: (rowId: string) => void;
+  onInspect: (row: ChainTransaction) => void;
+}) {
+  const overdue = isOverdue(row);
+  return (
+    <TableRow
+      tabIndex={0}
+      aria-selected={isSelected}
+      onClick={() => onSelect(row.id)}
+      onDoubleClick={() => onInspect(row)}
+      onKeyDown={event => {
+        if (event.target !== event.currentTarget) return;
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          onInspect(row);
+        }
+        if (event.key === ' ') {
+          event.preventDefault();
+          onSelect(row.id);
+        }
+      }}
+      className={`cursor-pointer focus-visible:outline-2 focus-visible:outline-primary ${isSelected ? 'bg-primary/10 hover:bg-primary/15' : ''} ${overdue ? 'bg-red-500/5' : ''}`}
+    >
+      <TableCell>
+        <div className="flex items-center gap-2 whitespace-nowrap">
+          {row.direction === 'in'
+            ? <ArrowDownLeft className="size-4 text-emerald-600" />
+            : row.direction === 'out'
+              ? <ArrowUpRight className="size-4 text-orange-600" />
+              : <CreditCard className="size-4 text-muted-foreground" />}
+          <span className="text-sm font-medium">{row.type}</span>
+          {row.draft && <Badge variant="outline">Preview</Badge>}
+        </div>
+      </TableCell>
+      <TableCell className="whitespace-nowrap text-xs text-muted-foreground">{formatDate(row.date)}</TableCell>
+      <TableCell className="font-mono text-xs">{row.reference}</TableCell>
+      <TableCell className="text-right tabular-nums">{chainMoney(row.amount)}</TableCell>
+      {warehouse ? (
+        <TableCell>
+          <Badge variant="secondary" className="capitalize">{row.status.replaceAll('_', ' ')}</Badge>
+        </TableCell>
+      ) : (
+        <>
+          <TableCell className={`text-right font-medium tabular-nums ${overdue ? 'text-red-600' : ''}`}>
+            {chainMoney(row.remaining)}
+          </TableCell>
+          <TableCell className="whitespace-nowrap text-xs">
+            {formatDate(row.dueDate)}
+            {overdue && <span className="mt-1 block font-semibold text-red-600">Overdue</span>}
+          </TableCell>
+        </>
+      )}
+      <TableCell>
+        <Button
+          variant="ghost"
+          size="icon"
+          aria-label={`View ${row.reference}`}
+          onClick={event => {
+            event.stopPropagation();
+            onInspect(row);
+          }}
+        >
+          <Eye className="size-4" />
+        </Button>
+      </TableCell>
+    </TableRow>
+  );
+});
 
 function InfoField({ icon: Icon, label, value }: { icon: typeof MapPin; label: string; value?: string }) {
   return <div className="flex items-start gap-2.5"><Icon className="mt-0.5 size-4 shrink-0 text-muted-foreground" /><div><p className="text-xs text-muted-foreground">{label}</p><p className="mt-0.5 text-sm font-medium">{value || 'Not provided'}</p></div></div>;

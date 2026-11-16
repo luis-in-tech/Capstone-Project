@@ -1,6 +1,7 @@
 import { SearchBar } from '@/components/ui/search-bar';
 import { hasAdminRole } from '../lib/staffPermissions';
 import React, { useState, useEffect, useRef } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useStaffAccess } from '../hooks/useStaffAccess';
 import { permitsMovement } from '../lib/staffPermissions';
 import { db } from '../lib/supabaseAdapter';
@@ -21,6 +22,9 @@ import { ConfirmDialog } from './ConfirmDialog';
 import { toast } from 'sonner';
 
 export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const transferIdParam = searchParams.get('transferId');
+  const lastAppliedTransferParamRef = useRef<string | null>(null);
   const { profile } = useAuth();
   const { permissions } = useStaffAccess();
   const [transfers, setTransfers] = useState<Transfer[]>([]);
@@ -80,6 +84,19 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
       unsubWarehouses();
     };
   }, []);
+
+  useEffect(() => {
+    if (!transferIdParam) {
+      lastAppliedTransferParamRef.current = null;
+      return;
+    }
+    if (lastAppliedTransferParamRef.current === transferIdParam || !transfers.length) return;
+    const match = transfers.find(t => t.id === transferIdParam);
+    if (match) {
+      lastAppliedTransferParamRef.current = transferIdParam;
+      setSelectedTransfer(match);
+    }
+  }, [transferIdParam, transfers]);
 
   const orderableProducts = products.filter(p => !p.hasVariations && p.variantEnabled !== false);
 
@@ -1181,7 +1198,20 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
       </Dialog>
 
       {/* Transport Details Modal */}
-      <Dialog open={!!selectedTransfer} onOpenChange={(open) => !open && setSelectedTransfer(null)}>
+      <Dialog
+        open={!!selectedTransfer}
+        onOpenChange={(open) => {
+          if (!open) {
+            setSelectedTransfer(null);
+            lastAppliedTransferParamRef.current = null;
+            if (searchParams.has('transferId')) {
+              const next = new URLSearchParams(searchParams);
+              next.delete('transferId');
+              setSearchParams(next, { replace: true });
+            }
+          }
+        }}
+      >
         <DialogContent className="sm:max-w-lg">
           <DialogHeader>
             <DialogTitle>Transport Details</DialogTitle>

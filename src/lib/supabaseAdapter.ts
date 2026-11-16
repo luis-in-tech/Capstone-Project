@@ -1,4 +1,5 @@
 import { supabase } from './supabase';
+import { buildQueryCacheKey } from './queryKey';
 
 export const db = {};
 export const storage = supabase.storage;
@@ -213,7 +214,29 @@ function getLocalCollection(path: string): any[] {
   }
 }
 
+export interface AdapterSnapshotDoc {
+  id: any;
+  data: () => any;
+}
+
+export interface AdapterQuerySnapshot {
+  docs: AdapterSnapshotDoc[];
+  empty: boolean;
+}
+
+const tableEpochs = new Map<string, number>();
+const inFlightGetDocs = new Map<string, Promise<AdapterQuerySnapshot>>();
+
+function getTableEpoch(path: string): number {
+  return tableEpochs.get(path) ?? 0;
+}
+
+function bumpTableEpoch(path: string): void {
+  tableEpochs.set(path, getTableEpoch(path) + 1);
+}
+
 function saveLocalCollection(path: string, items: any[]) {
+  bumpTableEpoch(path);
   if (typeof window === 'undefined' || !window.localStorage) return;
   try {
     localStorage.setItem(`activepro_db_${path}`, JSON.stringify(items));
@@ -299,110 +322,174 @@ export function serverTimestamp() {
   return new Date().toISOString();
 }
 
-export async function getDocs(q: any) {
-  let remoteData: any[] = [];
-  let remoteSuccess = false;
-  const hasLimitOp = Boolean(q.ops?.some((op: any) => op.type === 'limit'));
-  const hasWhereOp = Boolean(q.isSubcollection || q.ops?.some((op: any) => op.type === 'where'));
-  try {
-    const PAGE_SIZE = 1000;
-    let offset = 0;
-    while (true) {
-      let builder: any = supabase.from(q.path).select('*');
-      if (q.isSubcollection && q.parentField && q.parentId) {
-        builder = builder.eq(q.parentField, q.parentId);
-      }
-      if (q.ops) {
-        for (const op of q.ops) {
-          if (op.type === 'where') {
-            if (op.op === '==') builder = builder.eq(op.field, op.value);
-            if (op.op === '!=') builder = builder.neq(op.field, op.value);
-            if (op.op === '>') builder = builder.gt(op.field, op.value);
-            if (op.op === '>=') builder = builder.gte(op.field, op.value);
-            if (op.op === '<') builder = builder.lt(op.field, op.value);
-            if (op.op === '<=') builder = builder.lte(op.field, op.value);
-            if (op.op === 'in') builder = builder.in(op.field, op.value);
-            if (op.op === 'array-contains') builder = builder.contains(op.field, [op.value]);
-          }
-          if (op.type === 'orderBy') {
-            builder = builder.order(op.field, { ascending: op.dir === 'asc' });
-          }
-          if (op.type === 'limit') {
-            builder = builder.limit(op.n);
+export async function getDocs(q: any): Promise<AdapterQuerySnapshot> {
+  const dedupeKey = `${getTableEpoch(q.path)}:${buildQueryCacheKey(q)}`;
+  const existing = inFlightGetDocs.get(dedupeKey);
+  if (existing) {
+    return existing;
+  }
+
+  const runFetch: Promise<AdapterQuerySnapshot> = (async (): Promise<AdapterQuerySnapshot> => {
+    let remoteData: any[] = [];
+    let remoteSuccess = false;
+    const hasLimitOp = Boolean(q.ops?.some((op: any) => op.type === 'limit'));
+    const hasWhereOp = Boolean(q.isSubcollection || q.ops?.some((op: any) => op.type === 'where'));
+    try {
+      const PAGE_SIZE = 1000;
+      let offset = 0;
+      while (true) {
+        let builder: any = supabase.from(q.path).select('*');
+        if (q.isSubcollection && q.parentField && q.parentId) {
+          builder = builder.eq(q.parentField, q.parentId);
+        }
+        if (q.ops) {
+          for (const op of q.ops) {
+            if (op.type === 'where') {
+              if (op.op === '==') builder = builder.eq(op.field, op.value);
+              if (op.op === '!=') builder = builder.neq(op.field, op.value);
+              if (op.op === '>') builder = builder.gt(op.field, op.value);
+              if (op.op === '>=') builder = builder.gte(op.field, op.value);
+              if (op.op === '<') builder = builder.lt(op.field, op.value);
+              if (op.op === '<=') builder = builder.lte(op.field, op.value);
+              if (op.op === 'in') builder = builder.in(op.field, op.value);
+              if (op.op === 'array-contains') builder = builder.contains(op.field, [op.value]);
+            }
+            if (op.type === 'orderBy') {
+              builder = builder.order(op.field, { ascending: op.dir === 'asc' });
+            }
+            if (op.type === 'limit') {
+              builder = builder.limit(op.n);
+            }
           }
         }
+        if (!hasLimitOp) {
+          builder = builder.range(offset, offset + PAGE_SIZE - 1);
+        }
+        const { data, error } = await builder;
+        if (error || !Array.isArray(data)) {
+          break;
+        }
+        remoteSuccess = true;
+        remoteData.push(...data);
+        if (hasLimitOp || data.length < PAGE_SIZE) {
+          break;
+        }
+        offset += PAGE_SIZE;
       }
-      if (!hasLimitOp) {
-        builder = builder.range(offset, offset + PAGE_SIZE - 1);
-      }
-      const { data, error } = await builder;
-      if (error || !Array.isArray(data)) {
-        break;
-      }
-      remoteSuccess = true;
-      remoteData.push(...data);
-      if (hasLimitOp || data.length < PAGE_SIZE) {
-        break;
-      }
-      offset += PAGE_SIZE;
+    } catch (err) {
+      console.warn(`Supabase fetch failed for ${q.path}, utilizing local persistent records:`, err);
     }
-  } catch (err) {
-    console.warn(`Supabase fetch failed for ${q.path}, utilizing local persistent records:`, err);
-  }
 
-  // Overwrite stale local cache when full remote collection fetch succeeds (server data authoritative)
-  const keepLocalSeeds = ['expenses', 'expenseCategories', 'orders'].includes(q.path);
-  if (remoteSuccess && !hasWhereOp && !hasLimitOp && !keepLocalSeeds) {
-    if (typeof window !== 'undefined' && window.localStorage) {
-      try {
-        localStorage.setItem(`activepro_db_${q.path}`, JSON.stringify(remoteData));
-      } catch {}
-    }
-  }
-
-  const localItems = (remoteSuccess && !keepLocalSeeds) ? [] : getLocalCollection(q.path);
-  const mergedMap = new Map<string, any>();
-
-  for (const item of localItems) {
-    const id = item.id || item.uid;
-    if (id) mergedMap.set(id, item);
-  }
-
-  for (const item of remoteData) {
-    const id = item.id || item.uid;
-    if (id) {
-      const existing = mergedMap.get(id);
-      mergedMap.set(id, existing ? { ...existing, ...item } : item);
-    }
-  }
-
-  let finalData = Array.from(mergedMap.values());
-
-  // Filter if subcollection
-  if (q.isSubcollection && q.parentField && q.parentId) {
-    finalData = finalData.filter((item: any) => item[q.parentField] === q.parentId);
-  }
-
-  // Apply in-memory where ops
-  if (q.ops) {
-    for (const op of q.ops) {
-      if (op.type === 'where') {
-        if (op.op === '==') finalData = finalData.filter((item: any) => item[op.field] === op.value);
-        if (op.op === '!=') finalData = finalData.filter((item: any) => item[op.field] !== op.value);
-        if (op.op === '>') finalData = finalData.filter((item: any) => item[op.field] > op.value);
-        if (op.op === '>=') finalData = finalData.filter((item: any) => item[op.field] >= op.value);
-        if (op.op === '<') finalData = finalData.filter((item: any) => item[op.field] < op.value);
-        if (op.op === '<=') finalData = finalData.filter((item: any) => item[op.field] <= op.value);
+    // Overwrite stale local cache when full remote collection fetch succeeds (server data authoritative)
+    const keepLocalSeeds = ['expenses', 'expenseCategories', 'orders'].includes(q.path);
+    if (remoteSuccess && !hasWhereOp && !hasLimitOp && !keepLocalSeeds) {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        try {
+          localStorage.setItem(`activepro_db_${q.path}`, JSON.stringify(remoteData));
+        } catch {}
       }
     }
+
+    const localItems = (remoteSuccess && !keepLocalSeeds) ? [] : getLocalCollection(q.path);
+    const mergedMap = new Map<string, any>();
+
+    for (const item of localItems) {
+      const id = item.id || item.uid;
+      if (id) mergedMap.set(id, item);
+    }
+
+    for (const item of remoteData) {
+      const id = item.id || item.uid;
+      if (id) {
+        const existingItem = mergedMap.get(id);
+        mergedMap.set(id, existingItem ? { ...existingItem, ...item } : item);
+      }
+    }
+
+    let finalData = Array.from(mergedMap.values());
+
+    // Filter if subcollection
+    if (q.isSubcollection && q.parentField && q.parentId) {
+      finalData = finalData.filter((item: any) => item[q.parentField] === q.parentId);
+    }
+
+    // Apply in-memory where ops
+    if (q.ops) {
+      for (const op of q.ops) {
+        if (op.type === 'where') {
+          if (op.op === '==') finalData = finalData.filter((item: any) => item[op.field] === op.value);
+          if (op.op === '!=') finalData = finalData.filter((item: any) => item[op.field] !== op.value);
+          if (op.op === '>') finalData = finalData.filter((item: any) => item[op.field] > op.value);
+          if (op.op === '>=') finalData = finalData.filter((item: any) => item[op.field] >= op.value);
+          if (op.op === '<') finalData = finalData.filter((item: any) => item[op.field] < op.value);
+          if (op.op === '<=') finalData = finalData.filter((item: any) => item[op.field] <= op.value);
+        }
+      }
+    }
+
+    return {
+      docs: finalData.map((d: any) => ({
+        id: d.id || d.uid,
+        data: () => d
+      })),
+      empty: finalData.length === 0
+    };
+  })();
+
+  inFlightGetDocs.set(dedupeKey, runFetch);
+  try {
+    return await runFetch;
+  } finally {
+    if (inFlightGetDocs.get(dedupeKey) === runFetch) {
+      inFlightGetDocs.delete(dedupeKey);
+    }
+  }
+}
+
+interface PooledTableSubscription {
+  channel: any;
+  listeners: Set<() => void>;
+  cleanupTimer: ReturnType<typeof setTimeout> | null;
+}
+
+const pooledTableSubscriptions = new Map<string, PooledTableSubscription>();
+const CHANNEL_TEARDOWN_GRACE_MS = 100;
+const SNAPSHOT_DEBOUNCE_MS = 80;
+
+function subscribeToTableRealtime(table: string, listener: () => void): () => void {
+  let entry = pooledTableSubscriptions.get(table);
+  if (!entry) {
+    const listeners = new Set<() => void>();
+    const channel = supabase
+      .channel(`public:${table}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table }, () => {
+        for (const notify of Array.from(listeners)) {
+          notify();
+        }
+      })
+      .subscribe();
+    entry = { channel, listeners, cleanupTimer: null };
+    pooledTableSubscriptions.set(table, entry);
+  } else if (entry.cleanupTimer !== null) {
+    clearTimeout(entry.cleanupTimer);
+    entry.cleanupTimer = null;
   }
 
-  return {
-    docs: finalData.map((d: any) => ({
-      id: d.id || d.uid,
-      data: () => d
-    })),
-    empty: finalData.length === 0
+  entry.listeners.add(listener);
+
+  return () => {
+    const current = pooledTableSubscriptions.get(table);
+    if (!current) return;
+    current.listeners.delete(listener);
+    if (current.listeners.size === 0 && current.cleanupTimer === null) {
+      current.cleanupTimer = setTimeout(() => {
+        const latest = pooledTableSubscriptions.get(table);
+        if (latest && latest.listeners.size === 0) {
+          pooledTableSubscriptions.delete(table);
+          supabase.removeChannel(latest.channel);
+        }
+      }, CHANNEL_TEARDOWN_GRACE_MS);
+    }
   };
 }
 
@@ -410,8 +497,10 @@ export function onSnapshot(q: any, callback: (snap: any) => void, errorCb?: (e: 
   let isUnmounted = false;
   let isFetching = false;
   let hasPendingFetch = false;
+  let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
   const fetchAndNotify = async () => {
+    if (isUnmounted) return;
     if (isFetching) {
       hasPendingFetch = true;
       return;
@@ -426,37 +515,58 @@ export function onSnapshot(q: any, callback: (snap: any) => void, errorCb?: (e: 
       isFetching = false;
       if (hasPendingFetch && !isUnmounted) {
         hasPendingFetch = false;
-        fetchAndNotify();
+        void fetchAndNotify();
       }
     }
   };
 
-  fetchAndNotify();
+  const scheduleFetchAndNotify = () => {
+    if (isUnmounted) return;
+    if (debounceTimer !== null) {
+      clearTimeout(debounceTimer);
+    }
+    debounceTimer = setTimeout(() => {
+      debounceTimer = null;
+      void fetchAndNotify();
+    }, SNAPSHOT_DEBOUNCE_MS);
+  };
+
+  void fetchAndNotify();
 
   const handleLocalChange = (e: any) => {
     if (!e.detail?.path || e.detail.path === q.path) {
-      fetchAndNotify();
+      scheduleFetchAndNotify();
+    }
+  };
+
+  const handleStorageChange = (e: StorageEvent) => {
+    if (
+      !e.key ||
+      e.key === `activepro_db_${q.path}` ||
+      (q.path === 'orders' && e.key === 'activepro_order_overrides')
+    ) {
+      scheduleFetchAndNotify();
     }
   };
 
   if (typeof window !== 'undefined') {
     window.addEventListener('activepro_db_changed', handleLocalChange);
-    window.addEventListener('storage', fetchAndNotify);
+    window.addEventListener('storage', handleStorageChange);
   }
 
-  const channel = supabase.channel(`public:${q.path}_${Date.now()}`)
-    .on('postgres_changes', { event: '*', schema: 'public', table: q.path }, () => {
-      fetchAndNotify();
-    })
-    .subscribe();
+  const releaseChannel = subscribeToTableRealtime(q.path, scheduleFetchAndNotify);
 
   return () => {
     isUnmounted = true;
+    if (debounceTimer !== null) {
+      clearTimeout(debounceTimer);
+      debounceTimer = null;
+    }
     if (typeof window !== 'undefined') {
       window.removeEventListener('activepro_db_changed', handleLocalChange);
-      window.removeEventListener('storage', fetchAndNotify);
+      window.removeEventListener('storage', handleStorageChange);
     }
-    supabase.removeChannel(channel);
+    releaseChannel();
   };
 }
 

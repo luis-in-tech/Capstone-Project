@@ -17,6 +17,9 @@ import {
 } from "../lib/orderEntry";
 
 type ReceiptTemplate = {
+  companyName: string;
+  companyTagline: string;
+  showLogo: boolean;
   docSubtitle: string;
   docTitle: string;
   footerHeading: string;
@@ -26,6 +29,9 @@ type ReceiptTemplate = {
 };
 
 const DEFAULT_TEMPLATE: ReceiptTemplate = {
+  companyName: "ACTIVE PRO",
+  companyTagline: "Bicycle Parts, Accessories & Wholesale Distribution",
+  showLogo: true,
   docSubtitle: "DELIVERY DOCUMENT",
   docTitle: "DELIVERY RECEIPT",
   footerHeading: "PACKING LIST / ACKNOWLEDGEMENT",
@@ -42,6 +48,9 @@ const loadTemplate = (): ReceiptTemplate => {
     if (!raw) return DEFAULT_TEMPLATE;
     const parsed = JSON.parse(raw);
     return {
+      companyName: typeof parsed.companyName === "string" && parsed.companyName.trim() ? parsed.companyName : DEFAULT_TEMPLATE.companyName,
+      companyTagline: typeof parsed.companyTagline === "string" ? parsed.companyTagline : DEFAULT_TEMPLATE.companyTagline,
+      showLogo: typeof parsed.showLogo === "boolean" ? parsed.showLogo : DEFAULT_TEMPLATE.showLogo,
       docSubtitle: typeof parsed.docSubtitle === "string" && parsed.docSubtitle.trim() ? parsed.docSubtitle : DEFAULT_TEMPLATE.docSubtitle,
       docTitle: typeof parsed.docTitle === "string" && parsed.docTitle.trim() ? parsed.docTitle : DEFAULT_TEMPLATE.docTitle,
       footerHeading: typeof parsed.footerHeading === "string" && parsed.footerHeading.trim() ? parsed.footerHeading : DEFAULT_TEMPLATE.footerHeading,
@@ -58,11 +67,16 @@ const printStyles = `
   @page { size: A4 portrait; margin: 12mm; }
   .dr-page, .dr-page * { box-sizing: border-box; }
   .dr-page { width: 100%; background: white; color: #111827; padding: 28px; margin-bottom: 20px; font: 12px Arial, sans-serif; }
-  .dr-heading { display: flex; justify-content: space-between; gap: 20px; border-bottom: 2px solid #111827; padding-bottom: 16px; }
+  .dr-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; border-bottom: 2px solid #111827; padding-bottom: 16px; }
   .dr-heading > div { min-width: 0; overflow-wrap: anywhere; }
-  .dr-heading h2 { margin: 4px 0; font-size: 24px; letter-spacing: 2px; }
-  .dr-muted { color: #64748b; font-size: 11px; }
-  .dr-meta { display: grid; grid-template-columns: 2fr 1fr; gap: 10px 24px; padding: 20px 0; font-size: 12px; }
+  .dr-brand { display: flex; align-items: center; gap: 12px; }
+  .dr-brand-logo { width: 42px; height: 42px; object-fit: contain; border-radius: 6px; border: 1px solid #cbd5e1; background: #1c1f26; padding: 3px; }
+  .dr-company-name { font-size: 14px; font-weight: 800; letter-spacing: 1.5px; color: #0f172a; margin: 0; }
+  .dr-company-tagline { font-size: 10px; color: #475569; margin: 1px 0 6px; }
+  .dr-heading h2 { margin: 2px 0 0; font-size: 22px; letter-spacing: 2px; }
+  .dr-order-box { border: 1px solid #cbd5e1; background: #f8fafc; border-radius: 6px; padding: 8px 12px; text-align: right; min-width: 190px; }
+  .dr-muted { color: #64748b; font-size: 10px; text-transform: uppercase; letter-spacing: 0.8px; }
+  .dr-meta { display: grid; grid-template-columns: 1.6fr 1fr; gap: 8px 24px; padding: 14px 12px; margin: 14px 0; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; font-size: 12px; }
   .dr-meta div { overflow-wrap: anywhere; }
   .dr-table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 11px; }
   .dr-table th { background: #f1f5f9; text-align: left; border-block: 1px solid #94a3b8; padding: 9px 5px; }
@@ -123,6 +137,9 @@ export function DeliveryReceipt({
   ]);
   const pages = receiptPages(rows);
   const details = order.receiptDetails as (typeof order.receiptDetails & Partial<ReceiptTemplate>) | undefined;
+  const displayCompanyName = details?.companyName || template.companyName || DEFAULT_TEMPLATE.companyName;
+  const displayCompanyTagline = details?.companyTagline !== undefined ? details.companyTagline : template.companyTagline;
+  const displayShowLogo = details?.showLogo !== undefined ? details.showLogo : template.showLogo;
   const displaySubtitle = details?.docSubtitle || template.docSubtitle || DEFAULT_TEMPLATE.docSubtitle;
   const displayTitle = details?.docTitle || template.docTitle || DEFAULT_TEMPLATE.docTitle;
   const displayFooterHeading = details?.footerHeading || template.footerHeading || DEFAULT_TEMPLATE.footerHeading;
@@ -136,6 +153,12 @@ export function DeliveryReceipt({
   const safePhotoUrl = safeReceiptPhotoUrl(order.photoValidationUrl);
   const subtotal =
     details?.subtotal ?? items.reduce((sum, item) => sum + item.subtotal, 0);
+  const groupDiscountTotal = (details?.groupDiscounts || []).reduce((sum: number, d: GroupDiscountResult) => sum + (d.amount || 0), 0);
+  const orderDiscountPhp =
+    details?.orderDiscount !== undefined
+      ? details.orderDiscount
+      : Math.max(0, (details?.discount || 0) - groupDiscountTotal);
+  const logoSrc = `${typeof window !== "undefined" ? window.location.origin : ""}/logo.png`;
   const print = () => {
     printCleanupRef.current?.();
     // Clone only the receipt into an isolated document so app dialogs never appear in print.
@@ -204,27 +227,39 @@ export function DeliveryReceipt({
             {pages.map((page, index) => (
               <section className="dr-page shadow-sm" key={index}>
                 <div className="dr-heading">
-                  <div>
-                    <div className="dr-muted">{displaySubtitle}</div>
-                    <h2>{displayTitle}</h2>
+                  <div className="dr-brand">
+                    {displayShowLogo && (
+                      <img src={logoSrc} alt={displayCompanyName} className="dr-brand-logo" />
+                    )}
+                    <div>
+                      <p className="dr-company-name">{displayCompanyName}</p>
+                      {displayCompanyTagline && (
+                        <p className="dr-company-tagline">{displayCompanyTagline}</p>
+                      )}
+                      <div className="dr-muted">{displaySubtitle}</div>
+                      <h2>{displayTitle}</h2>
+                    </div>
                   </div>
-                  <div>
-                    <div className="dr-muted">Order Number</div>
-                    <strong>{order.orderNumber}</strong>
+                  <div className="dr-order-box">
+                    <div className="dr-muted">DR / Order No.</div>
+                    <strong style={{ fontSize: "14px", letterSpacing: "0.5px" }}>{order.orderNumber}</strong>
+                    <div style={{ marginTop: "6px", fontSize: "11px", color: "#334155" }}>
+                      <b>Date:</b> {date ? date.toLocaleDateString("en-PH") : "—"}
+                    </div>
                   </div>
                 </div>
                 <div className="dr-meta">
                   <div>
-                    <b>Customer Name:</b> {order.clientName}
-                  </div>
-                  <div>
-                    <b>Date:</b> {date ? date.toLocaleDateString("en-PH") : "—"}
-                  </div>
-                  <div>
-                    <b>Address:</b> {details?.address || "—"}
+                    <b>Customer / Sold To:</b> {order.clientName}
                   </div>
                   <div>
                     <b>Payment Terms:</b> {details?.paymentTerms || "—"}
+                  </div>
+                  <div>
+                    <b>Delivery Address:</b> {details?.address || "—"}
+                  </div>
+                  <div>
+                    <b>Delivery Region:</b> {(order as any).deliveryRegion || "—"}
                   </div>
                 </div>
                 <table className="dr-table">
@@ -279,7 +314,19 @@ export function DeliveryReceipt({
                         <span>Subtotal</span>
                         <span>{money(subtotal)}</span>
                       </div>
-                      {!!details?.discount && (
+                      {groupDiscountTotal > 0 && (
+                        <div>
+                          <span>Group Discounts</span>
+                          <span>−{money(groupDiscountTotal)}</span>
+                        </div>
+                      )}
+                      {orderDiscountPhp > 0 && (
+                        <div>
+                          <span>Order Discount</span>
+                          <span>−{money(orderDiscountPhp)}</span>
+                        </div>
+                      )}
+                      {groupDiscountTotal === 0 && orderDiscountPhp === 0 && !!details?.discount && (
                         <div>
                           <span>Total Discounts</span>
                           <span>−{money(details.discount)}</span>

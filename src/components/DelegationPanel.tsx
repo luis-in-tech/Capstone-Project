@@ -1,7 +1,8 @@
 
 import { PageHeading } from './PageHeading';
 import { SearchBar } from '@/components/ui/search-bar';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { SpinnerGapIcon as Loader2, PencilIcon as Pencil, PlusIcon as Plus, ShieldCheckIcon as ShieldCheck, UserIcon as UserRound, UsersIcon as Users, WarehouseIcon, WarningCircleIcon as CircleAlert, ShieldSlashIcon as ShieldOff } from '@phosphor-icons/react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
@@ -29,6 +30,10 @@ function PermissionSelect({ id, label, value, options, disabledValues = [], onCh
 }
 
 export function DelegationPanel() {
+  const [searchParams] = useSearchParams();
+  const [highlightedEmail, setHighlightedEmail] = useState('');
+  const lastAppliedDelegationRef = useRef('');
+  const highlightedRowRef = useRef<HTMLTableRowElement | null>(null);
   const { profile } = useAuth();
   const access = useStaffAccess();
   const isAdmin = profile?.role === 'admin';
@@ -77,6 +82,36 @@ export function DelegationPanel() {
   const ready = loaded.includes('users') && loaded.includes('delegations') && !errors.users && !errors.delegations;
   const warehouseReady = loaded.includes('warehouses') && !errors.warehouses;
   const rows = users.filter(user => (roleFilter === 'all' || user.role === roleFilter) && (status === 'all' || (status === 'inactive' ? inactive(user) : !inactive(user))) && `${user.displayName} ${user.email} ${user.role}`.toLowerCase().includes(search.trim().toLowerCase())).sort((a, b) => (a.displayName || a.email).localeCompare(b.displayName || b.email));
+
+  useEffect(() => {
+    const emailParam = searchParams.get('email');
+    const delegationIdParam = searchParams.get('delegationId');
+    const statusParam = searchParams.get('status');
+    if (!emailParam && !delegationIdParam && !statusParam) {
+      lastAppliedDelegationRef.current = '';
+      return;
+    }
+    const targetEmail = (
+      emailParam ||
+      delegations.find(d => d.id === delegationIdParam)?.staffEmail ||
+      ''
+    ).trim();
+    const key = `${targetEmail}:${delegationIdParam || ''}:${statusParam || ''}`;
+    if (!targetEmail && delegationIdParam && !delegations.length) return;
+    if (lastAppliedDelegationRef.current === key) return;
+    lastAppliedDelegationRef.current = key;
+    setRoleFilter('all');
+    setStatus(statusParam === 'active' || statusParam === 'inactive' || statusParam === 'all' ? statusParam : 'all');
+    if (targetEmail) {
+      setSearch(targetEmail);
+      setHighlightedEmail(targetEmail.toLowerCase());
+    }
+  }, [searchParams, delegations]);
+
+  useEffect(() => {
+    if (!ready || !highlightedEmail || !highlightedRowRef.current) return;
+    highlightedRowRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }, [highlightedEmail, ready, rows.length]);
   const selectedUser = editor && editor !== 'new' ? editor : null;
   const currentDelegation = selectedUser ? delegationFor(selectedUser) : undefined;
   const patch = (value: Partial<StaffPermissions>) => { setDirty(true); setFormError(''); setDraft(prev => normalizePermissions({ ...prev, ...value })); };
@@ -283,11 +318,11 @@ export function DelegationPanel() {
     <div className="grid gap-3 sm:grid-cols-3">{[{ label: 'Active accounts', value: activeCount, detail: 'All users, including administrators', icon: Users }, { label: 'No permissions assigned', value: unassigned, detail: 'Accounts without a delegation', icon: UserRound }, { label: 'Deactivated access', value: users.length - activeCount, detail: 'Access can be restored anytime', icon: ShieldOff }].map(item => <div key={item.label} className="flex items-start gap-3 rounded-xl border bg-card p-5"><div className="rounded-lg bg-muted p-2.5"><item.icon className="size-5 text-muted-foreground" /></div><div><p className="text-xs font-medium text-muted-foreground">{item.label}</p><p className="mt-1 text-2xl font-semibold">{ready ? item.value : '—'}</p><p className="mt-1 text-xs text-muted-foreground">{item.detail}</p></div></div>)}</div>
     {Object.keys(errors).length > 0 && <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm"><span>{Object.values(errors).join(' ')}</span><Button variant="outline" size="sm" onClick={() => setReload(value => value + 1)}>Retry</Button></div>}
     <div className="overflow-hidden rounded-xl border bg-card">
-      <div className="flex flex-col gap-3 border-b p-4 sm:flex-row"><div className="relative flex-1"><SearchBar className="h-10 pl-9" aria-label="Search user accounts" placeholder="Search by name, email, or role…" value={search} onValueChange={setSearch} /></div><select className={`${selectClass} sm:w-44`} aria-label="Filter by role tag" value={roleFilter} onChange={event => setRoleFilter(event.target.value)}><option value="all">All role tags</option><option value="admin">Admin</option><option value="secretary">Secretary</option><option value="agent">Agent</option><option value="staff">Staff</option></select><select className={`${selectClass} sm:w-48`} aria-label="Filter account status" value={status} onChange={event => setStatus(event.target.value)}><option value="active">Active accounts</option><option value="all">All accounts</option><option value="inactive">Deactivated access</option></select></div>
+      <div className="flex flex-col gap-3 border-b p-4 sm:flex-row"><div className="relative flex-1"><SearchBar className="h-10 pl-9" aria-label="Search user accounts" placeholder="Search by name, email, or role…" value={search} onValueChange={value => { setHighlightedEmail(''); setSearch(value); }} /></div><select className={`${selectClass} sm:w-44`} aria-label="Filter by role tag" value={roleFilter} onChange={event => setRoleFilter(event.target.value)}><option value="all">All role tags</option><option value="admin">Admin</option><option value="secretary">Secretary</option><option value="agent">Agent</option><option value="staff">Staff</option></select><select className={`${selectClass} sm:w-48`} aria-label="Filter account status" value={status} onChange={event => setStatus(event.target.value)}><option value="active">Active accounts</option><option value="all">All accounts</option><option value="inactive">Deactivated access</option></select></div>
       <Table><TableHeader className="bg-muted/40"><TableRow><TableHead className="pl-5">User</TableHead><TableHead>Status</TableHead><TableHead className="min-w-72">Permissions</TableHead><TableHead className="min-w-44">Warehouse access</TableHead><TableHead className="px-5 text-center">Actions</TableHead></TableRow></TableHeader><TableBody>
         {ready && rows.map(user => {
-          const delegation = delegationFor(user); const permissions = resolvePermissions(user, delegation); const disabled = inactive(user); const protectedAccount = !disabled && user.role === 'admin'; const editable = canManageUser(profile, user);
-          return <TableRow key={user.uid}><TableCell className="py-5 pl-5 align-top"><div className="flex items-center gap-3"><div className="flex size-9 shrink-0 items-center justify-center rounded-full bg-muted text-sm font-semibold">{(user.displayName || user.email).slice(0, 1).toUpperCase()}</div><div><p className="font-semibold">{user.displayName || 'Unnamed user'}</p><p className="mt-0.5 text-xs text-muted-foreground">{user.email}</p><p className="mt-1 text-[11px] capitalize text-muted-foreground">{user.role}{user.uid === profile?.uid ? ' · You' : ''}</p></div></div></TableCell>
+          const delegation = delegationFor(user); const permissions = resolvePermissions(user, delegation); const disabled = inactive(user); const protectedAccount = !disabled && user.role === 'admin'; const editable = canManageUser(profile, user); const isHighlighted = !!highlightedEmail && user.email.trim().toLowerCase() === highlightedEmail;
+          return <TableRow key={user.uid} ref={isHighlighted ? highlightedRowRef : undefined} className={isHighlighted ? 'bg-primary/10 ring-1 ring-inset ring-primary/35' : undefined}><TableCell className="py-5 pl-5 align-top"><div className="flex items-center gap-3"><div className="flex size-9 shrink-0 items-center justify-center rounded-full bg-muted text-sm font-semibold">{(user.displayName || user.email).slice(0, 1).toUpperCase()}</div><div><p className="font-semibold">{user.displayName || 'Unnamed user'}</p><p className="mt-0.5 text-xs text-muted-foreground">{user.email}</p><p className="mt-1 text-[11px] capitalize text-muted-foreground">{user.role}{user.uid === profile?.uid ? ' · You' : ''}</p></div></div></TableCell>
             <TableCell className="align-top py-5"><Badge variant={disabled ? 'outline' : 'secondary'}>{disabled ? 'Deactivated' : 'Active'}</Badge></TableCell>
             <TableCell className="py-5 align-top">{protectedAccount ? <span className="inline-flex items-center gap-1.5 text-sm font-medium"><ShieldCheck className="size-4 text-primary" />Full administrator access</span> : disabled ? <p className="text-sm text-muted-foreground">Access deactivated</p> : <div className="space-y-2">{!delegation && <Badge variant="outline" className="border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">No Permissions Assigned</Badge>}<div className="grid gap-x-4 gap-y-1 whitespace-normal text-xs sm:grid-cols-2"><span><span className="text-muted-foreground">Inventory:</span> {permissions.inventory === 'adjust' ? 'Can adjust' : 'View only'}</span><span><span className="text-muted-foreground">Pricelist:</span> {permissions.pricelist === 'edit' ? 'Can edit' : 'View only'}</span><span><span className="text-muted-foreground">Orders:</span> {orderLabels[permissions.orders]}</span><span><span className="text-muted-foreground">Supply Chain:</span> {supplySummary(permissions.supplyChain)}</span><span><span className="text-muted-foreground">Movement view:</span> {movementLabel(permissions.movementView)}</span><span><span className="text-muted-foreground">Movement create:</span> {movementLabel(permissions.movementCreate)}</span><span><span className="text-muted-foreground">Price access:</span> {permissions.priceAccess === 'main_only' ? 'Main price only' : permissions.priceAccess === 'selling_no_cost' ? 'Selling (no cost)' : 'All prices'}</span><span><span className="text-muted-foreground">Financials:</span> {permissions.financials === 'full' ? 'Full Access' : permissions.financials === 'expense_only' ? 'Expense Entry Only' : 'No Access'}</span></div>{!delegation && <p className="text-[11px] text-muted-foreground">Current role defaults shown. Assign permissions to customize access.</p>}</div>}</TableCell>
             <TableCell className="max-w-60 py-5 align-top text-xs">{disabled ? <span className="text-muted-foreground">No access</span> : permissions.warehouseAccess === 'all' ? <span className="inline-flex items-center gap-1.5"><WarehouseIcon className="size-3.5 text-muted-foreground" />All warehouses</span> : <div><p className="mb-1 font-medium">{permissions.warehouseIds.length} selected</p><p className="text-muted-foreground">{permissions.warehouseIds.map(id => warehouses.find(w => w.id === id)?.name || 'Unavailable warehouse').join(', ') || 'No warehouses'}</p></div>}</TableCell>
