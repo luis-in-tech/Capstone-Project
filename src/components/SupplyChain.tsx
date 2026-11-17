@@ -304,7 +304,8 @@ export function SupplyChain() {
       />
 
       <Dialog open={referenceManager !== null} onOpenChange={(open) => { if (!open) { setReferenceManager(null); setNewReferenceName(''); setEditingReferenceName(null); } }}>
-        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
+        {referenceManager !== null ? (
+          <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
           <DialogHeader>
             <DialogTitle>Manage {referenceManager === 'category' ? 'Categories' : 'Suppliers'}</DialogTitle>
             <DialogDescription>Add, rename, or remove {referenceManager === 'category' ? 'product categories' : 'preferred suppliers'} used by Inventory.</DialogDescription>
@@ -339,12 +340,14 @@ export function SupplyChain() {
             ))}
             {(referenceManager === 'category' ? categories : suppliers.filter(name => name !== 'N/A')).length === 0 && <div className="rounded-xl border border-dashed p-6 text-center text-sm text-muted-foreground">No {referenceManager === 'category' ? 'categories' : 'suppliers'} added yet.</div>}
           </div>
-        </DialogContent>
+          </DialogContent>
+        ) : null}
       </Dialog>
 
       {/* Destructive Reference Deletion Confirmation Dialog */}
       <Dialog open={deletingReference !== null} onOpenChange={(open) => { if (!open && referenceAction === null) setDeletingReference(null); }}>
-        <DialogContent className="sm:max-w-md">
+        {deletingReference !== null ? (
+          <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2 text-red-600">
               <AlertTriangle className="h-5 w-5" />
@@ -410,7 +413,8 @@ export function SupplyChain() {
               {referenceAction !== null ? 'Deleting...' : deletingReference && deletingReference.affectedCount > 0 ? `Reassign ${deletingReference.affectedCount} & Delete` : `Delete ${deletingReference?.type === 'category' ? 'Category' : 'Supplier'}`}
             </Button>
           </DialogFooter>
-        </DialogContent>
+          </DialogContent>
+        ) : null}
       </Dialog>
 
       <ConfirmDialog

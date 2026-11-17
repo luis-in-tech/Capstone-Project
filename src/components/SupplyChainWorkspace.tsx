@@ -174,10 +174,13 @@ export const SupplyChainWorkspace = memo(function SupplyChainWorkspace({ sourceL
     const stops = [
       watch('orders', (records: SourceOrder[]) => {
         setOrders(records);
-        try {
-          localStorage.setItem('activepro_supply_chain_orders', JSON.stringify(records));
-          localStorage.setItem('activepro_db_orders', JSON.stringify(records));
-        } catch {}
+        setTimeout(() => {
+          try {
+            const json = JSON.stringify(records);
+            localStorage.setItem('activepro_supply_chain_orders', json);
+            localStorage.setItem('activepro_db_orders', json);
+          } catch {}
+        }, 0);
       }),
       watch('order_items', setOrderItems),
       watch('inventory_movements', setMovements),
@@ -185,11 +188,15 @@ export const SupplyChainWorkspace = memo(function SupplyChainWorkspace({ sourceL
       watch('customers', (dbCustomers: Entity[]) => {
         if (Array.isArray(dbCustomers) && dbCustomers.length > 0) {
           setCustomerDrafts(dbCustomers);
-          try { localStorage.setItem('activepro_supply_chain_customers', JSON.stringify(dbCustomers)); } catch {}
           const activeIds = new Set(dbCustomers.map(c => c.id || `customer:${(c.name || '').trim().toLowerCase()}`));
           setHiddenCustomers(prev => {
             const next = prev.filter(id => !activeIds.has(id));
-            try { localStorage.setItem('activepro_supply_chain_hidden_customers', JSON.stringify(next)); } catch {}
+            setTimeout(() => {
+              try {
+                localStorage.setItem('activepro_supply_chain_customers', JSON.stringify(dbCustomers));
+                localStorage.setItem('activepro_supply_chain_hidden_customers', JSON.stringify(next));
+              } catch {}
+            }, 0);
             return next;
           });
         }
@@ -535,6 +542,16 @@ export const SupplyChainWorkspace = memo(function SupplyChainWorkspace({ sourceL
   }, []);
   const handleSelectRow = useCallback((rowId: string) => setSelectedId(rowId), []);
   const handleInspectRow = useCallback((row: ChainTransaction) => setDetails(row), []);
+  const handleCloseAction = useCallback(() => setAction(null), []);
+  const handlePreviewEntry = useCallback((entry: ChainTransaction) => {
+    setPreviews(rows => [...rows, entry]);
+    setAction(null);
+    setSelectedId(entry.id);
+    setTypeFilter('All');
+    setSearch('');
+    setHistoryPage(1);
+    toast.success('Preview added. No financial or inventory changes posted.');
+  }, []);
 
   useEffect(() => {
     const viewParam = searchParams.get('view') as SupplyView | null;
@@ -791,13 +808,20 @@ export const SupplyChainWorkspace = memo(function SupplyChainWorkspace({ sourceL
       const updatedOrderBalances = { ...orderBalanceOverrides };
 
       for (const preview of previews) {
-        if (preview.type === 'Refund' || preview.type === 'Purchase Refund' || preview.type === 'Payment' || preview.type === 'Bill Payment') {
+        // Customer payments & supplier bill payments settle existing AR/AP balances (orders / inventory_movements)
+        // and must not be posted as operating expenses; purchase refunds are vendor credits rather than OPEX.
+        if (preview.type === 'Refund') {
+          const counterparty = entities.find(ent => ent.id === preview.entityId)?.name;
+          const prefix = counterparty ? `Customer Refund · ${counterparty}` : 'Customer Refund';
+          const description = preview.notes && preview.notes.includes(preview.reference)
+            ? `${prefix} · ${preview.notes}`
+            : `${prefix} (${preview.reference}) · ${preview.notes || 'Order refund'}`;
           await addDoc(collection(db, 'expenses'), {
             amount: preview.amount,
-            category: preview.type.includes('Refund') ? 'Refund / Return' : 'Supply Chain Ledger',
+            category: 'Refund / Return',
             date: preview.date,
-            description: preview.notes || `Supply Chain Transaction: ${preview.reference}`,
-            type: preview.type.includes('Payment') ? 'income' : 'expense'
+            description,
+            ...(preview.parentId ? { orderId: preview.parentId } : {}),
           });
         }
 
@@ -1018,69 +1042,95 @@ export const SupplyChainWorkspace = memo(function SupplyChainWorkspace({ sourceL
       </div>
     </div>
 
-    {action && selected && canAct(action) && <SupplyChainTransactionDialog key={`${selected.id}:${action}`} view={view} action={action} transaction={selected} products={products} warehouses={warehouses} inventory={inventory} onClose={() => setAction(null)} onPreview={entry => { setPreviews(rows => [...rows, entry]); setAction(null); setSelectedId(entry.id); setTypeFilter('All'); setSearch(''); setHistoryPage(1); toast.success('Preview added. No financial or inventory changes posted.'); }} />}
+    {action && selected && canAct(action) && <SupplyChainTransactionDialog key={`${selected.id}:${action}`} view={view} action={action} transaction={selected} products={products} warehouses={warehouses} inventory={inventory} onClose={handleCloseAction} onPreview={handlePreviewEntry} />}
 
-    <Dialog open={!!details} onOpenChange={open => { if (!open) setDetails(null); }}><DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl"><DialogHeader><DialogTitle>{details?.type} details</DialogTitle><DialogDescription>{details?.reference} · {formatDate(details?.date)}</DialogDescription></DialogHeader>{details && <><div className="flex flex-wrap justify-between gap-3 rounded-xl bg-muted/40 p-4"><div><p className="text-xs text-muted-foreground">Amount / value</p><p className="text-2xl font-bold">{chainMoney(details.amount)}</p></div><Badge variant="secondary" className="h-fit capitalize">{details.status.replaceAll('_', ' ')}</Badge></div>{details.direction && <div className={`rounded-lg p-3 text-sm ${details.direction === 'in' ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' : 'bg-orange-500/10 text-orange-700 dark:text-orange-300'}`}>{details.draft ? 'Preview: inventory would ' : 'Inventory direction: '}{details.direction === 'in' ? 'increase — items received' : 'decrease — items issued'}</div>}{details.notes && <p className="text-sm text-muted-foreground">{details.notes}</p>}<Table><TableHeader><TableRow><TableHead>Item</TableHead><TableHead className="text-right">Quantity</TableHead><TableHead className="text-right">Unit value</TableHead></TableRow></TableHeader><TableBody>{details.items.map(item => <TableRow key={item.id}><TableCell><p className="font-medium">{item.name}</p><p className="text-xs text-muted-foreground">{item.sku}{item.warehouseId && ` · ${warehouseById.get(item.warehouseId)?.name || 'Warehouse'}`}</p></TableCell><TableCell className="text-right">{item.quantity}</TableCell><TableCell className="text-right">{chainMoney(item.unitPrice)}</TableCell></TableRow>)}{!details.items.length && <TableRow><TableCell colSpan={3} className="py-8 text-center text-muted-foreground">No physical items recorded.</TableCell></TableRow>}</TableBody></Table>{details.draft && <p className="text-xs text-amber-700 dark:text-amber-300">Session preview only. No financial or inventory changes posted.</p>}<Button variant="outline" onClick={() => setDetails(null)}>Close</Button></>}</DialogContent></Dialog>
+    <Dialog open={!!details} onOpenChange={open => { if (!open) setDetails(null); }}>
+      {details ? (
+        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
+          <DialogHeader><DialogTitle>{details.type} details</DialogTitle><DialogDescription>{details.reference} · {formatDate(details.date)}</DialogDescription></DialogHeader>
+          <div className="flex flex-wrap justify-between gap-3 rounded-xl bg-muted/40 p-4"><div><p className="text-xs text-muted-foreground">Amount / value</p><p className="text-2xl font-bold">{chainMoney(details.amount)}</p></div><Badge variant="secondary" className="h-fit capitalize">{details.status.replaceAll('_', ' ')}</Badge></div>
+          {details.direction && <div className={`rounded-lg p-3 text-sm ${details.direction === 'in' ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' : 'bg-orange-500/10 text-orange-700 dark:text-orange-300'}`}>{details.draft ? 'Preview: inventory would ' : 'Inventory direction: '}{details.direction === 'in' ? 'increase — items received' : 'decrease — items issued'}</div>}
+          {details.notes && <p className="text-sm text-muted-foreground">{details.notes}</p>}
+          <Table><TableHeader><TableRow><TableHead>Item</TableHead><TableHead className="text-right">Quantity</TableHead><TableHead className="text-right">Unit value</TableHead></TableRow></TableHeader><TableBody>{details.items.map(item => <TableRow key={item.id}><TableCell><p className="font-medium">{item.name}</p><p className="text-xs text-muted-foreground">{item.sku}{item.warehouseId && ` · ${warehouseById.get(item.warehouseId)?.name || 'Warehouse'}`}</p></TableCell><TableCell className="text-right">{item.quantity}</TableCell><TableCell className="text-right">{chainMoney(item.unitPrice)}</TableCell></TableRow>)}{!details.items.length && <TableRow><TableCell colSpan={3} className="py-8 text-center text-muted-foreground">No physical items recorded.</TableCell></TableRow>}</TableBody></Table>
+          {details.draft && <p className="text-xs text-amber-700 dark:text-amber-300">Session preview only. No financial or inventory changes posted.</p>}
+          <Button variant="outline" onClick={() => setDetails(null)}>Close</Button>
+        </DialogContent>
+      ) : null}
+    </Dialog>
 
-    <Dialog open={!!editor} onOpenChange={open => { if (!open && !saving) setEditor(null); }}><DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-xl"><DialogHeader><DialogTitle>{editor?.id ? 'Edit' : 'Add'} {singular}</DialogTitle><DialogDescription>{customer ? 'Customer profiles can be used in Order Entry to create orders.' : `The ${warehouse ? 'name, location, and status' : 'name'} will be saved. Contact details${!warehouse ? ', address, and payment terms' : ''} are session previews.`}</DialogDescription></DialogHeader>{editor && <form onSubmit={event => { event.preventDefault(); void saveEntity(); }} className="space-y-4">
-      <Field label="Name" id="chain-entity-name"><Input id="chain-entity-name" required value={editor.name} onChange={e => setEditor({ ...editor, name: e.target.value })} /></Field>
-      <Field label={warehouse ? "Location" : "Address"} id="chain-entity-address"><Input id="chain-entity-address" value={editor.address || ''} onChange={e => setEditor({ ...editor, address: e.target.value })} placeholder={warehouse ? "e.g. Hub 1" : "Street, city, province"} /></Field>
-      <div className="grid gap-4 sm:grid-cols-2">
-        <Field label="Contact person" id="chain-entity-contact"><Input id="chain-entity-contact" value={editor.contact || ''} onChange={e => setEditor({ ...editor, contact: e.target.value })} /></Field>
-        <Field label="Contact number" id="chain-entity-phone"><Input id="chain-entity-phone" type="tel" value={editor.phone || ''} onChange={e => setEditor({ ...editor, phone: e.target.value })} /></Field>
-      </div>
-
-      {customer && (
-        <>
-          <div className="grid gap-4 sm:grid-cols-2">
-            <Field label="Viber Number" id="chain-entity-viber"><Input id="chain-entity-viber" value={editor.viber || ''} onChange={e => setEditor({ ...editor, viber: e.target.value })} placeholder="e.g. 09171234567" /></Field>
-            <Field label="Messenger" id="chain-entity-messenger"><Input id="chain-entity-messenger" value={editor.messenger || ''} onChange={e => setEditor({ ...editor, messenger: e.target.value })} placeholder="e.g. m.me/profile or username" /></Field>
-          </div>
-          <Field label="Email Address" id="chain-entity-email"><Input id="chain-entity-email" type="email" value={editor.email || ''} onChange={e => setEditor({ ...editor, email: e.target.value })} placeholder="e.g. client@example.com" /></Field>
-          <div className="grid gap-4 sm:grid-cols-2">
-            <Field label="Payment terms" id="chain-entity-terms"><Input id="chain-entity-terms" value={editor.terms || ''} onChange={e => setEditor({ ...editor, terms: e.target.value })} placeholder="e.g. Cash on delivery, Net 30" /></Field>
-            <Field label="Payment Notes" id="chain-entity-payment-notes"><Input id="chain-entity-payment-notes" value={editor.paymentNotes || ''} onChange={e => setEditor({ ...editor, paymentNotes: e.target.value })} placeholder="e.g. MM & add 5%, No sale of Shimano" /></Field>
-          </div>
-          <div className="rounded-xl border bg-muted/20 p-4 space-y-3">
-            <div className="flex items-center gap-1.5 font-bold uppercase tracking-wider text-[10px] text-muted-foreground">
-              <Bank className="size-3.5" /> Bank Details
+    <Dialog open={!!editor} onOpenChange={open => { if (!open && !saving) setEditor(null); }}>
+      {editor ? (
+        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-xl">
+          <DialogHeader><DialogTitle>{editor.id ? 'Edit' : 'Add'} {singular}</DialogTitle><DialogDescription>{customer ? 'Customer profiles can be used in Order Entry to create orders.' : `The ${warehouse ? 'name, location, and status' : 'name'} will be saved. Contact details${!warehouse ? ', address, and payment terms' : ''} are session previews.`}</DialogDescription></DialogHeader>
+          <form onSubmit={event => { event.preventDefault(); void saveEntity(); }} className="space-y-4">
+            <Field label="Name" id="chain-entity-name"><Input id="chain-entity-name" required value={editor.name} onChange={e => setEditor({ ...editor, name: e.target.value })} /></Field>
+            <Field label={warehouse ? "Location" : "Address"} id="chain-entity-address"><Input id="chain-entity-address" value={editor.address || ''} onChange={e => setEditor({ ...editor, address: e.target.value })} placeholder={warehouse ? "e.g. Hub 1" : "Street, city, province"} /></Field>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field label="Contact person" id="chain-entity-contact"><Input id="chain-entity-contact" value={editor.contact || ''} onChange={e => setEditor({ ...editor, contact: e.target.value })} /></Field>
+              <Field label="Contact number" id="chain-entity-phone"><Input id="chain-entity-phone" type="tel" value={editor.phone || ''} onChange={e => setEditor({ ...editor, phone: e.target.value })} /></Field>
             </div>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <Field label="Bank Name" id="chain-bank-name"><Input id="chain-bank-name" value={editor.bankName || ''} onChange={e => setEditor({ ...editor, bankName: e.target.value })} placeholder="e.g. BDO, BPI, Metrobank" /></Field>
-              <Field label="Account Name" id="chain-bank-acc-name"><Input id="chain-bank-acc-name" value={editor.bankAccountName || ''} onChange={e => setEditor({ ...editor, bankAccountName: e.target.value })} placeholder="e.g. Active Pro Trading" /></Field>
-              <Field label="Account Number" id="chain-bank-acc-num"><Input id="chain-bank-acc-num" value={editor.bankAccountNumber || ''} onChange={e => setEditor({ ...editor, bankAccountNumber: e.target.value })} placeholder="e.g. 0012-3456-7890" /></Field>
-              <Field label="Bank Branch Address" id="chain-bank-branch"><Input id="chain-bank-branch" value={editor.bankBranchAddress || ''} onChange={e => setEditor({ ...editor, bankBranchAddress: e.target.value })} placeholder="e.g. Ortigas Branch, Pasig City" /></Field>
+
+            {customer && (
+              <>
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <Field label="Viber Number" id="chain-entity-viber"><Input id="chain-entity-viber" value={editor.viber || ''} onChange={e => setEditor({ ...editor, viber: e.target.value })} placeholder="e.g. 09171234567" /></Field>
+                  <Field label="Messenger" id="chain-entity-messenger"><Input id="chain-entity-messenger" value={editor.messenger || ''} onChange={e => setEditor({ ...editor, messenger: e.target.value })} placeholder="e.g. m.me/profile or username" /></Field>
+                </div>
+                <Field label="Email Address" id="chain-entity-email"><Input id="chain-entity-email" type="email" value={editor.email || ''} onChange={e => setEditor({ ...editor, email: e.target.value })} placeholder="e.g. client@example.com" /></Field>
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <Field label="Payment terms" id="chain-entity-terms"><Input id="chain-entity-terms" value={editor.terms || ''} onChange={e => setEditor({ ...editor, terms: e.target.value })} placeholder="e.g. Cash on delivery, Net 30" /></Field>
+                  <Field label="Payment Notes" id="chain-entity-payment-notes"><Input id="chain-entity-payment-notes" value={editor.paymentNotes || ''} onChange={e => setEditor({ ...editor, paymentNotes: e.target.value })} placeholder="e.g. MM & add 5%, No sale of Shimano" /></Field>
+                </div>
+                <div className="rounded-xl border bg-muted/20 p-4 space-y-3">
+                  <div className="flex items-center gap-1.5 font-bold uppercase tracking-wider text-[10px] text-muted-foreground">
+                    <Bank className="size-3.5" /> Bank Details
+                  </div>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <Field label="Bank Name" id="chain-bank-name"><Input id="chain-bank-name" value={editor.bankName || ''} onChange={e => setEditor({ ...editor, bankName: e.target.value })} placeholder="e.g. BDO, BPI, Metrobank" /></Field>
+                    <Field label="Account Name" id="chain-bank-acc-name"><Input id="chain-bank-acc-name" value={editor.bankAccountName || ''} onChange={e => setEditor({ ...editor, bankAccountName: e.target.value })} placeholder="e.g. Active Pro Trading" /></Field>
+                    <Field label="Account Number" id="chain-bank-acc-num"><Input id="chain-bank-acc-num" value={editor.bankAccountNumber || ''} onChange={e => setEditor({ ...editor, bankAccountNumber: e.target.value })} placeholder="e.g. 0012-3456-7890" /></Field>
+                    <Field label="Bank Branch Address" id="chain-bank-branch"><Input id="chain-bank-branch" value={editor.bankBranchAddress || ''} onChange={e => setEditor({ ...editor, bankBranchAddress: e.target.value })} placeholder="e.g. Ortigas Branch, Pasig City" /></Field>
+                  </div>
+                </div>
+              </>
+            )}
+
+            {!customer && (
+              warehouse ? <Field label="Status" id="chain-entity-status"><select id="chain-entity-status" className="h-10 w-full rounded-lg border bg-background px-3 text-sm" value={editor.active === false ? 'inactive' : 'active'} onChange={e => setEditor({ ...editor, active: e.target.value === 'active' })}><option value="active">Active</option><option value="inactive">Inactive</option></select></Field> : <Field label="Payment terms" id="chain-entity-terms"><Input id="chain-entity-terms" value={editor.terms || ''} onChange={e => setEditor({ ...editor, terms: e.target.value })} placeholder="e.g. Cash on delivery, Net 30" /></Field>
+            )}
+
+            {editError && <p role="alert" className="text-sm text-destructive">{editError}</p>}
+            <div className="flex justify-end gap-2 border-t pt-4">
+              <Button type="button" variant="outline" disabled={saving} onClick={() => setEditor(null)}>Cancel</Button>
+              <Button type="submit" disabled={saving || !editor.name.trim()}>{saving ? 'Saving…' : customer ? 'Save customer' : 'Save changes'}</Button>
             </div>
-          </div>
-        </>
-      )}
+          </form>
+        </DialogContent>
+      ) : null}
+    </Dialog>
 
-      {!customer && (
-        warehouse ? <Field label="Status" id="chain-entity-status"><select id="chain-entity-status" className="h-10 w-full rounded-lg border bg-background px-3 text-sm" value={editor.active === false ? 'inactive' : 'active'} onChange={e => setEditor({ ...editor, active: e.target.value === 'active' })}><option value="active">Active</option><option value="inactive">Inactive</option></select></Field> : <Field label="Payment terms" id="chain-entity-terms"><Input id="chain-entity-terms" value={editor.terms || ''} onChange={e => setEditor({ ...editor, terms: e.target.value })} placeholder="e.g. Cash on delivery, Net 30" /></Field>
-      )}
-
-      {editError && <p role="alert" className="text-sm text-destructive">{editError}</p>}
-      <div className="flex justify-end gap-2 border-t pt-4">
-        <Button type="button" variant="outline" disabled={saving} onClick={() => setEditor(null)}>Cancel</Button>
-        <Button type="submit" disabled={saving || !editor.name.trim()}>{saving ? 'Saving…' : customer ? 'Save customer' : 'Save changes'}</Button>
-      </div>
-    </form>}</DialogContent></Dialog>
-
-    <Dialog open={removing} onOpenChange={setRemoving}><DialogContent className="sm:max-w-md"><DialogHeader><DialogTitle>Remove {current?.name}?</DialogTitle><DialogDescription>{customer ? 'This removes the customer from the directory and Order Entry. Existing orders and balances are preserved.' : warehouse ? 'The existing warehouse removal flow will show the stock impact before deletion.' : 'The existing supplier removal flow will show which product assignments are affected.'}</DialogDescription></DialogHeader><div className="flex justify-end gap-2"><Button variant="outline" onClick={() => setRemoving(false)}>Cancel</Button><Button variant="destructive" onClick={() => { if (!current) return; if (customer) {
-      setHiddenCustomers(ids => {
-        const next = [...ids, current.id];
-        try { localStorage.setItem('activepro_supply_chain_hidden_customers', JSON.stringify(next)); } catch {}
-        return next;
-      });
-      setCustomerDrafts(items => {
-        const next = items.filter(c => c.id !== current.id && c.name.toLowerCase() !== current.name.toLowerCase());
-        try { localStorage.setItem('activepro_supply_chain_customers', JSON.stringify(next)); } catch {}
-        window.dispatchEvent(new CustomEvent('activepro_customers_changed'));
-        return next;
-      });
-      deleteDoc(doc(db, 'customers', current.id)).catch(() => {});
-      setEntityId('');
-    } else if (warehouse) { const record = warehouseById.get(current.id); if (record) onRemoveWarehouse(record); } else onRemoveSupplier(current.name); setRemoving(false); }}>{customer ? 'Remove customer' : 'Continue'}</Button></div></DialogContent></Dialog>
+    <Dialog open={removing} onOpenChange={setRemoving}>
+      {removing ? (
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader><DialogTitle>Remove {current?.name}?</DialogTitle><DialogDescription>{customer ? 'This removes the customer from the directory and Order Entry. Existing orders and balances are preserved.' : warehouse ? 'The existing warehouse removal flow will show the stock impact before deletion.' : 'The existing supplier removal flow will show which product assignments are affected.'}</DialogDescription></DialogHeader>
+          <div className="flex justify-end gap-2"><Button variant="outline" onClick={() => setRemoving(false)}>Cancel</Button><Button variant="destructive" onClick={() => { if (!current) return; if (customer) {
+            setHiddenCustomers(ids => {
+              const next = [...ids, current.id];
+              try { localStorage.setItem('activepro_supply_chain_hidden_customers', JSON.stringify(next)); } catch {}
+              return next;
+            });
+            setCustomerDrafts(items => {
+              const next = items.filter(c => c.id !== current.id && c.name.toLowerCase() !== current.name.toLowerCase());
+              try { localStorage.setItem('activepro_supply_chain_customers', JSON.stringify(next)); } catch {}
+              window.dispatchEvent(new CustomEvent('activepro_customers_changed'));
+              return next;
+            });
+            deleteDoc(doc(db, 'customers', current.id)).catch(() => {});
+            setEntityId('');
+          } else if (warehouse) { const record = warehouseById.get(current.id); if (record) onRemoveWarehouse(record); } else onRemoveSupplier(current.name); setRemoving(false); }}>{customer ? 'Remove customer' : 'Continue'}</Button></div>
+        </DialogContent>
+      ) : null}
+    </Dialog>
   </>}
   </div>;
 });
