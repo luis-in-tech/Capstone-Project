@@ -4,7 +4,6 @@ import { db } from '../lib/supabaseAdapter';
 import { collection, onSnapshot, addDoc, query, orderBy, serverTimestamp, updateDoc, doc } from '../lib/supabaseAdapter';
 import { Expense, Order, ExpenseCategory } from '../types';
 import { handleSupabaseError, OperationType } from '../lib/supabaseErrorHandler';
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -18,13 +17,11 @@ import {
   WalletIcon as Wallet,
   PlusIcon as Plus,
   ArrowUpRightIcon as ArrowUpRight,
-  ArrowDownRightIcon as ArrowDownRight,
   FileTextIcon as FileText,
   ChartPieIcon as PieChartIcon,
   ChartBarIcon as BarChartIcon,
   GearIcon as Settings,
   PencilSimpleIcon as Edit2,
-  ArchiveIcon as Archive,
   ArrowsCounterClockwiseIcon as RefreshCcw,
   TrashIcon as Trash2,
   CaretUpIcon as ChevronUp,
@@ -34,8 +31,6 @@ import {
   CalendarIcon as Calendar,
   FileXlsIcon as FileSpreadsheet,
   PrinterIcon as Printer,
-  PulseIcon as Activity,
-  StackIcon as Layers,
   UploadSimpleIcon as Upload,
   FileArrowUpIcon as FileUp,
   CheckCircleIcon as CheckCircle2,
@@ -44,7 +39,7 @@ import {
   CheckIcon as Check,
   MagnifyingGlassIcon as SearchIcon
 } from '@phosphor-icons/react';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, PieChart, Pie, Cell, LineChart, Line } from 'recharts';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, LineChart, Line } from 'recharts';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import { useAuth } from '../hooks/useAuth';
@@ -825,17 +820,29 @@ export function Finance() {
 
   useEffect(() => {
     const unsubExpenses = onSnapshot(query(collection(db, 'expenses'), orderBy('date', 'desc')), (snap) => {
-      setExpenses(snap.docs.map(d => ({ id: d.id, ...d.data() } as Expense)));
+      const raw: Expense[] = snap.docs.map((d: { id: string; data: () => Record<string, unknown> }) => ({ id: d.id, ...d.data() } as Expense));
+      const hasReal2025 = raw.some(e => {
+        if (String(e.id || '').startsWith('00000000-2025-')) return false;
+        const dt = parseDate(e.date);
+        return dt && dt.getFullYear() === 2025;
+      });
+      setExpenses(hasReal2025 ? raw.filter(e => !String(e.id || '').startsWith('00000000-2025-')) : raw);
     }, (error) => {
       handleSupabaseError(error, OperationType.GET, 'expenses');
     });
     const unsubOrders = onSnapshot(collection(db, 'orders'), (snap) => {
-      setOrders(snap.docs.map(d => ({ id: d.id, ...d.data() } as Order)));
+      const raw: Order[] = snap.docs.map((d: { id: string; data: () => Record<string, unknown> }) => ({ id: d.id, ...d.data() } as Order));
+      const hasReal2025 = raw.some(o => {
+        if (String(o.id || '').startsWith('00000000-2025-')) return false;
+        const dt = parseDate(o.createdAt);
+        return dt && dt.getFullYear() === 2025;
+      });
+      setOrders(hasReal2025 ? raw.filter(o => !String(o.id || '').startsWith('00000000-2025-')) : raw);
     }, (error) => {
       handleSupabaseError(error, OperationType.GET, 'orders');
     });
     const unsubCategories = onSnapshot(query(collection(db, 'expenseCategories'), orderBy('createdAt', 'asc')), (snap) => {
-      setCategories(snap.docs.map(d => ({ id: d.id, ...d.data() } as ExpenseCategory)));
+      setCategories(snap.docs.map((d: { id: string; data: () => Record<string, unknown> }) => ({ id: d.id, ...d.data() } as ExpenseCategory)));
     }, (error) => {
       handleSupabaseError(error, OperationType.GET, 'expenseCategories');
     });
@@ -874,28 +881,23 @@ export function Finance() {
     });
   }, [expenses, selectedPeriod]);
 
-  // 100% Dynamic Financial Health KPIs (Computed directly from live Supabase collections)
+  // 100% Dynamic Financial Health KPIs (Audited Q1 2025 baseline + live Supabase collections)
   const displayRevenue = React.useMemo(() => {
+    if (selectedPeriod === '2025') return 21502353.40;
     const ordersRev = filteredOrders
       .filter(o => ['delivered', 'completed'].includes(o.status))
       .reduce((sum, o) => sum + (o.totalAmount || 0), 0);
-    // If Supabase has order records for this period, compute dynamically
-    if (ordersRev > 0) return ordersRev;
-    // Fallback baseline only if database has zero records and 2025 audited period is selected
-    if (selectedPeriod === '2025') return 21502353.40;
-    return 0;
+    return ordersRev;
   }, [filteredOrders, selectedPeriod]);
 
   const displayExpenses = React.useMemo(() => {
-    const totalExp = filteredExpenses.filter(e => (e as any).type !== 'income').reduce((sum, e) => sum + (e.amount || 0), 0);
-    // If Supabase has expense records for this period, compute dynamically
-    if (totalExp > 0) return totalExp;
-    // Fallback baseline only if database has zero records and 2025 audited period is selected
     if (selectedPeriod === '2025') return 17122588.64;
-    return 0;
+    const totalExp = filteredExpenses.filter(e => (e as any).type !== 'income').reduce((sum, e) => sum + (e.amount || 0), 0);
+    return totalExp;
   }, [filteredExpenses, selectedPeriod]);
 
   const displayGrossProfit = React.useMemo(() => {
+    if (selectedPeriod === '2025') return 4416518.11;
     const directCogs = filteredExpenses
       .filter(e => {
         const cat = (e.category || '').toLowerCase();
@@ -906,15 +908,14 @@ export function Finance() {
     if (displayRevenue > 0 || directCogs > 0) {
       return displayRevenue - directCogs;
     }
-    if (selectedPeriod === '2025') return 4416518.11;
     return 0;
   }, [displayRevenue, filteredExpenses, selectedPeriod]);
 
   const displayNetProfit = React.useMemo(() => {
+    if (selectedPeriod === '2025') return 4379764.76;
     if (displayRevenue > 0 || displayExpenses > 0) {
       return displayRevenue - displayExpenses;
     }
-    if (selectedPeriod === '2025') return 4379764.76;
     return 0;
   }, [displayRevenue, displayExpenses, selectedPeriod]);
 
@@ -1270,10 +1271,6 @@ export function Finance() {
     return [...audited2025, ...live2026];
   }, [selectedPeriod, trajectoryGranularity, orders, expenses, filteredOrders, filteredExpenses]);
 
-  const currentMonthDate = new Date();
-  const currentMonthName = currentMonthDate.toLocaleString('default', { month: 'short' });
-  const currentMonthYear = currentMonthDate.getFullYear();
-
   const pieData = React.useMemo(() => {
     const isCogsCategory = (cat: string) => ['Cost of Goods Sold', 'COGS', 'Inventory Purchase', 'Raw Materials'].some(
       c => (cat || '').toLowerCase().includes(c.toLowerCase())
@@ -1597,7 +1594,7 @@ export function Finance() {
 
   const handleUpdateExpense = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    if (!editingExpense) return;
+    if (!editingExpense || isExpenseOnly) return;
 
     const formData = new FormData(e.currentTarget);
     const orderId = formData.get('orderId') as string;
@@ -1629,6 +1626,7 @@ export function Finance() {
   };
 
   const handleDeleteExpense = async (id: string) => {
+    if (isExpenseOnly) return;
     if (!confirm('Are you sure you want to delete this expense record? This action is permanent.')) return;
     try {
       // For deletion we reach for a lower-level UI but here we just use native confirm for safety
@@ -1642,6 +1640,7 @@ export function Finance() {
 
   const handleAddCategory = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
+    if (isExpenseOnly) return;
     const formData = new FormData(e.currentTarget);
     const name = formData.get('name') as string;
 
@@ -1668,6 +1667,7 @@ export function Finance() {
   };
 
   const toggleCategoryStatus = async (category: ExpenseCategory) => {
+    if (isExpenseOnly) return;
     const action = category.isActive ? 'archive' : 'activate';
     if (!confirm(`Are you sure you want to ${action} the "${category.name}" category?`)) return;
 
@@ -1683,7 +1683,7 @@ export function Finance() {
 
   const handleEditCategory = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    if (!editingCategory) return;
+    if (!editingCategory || isExpenseOnly) return;
 
     const formData = new FormData(e.currentTarget);
     const name = formData.get('name') as string;
@@ -1923,8 +1923,8 @@ export function Finance() {
             </div>
           </div>
         </div>
-        <div className="p-4 h-75 overflow-hidden">
-          <ResponsiveContainer width="100%" height={260}>
+        <div className="p-4 h-75 min-w-0 overflow-hidden">
+          <ResponsiveContainer width="100%" height={260} minWidth={0}>
             <BarChart
               data={chartData}
               margin={{ top: 0, right: 0, left: -20, bottom: 0 }}
@@ -1955,7 +1955,7 @@ export function Finance() {
                   fontSize: '11px',
                   fontWeight: 'bold'
                 }}
-                formatter={(value: number) => [`₱${value.toLocaleString()}`, '']}
+                formatter={(value: any) => [`₱${Number(value ?? 0).toLocaleString()}`, '']}
               />
               <Bar
                 dataKey="Revenue"
@@ -2022,8 +2022,8 @@ export function Finance() {
             </div>
           </div>
         </div>
-        <div className="p-4 h-75 overflow-hidden">
-          <ResponsiveContainer width="100%" height={260}>
+        <div className="p-4 h-75 min-w-0 overflow-hidden">
+          <ResponsiveContainer width="100%" height={260} minWidth={0}>
             <LineChart data={chartData12Months} margin={{ top: 5, right: 20, left: -20, bottom: 5 }}>
               <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--border)" />
               <XAxis
@@ -2129,7 +2129,9 @@ export function Finance() {
                 </div>
               ) : (
                 <>
-                  <Dialog open={isManageCategoriesOpen} onOpenChange={setIsManageCategoriesOpen}>
+                  {!isExpenseOnly && (
+                    <>
+                      <Dialog open={isManageCategoriesOpen} onOpenChange={setIsManageCategoriesOpen}>
                     <DialogTrigger render={
                       <Button variant="outline" className="h-7 gap-1.5 px-2.5 text-[9px] font-bold uppercase tracking-wider rounded-sm border-border hover:bg-muted shadow-none">
                         <Settings className="w-3 h-3" /> Manage Categories
@@ -2284,14 +2286,16 @@ export function Finance() {
                     </DialogContent>
                   </Dialog>
 
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="h-7 gap-1.5 px-2.5 border border-emerald-500/40 text-emerald-700 dark:text-emerald-400 bg-emerald-50/40 dark:bg-emerald-950/30 text-[9px] font-black uppercase tracking-wider hover:bg-emerald-50/60 transition-all rounded-sm shadow-none"
-                    onClick={() => setIsCSVImportOpen(true)}
-                  >
-                    <FileUp className="w-3 h-3 text-emerald-600 dark:text-emerald-400" /> Import Financial CSV
-                  </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-7 gap-1.5 px-2.5 border border-emerald-500/40 text-emerald-700 dark:text-emerald-400 bg-emerald-50/40 dark:bg-emerald-950/30 text-[9px] font-black uppercase tracking-wider hover:bg-emerald-50/60 transition-all rounded-sm shadow-none"
+                        onClick={() => setIsCSVImportOpen(true)}
+                      >
+                        <FileUp className="w-3 h-3 text-emerald-600 dark:text-emerald-400" /> Import Financial CSV
+                      </Button>
+                    </>
+                  )}
 
                   <Dialog open={isAddExpenseOpen} onOpenChange={setIsAddExpenseOpen}>
                     <DialogTrigger render={
@@ -2464,7 +2468,7 @@ export function Finance() {
                     </span>
                   )}
                   <div className="flex items-center gap-1.5 shrink-0">
-                    <Select value={selectedPeriod} onValueChange={(v: '2025' | '2026' | 'all') => setSelectedPeriod(v)}>
+                    <Select value={selectedPeriod} onValueChange={(v) => { if (v) setSelectedPeriod(v); }}>
                       <SelectTrigger className="h-7 text-[9px] uppercase font-bold tracking-wider px-2.5 rounded-sm border-border">
                         <SelectValue placeholder="Period">
                           {selectedPeriod === '2025' ? '2025' : selectedPeriod === '2026' ? '2026' : 'ALL'}
@@ -2639,16 +2643,18 @@ export function Finance() {
                         <span className="text-[10px] text-muted-foreground font-medium">
                           {parseDate(e.date)?.toLocaleDateString() ?? 'N/A'}
                         </span>
-                        <div className="flex gap-1">
-                          <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-foreground hover:bg-muted"
-                            onClick={() => { setEditingExpense(e); setIsEditExpenseOpen(true); }}>
-                            <Edit2 className="w-3.5 h-3.5" />
-                          </Button>
-                          <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-red-500 hover:bg-red-500/10"
-                            onClick={() => handleDeleteExpense(e.id)}>
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </Button>
-                        </div>
+                        {!isExpenseOnly && (
+                          <div className="flex gap-1">
+                            <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-foreground hover:bg-muted"
+                              onClick={() => { setEditingExpense(e); setIsEditExpenseOpen(true); }}>
+                              <Edit2 className="w-3.5 h-3.5" />
+                            </Button>
+                            <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-red-500 hover:bg-red-500/10"
+                              onClick={() => handleDeleteExpense(e.id)}>
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </Button>
+                          </div>
+                        )}
                       </div>
                     </div>
                   );
@@ -2696,7 +2702,9 @@ export function Finance() {
                             Amount {sortKey === 'amount' ? (sortDirection === 'asc' ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />) : <ArrowUpDown className="w-2.5 h-2.5 opacity-40" />}
                           </div>
                         </TableHead>
-                        <TableHead className="text-[10px] font-black uppercase tracking-widest text-neutral-600 dark:text-neutral-400 py-2 px-3 text-right min-w-20">Actions</TableHead>
+                        {!isExpenseOnly && (
+                          <TableHead className="text-[10px] font-black uppercase tracking-widest text-neutral-600 dark:text-neutral-400 py-2 px-3 text-right min-w-20">Actions</TableHead>
+                        )}
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -2725,35 +2733,37 @@ export function Finance() {
                             <TableCell className="text-right font-black font-mono tabular-nums text-xs text-red-600 dark:text-red-400 py-1.5 px-3">
                               -₱{e.amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                             </TableCell>
-                            <TableCell className="text-right py-1.5 px-3">
-                              <div className="flex justify-end gap-1">
-                                <Button
-                                  variant="ghost"
-                                  size="icon"
-                                  className="h-6 w-6 rounded-sm text-muted-foreground hover:text-foreground hover:bg-muted"
-                                  onClick={() => {
-                                    setEditingExpense(e);
-                                    setIsEditExpenseOpen(true);
-                                  }}
-                                >
-                                  <Edit2 className="w-3 h-3" />
-                                </Button>
-                                <Button
-                                  variant="ghost"
-                                  size="icon"
-                                  className="h-6 w-6 rounded-sm text-muted-foreground hover:text-red-500 hover:bg-red-500/10"
-                                  onClick={() => handleDeleteExpense(e.id)}
-                                >
-                                  <Trash2 className="w-3 h-3" />
-                                </Button>
-                              </div>
-                            </TableCell>
+                            {!isExpenseOnly && (
+                              <TableCell className="text-right py-1.5 px-3">
+                                <div className="flex justify-end gap-1">
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    className="h-6 w-6 rounded-sm text-muted-foreground hover:text-foreground hover:bg-muted"
+                                    onClick={() => {
+                                      setEditingExpense(e);
+                                      setIsEditExpenseOpen(true);
+                                    }}
+                                  >
+                                    <Edit2 className="w-3 h-3" />
+                                  </Button>
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    className="h-6 w-6 rounded-sm text-muted-foreground hover:text-red-500 hover:bg-red-500/10"
+                                    onClick={() => handleDeleteExpense(e.id)}
+                                  >
+                                    <Trash2 className="w-3 h-3" />
+                                  </Button>
+                                </div>
+                              </TableCell>
+                            )}
                           </TableRow>
                         );
                       })}
                       {sortedExpenses.length === 0 && (
                         <TableRow>
-                          <TableCell colSpan={5} className="text-center py-6 text-xs italic text-muted-foreground">
+                          <TableCell colSpan={isExpenseOnly ? 4 : 5} className="text-center py-6 text-xs italic text-muted-foreground">
                             No operational expense records found.
                           </TableCell>
                         </TableRow>
@@ -2908,7 +2918,7 @@ export function Finance() {
         </div>
 
         {/* Financial Policy & Compliance Sidebar */}
-        <div className="w-full lg:w-80 space-y-4">
+        <div className="w-full lg:w-80 min-w-0 space-y-4">
           <div className="border border-border bg-card rounded-sm shadow-none overflow-hidden">
             <div className="p-3 border-b border-border bg-muted/20">
               <div className="flex items-center justify-between gap-2">
@@ -2945,10 +2955,10 @@ export function Finance() {
                 {expenseScope === 'opex' ? 'Operational Spend Breakdown' : 'Total Spend Breakdown'} &bull; {selectedPeriod === '2025' ? 'FY 2025 (Audited)' : selectedPeriod === '2026' ? 'FY 2026 (Live Ops)' : 'All Periods'}
               </div>
             </div>
-            <div className="p-3">
-              <div className="h-47.5 w-full">
+            <div className="p-3 min-w-0">
+              <div className="h-47.5 w-full min-w-0">
                 {pieData.length > 0 ? (
-                  <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={190}>
+                  <ResponsiveContainer width="100%" height={190} minWidth={0}>
                     <PieChart>
                       <Pie
                         data={pieData}
@@ -2962,7 +2972,7 @@ export function Finance() {
                         animationDuration={800}
                         animationEasing="ease-in-out"
                       >
-                        {pieData.map((entry, index) => (
+                        {pieData.map((_entry, index) => (
                           <Cell
                             key={`cell-${index}`}
                             fill={PIE_COLORS[index % PIE_COLORS.length]}
@@ -2980,10 +2990,11 @@ export function Finance() {
                           fontSize: '11px',
                           fontWeight: 'bold',
                         }}
-                        formatter={(value: number, name: string) => {
+                        formatter={(value: any, name: any) => {
+                          const numVal = Number(value ?? 0);
                           const total = pieData.reduce((acc, curr) => acc + curr.value, 0);
-                          const percent = total > 0 ? ((value / total) * 100).toFixed(1) : '0.0';
-                          return [`₱${value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (${percent}%)`, name];
+                          const percent = total > 0 ? ((numVal / total) * 100).toFixed(1) : '0.0';
+                          return [`₱${numVal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (${percent}%)`, String(name ?? '')];
                         }}
                       />
                     </PieChart>
