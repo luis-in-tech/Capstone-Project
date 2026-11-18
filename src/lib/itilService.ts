@@ -185,7 +185,7 @@ export async function evaluateAndSyncSLAIncidents(
             deliveryLocation: order.deliveryRegion || 'Unspecified',
             daysOverdue,
             assignedAgentId: order.agentId,
-            assignedAgentName: currentUser?.displayName || 'Assigned Field Agent',
+            assignedAgentName: (order as any).agentName || (order as any).preparedBy || (currentUser?.uid === order.agentId ? currentUser?.displayName : undefined) || 'Assigned Field Agent',
             description: `ITIL SLA Breach: Fulfillment target exceeded for ${order.deliveryRegion || 'destination'}. Order is ${daysOverdue} day(s) overdue.`,
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),

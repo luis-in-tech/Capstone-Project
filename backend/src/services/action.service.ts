@@ -132,7 +132,7 @@ export async function listActions(
   pageSize = 50
 ): Promise<{ actions: ActionLog[]; total: number }> {
   const safePage = Number.isFinite(page) ? Math.max(1, Math.floor(page)) : 1;
-  const safePageSize = Number.isFinite(pageSize) ? Math.min(100, Math.max(1, Math.floor(pageSize))) : 50;
+  const safePageSize = Number.isFinite(pageSize) ? Math.min(200, Math.max(1, Math.floor(pageSize))) : 50;
   const skip = (safePage - 1) * safePageSize;
 
   const [actions, total] = await prisma.$transaction([

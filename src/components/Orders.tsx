@@ -3,7 +3,7 @@ import { SearchBar } from '@/components/ui/search-bar';
 import { previousOrderStatus } from '../lib/orderStatus';
 import { hasAdminRole } from '../lib/staffPermissions';
 import { useStaffAccess } from '../hooks/useStaffAccess';
-import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { lazy, Suspense, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { matchesOrderNotificationParam } from '../lib/notificationLinks';
 import { db, storage } from '../lib/supabaseAdapter';
@@ -625,8 +625,10 @@ export function Orders() {
     };
   }, []);
 
+  const deferredSearchQuery = useDeferredValue(searchQuery);
+
   const filteredOrders = useMemo(() => {
-    const queryStr = searchQuery.toLowerCase();
+    const queryStr = deferredSearchQuery.toLowerCase();
     if (!queryStr) return orders;
     return orders.filter(order => {
       const matchesSku = order.skus?.some(sku => sku.toLowerCase().includes(queryStr));
@@ -636,7 +638,7 @@ export function Orders() {
       const matchesRegion = order.deliveryRegion?.toLowerCase().includes(queryStr);
       return matchesSku || matchesOrderNumber || matchesClient || matchesCity || matchesRegion;
     });
-  }, [orders, searchQuery]);
+  }, [orders, deferredSearchQuery]);
 
   const toggleSort = useCallback((key: OrderSortKey) => {
     setOrderViewMode('all');

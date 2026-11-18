@@ -122,8 +122,13 @@ export async function backupFile(
   const backupSlotDir = path.join(TRASH_DIR, backupSlot);
   const backupDest = path.join(backupSlotDir, relativePath);
 
-  // Perform the copy
-  copyRecursiveSync(absolutePath, backupDest);
+  // Perform the copy; clean up staged slot dir if recursive copy fails
+  try {
+    copyRecursiveSync(absolutePath, backupDest);
+  } catch (err) {
+    fs.rmSync(backupSlotDir, { recursive: true, force: true });
+    throw err;
+  }
 
   // Measure size for metadata
   const sizeBytes = computeSizeBytes(absolutePath);
@@ -179,10 +184,12 @@ export async function restoreBackup(backupId: string): Promise<BackupEntry> {
   // Fetch the backup record
   const entry = await prisma.backupEntry.findUnique({ where: { id: backupId } });
   if (!entry) {
-    throw new Error(`Restore failed: backup entry not found (id="${backupId}")`);
+    throw new AppError(404, 'BACKUP_NOT_FOUND', `Restore failed: backup entry not found (id="${backupId}")`);
   }
   if (entry.restoredAt) {
-    throw new Error(
+    throw new AppError(
+      409,
+      'ALREADY_RESTORED',
       `Restore failed: backup "${backupId}" was already restored at ${entry.restoredAt.toISOString()}`
     );
   }
@@ -205,7 +212,9 @@ export async function restoreBackup(backupId: string): Promise<BackupEntry> {
   try {
     backupStat = fs.lstatSync(entry.backupPath);
   } catch {
-    throw new Error(
+    throw new AppError(
+      404,
+      'BACKUP_FILE_MISSING',
       `Restore failed: backup copy no longer exists at "${entry.backupPath}"`
     );
   }

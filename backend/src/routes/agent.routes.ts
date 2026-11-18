@@ -33,5 +33,6 @@ router.get('/sessions/:id/actions',       agentCtrl.listActions);
 // ─── Snapshots ─────────────────────────────────────────────────────────────────
 
 router.post('/sessions/:id/snapshot',     agentCtrl.createSnapshot);
+router.get('/sessions/:id/snapshots',     agentCtrl.listSnapshots);
 
 export default router;

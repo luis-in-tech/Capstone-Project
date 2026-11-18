@@ -1,6 +1,6 @@
 import { SearchBar } from '@/components/ui/search-bar';
 import { hasAdminRole } from '../lib/staffPermissions';
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useDeferredValue } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useStaffAccess } from '../hooks/useStaffAccess';
 import { permitsMovement } from '../lib/staffPermissions';
@@ -506,6 +506,7 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
   };
 
   // Filter transfers
+  const deferredSearchTerm = useDeferredValue(searchTerm);
   const scopedTransfers = transfers.filter(
     t => hasAllWarehouseAccess || canAccessWarehouse(t.sourceWarehouseId) || canAccessWarehouse(t.destinationWarehouseId)
   );
@@ -513,8 +514,8 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
     const product = products.find(p => p.id === t.productId);
 
     // Search filter
-    if (searchTerm) {
-      const term = searchTerm.toLowerCase();
+    if (deferredSearchTerm) {
+      const term = deferredSearchTerm.toLowerCase();
       const idMatch = `tfr-${t.id.slice(-6)}`.toLowerCase().includes(term) || t.id.toLowerCase().includes(term);
       const prodMatch = (product?.name || '').toLowerCase().includes(term) || (product?.sku || '').toLowerCase().includes(term);
       const driverMatch = (t.driverName || '').toLowerCase().includes(term);

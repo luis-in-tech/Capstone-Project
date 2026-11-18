@@ -1,6 +1,6 @@
 import { hasAdminRole } from '../lib/staffPermissions';
 import { useStaffAccess } from '../hooks/useStaffAccess';
-import React, { lazy, Suspense, useCallback, useState, useEffect, useMemo, useRef } from 'react';
+import React, { lazy, Suspense, useCallback, useDeferredValue, useState, useEffect, useMemo, useRef } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { db, storage, collection, onSnapshot, addDoc, getDoc, updateDoc, doc, serverTimestamp, deleteDoc, ref, uploadBytes, getDownloadURL } from '../lib/supabaseAdapter';
 import { supabase } from '../lib/supabase';
@@ -673,7 +673,7 @@ export function Inventory() {
       };
 
       if (addVariations.enabled) {
-        await saveProductVariations({ ...newProduct, id: crypto.randomUUID() }, addVariations, uploadProductImage);
+        await saveProductVariations({ ...newProduct, id: crypto.randomUUID() }, addVariations, uploadProductImage, products);
       } else {
         const createdInvIds: string[] = [];
         let createdProdId: string | null = null;
@@ -914,7 +914,7 @@ export function Inventory() {
       };
 
       if (editVariations.enabled || editingProduct.hasVariations || childrenOf(editingProduct.id).length) {
-        await saveProductVariations({ ...updatedData, id: editingProduct.id }, editVariations, uploadProductImage);
+        await saveProductVariations({ ...updatedData, id: editingProduct.id }, editVariations, uploadProductImage, products);
       } else await updateDoc(doc(db, 'products', editingProduct.id), { ...updatedData, promoPrice: promoPrice ?? null });
 
       if (selectedProduct && selectedProduct.id === editingProduct.id) {
@@ -1212,8 +1212,10 @@ export function Inventory() {
     return map;
   }, [parentProducts, warehouseFilter, getStockCount, getProductStatus, childrenOf, variantRange, canViewWholesale, canViewCost]);
 
+  const deferredSearchTerm = useDeferredValue(searchTerm);
+
   const filteredProducts = useMemo(() => {
-    const term = searchTerm.trim().toLowerCase();
+    const term = deferredSearchTerm.trim().toLowerCase();
     return parentProducts.filter(product => {
       const meta = productRowMetaMap.get(product.id);
       const stock = meta ? meta.stock : 0;
@@ -1226,7 +1228,7 @@ export function Inventory() {
         && (stockFilter === 'all' || status === stockFilter)
         && (!hideZeroStock || stock > 0);
     });
-  }, [parentProducts, searchTerm, categoryFilter, supplierFilter, stockFilter, hideZeroStock, productRowMetaMap, productSearchTextMap]);
+  }, [parentProducts, deferredSearchTerm, categoryFilter, supplierFilter, stockFilter, hideZeroStock, productRowMetaMap, productSearchTextMap]);
 
   const totalProducts = parentProducts.length;
 
@@ -2390,11 +2392,11 @@ export function Inventory() {
               <Select name="warehouseId" required value={selectedWarehouseId} onValueChange={(value) => value !== null && setSelectedWarehouseId(value)}>
                 <SelectTrigger id="warehouseId">
                   <SelectValue placeholder="Select warehouse...">
-                    {selectedWarehouseId ? warehouses.find(w => w.id === selectedWarehouseId)?.name : 'Select warehouse...'}
+                    {selectedWarehouseId ? visibleWarehouses.find(w => w.id === selectedWarehouseId)?.name : 'Select warehouse...'}
                   </SelectValue>
                 </SelectTrigger>
                 <SelectContent>
-                  {warehouses.map(wh => {
+                  {visibleWarehouses.map(wh => {
                     const whCount = adjustmentProduct ? getStockCount(adjustmentProduct.id, wh.id) : 0;
                     return (
                       <SelectItem key={wh.id} value={wh.id}>

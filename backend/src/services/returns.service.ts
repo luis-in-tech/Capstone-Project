@@ -117,7 +117,7 @@ export async function processReturn(payload: ProcessReturnPayload): Promise<Retu
       throw new AppError(400, 'VALIDATION_ERROR', `Item at position ${idx + 1} is missing productId or SKU.`);
     }
 
-    if (!Number.isFinite(item.quantity) || item.quantity <= 0) {
+    if (!Number.isFinite(item.quantity) || !Number.isInteger(item.quantity) || item.quantity <= 0) {
       throw new AppError(400, 'VALIDATION_ERROR', `Quantity for item ${item.name || item.sku} must be at least 1.`);
     }
 

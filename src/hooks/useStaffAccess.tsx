@@ -485,7 +485,9 @@ function AdminNotificationsProvider({ children }: { children: React.ReactNode })
     });
 
     warehousesDoc.forEach((w) => {
-      const date = parseOptionalNotificationDate(w.updatedAt || w.createdAt || w.updated_at || w.created_at);
+      const rawDate = w.updatedAt || w.createdAt || w.updated_at || w.created_at;
+      if (!rawDate) return;
+      const date = parseOptionalNotificationDate(rawDate);
       list.push({
         id: `wh-${w.id}`,
         type: 'supply_chain',

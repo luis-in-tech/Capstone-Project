@@ -45,6 +45,7 @@ export function normalizePermissions(value: StaffPermissions): StaffPermissions 
   };
 }
 export function resolvePermissions(profile: UserProfile | null, delegation?: StaffDelegation): StaffPermissions {
+  if (!profile) return { ...defaultPermissions, orders: 'none', movementView: 'none', movementCreate: 'none', supplyChain: [], warehouseAccess: 'selected', warehouseIds: [], priceAccess: 'main_only', financials: 'none' };
   if (profile?.role === 'admin') return { ...defaultPermissions, inventory: 'adjust', pricelist: 'edit', orders: 'create', movementView: 'both', movementCreate: 'both', warehouseAccess: 'all', supplyChain: [...supplyChainViews], priceAccess: 'all', financials: 'full' };
   if (delegation?.active === false) return { ...defaultPermissions, warehouseAccess: 'selected', warehouseIds: [], priceAccess: 'main_only', financials: 'none' };
   if (delegation?.permissions) return normalizePermissions(delegation.permissions);

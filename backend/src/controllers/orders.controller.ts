@@ -147,3 +147,32 @@ export async function cancelOrder(
   }
 }
 
+const updateOrderStatusSchema = z
+  .object({
+    status: z.enum(['pending', 'in_transit', 'delivered']).optional(),
+    paymentStatus: z.enum(['paid', 'unpaid', 'partial']).optional(),
+    updatedBy: z.string().trim().min(1).optional(),
+    note: z.string().trim().min(1).optional(),
+  })
+  .refine((data) => Boolean(data.status || data.paymentStatus), {
+    message: 'At least one of status or paymentStatus must be provided.',
+  });
+
+export async function updateOrderStatus(
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const id = req.params['id'] as string;
+    const parsed = updateOrderStatusSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      throw new AppError(400, 'VALIDATION_ERROR', 'Invalid order status update payload.');
+    }
+    const updated = await ordersService.updateOrderStatus(id, parsed.data);
+    ok(res, updated, `Order "${updated.orderNumber}" updated.`);
+  } catch (err) {
+    next(err);
+  }
+}
+
