@@ -3,6 +3,8 @@ import {
   ArrowClockwiseIcon as Redo2,
   ArrowCounterClockwiseIcon as Undo2,
   ArrowDownIcon as ArrowDown,
+  ArrowLineDownIcon as ArrowToBottom,
+  ArrowLineUpIcon as ArrowToTop,
   ArrowUpIcon as ArrowUp,
   CopyIcon as Copy,
   CursorIcon as MousePointer,
@@ -19,7 +21,11 @@ import {
   PencilIcon as Pencil,
   PlusIcon as Plus,
   SquareIcon as Square,
+  StackIcon as LayersIcon,
+  TextBIcon as BoldIcon,
+  TextItalicIcon as ItalicIcon,
   TextTIcon as TextT,
+  TextUnderlineIcon as UnderlineIcon,
   TrashIcon as Trash2,
   UploadSimpleIcon as Upload,
   XIcon as X,
@@ -31,6 +37,7 @@ import { Label } from '@/components/ui/label';
 import { supabase } from '../lib/supabase';
 import { toast } from 'sonner';
 import { defaultZoneBox, type WarehouseZone } from '../lib/warehouseLayout';
+import { FloorplanColorPicker } from './FloorplanColorPicker';
 import {
   FLOORPLAN_COLORS,
   FLOORPLAN_HEIGHT_PRESETS,
@@ -42,14 +49,19 @@ import {
   clampGroupDelta,
   clampPct,
   computeAlignDeltas,
+  computeContrastBorderHex,
   computeDistributeDeltas,
   computeMatchSizes,
+  computeReorderedZIndices,
+  computeRotatedRect90,
   createDrawnLineGeometry,
   duplicateShape,
   extractBoxStyle,
   fontSizeClass,
   getLineEndpoints,
   getLineMetrics,
+  hexToRgba,
+  isDarkHexColor,
   itemSelectionKey,
   moveLinePoints,
   normalizeRectFromPoints,
@@ -75,6 +87,8 @@ import {
   type FloorplanData,
   type FloorplanDoor,
   type FloorplanShape,
+  type LayerAction,
+  type LayerOrderedItem,
   type LineColor,
   type LinePoints,
   type LineStyle,
@@ -285,21 +299,92 @@ function nearestWallDoorPosition(px: number, py: number, snapStep: number): { ed
   return { edge: nearest.edge, offset: r1(clampPct(snapped, 2, 98)) };
 }
 
-function resolveElementClasses(colorIdx: number, border: BorderStyle | undefined, isLabel: boolean, isZone: boolean): string {
-  const palette = FLOORPLAN_COLORS[colorIdx] ?? FLOORPLAN_COLORS[0];
-  const effectiveBorder: BorderStyle = border ?? (isLabel ? 'none' : 'solid');
-  if (isLabel && effectiveBorder === 'none' && colorIdx === 4) {
-    return 'bg-transparent border border-transparent text-foreground';
-  }
+interface ElementAppearance {
+  className: string;
+  style: React.CSSProperties;
+  effectiveTextColor?: string;
+}
+
+const PRESET_RGB_ALPHA_MAP: Record<number, { hex: string; alpha: number }> = {
+  0: { hex: '#F59E0B', alpha: 0.15 },
+  1: { hex: '#10B981', alpha: 0.15 },
+  2: { hex: '#8B5CF6', alpha: 0.15 },
+  3: { hex: '#F59E0B', alpha: 0.2 },
+  4: { hex: '#FFFFFF', alpha: 1 },
+  5: { hex: '#94A3B8', alpha: 0.2 },
+  6: { hex: '#0EA5E9', alpha: 0.15 },
+};
+
+function resolveElementAppearance(
+  el: Pick<FloorplanBox, 'color' | 'border' | 'fillColor' | 'fillOpacity' | 'textColor'>,
+  isLabel: boolean,
+  isZone: boolean,
+  onionView: boolean,
+): ElementAppearance {
+  const palette = FLOORPLAN_COLORS[el.color] ?? FLOORPLAN_COLORS[0];
+  const effectiveBorder: BorderStyle = el.border ?? (isLabel ? 'none' : 'solid');
   const strokeWidth = isZone && effectiveBorder !== 'none' ? 'border-2' : 'border';
-  if (effectiveBorder === 'none') {
-    const fillOnly = palette.className.replace(/\bborder-\S+/g, '').trim();
-    return `${fillOnly} border border-transparent`;
+  const borderStyleCls =
+    effectiveBorder === 'none' ? 'border-transparent' : effectiveBorder === 'dashed' ? 'border-dashed' : 'border-solid';
+
+  const inlineStyle: React.CSSProperties = {};
+  let className = '';
+
+  if (el.fillColor || el.fillOpacity !== undefined) {
+    const presetFallback = PRESET_RGB_ALPHA_MAP[el.color] ?? PRESET_RGB_ALPHA_MAP[4];
+    const baseHex = el.fillColor ?? presetFallback.hex;
+    const baseAlpha = el.fillOpacity ?? (el.fillColor ? 1 : presetFallback.alpha);
+    const displayAlpha = onionView ? Math.min(baseAlpha, 0.45) : baseAlpha;
+    inlineStyle.backgroundColor = displayAlpha <= 0 ? 'transparent' : hexToRgba(baseHex, displayAlpha);
+    if (effectiveBorder !== 'none') {
+      inlineStyle.borderColor = computeContrastBorderHex(baseHex);
+    }
+    className = `${strokeWidth} ${borderStyleCls} text-foreground`;
+  } else if (isLabel && effectiveBorder === 'none' && el.color === 4) {
+    className = 'bg-transparent border border-transparent text-foreground';
+  } else {
+    const basePreset =
+      effectiveBorder === 'none' ? palette.className.replace(/\bborder-\S+/g, '').trim() : palette.className;
+    className = `${basePreset} ${strokeWidth} ${borderStyleCls}`;
+    if (onionView) {
+      const presetFallback = PRESET_RGB_ALPHA_MAP[el.color] ?? PRESET_RGB_ALPHA_MAP[4];
+      inlineStyle.backgroundColor = hexToRgba(presetFallback.hex, Math.min(presetFallback.alpha, 0.48));
+    }
   }
-  if (effectiveBorder === 'dashed') {
-    return `${palette.className} ${strokeWidth} border-dashed`;
+
+  let effectiveTextColor: string | undefined;
+  if (el.textColor) {
+    effectiveTextColor = el.textColor;
+    inlineStyle.color = el.textColor;
+  } else if (el.fillColor && (el.fillOpacity ?? 1) >= 0.55 && !onionView && isDarkHexColor(el.fillColor)) {
+    effectiveTextColor = '#FFFFFF';
+    inlineStyle.color = '#FFFFFF';
   }
-  return `${palette.className} ${strokeWidth} border-solid`;
+
+  return { className, style: inlineStyle, effectiveTextColor };
+}
+
+function textFormatClasses(
+  bold: boolean | undefined,
+  italic: boolean | undefined,
+  underline: boolean | undefined,
+  role: 'zone-title' | 'zone-sublabel' | 'shape',
+): string {
+  const weight =
+    bold === true
+      ? role === 'zone-title'
+        ? 'font-extrabold'
+        : 'font-bold'
+      : bold === false
+        ? role === 'zone-title'
+          ? 'font-medium'
+          : 'font-normal'
+        : role === 'zone-title'
+          ? 'font-semibold'
+          : role === 'zone-sublabel'
+            ? 'font-normal'
+            : 'font-medium';
+  return `${weight} ${italic ? 'italic' : ''} ${underline ? 'underline underline-offset-2' : ''}`.trim();
 }
 
 function lineStrokeClass(lineColor: LineColor | undefined): string {
@@ -321,6 +406,7 @@ function lineStrokeClass(lineColor: LineColor | undefined): string {
 function rotatedTextStyle(rotate: TextRotation | undefined): React.CSSProperties | undefined {
   if (rotate === 90) return { writingMode: 'vertical-rl' };
   if (rotate === -90) return { writingMode: 'vertical-rl', transform: 'rotate(180deg)' };
+  if (rotate === 180) return { transform: 'rotate(180deg)' };
   return undefined;
 }
 
@@ -387,7 +473,7 @@ function ResizeHandles({
           key={handle}
           aria-hidden="true"
           onPointerDown={e => onHandlePointerDown(e, handle)}
-          className={`absolute z-10 ${sizeClass} touch-none border-2 border-gold bg-card`}
+          className={`pointer-events-auto absolute z-10 ${sizeClass} touch-none border-2 border-gold bg-card shadow-2xs`}
           style={{
             left: handle.includes('w') ? '0%' : handle.includes('e') ? '100%' : '50%',
             top: handle.includes('n') ? '0%' : handle.includes('s') ? '100%' : '50%',
@@ -446,6 +532,7 @@ export const WarehouseFloorplan = memo(function WarehouseFloorplan({
   const [focusedZoneId, setFocusedZoneId] = useState('');
   const [snapStep, setSnapStep] = useState<0 | 1 | 2 | 5>(1);
   const [showGrid, setShowGrid] = useState(true);
+  const [onionView, setOnionView] = useState(false);
   const [lastCustomHeight, setLastCustomHeight] = useState<number | null>(null);
   const [activeFloorId, setActiveFloorId] = useState('');
   const [floorModal, setFloorModal] = useState<{ mode: 'add' | 'rename'; floorId?: string } | null>(null);
@@ -520,7 +607,6 @@ export const WarehouseFloorplan = memo(function WarehouseFloorplan({
     if (!isDirty) return;
     function onBeforeUnload(e: BeforeUnloadEvent) {
       e.preventDefault();
-      e.returnValue = '';
     }
     window.addEventListener('beforeunload', onBeforeUnload);
     return () => window.removeEventListener('beforeunload', onBeforeUnload);
@@ -1462,17 +1548,6 @@ export const WarehouseFloorplan = memo(function WarehouseFloorplan({
   const focusedZone = zones.find(z => z.id === focusedZoneId);
   const focusedStats = focusedZone ? summary(focusedZone.id) : null;
 
-  const zBounds = useMemo(() => {
-    const zs = [
-      ...zones.map((z, i) => boxFor(plan, z, i, zones.length).z ?? 20),
-      ...(plan.shapes ?? []).map(s => s.z ?? (s.kind === 'label' ? 30 : s.kind === 'line' ? 25 : 10)),
-    ];
-    return {
-      min: zs.length ? Math.min(...zs) : 10,
-      max: zs.length ? Math.max(...zs) : 30,
-    };
-  }, [plan, zones]);
-
   const sortedRenderables = useMemo(() => {
     type Item =
       | { key: string; itemKind: 'zone'; zOrder: number; zone: WarehouseZone; box: FloorplanBox }
@@ -1500,6 +1575,15 @@ export const WarehouseFloorplan = memo(function WarehouseFloorplan({
     return items.sort((a, b) => a.zOrder - b.zOrder);
   }, [plan, zones, effectiveFloorId, floors]);
 
+  const layerRankMap = useMemo(() => {
+    const map: Record<string, { rank: number; total: number }> = {};
+    const total = sortedRenderables.length;
+    sortedRenderables.forEach((item, idx) => {
+      map[item.key] = { rank: idx + 1, total };
+    });
+    return map;
+  }, [sortedRenderables]);
+
   const visibleDoors = useMemo(
     () => plan.doors.filter(d => belongsToFloor(d.floor, effectiveFloorId, floors)),
     [plan.doors, effectiveFloorId, floors],
@@ -1520,45 +1604,164 @@ export const WarehouseFloorplan = memo(function WarehouseFloorplan({
 
   const hasHighlightSearch = !editing && !compact && Boolean(highlightedZones && Object.keys(highlightedZones).length > 0);
 
-  function updateSelectedStyle(
-    patch: Partial<{
-      label: string;
-      sublabel: string;
-      color: number;
-      border: BorderStyle;
-      fontSize: TextSize;
-      rotate: TextRotation;
-      align: 'left' | 'center';
-      lineColor: LineColor;
-      lineStyle: LineStyle;
-      lineWidth: number;
-      z: number;
-    }>,
-  ) {
+  type FloorplanStylePatch = Partial<{
+    label: string;
+    sublabel: string;
+    color: number;
+    fillColor: string | undefined;
+    fillOpacity: number | undefined;
+    textColor: string | undefined;
+    bold: boolean | undefined;
+    italic: boolean | undefined;
+    underline: boolean | undefined;
+    border: BorderStyle;
+    fontSize: TextSize;
+    rotate: TextRotation;
+    align: 'left' | 'center';
+    lineColor: LineColor;
+    lineStyle: LineStyle;
+    lineWidth: number;
+    z: number;
+  }>;
+
+  function applyStylePatch<T extends FloorplanBox | FloorplanShape>(target: T, patch: FloorplanStylePatch): T {
+    const next: Record<string, unknown> = { ...target };
+    for (const [k, v] of Object.entries(patch)) {
+      if (v === undefined) {
+        delete next[k];
+      } else {
+        next[k] = v;
+      }
+    }
+    return next as T;
+  }
+
+  function updateSelectedStyle(patch: FloorplanStylePatch) {
     if (!chosen) return;
     if (chosen.kind === 'zone' && selectedZone && selectedZoneBox) {
       applyChange(p => ({
         ...p,
         boxes: {
           ...p.boxes,
-          [selectedZone.id]: {
-            ...boxFor(p, selectedZone, selectedZoneIdx, zones.length),
-            ...(patch.color !== undefined ? { color: patch.color } : {}),
-            ...(patch.border !== undefined ? { border: patch.border } : {}),
-            ...(patch.fontSize !== undefined ? { fontSize: patch.fontSize } : {}),
-            ...(patch.rotate !== undefined ? { rotate: patch.rotate } : {}),
-            ...(patch.align !== undefined ? { align: patch.align } : {}),
-            ...(patch.sublabel !== undefined ? { sublabel: patch.sublabel } : {}),
-            ...(patch.z !== undefined ? { z: patch.z } : {}),
-          },
+          [selectedZone.id]: applyStylePatch(boxFor(p, selectedZone, selectedZoneIdx, zones.length), patch),
         },
       }));
     } else if (chosen.kind === 'shape' && selectedShape) {
       applyChange(p => ({
         ...p,
-        shapes: (p.shapes ?? []).map(s => (s.id === selectedShape.id ? { ...s, ...patch } : s)),
+        shapes: (p.shapes ?? []).map(s => (s.id === selectedShape.id ? applyStylePatch(s, patch) : s)),
       }));
     }
+  }
+
+  function handleReorderLayer(action: LayerAction) {
+    if (!chosen || (chosen.kind !== 'zone' && chosen.kind !== 'shape')) return;
+    const targetKey = itemSelectionKey(chosen.kind, chosen.id);
+    const items: LayerOrderedItem[] = sortedRenderables.map(item =>
+      item.itemKind === 'zone'
+        ? { kind: 'zone', id: item.zone.id, x: item.box.x, y: item.box.y, w: item.box.w, h: item.box.h, zOrder: item.zOrder }
+        : { kind: 'shape', id: item.shape.id, x: item.shape.x, y: item.shape.y, w: item.shape.w, h: item.shape.h, zOrder: item.zOrder },
+    );
+    const nextZMap = computeReorderedZIndices(items, targetKey, action);
+    if (Object.keys(nextZMap).length === 0) return;
+
+    applyChange(p => {
+      const nextBoxes = { ...p.boxes };
+      let boxesChanged = false;
+      zones.forEach((z, idx) => {
+        const zVal = nextZMap[itemSelectionKey('zone', z.id)];
+        if (zVal === undefined) return;
+        const cur = boxFor(p, z, idx, zones.length);
+        if (cur.z !== zVal) {
+          nextBoxes[z.id] = { ...cur, z: zVal };
+          boxesChanged = true;
+        }
+      });
+      let shapesChanged = false;
+      const nextShapes = (p.shapes ?? []).map(s => {
+        const zVal = nextZMap[itemSelectionKey('shape', s.id)];
+        if (zVal === undefined || s.z === zVal) return s;
+        shapesChanged = true;
+        return { ...s, z: zVal };
+      });
+      if (!boxesChanged && !shapesChanged) return p;
+      return {
+        ...p,
+        ...(boxesChanged ? { boxes: nextBoxes } : {}),
+        ...(shapesChanged ? { shapes: nextShapes } : {}),
+      };
+    });
+  }
+
+  function handleRotateSelection(dir: 'cw' | 'ccw' | 'flip180') {
+    if (!chosen || chosen.kind === 'door') return;
+    const rect = canvasRef.current?.getBoundingClientRect();
+    const aspectRatio = rect && rect.height > 0 ? rect.width / rect.height : 960 / canvasHeight;
+    if (chosen.kind === 'zone' && selectedZone && selectedZoneBox) {
+      const next = computeRotatedRect90(selectedZoneBox, selectedZoneBox.rotate, dir, aspectRatio);
+      applyChange(p => ({
+        ...p,
+        boxes: {
+          ...p.boxes,
+          [selectedZone.id]: { ...boxFor(p, selectedZone, selectedZoneIdx, zones.length), ...next },
+        },
+      }));
+    } else if (chosen.kind === 'shape' && selectedShape && selectedShape.kind !== 'line') {
+      const next = computeRotatedRect90(selectedShape, selectedShape.rotate, dir, aspectRatio);
+      applyChange(p => ({
+        ...p,
+        shapes: (p.shapes ?? []).map(s => (s.id === selectedShape.id ? { ...s, ...next } : s)),
+      }));
+    }
+  }
+
+  function renderLayerButtons(ariaScope: string) {
+    const atBottom = !selectedLayerInfo || selectedLayerInfo.rank <= 1;
+    const atTop = !selectedLayerInfo || selectedLayerInfo.rank >= selectedLayerInfo.total;
+    return (
+      <div className="flex items-center gap-1">
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={atBottom}
+          title="Send to back (bottom layer)"
+          aria-label={`Send ${ariaScope}to back`}
+          onClick={() => handleReorderLayer('to-back')}
+        >
+          <ArrowToBottom className="size-3.5" />
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={atBottom}
+          title="Send backward one overlapping layer"
+          onClick={() => handleReorderLayer('back-one')}
+        >
+          <ArrowDown className="size-3.5" />
+          Back
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={atTop}
+          title="Bring forward one overlapping layer"
+          onClick={() => handleReorderLayer('front-one')}
+        >
+          <ArrowUp className="size-3.5" />
+          Front
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={atTop}
+          title="Bring to front (top layer)"
+          aria-label={`Bring ${ariaScope}to front`}
+          onClick={() => handleReorderLayer('to-front')}
+        >
+          <ArrowToTop className="size-3.5" />
+        </Button>
+      </div>
+    );
   }
 
   function updateSelectedLinePoints(updater: (pts: LinePoints) => LinePoints) {
@@ -1665,14 +1868,19 @@ export const WarehouseFloorplan = memo(function WarehouseFloorplan({
         zones.forEach((z, idx) => {
           if (!targetKeys.has(itemSelectionKey('zone', z.id))) return;
           const cur = boxFor(p, z, idx, zones.length);
-          nextBoxes[z.id] = {
-            ...cur,
+          nextBoxes[z.id] = applyStylePatch(cur, {
             color: copiedStyle.color,
+            fillColor: copiedStyle.fillColor,
+            fillOpacity: copiedStyle.fillOpacity,
+            textColor: copiedStyle.textColor,
+            bold: copiedStyle.bold,
+            italic: copiedStyle.italic,
+            underline: copiedStyle.underline,
             border: copiedStyle.border,
             fontSize: copiedStyle.fontSize,
             rotate: copiedStyle.rotate,
             align: copiedStyle.align,
-          };
+          });
         });
       }
       const nextShapes = (p.shapes ?? []).map(s => {
@@ -1686,14 +1894,19 @@ export const WarehouseFloorplan = memo(function WarehouseFloorplan({
           };
         }
         if (s.kind !== 'line' && copiedStyle.styleKind === 'rect') {
-          return {
-            ...s,
+          return applyStylePatch(s, {
             color: copiedStyle.color,
+            fillColor: copiedStyle.fillColor,
+            fillOpacity: copiedStyle.fillOpacity,
+            textColor: copiedStyle.textColor,
+            bold: copiedStyle.bold,
+            italic: copiedStyle.italic,
+            underline: copiedStyle.underline,
             border: s.kind === 'label' && copiedStyle.border === 'none' ? 'none' : copiedStyle.border,
             fontSize: copiedStyle.fontSize,
             rotate: copiedStyle.rotate,
             align: copiedStyle.align,
-          };
+          });
         }
         return s;
       });
@@ -1889,6 +2102,12 @@ export const WarehouseFloorplan = memo(function WarehouseFloorplan({
       ? {
           isLine: false,
           color: selectedZoneBox.color,
+          fillColor: selectedZoneBox.fillColor,
+          fillOpacity: selectedZoneBox.fillOpacity,
+          textColor: selectedZoneBox.textColor,
+          bold: selectedZoneBox.bold,
+          italic: selectedZoneBox.italic,
+          underline: selectedZoneBox.underline,
           border: selectedZoneBox.border ?? 'solid',
           fontSize: selectedZoneBox.fontSize ?? 'sm',
           rotate: selectedZoneBox.rotate ?? 0,
@@ -1902,6 +2121,12 @@ export const WarehouseFloorplan = memo(function WarehouseFloorplan({
         ? {
             isLine: selectedShape.kind === 'line',
             color: selectedShape.color,
+            fillColor: selectedShape.fillColor,
+            fillOpacity: selectedShape.fillOpacity,
+            textColor: selectedShape.textColor,
+            bold: selectedShape.bold,
+            italic: selectedShape.italic,
+            underline: selectedShape.underline,
             border: selectedShape.border ?? (selectedShape.kind === 'label' ? 'none' : 'solid'),
             fontSize: selectedShape.fontSize ?? 'sm',
             rotate: selectedShape.rotate ?? 0,
@@ -1912,6 +2137,11 @@ export const WarehouseFloorplan = memo(function WarehouseFloorplan({
             h: selectedShape.h,
           }
         : null;
+
+  const selectedLayerInfo =
+    chosen && (chosen.kind === 'zone' || chosen.kind === 'shape')
+      ? layerRankMap[itemSelectionKey(chosen.kind, chosen.id)]
+      : undefined;
 
   return (
     <div className="space-y-4">
@@ -2197,6 +2427,16 @@ export const WarehouseFloorplan = memo(function WarehouseFloorplan({
                 <Grid className="size-3.5" />
                 Grid
               </Button>
+              <Button
+                size="sm"
+                variant={onionView ? 'secondary' : 'outline'}
+                aria-pressed={onionView}
+                title="Translucent onion-skin layers while editing so stacked boxes and zones show through"
+                onClick={() => setOnionView(o => !o)}
+              >
+                <LayersIcon className="size-3.5" />
+                Onion
+              </Button>
               <label className="flex items-center gap-1.5 text-muted-foreground">
                 Canvas
                 <select
@@ -2471,16 +2711,7 @@ export const WarehouseFloorplan = memo(function WarehouseFloorplan({
                       Delete Zone
                     </Button>
                   </div>
-                  <div className="flex items-center gap-1.5">
-                    <Button size="sm" variant="outline" onClick={() => updateSelectedStyle({ z: zBounds.min - 1 })}>
-                      <ArrowDown className="size-3.5" />
-                      Send Back
-                    </Button>
-                    <Button size="sm" variant="outline" onClick={() => updateSelectedStyle({ z: zBounds.max + 1 })}>
-                      <ArrowUp className="size-3.5" />
-                      Bring Front
-                    </Button>
-                  </div>
+                  {renderLayerButtons('zone ')}
                 </div>
               )}
 
@@ -2603,14 +2834,7 @@ export const WarehouseFloorplan = memo(function WarehouseFloorplan({
                         </select>
                       </label>
                     )}
-                    <Button size="sm" variant="outline" onClick={() => updateSelectedStyle({ z: zBounds.min - 1 })}>
-                      <ArrowDown className="size-3.5" />
-                      Back
-                    </Button>
-                    <Button size="sm" variant="outline" onClick={() => updateSelectedStyle({ z: zBounds.max + 1 })}>
-                      <ArrowUp className="size-3.5" />
-                      Front
-                    </Button>
+                    {renderLayerButtons('shape ')}
                     <Button size="sm" variant="outline" onClick={handleDuplicateSelection}>
                       <Copy className="size-3.5" />
                       Duplicate
@@ -2701,26 +2925,27 @@ export const WarehouseFloorplan = memo(function WarehouseFloorplan({
                           }
                         />
                       </label>
-                      <label className="flex flex-col gap-1">
-                        <span className="text-[11px] font-medium text-muted-foreground">Style / Fill</span>
-                        <select
-                          aria-label="Element fill color"
-                          className="rounded border bg-background px-2 py-1 text-foreground"
-                          value={styleTarget.color}
-                          onChange={e => updateSelectedStyle({ color: Number(e.target.value) })}
-                        >
-                          {FLOORPLAN_COLORS.map(c => (
-                            <option key={c.id} value={c.id}>
-                              {c.name}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
+                      <div className="flex flex-col gap-1">
+                        <span className="text-[11px] font-medium text-muted-foreground">Fill Color</span>
+                        <FloorplanColorPicker
+                          mode="fill"
+                          ariaLabel="Element fill color"
+                          presetIndex={styleTarget.color}
+                          fillColor={styleTarget.fillColor}
+                          fillOpacity={styleTarget.fillOpacity}
+                          onSelectFillPreset={colorIdx =>
+                            updateSelectedStyle({ color: colorIdx, fillColor: undefined, fillOpacity: undefined })
+                          }
+                          onChangeCustomFill={(nextHex, nextOpacity) =>
+                            updateSelectedStyle({ fillColor: nextHex, fillOpacity: nextOpacity })
+                          }
+                        />
+                      </div>
                       <label className="flex flex-col gap-1">
                         <span className="text-[11px] font-medium text-muted-foreground">Border</span>
                         <select
                           aria-label="Element border style"
-                          className="rounded border bg-background px-2 py-1 text-foreground"
+                          className="h-7.5 rounded border bg-background px-2 py-1 text-foreground"
                           value={styleTarget.border}
                           onChange={e => updateSelectedStyle({ border: e.target.value as BorderStyle })}
                         >
@@ -2729,11 +2954,58 @@ export const WarehouseFloorplan = memo(function WarehouseFloorplan({
                           <option value="none">None</option>
                         </select>
                       </label>
+                      <div className="flex flex-col gap-1">
+                        <span className="text-[11px] font-medium text-muted-foreground">Text Color</span>
+                        <FloorplanColorPicker
+                          mode="text"
+                          ariaLabel="Text color"
+                          textColor={styleTarget.textColor}
+                          onChangeTextColor={nextHex => updateSelectedStyle({ textColor: nextHex })}
+                        />
+                      </div>
+                      <div className="flex flex-col gap-1">
+                        <span className="text-[11px] font-medium text-muted-foreground">Format</span>
+                        <div className="flex items-center gap-1">
+                          <Button
+                            size="sm"
+                            variant={styleTarget.bold ? 'secondary' : 'outline'}
+                            aria-pressed={Boolean(styleTarget.bold)}
+                            aria-label="Bold"
+                            title="Bold"
+                            className="size-7.5 px-0"
+                            onClick={() => updateSelectedStyle({ bold: !styleTarget.bold })}
+                          >
+                            <BoldIcon className="size-3.5" />
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant={styleTarget.italic ? 'secondary' : 'outline'}
+                            aria-pressed={Boolean(styleTarget.italic)}
+                            aria-label="Italic"
+                            title="Italic"
+                            className="size-7.5 px-0"
+                            onClick={() => updateSelectedStyle({ italic: !styleTarget.italic })}
+                          >
+                            <ItalicIcon className="size-3.5" />
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant={styleTarget.underline ? 'secondary' : 'outline'}
+                            aria-pressed={Boolean(styleTarget.underline)}
+                            aria-label="Underline"
+                            title="Underline"
+                            className="size-7.5 px-0"
+                            onClick={() => updateSelectedStyle({ underline: !styleTarget.underline })}
+                          >
+                            <UnderlineIcon className="size-3.5" />
+                          </Button>
+                        </div>
+                      </div>
                       <label className="flex flex-col gap-1">
                         <span className="text-[11px] font-medium text-muted-foreground">Text Size</span>
                         <select
                           aria-label="Text size"
-                          className="rounded border bg-background px-2 py-1 text-foreground"
+                          className="h-7.5 rounded border bg-background px-2 py-1 text-foreground"
                           value={styleTarget.fontSize}
                           onChange={e => updateSelectedStyle({ fontSize: e.target.value as TextSize })}
                         >
@@ -2743,24 +3015,38 @@ export const WarehouseFloorplan = memo(function WarehouseFloorplan({
                           <option value="lg">L</option>
                         </select>
                       </label>
-                      <label className="flex flex-col gap-1">
+                      <div className="flex flex-col gap-1">
                         <span className="text-[11px] font-medium text-muted-foreground">Rotate</span>
-                        <select
-                          aria-label="Text rotation"
-                          className="rounded border bg-background px-2 py-1 text-foreground"
-                          value={styleTarget.rotate}
-                          onChange={e => updateSelectedStyle({ rotate: Number(e.target.value) as TextRotation })}
-                        >
-                          <option value={0}>0° Horizontal</option>
-                          <option value={-90}>-90° Vertical ↑</option>
-                          <option value={90}>90° Vertical ↓</option>
-                        </select>
-                      </label>
+                        <div className="flex items-center gap-1">
+                          <select
+                            aria-label="Text rotation"
+                            className="h-7.5 rounded border bg-background px-2 py-1 text-foreground"
+                            value={styleTarget.rotate}
+                            onChange={e => updateSelectedStyle({ rotate: Number(e.target.value) as TextRotation })}
+                          >
+                            <option value={0}>0° Horizontal</option>
+                            <option value={-90}>-90° Vertical ↑</option>
+                            <option value={90}>90° Vertical ↓</option>
+                            <option value={180}>180° Upside Down</option>
+                          </select>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            aria-label="Rotate box 90 degrees"
+                            title="Rotate box / zone 90° clockwise (swaps width & height)"
+                            className="h-7.5 gap-1 px-2"
+                            onClick={() => handleRotateSelection('cw')}
+                          >
+                            <Redo2 className="size-3.5" />
+                            <span>90°</span>
+                          </Button>
+                        </div>
+                      </div>
                       <label className="flex flex-col gap-1">
                         <span className="text-[11px] font-medium text-muted-foreground">Align</span>
                         <select
                           aria-label="Text alignment"
-                          className="rounded border bg-background px-2 py-1 text-foreground"
+                          className="h-7.5 rounded border bg-background px-2 py-1 text-foreground"
                           value={styleTarget.align}
                           onChange={e => updateSelectedStyle({ align: e.target.value as 'left' | 'center' })}
                         >
@@ -2969,9 +3255,6 @@ export const WarehouseFloorplan = memo(function WarehouseFloorplan({
             const interactDisabled = editable && tool !== 'select';
             if (item.itemKind === 'shape') {
               const s = item.shape;
-              const isMultiSelected = editing && multiSelected.some(m => m.kind === 'shape' && m.id === s.id);
-              const isPrimarySelected = editing && chosen?.kind === 'shape' && chosen.id === s.id && multiSelected.length <= 1;
-              const isSelected = isMultiSelected || isPrimarySelected;
               if (s.kind === 'line') {
                 const pts = getLineEndpoints(s);
                 const lx1 = ((pts.x1 - s.x) / s.w) * 100;
@@ -2981,26 +3264,13 @@ export const WarehouseFloorplan = memo(function WarehouseFloorplan({
                 const strokePx = resolveLineWidth(s.lineWidth, compact);
                 const dashProps = resolveLineDash(s.lineStyle, strokePx);
                 const hitStrokePx = Math.max(14, strokePx + 12);
-                const handleTitle = 'Drag endpoint to resize & aim freely (hold Shift for 45°/90°)';
                 return (
                   <div
                     key={s.id}
-                    style={{ left: `${s.x}%`, top: `${s.y}%`, width: `${s.w}%`, height: `${s.h}%`, zIndex: isSelected ? 40 : item.zOrder }}
+                    style={{ left: `${s.x}%`, top: `${s.y}%`, width: `${s.w}%`, height: `${s.h}%`, zIndex: item.zOrder }}
                     className="pointer-events-none absolute"
                   >
                     <svg className="pointer-events-none h-full w-full overflow-visible">
-                      {isSelected && (
-                        <line
-                          x1={`${lx1}%`}
-                          y1={`${ly1}%`}
-                          x2={`${lx2}%`}
-                          y2={`${ly2}%`}
-                          stroke="currentColor"
-                          strokeWidth={strokePx + 6}
-                          strokeLinecap="round"
-                          className="pointer-events-none text-gold/35"
-                        />
-                      )}
                       <line
                         x1={`${lx1}%`}
                         y1={`${ly1}%`}
@@ -3033,45 +3303,26 @@ export const WarehouseFloorplan = memo(function WarehouseFloorplan({
                         />
                       )}
                     </svg>
-                    {editable && isPrimarySelected && tool === 'select' && (
-                      <>
-                        <span
-                          aria-hidden="true"
-                          title={`Start point (${pts.x1}%, ${pts.y1}%) — ${handleTitle}`}
-                          onPointerDown={e =>
-                            startElementDrag(e, 'shape', s.id, 'p1', { x: s.x, y: s.y, w: s.w, h: s.h }, undefined, pts)
-                          }
-                          className="pointer-events-auto absolute z-20 size-3.5 -translate-x-1/2 -translate-y-1/2 cursor-grab touch-none rounded-full border-2 border-gold bg-card shadow-sm transition-transform hover:scale-125 active:cursor-grabbing"
-                          style={{ left: `${lx1}%`, top: `${ly1}%` }}
-                        />
-                        <span
-                          aria-hidden="true"
-                          title={`End point (${pts.x2}%, ${pts.y2}%) — ${handleTitle}`}
-                          onPointerDown={e =>
-                            startElementDrag(e, 'shape', s.id, 'p2', { x: s.x, y: s.y, w: s.w, h: s.h }, undefined, pts)
-                          }
-                          className="pointer-events-auto absolute z-20 flex size-3.5 -translate-x-1/2 -translate-y-1/2 cursor-grab touch-none items-center justify-center rounded-full border-2 border-gold bg-card shadow-sm transition-transform hover:scale-125 active:cursor-grabbing"
-                          style={{ left: `${lx2}%`, top: `${ly2}%` }}
-                        >
-                          <span className="size-1.5 rounded-full bg-gold" />
-                        </span>
-                      </>
-                    )}
                   </div>
                 );
               }
 
               const isLabel = s.kind === 'label';
               const isInlineEditing = editable && editingInlineId === s.id;
-              const shapeCls = resolveElementClasses(s.color, s.border, isLabel, false);
+              const appearance = resolveElementAppearance(s, isLabel, false, editable && onionView);
               const alignCls = (s.align ?? 'center') === 'left' ? 'items-start text-left' : 'items-center text-center';
               return (
                 <div
                   key={s.id}
-                  style={{ left: `${s.x}%`, top: `${s.y}%`, width: `${s.w}%`, height: `${s.h}%`, zIndex: isSelected || isInlineEditing ? 45 : item.zOrder }}
-                  className={`absolute ${shapeCls} ${interactDisabled ? 'pointer-events-none' : ''} ${
-                    isSelected ? 'ring-2 ring-gold ring-offset-2 ring-offset-card' : ''
-                  }`}
+                  style={{
+                    left: `${s.x}%`,
+                    top: `${s.y}%`,
+                    width: `${s.w}%`,
+                    height: `${s.h}%`,
+                    zIndex: isInlineEditing ? 900 : item.zOrder,
+                    ...appearance.style,
+                  }}
+                  className={`absolute ${appearance.className} ${interactDisabled ? 'pointer-events-none' : ''}`}
                 >
                   {isInlineEditing ? (
                     <textarea
@@ -3089,24 +3340,36 @@ export const WarehouseFloorplan = memo(function WarehouseFloorplan({
                           commitInlineEdit(s.id);
                         }
                       }}
-                      className={`h-full w-full resize-none bg-background/95 p-1 text-foreground outline-none ${fontSizeClass(s.fontSize, compact)} ${
-                        (s.align ?? 'center') === 'left' ? 'text-left' : 'text-center'
-                      }`}
+                      style={{ color: appearance.effectiveTextColor }}
+                      className={`h-full w-full resize-none bg-background/95 p-1 text-foreground outline-none ${textFormatClasses(
+                        s.bold,
+                        s.italic,
+                        s.underline,
+                        'shape',
+                      )} ${fontSizeClass(s.fontSize, compact)} ${(s.align ?? 'center') === 'left' ? 'text-left' : 'text-center'}`}
                     />
                   ) : (
                     <div
                       role={editable ? 'button' : undefined}
-                      tabIndex={editable ? 0 : -1}
-                      aria-label={s.label || (isLabel ? 'Floorplan text label' : 'Floorplan box')}
-                      className={`flex h-full w-full flex-col justify-center overflow-hidden ${compact ? 'p-0.5' : 'px-1.5 py-1'} ${alignCls} ${
-                        editable ? 'cursor-move touch-none' : ''
-                      }`}
+                      tabIndex={editable ? 0 : undefined}
+                      aria-label={editable ? s.label || (isLabel ? 'Floorplan text label' : 'Floorplan box') : undefined}
+                      className={`flex h-full w-full flex-col justify-center overflow-hidden ${
+                        isLabel || compact ? 'p-0.5' : 'px-1.5 py-1'
+                      } ${alignCls} ${editable ? 'cursor-move touch-none' : ''}`}
                       onPointerDown={e => startElementDrag(e, 'shape', s.id, 'move', { x: s.x, y: s.y, w: s.w, h: s.h })}
                       onDoubleClick={e => {
                         if (!editable || tool !== 'select') return;
                         e.stopPropagation();
                         setEditingInlineId(s.id);
                         setInlineDraft(s.label);
+                      }}
+                      onKeyDown={e => {
+                        if (!editable || tool !== 'select') return;
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          selectSingleTarget({ kind: 'shape', id: s.id });
+                        }
                       }}
                       onClick={e => {
                         e.stopPropagation();
@@ -3115,14 +3378,16 @@ export const WarehouseFloorplan = memo(function WarehouseFloorplan({
                     >
                       <span
                         style={rotatedTextStyle(s.rotate)}
-                        className={`max-h-full max-w-full whitespace-pre-line font-medium ${fontSizeClass(s.fontSize, compact)}`}
+                        className={`inline-block max-h-full max-w-full whitespace-pre-line ${textFormatClasses(
+                          s.bold,
+                          s.italic,
+                          s.underline,
+                          'shape',
+                        )} ${fontSizeClass(s.fontSize, compact)}`}
                       >
                         {s.label}
                       </span>
                     </div>
-                  )}
-                  {editable && isPrimarySelected && !isInlineEditing && (
-                    <ResizeHandles onHandlePointerDown={(e, h) => startElementDrag(e, 'shape', s.id, h, { x: s.x, y: s.y, w: s.w, h: s.h })} />
                   )}
                 </div>
               );
@@ -3141,17 +3406,24 @@ export const WarehouseFloorplan = memo(function WarehouseFloorplan({
               : editing
                 ? isMultiZoneSelected || isPrimaryZoneSelected
                 : focusedZoneId === z.id;
-            const zoneCls = resolveElementClasses(b.color, b.border, false, true);
+            const appearance = resolveElementAppearance(b, false, true, editable && onionView);
             const alignCls = (b.align ?? 'left') === 'center' ? 'items-center text-center' : 'items-start text-left';
-            const rotated = b.rotate === 90 || b.rotate === -90;
+            const verticalRotated = b.rotate === 90 || b.rotate === -90;
             return (
               <div
                 key={z.id}
-                style={{ left: `${b.x}%`, top: `${b.y}%`, width: `${b.w}%`, height: `${b.h}%`, zIndex: active || isZoneMatched ? 40 : item.zOrder }}
-                className={`absolute transition-opacity ${zoneCls} ${interactDisabled ? 'pointer-events-none' : ''} ${
+                style={{
+                  left: `${b.x}%`,
+                  top: `${b.y}%`,
+                  width: `${b.w}%`,
+                  height: `${b.h}%`,
+                  zIndex: isZoneMatched && !editing ? Math.max(item.zOrder, 500) : item.zOrder,
+                  ...appearance.style,
+                }}
+                className={`absolute transition-opacity ${appearance.className} ${interactDisabled ? 'pointer-events-none' : ''} ${
                   isZoneMatched
                     ? 'ring-2 ring-gold ring-offset-2 ring-offset-card shadow-md'
-                    : active
+                    : !editing && active
                       ? 'ring-2 ring-gold ring-offset-2 ring-offset-card'
                       : ''
                 } ${isZoneDimmed ? 'opacity-40' : ''}`}
@@ -3182,26 +3454,145 @@ export const WarehouseFloorplan = memo(function WarehouseFloorplan({
                     else setFocusedZoneId(prev => (prev === z.id ? '' : z.id));
                   }}
                 >
-                  <div style={rotatedTextStyle(b.rotate)} className={`flex max-h-full max-w-full flex-col ${rotated ? 'items-center' : ''}`}>
-                    <span className={`max-w-full whitespace-pre-line font-semibold ${fontSizeClass(b.fontSize, compact)}`}>{z.name}</span>
+                  <div
+                    style={rotatedTextStyle(b.rotate)}
+                    className={`flex max-h-full max-w-full flex-col ${verticalRotated ? 'items-center' : ''}`}
+                  >
+                    <span
+                      className={`max-w-full whitespace-pre-line ${textFormatClasses(
+                        b.bold,
+                        b.italic,
+                        b.underline,
+                        'zone-title',
+                      )} ${fontSizeClass(b.fontSize, compact)}`}
+                    >
+                      {z.name}
+                    </span>
                     {!compact && b.sublabel && (
-                      <span className={`mt-1 max-w-full whitespace-pre-line text-muted-foreground ${fontSizeClass(b.fontSize ?? 'xs', false)}`}>
+                      <span
+                        className={`mt-1 max-w-full whitespace-pre-line ${
+                          appearance.effectiveTextColor ? 'opacity-85' : 'text-muted-foreground'
+                        } ${textFormatClasses(b.bold, b.italic, b.underline, 'zone-sublabel')} ${fontSizeClass(
+                          b.fontSize ?? 'xs',
+                          false,
+                        )}`}
+                      >
                         {b.sublabel}
                       </span>
                     )}
-                    {!compact && !rotated && (
-                      <span className="mt-1.5 text-[11px] text-muted-foreground">
+                    {!compact && !verticalRotated && (
+                      <span
+                        className={`mt-1.5 text-[11px] ${
+                          appearance.effectiveTextColor ? 'opacity-80' : 'text-muted-foreground'
+                        }`}
+                      >
                         {stats.units.toLocaleString()} units · {stats.products} products
                       </span>
                     )}
                   </div>
                 </button>
-                {editable && isPrimaryZoneSelected && (
-                  <ResizeHandles onHandlePointerDown={(e, h) => startElementDrag(e, 'zone', z.id, h, { x: b.x, y: b.y, w: b.w, h: b.h })} />
-                )}
               </div>
             );
           })}
+
+          {editable &&
+            sortedRenderables.map(item => {
+              if (item.itemKind === 'shape') {
+                const s = item.shape;
+                const isMultiSelected = multiSelected.some(m => m.kind === 'shape' && m.id === s.id);
+                const isPrimarySelected = chosen?.kind === 'shape' && chosen.id === s.id && multiSelected.length <= 1;
+                if (!isMultiSelected && !isPrimarySelected) return null;
+                if (editingInlineId === s.id) return null;
+
+                if (s.kind === 'line') {
+                  const pts = getLineEndpoints(s);
+                  const lx1 = ((pts.x1 - s.x) / s.w) * 100;
+                  const ly1 = ((pts.y1 - s.y) / s.h) * 100;
+                  const lx2 = ((pts.x2 - s.x) / s.w) * 100;
+                  const ly2 = ((pts.y2 - s.y) / s.h) * 100;
+                  const strokePx = resolveLineWidth(s.lineWidth, compact);
+                  const handleTitle = 'Drag endpoint to resize & aim freely (hold Shift for 45°/90°)';
+                  return (
+                    <div
+                      key={`sel:${s.id}`}
+                      style={{ left: `${s.x}%`, top: `${s.y}%`, width: `${s.w}%`, height: `${s.h}%`, zIndex: 800 }}
+                      className="pointer-events-none absolute"
+                    >
+                      <svg aria-hidden="true" className="pointer-events-none h-full w-full overflow-visible">
+                        <line
+                          x1={`${lx1}%`}
+                          y1={`${ly1}%`}
+                          x2={`${lx2}%`}
+                          y2={`${ly2}%`}
+                          stroke="currentColor"
+                          strokeWidth={strokePx + 6}
+                          strokeLinecap="round"
+                          className="pointer-events-none text-gold/45"
+                        />
+                      </svg>
+                      {isPrimarySelected && tool === 'select' && (
+                        <>
+                          <span
+                            aria-hidden="true"
+                            title={`Start point (${pts.x1}%, ${pts.y1}%) — ${handleTitle}`}
+                            onPointerDown={e =>
+                              startElementDrag(e, 'shape', s.id, 'p1', { x: s.x, y: s.y, w: s.w, h: s.h }, undefined, pts)
+                            }
+                            className="pointer-events-auto absolute z-20 size-3.5 -translate-x-1/2 -translate-y-1/2 cursor-grab touch-none rounded-full border-2 border-gold bg-card shadow-sm transition-transform hover:scale-125 active:cursor-grabbing"
+                            style={{ left: `${lx1}%`, top: `${ly1}%` }}
+                          />
+                          <span
+                            aria-hidden="true"
+                            title={`End point (${pts.x2}%, ${pts.y2}%) — ${handleTitle}`}
+                            onPointerDown={e =>
+                              startElementDrag(e, 'shape', s.id, 'p2', { x: s.x, y: s.y, w: s.w, h: s.h }, undefined, pts)
+                            }
+                            className="pointer-events-auto absolute z-20 flex size-3.5 -translate-x-1/2 -translate-y-1/2 cursor-grab touch-none items-center justify-center rounded-full border-2 border-gold bg-card shadow-sm transition-transform hover:scale-125 active:cursor-grabbing"
+                            style={{ left: `${lx2}%`, top: `${ly2}%` }}
+                          >
+                            <span className="size-1.5 rounded-full bg-gold" />
+                          </span>
+                        </>
+                      )}
+                    </div>
+                  );
+                }
+
+                return (
+                  <div
+                    key={`sel:${s.id}`}
+                    style={{ left: `${s.x}%`, top: `${s.y}%`, width: `${s.w}%`, height: `${s.h}%`, zIndex: 800 }}
+                    className="pointer-events-none absolute border-2 border-dashed border-amber-500/90 ring-1 ring-gold/45"
+                  >
+                    {isPrimarySelected && tool === 'select' && (
+                      <ResizeHandles
+                        onHandlePointerDown={(e, h) => startElementDrag(e, 'shape', s.id, h, { x: s.x, y: s.y, w: s.w, h: s.h })}
+                      />
+                    )}
+                  </div>
+                );
+              }
+
+              const z = item.zone;
+              const b = item.box;
+              const isMultiZoneSelected = multiSelected.some(m => m.kind === 'zone' && m.id === z.id);
+              const isPrimaryZoneSelected = chosen?.kind === 'zone' && chosen.id === z.id && multiSelected.length <= 1;
+              if (!isMultiZoneSelected && !isPrimaryZoneSelected) return null;
+
+              return (
+                <div
+                  key={`sel:zone:${z.id}`}
+                  style={{ left: `${b.x}%`, top: `${b.y}%`, width: `${b.w}%`, height: `${b.h}%`, zIndex: 800 }}
+                  className="pointer-events-none absolute border-2 border-dashed border-amber-500/90 ring-1 ring-gold/45"
+                >
+                  {isPrimaryZoneSelected && tool === 'select' && (
+                    <ResizeHandles
+                      onHandlePointerDown={(e, h) => startElementDrag(e, 'zone', z.id, h, { x: b.x, y: b.y, w: b.w, h: b.h })}
+                    />
+                  )}
+                </div>
+              );
+            })}
 
           {marqueePreview && (() => {
             const x = Math.min(marqueePreview.x1, marqueePreview.x2);
@@ -3211,7 +3602,7 @@ export const WarehouseFloorplan = memo(function WarehouseFloorplan({
             return (
               <div
                 aria-hidden="true"
-                className="pointer-events-none absolute z-50 border border-dashed border-sky-500 bg-sky-500/10"
+                className="pointer-events-none absolute z-950 border border-dashed border-sky-500 bg-sky-500/10"
                 style={{ left: `${x}%`, top: `${y}%`, width: `${w}%`, height: `${h}%` }}
               />
             );
@@ -3222,7 +3613,7 @@ export const WarehouseFloorplan = memo(function WarehouseFloorplan({
             return (
               <div
                 aria-hidden="true"
-                className="pointer-events-none absolute z-50 border-2 border-dashed border-gold bg-gold/10"
+                className="pointer-events-none absolute z-950 border-2 border-dashed border-gold bg-gold/10"
                 style={{ left: `${rect.x}%`, top: `${rect.y}%`, width: `${rect.w}%`, height: `${rect.h}%` }}
               />
             );
@@ -3239,7 +3630,7 @@ export const WarehouseFloorplan = memo(function WarehouseFloorplan({
             );
             const seg = getLineEndpoints(lineGeom);
             return (
-              <svg aria-hidden="true" className="pointer-events-none absolute inset-0 z-50 h-full w-full overflow-visible">
+              <svg aria-hidden="true" className="pointer-events-none absolute inset-0 z-950 h-full w-full overflow-visible">
                 <line
                   x1={`${seg.x1}%`}
                   y1={`${seg.y1}%`}
@@ -3269,7 +3660,7 @@ export const WarehouseFloorplan = memo(function WarehouseFloorplan({
                   e.stopPropagation();
                   if (editable && tool === 'select' && e.detail === 0) selectSingleTarget({ kind: 'door', id: d.id });
                 }}
-                className={`absolute z-30 flex items-center justify-center border-2 border-foreground/50 bg-card text-foreground ${
+                className={`absolute z-700 flex items-center justify-center border-2 border-foreground/50 bg-card text-foreground ${
                   compact ? 'h-5 w-7' : 'h-8 w-12'
                 } ${editable && tool === 'select' ? 'cursor-move touch-none' : ''} ${
                   interactDisabled ? 'pointer-events-none' : ''
