@@ -584,16 +584,16 @@ export function LogisticsOptimizer() {
       return;
     }
     if (actionLockRef.current || isProcessing) return;
-    actionLockRef.current = true;
-    setIsProcessing(true);
-    const protocolId = `${imbalance.productId}-${imbalance.depletedWarehouse.id}`;
 
     const qty = Number(imbalance.recommendedTransferQty);
     if (!Number.isInteger(qty) || qty <= 0) {
       toast.error('Invalid rebalance quantity. Must be a positive whole number.');
-      setIsProcessing(false);
       return;
     }
+
+    actionLockRef.current = true;
+    setIsProcessing(true);
+    const protocolId = `${imbalance.productId}-${imbalance.depletedWarehouse.id}`;
 
     const modifiedInventory: Array<{ id: string; prevQty: number }> = [];
     let createdDestInvId: string | null = null;

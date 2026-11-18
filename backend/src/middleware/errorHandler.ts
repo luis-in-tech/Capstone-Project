@@ -36,6 +36,11 @@ export function errorHandler(
   res: Response,
   _next: NextFunction
 ): void {
+  if (res.headersSent) {
+    _next(err);
+    return;
+  }
+
   // Determine HTTP status and structured error info
   let statusCode = 500;
   let code = 'INTERNAL_SERVER_ERROR';

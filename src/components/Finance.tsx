@@ -1722,10 +1722,11 @@ const PLStatementSection = memo(function PLStatementSection({
                       @media print { body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
                     </style>
                   `;
-                  iframeDoc.body.innerHTML = `<div><h4>${activePLData.title}</h4><p>${activePLData.subtitle}</p>${printContents}</div>`;
+                  const escapePrintHtml = (v: unknown) => String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                  iframeDoc.body.innerHTML = `<div><h4>${escapePrintHtml(activePLData.title)}</h4><p>${escapePrintHtml(activePLData.subtitle)}</p>${printContents}</div>`;
                   frame.contentWindow.focus();
                   frame.contentWindow.print();
-                  setTimeout(() => frame.remove(), 250);
+                  setTimeout(() => frame.remove(), 1000);
                 }
               }}
             >

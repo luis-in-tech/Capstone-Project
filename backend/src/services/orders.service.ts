@@ -7,6 +7,7 @@
  */
 
 import { AppError } from '../middleware/errorHandler';
+import { notifyOrderMutation } from './pnl.service';
 import {
   OrderDto,
   OrderItemDto,
@@ -286,6 +287,40 @@ export async function cancelOrder(
   });
 
   ordersStore.set(orderId, order);
+  return { ...order, items };
+}
+
+/**
+ * Transitions order fulfillment or payment status and broadcasts P&L telemetry.
+ */
+export async function updateOrderStatus(
+  orderId: string,
+  payload: { status?: 'pending' | 'in_transit' | 'delivered'; paymentStatus?: 'paid' | 'unpaid' | 'partial'; updatedBy?: string; note?: string }
+): Promise<OrderDto> {
+  const order = ordersStore.get(orderId);
+  if (!order) {
+    throw new AppError(404, 'NOT_FOUND', `Order "${orderId}" not found.`);
+  }
+  if (order.status === 'cancelled') {
+    throw new AppError(400, 'INVALID_STATE', `Order "${order.orderNumber}" is cancelled and cannot be updated.`);
+  }
+  const now = new Date().toISOString();
+  if (payload.status && payload.status !== order.status) {
+    order.status = payload.status;
+    order.statusHistory.push({
+      status: payload.status,
+      changedBy: payload.updatedBy?.trim() || 'System',
+      timestamp: now,
+      note: payload.note?.trim() || `Order status updated to "${payload.status}".`,
+    });
+  }
+  if (payload.paymentStatus) {
+    order.paymentStatus = payload.paymentStatus;
+  }
+  order.updatedAt = now;
+  ordersStore.set(orderId, order);
+  await notifyOrderMutation();
+  const items = Array.from(orderItemsStore.values()).filter((i) => i.orderId === orderId);
   return { ...order, items };
 }
 

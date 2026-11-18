@@ -559,6 +559,7 @@ export const WarehouseFloorplan = memo(function WarehouseFloorplan({
     setError('');
     setPendingDraft(null);
     setLastCustomHeight(null);
+    setTraceUrl(null);
     async function load() {
       try {
         const result = await supabase.from('warehouse_floorplans').select('layout').eq('warehouseId', warehouseId).maybeSingle();
@@ -617,10 +618,13 @@ export const WarehouseFloorplan = memo(function WarehouseFloorplan({
     lastConversionSeqRef.current = pendingZoneConversion.seq;
     const { sourceShapeId, zoneId, box } = pendingZoneConversion;
 
-    applyChange(p => ({
-      ...p,
-      boxes: { ...p.boxes, [zoneId]: box },
-      shapes: (p.shapes ?? []).filter(s => s.id !== sourceShapeId),
+    setDoc(d => ({
+      ...d,
+      plan: {
+        ...d.plan,
+        boxes: { ...d.plan.boxes, [zoneId]: box },
+        shapes: (d.plan.shapes ?? []).filter(s => s.id !== sourceShapeId),
+      },
     }));
     setChosen({ kind: 'zone', id: zoneId });
     setMultiSelected([{ kind: 'zone', id: zoneId }]);
@@ -910,9 +914,8 @@ export const WarehouseFloorplan = memo(function WarehouseFloorplan({
     }
   }
 
-  useEffect(() => {
-    if (!editable) return;
-    function onKeyDown(e: KeyboardEvent) {
+  const onKeyDownRef = useRef<(e: KeyboardEvent) => void>(() => {});
+  onKeyDownRef.current = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
       if (target && (['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName) || target.isContentEditable)) {
         return;
@@ -1018,10 +1021,14 @@ export const WarehouseFloorplan = memo(function WarehouseFloorplan({
           });
         }
       }
-    }
+  };
+
+  useEffect(() => {
+    if (!editable) return;
+    const onKeyDown = (e: KeyboardEvent) => onKeyDownRef.current(e);
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  });
+  }, [editable]);
 
   async function save() {
     if (!editable) return;

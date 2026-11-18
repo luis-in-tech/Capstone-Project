@@ -222,3 +222,23 @@ export async function createSnapshot(
     next(err);
   }
 }
+
+/**
+ * GET /api/v1/agent/sessions/:id/snapshots
+ * Returns all saved workspace snapshots for the session (newest first).
+ */
+export async function listSnapshots(
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const id = typeof req.params['id'] === 'string' ? req.params['id'].trim() : '';
+    if (!id) throw new AppError(400, 'VALIDATION_ERROR', 'Session ID is required.');
+    await actionService.getSession(id);
+    const snapshots = await actionService.listSnapshots(id);
+    ok(res, snapshots, `${snapshots.length} snapshot(s) found.`);
+  } catch (err) {
+    next(err);
+  }
+}

@@ -1,11 +1,12 @@
 import { supabase } from './supabase';
 import { parseAttributes, validateVariations, variantFields, type VariationDraft } from './productVariations';
+import type { Product } from '../types';
 
 // One database transaction preserves the parent, variants and warehouse initialization together.
 // Variant IDs remain ordinary product IDs for existing stock, audit and financial consumers.
-export async function saveProductVariations(parent: Record<string, unknown> & { id: string }, draft: VariationDraft, uploadImage: (file: File) => Promise<string>) {
+export async function saveProductVariations(parent: Record<string, unknown> & { id: string }, draft: VariationDraft, uploadImage: (file: File) => Promise<string>, allProducts: Product[] = []) {
   if (draft.enabled) {
-    const validationError = validateVariations(draft, String(parent.sku ?? ''), [], parent.id);
+    const validationError = validateVariations(draft, String(parent.sku ?? ''), allProducts, parent.id);
     if (validationError) {
       throw new Error(validationError);
     }

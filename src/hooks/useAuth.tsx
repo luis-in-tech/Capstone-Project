@@ -88,13 +88,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       if (!isMountedRef.current) return;
-      const nextSeq = ++authSeqRef.current;
       const nextUser = session?.user ?? null;
       if (event === 'SIGNED_OUT' || !nextUser) {
+        const nextSeq = ++authSeqRef.current;
         handleUserChange(null, { force: true, seq: nextSeq });
         return;
       }
       if (event === 'USER_UPDATED' || loadedUidRef.current !== nextUser.id) {
+        if (event !== 'USER_UPDATED' && inFlightProfileRef.current?.uid === nextUser.id) {
+          setUser(nextUser);
+          resetInactivityTimer(nextUser);
+          return;
+        }
+        const nextSeq = ++authSeqRef.current;
         handleUserChange(nextUser, { force: event === 'USER_UPDATED', seq: nextSeq });
       } else {
         setUser(nextUser);
@@ -217,6 +223,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     };
 
     if (user) {
+      resetInactivityTimer(user);
       ACTIVITY_EVENTS.forEach(evt => window.addEventListener(evt, handleActivity, { passive: true }));
     }
 

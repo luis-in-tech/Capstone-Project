@@ -21,6 +21,7 @@ router.get('/', ordersCtrl.listOrders);
 router.get('/customer/:customerName/transactions', ordersCtrl.getCustomerTransactions);
 router.get('/:id', ordersCtrl.getOrderById);
 router.post('/:id/cancel', ordersCtrl.cancelOrder);
+router.patch('/:id/status', ordersCtrl.updateOrderStatus);
 
 export default router;
 

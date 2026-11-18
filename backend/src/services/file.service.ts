@@ -22,7 +22,7 @@
 
 import fs from 'fs';
 import path from 'path';
-import { FRONTEND_ROOT, isSubPath } from '../config/paths';
+import { FRONTEND_ROOT, BACKEND_ROOT, isSubPath, isPathSafe } from '../config/paths';
 import { backupFile, discardBackup } from './backup.service';
 import {
   FileNode,
@@ -108,9 +108,11 @@ function buildTree(dirPath: string, depth = 0): FileNode {
 
   for (const entry of entries) {
     if (SKIP_DIRS.has(entry.name) || entry.isSymbolicLink()) continue; // skip noisy dirs and symlinks
+    const childPath = path.join(dirPath, entry.name);
+    if (isSubPath(BACKEND_ROOT, childPath) || !isPathSafe(childPath)) continue;
 
     try {
-      children.push(buildTree(path.join(dirPath, entry.name), depth + 1));
+      children.push(buildTree(childPath, depth + 1));
     } catch {
       // Skip files we can't read (permissions, broken symlinks, etc.)
     }
@@ -224,13 +226,16 @@ export async function writeFile(
     backupId = backup.id;
   }
 
+  const tmpPath = `${absolutePath}.tmp-${process.pid}-${Date.now()}`;
   try {
     // Ensure parent directory exists
     fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
 
-    // Write the file
-    fs.writeFileSync(absolutePath, content, 'utf-8');
+    // Write atomically via temp file before replacing target
+    fs.writeFileSync(tmpPath, content, 'utf-8');
+    fs.renameSync(tmpPath, absolutePath);
   } catch (err) {
+    try { if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath); } catch {}
     if (backupId) {
       await discardBackup(backupId).catch(() => {});
     }
@@ -357,7 +362,9 @@ export async function deleteEntry(
       fs.unlinkSync(absolutePath);
     }
   } catch (err) {
-    await discardBackup(backup.id).catch(() => {});
+    if (!stat.isDirectory() && fs.existsSync(absolutePath)) {
+      await discardBackup(backup.id).catch(() => {});
+    }
     throw err;
   }
 

@@ -306,7 +306,7 @@ export function clearLocalCaches() {
     const keysToRemove: string[] = [];
     for (let i = 0; i < localStorage.length; i++) {
       const key = localStorage.key(i);
-      if (key && key.startsWith('activepro_')) {
+      if (key && (key.startsWith('activepro_') || key.startsWith('activepro.'))) {
         keysToRemove.push(key);
       }
     }
@@ -413,7 +413,7 @@ export async function getDocs(q: any): Promise<AdapterQuerySnapshot> {
       finalData = finalData.filter((item: any) => item[q.parentField] === q.parentId);
     }
 
-    // Apply in-memory where ops
+    // Apply in-memory where, orderBy, and limit ops
     if (q.ops) {
       for (const op of q.ops) {
         if (op.type === 'where') {
@@ -423,6 +423,23 @@ export async function getDocs(q: any): Promise<AdapterQuerySnapshot> {
           if (op.op === '>=') finalData = finalData.filter((item: any) => item[op.field] >= op.value);
           if (op.op === '<') finalData = finalData.filter((item: any) => item[op.field] < op.value);
           if (op.op === '<=') finalData = finalData.filter((item: any) => item[op.field] <= op.value);
+          if (op.op === 'in') finalData = finalData.filter((item: any) => Array.isArray(op.value) && op.value.includes(item[op.field]));
+          if (op.op === 'array-contains') finalData = finalData.filter((item: any) => Array.isArray(item[op.field]) && item[op.field].includes(op.value));
+        }
+      }
+      for (const op of q.ops) {
+        if (op.type === 'orderBy') {
+          const factor = op.dir === 'desc' ? -1 : 1;
+          finalData.sort((a: any, b: any) => {
+            const av = a?.[op.field] ?? '';
+            const bv = b?.[op.field] ?? '';
+            return av < bv ? -1 * factor : av > bv ? 1 * factor : 0;
+          });
+        }
+      }
+      for (const op of q.ops) {
+        if (op.type === 'limit' && typeof op.n === 'number' && op.n > 0) {
+          finalData = finalData.slice(0, op.n);
         }
       }
     }
@@ -653,10 +670,14 @@ export async function deleteDoc(docRef: any) {
   try {
     const { error } = await supabase.from(docRef.path).delete().eq('id', docRef.id);
     if (error) {
-      const { error: err2 } = await supabase.from(docRef.path).delete().eq('uid', docRef.id);
-      if (err2) {
-        console.warn(`Supabase deleteDoc fallback for ${docRef.path}:`, err2);
-        throw err2;
+      if (docRef.path === 'users' || docRef.path === 'profiles') {
+        const { error: err2 } = await supabase.from(docRef.path).delete().eq('uid', docRef.id);
+        if (err2) {
+          console.warn(`Supabase deleteDoc fallback for ${docRef.path}:`, err2);
+          throw err2;
+        }
+      } else {
+        throw error;
       }
     }
   } catch (err) {
@@ -673,7 +694,7 @@ export async function getDoc(docRef: any) {
   let data = localMatch || null;
   try {
     let { data: remoteData, error } = await supabase.from(docRef.path).select('*').eq('id', docRef.id).maybeSingle();
-    if (error || !remoteData) {
+    if ((error || !remoteData) && (docRef.path === 'users' || docRef.path === 'profiles')) {
       const { data: uidData, error: uidError } = await supabase.from(docRef.path).select('*').eq('uid', docRef.id).maybeSingle();
       if (!uidError && uidData) {
         remoteData = uidData;
