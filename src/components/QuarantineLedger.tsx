@@ -163,7 +163,7 @@ export function QuarantineLedger({
       } else if (newStatus === 'WRITTEN_OFF') {
         toast.success(`Asset written off: removed from quarantine.`);
       } else {
-        toast.success(`Ticket ${ticket.ticketNumber} status updated to ${newStatus.replace('_', ' ')}.`);
+        toast.success(`Ticket ${ticket.ticketNumber} status updated to ${newStatus.replaceAll('_', ' ')}.`);
       }
 
       onRefresh();

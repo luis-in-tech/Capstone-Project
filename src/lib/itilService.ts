@@ -559,7 +559,6 @@ export async function updateDefectiveTicketStatus(
     await updateDoc(doc(db, 'defective_tickets', ticketId), {
       status: newStatus,
       resolutionNotes: updated.resolutionNotes,
-      updatedAt: nowIso,
     });
     if (linkedIncidentUpdate) {
       await updateDoc(doc(db, 'itil_incidents', linkedIncidentUpdate.id), {

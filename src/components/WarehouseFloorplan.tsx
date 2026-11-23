@@ -643,7 +643,8 @@ export const WarehouseFloorplan = memo(function WarehouseFloorplan({
         // Ignore storage error
       }
     } else {
-      void supabase.from('warehouse_floorplans').upsert({ warehouseId, layout: nextSaved }, { onConflict: 'warehouseId' });
+      void supabase.from('warehouse_floorplans').upsert({ warehouseId, layout: nextSaved }, { onConflict: 'warehouseId' })
+        .then(({ error }) => { if (error) toast.error('Unable to sync converted zone layout.'); });
     }
   }, [pendingZoneConversion, local, storageKey, warehouseId]);
 

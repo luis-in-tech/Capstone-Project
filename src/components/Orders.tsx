@@ -1,6 +1,6 @@
 import { PageHeading } from './PageHeading';
 import { SearchBar } from '@/components/ui/search-bar';
-import { previousOrderStatus } from '../lib/orderStatus';
+import { previousOrderStatus, revertBlockReason } from '../lib/orderStatus';
 import { hasAdminRole } from '../lib/staffPermissions';
 import { useStaffAccess } from '../hooks/useStaffAccess';
 import React, { lazy, Suspense, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
@@ -983,6 +983,8 @@ export function Orders() {
   const revertOrderStatus = async (order: Order) => {
     const target = previousOrderStatus(order);
     if (!canCreate || !target || statusLock.current) return;
+    const blockReason = revertBlockReason(order, target);
+    if (blockReason) { toast.error(blockReason); return; }
     if (!window.confirm(`Revert order ${order.orderNumber} to ${target.replaceAll('_', ' ')}?`)) return;
     statusLock.current = true;
     setIsReverting(true);

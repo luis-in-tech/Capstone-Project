@@ -208,7 +208,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const retryProfile = async () => {
     if (!user) return;
     setLoading(true);
-    await handleUserChange(user, { force: true });
+    await handleUserChange(user, { force: true, seq: ++authSeqRef.current });
   };
 
   useEffect(() => {
@@ -231,7 +231,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       ACTIVITY_EVENTS.forEach(evt => window.removeEventListener(evt, handleActivity));
       clearInactivityTimer();
     };
-  }, [user]);
+  }, [user?.id]);
 
   const signIn = async () => {
     try {

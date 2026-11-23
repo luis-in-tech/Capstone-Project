@@ -30,6 +30,7 @@ import { CheckIcon as Check, DownloadIcon as Download, EyeIcon as Eye, FileTextI
 import { useAuth } from '../hooks/useAuth';
 import { hasAdminRole } from '../lib/staffPermissions';
 import { ConfirmDialog } from './ConfirmDialog';
+import { escapeHtml } from '../lib/exportUtils';
 import { toast } from 'sonner';
 
 // ---------------------------------------------------------------------------
@@ -288,7 +289,6 @@ const dateLabel = (value?: string) => {
   return isNaN(d.getTime()) ? '—' : d.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
 };
 const listType = (p: SavedPricelist) => { const types = [...new Set(p.items.map(i => i.priceType))]; return types.length === 1 ? typeLabel(types[0]) : 'Mixed'; };
-const escapeHtml = (value: unknown) => String(value ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
 function readSaved(): SavedPricelist[] { try { const data = JSON.parse(localStorage.getItem(KEY) || '[]'); return Array.isArray(data) ? data.map((p: SavedPricelist & { exportedAt?: string; products?: Product[] }) => ({ ...p, createdAt: p.createdAt || p.exportedAt || new Date().toISOString(), items: p.items || (p.products || []).map(x => ({ productId: x.id, sku: x.sku, name: x.name, category: x.category, priceType: 'base', price: Number(x.basePrice || 0) })) })) : []; } catch { return []; } }
 
 // ---------------------------------------------------------------------------

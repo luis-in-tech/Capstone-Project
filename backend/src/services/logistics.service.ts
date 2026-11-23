@@ -311,11 +311,8 @@ export function solveCapacityConstrainedVRP(
 
   savingsList.sort((a, b) => b.savings - a.savings);
 
-  const findRouteIndex = (currentRoutes: DeliveryStopDto[][], stopTarget: DeliveryStopDto): number => {
-    return currentRoutes.findIndex((r) =>
-      r.some((s) => s === stopTarget || (s.order?.id && stopTarget.order?.id && s.order.id === stopTarget.order.id))
-    );
-  };
+  const findRouteIndex = (currentRoutes: DeliveryStopDto[][], stopTarget: DeliveryStopDto): number =>
+    currentRoutes.findIndex((r) => r.includes(stopTarget));
 
   const getRouteUnits = (route: DeliveryStopDto[]): number => {
     return route.reduce((sum, s) => sum + s.units, 0);

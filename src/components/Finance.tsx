@@ -46,6 +46,7 @@ import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import { useAuth } from '../hooks/useAuth';
 import { useStaffAccess } from '../hooks/useStaffAccess';
+import { escapeCsvCell } from '../lib/exportUtils';
 import { toast } from 'sonner';
 
 export interface PLRow {
@@ -342,6 +343,7 @@ function downloadSampleCSV(type: 'expenses' | 'sales') {
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
+  URL.revokeObjectURL(url);
 }
 
 interface FinancialImportModalProps {
@@ -2955,18 +2957,17 @@ export function Finance() {
   }, [selectedPeriod, orders, expenses]);
 
   const handleExportPLStatementCSV = useCallback(() => {
-    const headerLine = `"${activePLData.title}"`;
-    const subheaderLine = `"${activePLData.subtitle}"`;
-    const colHeaderLine = `"${['Account / Line Item', ...activePLData.colHeaders].join('","')}"`;
+    const headerLine = escapeCsvCell(activePLData.title);
+    const subheaderLine = escapeCsvCell(activePLData.subtitle);
+    const colHeaderLine = ['Account / Line Item', ...activePLData.colHeaders].map(escapeCsvCell).join(',');
 
     const rowLines = activePLData.rows.map(row => {
       if (row.isHeader || row.isSubheader) {
-        return `"${row.section}","${activePLData.colHeaders.map(() => '').join('","')}"`;
+        return [row.section, ...activePLData.colHeaders.map(() => '')].map(escapeCsvCell).join(',');
       }
       const colValues = (row.cols || []).map(val => val !== undefined ? val.toFixed(2) : '0.00');
       const totalVal = row.total !== undefined ? row.total.toFixed(2) : '0.00';
-      const pctVal = `"${row.pct || '0.00%'}"`;
-      return `"${row.name}",${colValues.join(',')},${totalVal},${pctVal}`;
+      return [escapeCsvCell(row.name), ...colValues, totalVal, escapeCsvCell(row.pct || '0.00%')].join(',');
     });
 
     const csvContent = [headerLine, subheaderLine, '""', colHeaderLine, ...rowLines].join('\n');
