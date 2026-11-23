@@ -541,6 +541,96 @@ export function WarehouseLayout({ warehouses, products, inventory }: { warehouse
     () => rows.slice(pageStart, pageStart + ZONE_TABLE_PAGE_SIZE),
     [pageStart, rows],
   );
+  const topScrollRef = useRef<HTMLDivElement>(null);
+  const tableWrapperRef = useRef<HTMLDivElement>(null);
+  const scrollSyncSourceRef = useRef<'top' | 'table' | null>(null);
+  const scrollSyncRafRef = useRef<number | null>(null);
+  const [tableScrollMetrics, setTableScrollMetrics] = useState({ width: 0, overflow: false });
+  const showZoneTable = Boolean(warehouse && !loading && !error && selectedName);
+
+  useEffect(() => () => {
+    if (scrollSyncRafRef.current !== null) {
+      cancelAnimationFrame(scrollSyncRafRef.current);
+    }
+  }, []);
+
+  const syncHorizontalScroll = useCallback((source: 'top' | 'table', fromEl: HTMLElement, toEl: HTMLElement) => {
+    if (scrollSyncSourceRef.current && scrollSyncSourceRef.current !== source) return;
+    scrollSyncSourceRef.current = source;
+    if (toEl.scrollLeft !== fromEl.scrollLeft) {
+      toEl.scrollLeft = fromEl.scrollLeft;
+    }
+    if (scrollSyncRafRef.current !== null) cancelAnimationFrame(scrollSyncRafRef.current);
+    scrollSyncRafRef.current = requestAnimationFrame(() => {
+      scrollSyncSourceRef.current = null;
+      scrollSyncRafRef.current = null;
+    });
+  }, []);
+
+  const handleTopScroll = useCallback(() => {
+    const topEl = topScrollRef.current;
+    const tableContainer = tableWrapperRef.current?.querySelector<HTMLDivElement>('[data-slot="table-container"]');
+    if (topEl && tableContainer) syncHorizontalScroll('top', topEl, tableContainer);
+  }, [syncHorizontalScroll]);
+
+  useEffect(() => {
+    if (!showZoneTable) {
+      setTableScrollMetrics(prev => (prev.width === 0 && !prev.overflow ? prev : { width: 0, overflow: false }));
+      return;
+    }
+
+    const tableContainer = tableWrapperRef.current?.querySelector<HTMLDivElement>('[data-slot="table-container"]');
+    if (!tableContainer) return;
+
+    const updateMetrics = () => {
+      const clientWidth = tableContainer.clientWidth;
+      if (clientWidth === 0) return;
+      const scrollWidth = tableContainer.scrollWidth;
+      const overflow = scrollWidth > clientWidth + 1;
+      setTableScrollMetrics(prev => (
+        prev.width === scrollWidth && prev.overflow === overflow
+          ? prev
+          : { width: scrollWidth, overflow }
+      ));
+      const topEl = topScrollRef.current;
+      if (topEl && Math.abs(topEl.scrollLeft - tableContainer.scrollLeft) > 1) {
+        syncHorizontalScroll('table', tableContainer, topEl);
+      }
+    };
+
+    const handleTableScroll = () => {
+      const topEl = topScrollRef.current;
+      if (topEl) syncHorizontalScroll('table', tableContainer, topEl);
+    };
+
+    updateMetrics();
+    tableContainer.addEventListener('scroll', handleTableScroll, { passive: true });
+    window.addEventListener('resize', updateMetrics);
+
+    let observer: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== 'undefined') {
+      observer = new ResizeObserver(updateMetrics);
+      observer.observe(tableContainer);
+      const tableEl = tableContainer.querySelector('table');
+      if (tableEl) observer.observe(tableEl);
+    }
+
+    return () => {
+      tableContainer.removeEventListener('scroll', handleTableScroll);
+      window.removeEventListener('resize', updateMetrics);
+      observer?.disconnect();
+    };
+  }, [showZoneTable, search, currentPage, pagedRows.length, selected, canEdit, zones.length, syncHorizontalScroll]);
+
+  useEffect(() => {
+    if (!tableScrollMetrics.overflow) return;
+    const topEl = topScrollRef.current;
+    const tableContainer = tableWrapperRef.current?.querySelector<HTMLDivElement>('[data-slot="table-container"]');
+    if (topEl && tableContainer && Math.abs(topEl.scrollLeft - tableContainer.scrollLeft) > 1) {
+      syncHorizontalScroll('table', tableContainer, topEl);
+    }
+  }, [tableScrollMetrics.overflow, tableScrollMetrics.width, syncHorizontalScroll]);
+
   const destinationOptions = useMemo(() => (
     selected === 'unassigned'
       ? zones.map(z => ({ value: z.id, label: z.name }))
@@ -772,6 +862,20 @@ export function WarehouseLayout({ warehouses, products, inventory }: { warehouse
             </div>
           )}
         </div>
+        <div
+          ref={topScrollRef}
+          onScroll={handleTopScroll}
+          aria-hidden="true"
+          tabIndex={-1}
+          className={
+            tableScrollMetrics.overflow
+              ? 'w-full overflow-x-auto overflow-y-hidden border-b border-border bg-muted/20'
+              : 'hidden'
+          }
+        >
+          <div style={{ width: `${tableScrollMetrics.width}px`, height: '1px' }} />
+        </div>
+        <div ref={tableWrapperRef}>
         <Table><TableHeader className="bg-muted/40"><TableRow>
           {canEdit && zones.length > 0 && (
             <TableHead className="w-10 pl-4">
@@ -841,6 +945,7 @@ export function WarehouseLayout({ warehouses, products, inventory }: { warehouse
             )}
           </TableRow>;
         })}</TableBody></Table>
+        </div>
         {!rows.length && <div className="p-12 text-center"><Package className="mx-auto mb-3 size-8 text-muted-foreground/50" /><p className="font-medium">{search ? 'No matching products' : 'No stock recorded here yet'}</p><p className="mt-1 text-sm text-muted-foreground">{search ? 'Try another SKU or item name.' : 'Products appear here when stock is allocated to this location.'}</p></div>}
         <div className="flex flex-wrap items-center justify-between gap-2 border-t bg-muted/20 px-5 py-3 text-xs text-muted-foreground">
           <span>

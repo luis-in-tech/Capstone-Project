@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   CaretRightIcon as ChevronRight,
@@ -16,7 +16,8 @@ import {
   GearIcon as Settings,
   CurrencyDollarIcon as DollarSign,
   PlayIcon as Play,
-  MonitorIcon as Monitor
+  MonitorIcon as Monitor,
+  UsersIcon as Users
 } from '@phosphor-icons/react';
 import { Button } from '@/components/ui/button';
 import {
@@ -26,7 +27,17 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 
-const TUTORIAL_PAGES = [
+interface TutorialPage {
+  id: string;
+  title: string;
+  icon: ReactNode;
+  content: string;
+  highlights: string[];
+  videoLabel: string;
+  videoSrc?: string;
+}
+
+const TUTORIAL_PAGES: TutorialPage[] = [
   {
     id: 'intro',
     title: 'Welcome to Active Pro',
@@ -38,7 +49,8 @@ const TUTORIAL_PAGES = [
       'Role-Based Access Control',
       'Automated Financial Processing'
     ],
-    videoLabel: 'System Overview'
+    videoLabel: 'System Overview',
+    videoSrc: '/guides/intro.mp4'
   },
   {
     id: 'admin',
@@ -51,7 +63,8 @@ const TUTORIAL_PAGES = [
       'User & Product Counts',
       'Monthly Revenue Chart'
     ],
-    videoLabel: 'Admin Panel Walkthrough'
+    videoLabel: 'Admin Panel Walkthrough',
+    videoSrc: '/guides/admin.mp4'
   },
   {
     id: 'dashboard',
@@ -64,21 +77,37 @@ const TUTORIAL_PAGES = [
       'Low-Stock Alerts',
       'Recent Order Activity Feed'
     ],
-    videoLabel: 'Analytics Walkthrough'
+    videoLabel: 'Analytics Walkthrough',
+    videoSrc: '/guides/dashboard.mp4'
   },
   {
     id: 'inventory',
     title: 'Inventory',
     icon: <Package className="w-8 h-8 text-white" />,
-    content: 'The Inventory module tracks every SKU across your warehouse network. View products in table or card layout, monitor stock levels per warehouse hub, generate QR labels, and perform manual stock adjustments with full audit logging. Each product supports multiple variations (Color, Size, Model, Series) for detailed tracking.',
+    content: 'The Inventory module tracks every SKU across your warehouse network. View products in table or card layout, monitor stock levels per warehouse hub, generate QR labels, map zone floorplans, log defective quarantine items, and perform manual stock adjustments with full audit logging.',
     highlights: [
       'SKU Tracking & Categorization',
-      'Hub-Specific Stock Levels',
+      'Hub-Specific Stock Levels & Adjustments',
       'QR Code Label Generation',
-      'Manual Stock Adjustment with Variations',
-      'Product Detail View with Variations'
+      'Warehouse Zone Floorplan Mapping',
+      'Quarantine & Damaged Asset Logging'
     ],
-    videoLabel: 'Inventory Walkthrough'
+    videoLabel: 'Inventory Walkthrough',
+    videoSrc: '/guides/inventory.mp4'
+  },
+  {
+    id: 'supply-chain',
+    title: 'Supply Chain',
+    icon: <Users className="w-8 h-8 text-white" />,
+    content: 'Manage customers, suppliers, warehouses, and product categories in one workspace. Review open balances and full transaction histories, preview customer or supplier payment entries before committing, and maintain up-to-date directory profiles.',
+    highlights: [
+      'Customer & Supplier Directories',
+      'Open Balances & Transaction Histories',
+      'Interactive Payment Preview Ledger',
+      'Warehouses & Categories Management'
+    ],
+    videoLabel: 'Supply Chain Walkthrough',
+    videoSrc: '/guides/supply-chain.mp4'
   },
   {
     id: 'orders',
@@ -177,11 +206,13 @@ const TUTORIAL_PAGES = [
 
 export const TutorialOverlay = ({ open, onOpenChange }: { open: boolean, onOpenChange: (open: boolean) => void }) => {
   const [currentPage, setCurrentPage] = useState(0);
+  const [failedVideos, setFailedVideos] = useState<Record<string, boolean>>({});
 
   const nextPage = () => currentPage < TUTORIAL_PAGES.length - 1 && setCurrentPage(prev => prev + 1);
   const prevPage = () => currentPage > 0 && setCurrentPage(prev => prev - 1);
 
   const current = TUTORIAL_PAGES[currentPage];
+  const hasPlayableVideo = Boolean(current.videoSrc && !failedVideos[current.id]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -236,24 +267,39 @@ export const TutorialOverlay = ({ open, onOpenChange }: { open: boolean, onOpenC
                       {current.content}
                     </p>
 
-                    {/* Video Placeholder */}
+                    {/* Video Player / Placeholder */}
                     <div className="bg-zinc-950 rounded-2xl overflow-hidden border border-zinc-200 aspect-video flex flex-col items-center justify-center relative">
-                       <div className="absolute inset-0 bg-linear-to-b from-zinc-900/80 to-zinc-950/95" />
-                       <div className="relative z-10 flex flex-col items-center gap-4">
-                          <div className="w-16 h-16 rounded-full bg-white/10 border-2 border-white/20 flex items-center justify-center">
-                             <Play className="w-6 h-6 text-white ml-0.5" />
-                          </div>
-                          <div className="text-center">
-                             <p className="text-[10px] font-black uppercase tracking-widest text-zinc-400 mb-1">Video Guide</p>
-                             <p className="text-sm font-bold text-white">{current.videoLabel}</p>
-                          </div>
-                       </div>
-                       <div className="absolute bottom-3 right-3 z-10">
-                          <div className="flex items-center gap-1.5 text-[9px] font-bold uppercase tracking-widest text-zinc-300">
-                             <Monitor className="w-3 h-3" />
-                             Coming Soon
-                          </div>
-                       </div>
+                       {hasPlayableVideo ? (
+                         <video
+                           key={current.videoSrc}
+                           src={current.videoSrc}
+                           controls
+                           playsInline
+                           preload="metadata"
+                           aria-label={current.videoLabel}
+                           onError={() => setFailedVideos((prev) => ({ ...prev, [current.id]: true }))}
+                           className="w-full h-full object-contain bg-zinc-950"
+                         />
+                       ) : (
+                         <>
+                           <div className="absolute inset-0 bg-linear-to-b from-zinc-900/80 to-zinc-950/95" />
+                           <div className="relative z-10 flex flex-col items-center gap-4">
+                              <div className="w-16 h-16 rounded-full bg-white/10 border-2 border-white/20 flex items-center justify-center">
+                                 <Play className="w-6 h-6 text-white ml-0.5" />
+                              </div>
+                              <div className="text-center">
+                                 <p className="text-[10px] font-black uppercase tracking-widest text-zinc-400 mb-1">Video Guide</p>
+                                 <p className="text-sm font-bold text-white">{current.videoLabel}</p>
+                              </div>
+                           </div>
+                           <div className="absolute bottom-3 right-3 z-10">
+                              <div className="flex items-center gap-1.5 text-[9px] font-bold uppercase tracking-widest text-zinc-300">
+                                 <Monitor className="w-3 h-3" />
+                                 Coming Soon
+                              </div>
+                           </div>
+                         </>
+                       )}
                     </div>
 
                     <div className="bg-zinc-50 rounded-2xl p-6 border border-zinc-200">
@@ -265,6 +311,7 @@ export const TutorialOverlay = ({ open, onOpenChange }: { open: boolean, onOpenC
                           {current.id === 'admin' && 'Only users with the Admin role can access the Admin Panel. This provides system-wide visibility and management controls.'}
                           {current.id === 'dashboard' && 'Analytics is accessible to Admin users and reports on Active Pro order and fulfillment performance.'}
                           {current.id === 'inventory' && 'Inventory is visible to all roles. Stock adjustments require Admin access or a specific delegation from the Staff Delegation panel.'}
+                          {current.id === 'supply-chain' && 'Supply Chain access is scoped by staff permissions across Customers, Suppliers, Warehouses, and Categories. Admins manage all directories while delegated staff view or edit assigned tabs.'}
                           {current.id === 'orders' && 'Order Entry is available to all roles. Agents can create and manage their own orders, while Admins and Secretaries can view all orders system-wide.'}
                           {current.id === 'transport' && 'Inventory Movement is available to Admin and Secretary roles for recording supplier receipts and warehouse transfers.'}
                           {current.id === 'finance' && 'The Financials module is Admin-only. It contains sensitive revenue and expense data used for business decision-making.'}

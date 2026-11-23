@@ -1732,9 +1732,107 @@ export function Inventory() {
     handleHideZeroStockChange,
   ]);
 
+  const stockTopScrollRef = useRef<HTMLDivElement>(null);
+  const stockTableWrapperRef = useRef<HTMLDivElement>(null);
+  const stockScrollSyncSourceRef = useRef<'top' | 'table' | null>(null);
+  const stockScrollSyncRafRef = useRef<number | null>(null);
+  const [stockTableScrollMetrics, setStockTableScrollMetrics] = useState({ width: 0, overflow: false });
+
+  useEffect(() => () => {
+    if (stockScrollSyncRafRef.current !== null) {
+      cancelAnimationFrame(stockScrollSyncRafRef.current);
+    }
+  }, []);
+
+  const syncStockHorizontalScroll = useCallback((source: 'top' | 'table', fromEl: HTMLElement, toEl: HTMLElement) => {
+    if (stockScrollSyncSourceRef.current && stockScrollSyncSourceRef.current !== source) return;
+    stockScrollSyncSourceRef.current = source;
+    if (toEl.scrollLeft !== fromEl.scrollLeft) {
+      toEl.scrollLeft = fromEl.scrollLeft;
+    }
+    if (stockScrollSyncRafRef.current !== null) cancelAnimationFrame(stockScrollSyncRafRef.current);
+    stockScrollSyncRafRef.current = requestAnimationFrame(() => {
+      stockScrollSyncSourceRef.current = null;
+      stockScrollSyncRafRef.current = null;
+    });
+  }, []);
+
+  const handleStockTopScroll = useCallback(() => {
+    const topEl = stockTopScrollRef.current;
+    const tableContainer = stockTableWrapperRef.current?.querySelector<HTMLDivElement>('[data-slot="table-container"]');
+    if (topEl && tableContainer) syncStockHorizontalScroll('top', topEl, tableContainer);
+  }, [syncStockHorizontalScroll]);
+
+  useEffect(() => {
+    if (inventoryView !== 'stock') return;
+    const tableContainer = stockTableWrapperRef.current?.querySelector<HTMLDivElement>('[data-slot="table-container"]');
+    if (!tableContainer) return;
+
+    const updateMetrics = () => {
+      const clientWidth = tableContainer.clientWidth;
+      if (clientWidth === 0) return;
+      const scrollWidth = tableContainer.scrollWidth;
+      const overflow = scrollWidth > clientWidth + 1;
+      setStockTableScrollMetrics(prev => (
+        prev.width === scrollWidth && prev.overflow === overflow
+          ? prev
+          : { width: scrollWidth, overflow }
+      ));
+      const topEl = stockTopScrollRef.current;
+      if (topEl && Math.abs(topEl.scrollLeft - tableContainer.scrollLeft) > 1) {
+        syncStockHorizontalScroll('table', tableContainer, topEl);
+      }
+    };
+
+    const handleTableScroll = () => {
+      const topEl = stockTopScrollRef.current;
+      if (topEl) syncStockHorizontalScroll('table', tableContainer, topEl);
+    };
+
+    updateMetrics();
+    tableContainer.addEventListener('scroll', handleTableScroll, { passive: true });
+    window.addEventListener('resize', updateMetrics);
+
+    let observer: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== 'undefined') {
+      observer = new ResizeObserver(updateMetrics);
+      observer.observe(tableContainer);
+      const tableEl = tableContainer.querySelector('table');
+      if (tableEl) observer.observe(tableEl);
+    }
+
+    return () => {
+      tableContainer.removeEventListener('scroll', handleTableScroll);
+      window.removeEventListener('resize', updateMetrics);
+      observer?.disconnect();
+    };
+  }, [inventoryView, paginatedProducts, canViewWholesale, hasLoadedProducts, filteredProducts.length, syncStockHorizontalScroll]);
+
+  useEffect(() => {
+    if (!stockTableScrollMetrics.overflow) return;
+    const topEl = stockTopScrollRef.current;
+    const tableContainer = stockTableWrapperRef.current?.querySelector<HTMLDivElement>('[data-slot="table-container"]');
+    if (topEl && tableContainer && Math.abs(topEl.scrollLeft - tableContainer.scrollLeft) > 1) {
+      syncStockHorizontalScroll('table', tableContainer, topEl);
+    }
+  }, [stockTableScrollMetrics.overflow, stockTableScrollMetrics.width, syncStockHorizontalScroll]);
+
   const stockTableCard = useMemo(() => (
       <div className="overflow-hidden rounded-2xl border border-border/70 bg-card shadow-sm">
-        <div className="overflow-x-auto">
+        <div
+          ref={stockTopScrollRef}
+          onScroll={handleStockTopScroll}
+          aria-hidden="true"
+          tabIndex={-1}
+          className={
+            stockTableScrollMetrics.overflow
+              ? 'w-full overflow-x-auto overflow-y-hidden border-b border-border bg-muted/20'
+              : 'hidden'
+          }
+        >
+          <div style={{ width: `${stockTableScrollMetrics.width}px`, height: '1px' }} />
+        </div>
+        <div ref={stockTableWrapperRef} className="overflow-x-auto">
           <Table>
             <TableHeader className="bg-muted/40">
               <TableRow>
@@ -1851,6 +1949,7 @@ export function Inventory() {
     handleDeleteRow,
     handleEditRow,
     handleQrRow,
+    handleStockTopScroll,
     handleViewRow,
     hasLoadedProducts,
     isAdmin,
@@ -1859,6 +1958,7 @@ export function Inventory() {
     parentProducts.length,
     productRowMetaMap,
     safeCurrentPage,
+    stockTableScrollMetrics,
     totalPages,
   ]);
 
