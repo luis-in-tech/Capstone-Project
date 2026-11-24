@@ -141,7 +141,11 @@ function AppContent() {
         handleSupabaseError(e, OperationType.WRITE, 'warehouses');
       }
     };
-    if (user && profile) seedWarehouses();
+    if (!user || !profile) return;
+    const timer = window.setTimeout(() => {
+      void seedWarehouses();
+    }, 400);
+    return () => window.clearTimeout(timer);
   }, [user?.id, profile?.uid, profile?.role, access.loading, access.revoked, access.error]);
 
   // Wait for user & profile data before computing redirection to prevent race condition

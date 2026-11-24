@@ -184,7 +184,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
       if (event === 'USER_UPDATED' || loadedUidRef.current !== nextUser.id) {
         if (event !== 'USER_UPDATED' && inFlightProfileRef.current?.uid === nextUser.id) {
-          setUser(nextUser);
+          setUser(prev => (prev?.id === nextUser.id ? nextUser : prev));
           resetInactivityTimer(nextUser);
           return;
         }
@@ -205,7 +205,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const handleUserChange = async (currentUser: User | null, options: { force?: boolean; seq?: number } = {}) => {
     if (!isMountedRef.current) return;
     const activeSeq = options.seq ?? authSeqRef.current;
-    setUser(currentUser);
 
     if (!currentUser) {
       clearLocalCaches();
@@ -213,6 +212,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       loadedUidRef.current = null;
       serverVerifiedUidRef.current = null;
       inFlightProfileRef.current = null;
+      setUser(null);
       setProfile(null);
       setProfileError(null);
       setLoading(false);
@@ -220,12 +220,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return;
     }
 
+    setUser(prev => (prev?.id === currentUser.id ? currentUser : prev));
+
     if (!options.force && inFlightProfileRef.current?.uid === currentUser.id) {
       await inFlightProfileRef.current.promise;
       return;
     }
 
     if (!options.force && loadedUidRef.current === currentUser.id) {
+      setUser(currentUser);
       setLoading(false);
       resetInactivityTimer(currentUser);
       return;
@@ -249,6 +252,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           loadedUidRef.current = currentUser.id;
           serverVerifiedUidRef.current = currentUser.id;
           writeCachedAuthProfile(verified);
+          setUser(currentUser);
           setProfile(verified);
           setProfileError(null);
         } else {
@@ -277,6 +281,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           loadedUidRef.current = currentUser.id;
           serverVerifiedUidRef.current = currentUser.id;
           writeCachedAuthProfile(resolvedProfile);
+          setUser(currentUser);
           setProfile(resolvedProfile);
           setProfileError(null);
         }
@@ -284,6 +289,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         handleSupabaseError(error, OperationType.GET, `users/${currentUser.id}`);
         if (!isMountedRef.current || authSeqRef.current !== activeSeq) return;
         writeCachedAuthProfile(null);
+        setUser(currentUser);
         // Preserve already-verified profile only if server verified this user in this session; never preserve unverified cache
         setProfile(prev => (serverVerifiedUidRef.current === currentUser.id && prev?.uid === currentUser.id ? prev : null));
         setProfileError('Failed to verify your user profile from the server. Please retry.');
@@ -342,8 +348,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const signInWithEmail = async (email: string, password: string) => {
     try {
-      const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
+      const { data, error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
       if (error) throw error;
+      if (data.user) {
+        await handleUserChange(data.user, { seq: authSeqRef.current });
+      }
       toast.success('Logged in successfully');
     } catch (error: any) {
       console.error("Email sign-in error:", error);

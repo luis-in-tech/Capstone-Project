@@ -1,10 +1,16 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useAuth } from '../hooks/useAuth';
+import { preloadRoute } from '../lib/routePrefetch';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { SignInIcon as LogIn, ArrowLeftIcon as ArrowLeft, EnvelopeIcon as Mail, LockIcon as Lock, EyeIcon as Eye, EyeSlashIcon as EyeOff } from '@phosphor-icons/react';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+
+const warmPostLoginRoutes = () => {
+  preloadRoute('/admin');
+  preloadRoute('/inventory');
+};
 
 export function Auth() {
   const { signInWithEmail, resetPassword } = useAuth();
@@ -14,6 +20,26 @@ export function Auth() {
   const [password, setPassword] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
+
+  useEffect(() => {
+    let timerId: number | null = null;
+    let idleId: number | null = null;
+    const win = window as Window & {
+      requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number;
+      cancelIdleCallback?: (id: number) => void;
+    };
+    if (typeof win.requestIdleCallback === 'function') {
+      idleId = win.requestIdleCallback(warmPostLoginRoutes, { timeout: 600 });
+    } else {
+      timerId = window.setTimeout(warmPostLoginRoutes, 250);
+    }
+    return () => {
+      if (timerId !== null) window.clearTimeout(timerId);
+      if (idleId !== null && typeof win.cancelIdleCallback === 'function') {
+        win.cancelIdleCallback(idleId);
+      }
+    };
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -36,6 +62,7 @@ export function Auth() {
         await resetPassword(trimmedEmail);
         setIsResetMode(false);
       } else {
+        warmPostLoginRoutes();
         await signInWithEmail(trimmedEmail, password);
       }
     } catch (err: any) {
@@ -60,6 +87,7 @@ export function Auth() {
         loop={!prefersReducedMotion}
         muted
         playsInline
+        preload={prefersReducedMotion ? 'none' : 'metadata'}
         aria-hidden="true"
         className="absolute inset-0 w-full h-full object-cover z-0"
       >
@@ -95,6 +123,7 @@ export function Auth() {
                   placeholder="name@corp.activepro" 
                   required 
                   value={email}
+                  onFocus={warmPostLoginRoutes}
                   onChange={(e) => setEmail(e.target.value)}
                   className="bg-background border-input pl-10 h-11 text-sm rounded-xl focus-visible:ring-ring focus-visible:border-ring transition-all font-medium"
                 />
