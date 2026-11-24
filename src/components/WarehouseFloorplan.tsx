@@ -66,6 +66,7 @@ import {
   moveLinePoints,
   normalizeRectFromPoints,
   parseFloorplanImport,
+  readCachedFloorplanMeta,
   rectIntersects,
   resizeLineLength,
   resolveEffectiveFloorId,
@@ -77,6 +78,7 @@ import {
   straightenLine,
   updateLineEndpoint,
   validFloorplan,
+  writeCachedFloorplanMeta,
   type AlignMode,
   type BorderStyle,
   type CopiedFloorplanStyle,
@@ -663,6 +665,7 @@ export const WarehouseFloorplan = memo(function WarehouseFloorplan({
         }
         if (!validFloorplan(value)) throw new Error('The saved floorplan is unreadable. It has not been overwritten.');
         const normalized = normalizeLoadedPlan(value);
+        writeCachedFloorplanMeta(storageKey, normalized);
         setDoc({ plan: normalized, undo: [], redo: [] });
         saved.current = normalized;
         setLocal(fallback);
@@ -1163,6 +1166,7 @@ export const WarehouseFloorplan = memo(function WarehouseFloorplan({
         // ignore cleanup error
       }
       saved.current = next;
+      writeCachedFloorplanMeta(storageKey, next);
       setDoc({ plan: next, undo: [], redo: [] });
       setEditing(false);
       setTool('select');
@@ -2073,7 +2077,12 @@ export const WarehouseFloorplan = memo(function WarehouseFloorplan({
     setCancelConfirmOpen(false);
   }
 
-  const canvasHeight = compact ? 168 : (plan.height ?? INITIAL_FLOORPLAN.height ?? 520);
+  const cachedMeta = useMemo(() => readCachedFloorplanMeta(storageKey), [storageKey]);
+  const canvasHeight = compact
+    ? 168
+    : loading
+      ? (cachedMeta?.height ?? plan.height ?? INITIAL_FLOORPLAN.height ?? 520)
+      : (plan.height ?? INITIAL_FLOORPLAN.height ?? 520);
   const gridStep = snapStep >= 2 ? snapStep : 5;
   const gridBackground =
     editable && showGrid && snapStep > 0
@@ -2088,6 +2097,7 @@ export const WarehouseFloorplan = memo(function WarehouseFloorplan({
     return (
       <div className="space-y-4">
         {!compact && canEdit && <div className="h-9 w-28 rounded-md bg-muted/50" />}
+        {!compact && cachedMeta?.hasTabs && <div className="h-8 w-64 rounded-md bg-muted/40" />}
         <div className={compact ? 'p-2' : 'p-4'}>
           <div
             style={{ height: `${canvasHeight}px` }}

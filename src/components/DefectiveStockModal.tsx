@@ -133,8 +133,8 @@ export const DefectiveStockModal = React.memo(function DefectiveStockModal({
     : 0;
 
   const leafProducts = useMemo(
-    () => products.filter((p) => !p.hasVariations && p.variantEnabled !== false),
-    [products]
+    () => products.filter((p) => p.variantEnabled !== false && (!p.hasVariations || (inventoryIndex.byProductTotal.get(p.id) ?? 0) > 0)),
+    [products, inventoryIndex.byProductTotal]
   );
 
   // Filter products only when the CI picker is open

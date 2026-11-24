@@ -698,15 +698,23 @@ const NewMovementDialogBody = memo(function NewMovementDialogBody({
   const sourceZoneOptions = zonesByWarehouse.get(draft.sourceWarehouseId) || DEFAULT_ZONE_OPTIONS;
   const destinationZoneOptions = zonesByWarehouse.get(draft.destinationWarehouseId) || DEFAULT_ZONE_OPTIONS;
 
+  const stockedProductIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const item of inventory) {
+      if (Number(item.quantity) > 0 && item.productId) ids.add(item.productId);
+    }
+    return ids;
+  }, [inventory]);
+
   const matchingProducts = useMemo(() => {
     const q = productSearch.trim().toLowerCase();
     return products.filter(
       product =>
-        !product.hasVariations
-        && product.variantEnabled !== false
-        && (!q || `${product.name} ${product.sku}`.toLowerCase().includes(q)),
+        product.variantEnabled !== false
+        && (external || !product.hasVariations || stockedProductIds.has(product.id))
+        && (!q || `${product.name} ${product.sku}${product.hasVariations ? ' original' : ''}`.toLowerCase().includes(q)),
     );
-  }, [products, productSearch]);
+  }, [products, productSearch, external, stockedProductIds]);
 
   const visibleProducts = useMemo(() => matchingProducts.slice(0, 40), [matchingProducts]);
 
@@ -1221,7 +1229,7 @@ const NewMovementDialogBody = memo(function NewMovementDialogBody({
                             </div>
                             <div className="min-w-0 flex-1">
                               <p className="truncate text-xs font-medium">{product.name}</p>
-                              <p className="text-[11px] text-muted-foreground">{product.sku}{!external && draft.sourceWarehouseId && <span className={stock === 0 ? 'text-destructive' : ''}> · {stock} available</span>}</p>
+                              <p className="text-[11px] text-muted-foreground">{product.sku}{product.hasVariations && ' · Original'}{!external && draft.sourceWarehouseId && <span className={stock === 0 ? 'text-destructive' : ''}> · {stock} available</span>}</p>
                             </div>
                             <Button variant="outline" size="sm" disabled={disabled} aria-label={`Add ${product.name}`} onClick={() => addProduct(product)}><Plus className="size-3" />Add</Button>
                           </div>

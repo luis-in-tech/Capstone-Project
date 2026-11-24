@@ -302,99 +302,108 @@ function AdminNotificationsProvider({ children }: { children: React.ReactNode })
       }
     };
 
-    const unsubOrders = onSnapshot(
-      query(collection(db, 'orders'), orderBy('createdAt', 'desc'), limit(20)),
-      (snap) => {
-        if (cancelled) return;
-        const rows: Order[] = snap.docs.map((d: any) => ({ id: d.id, ...d.data() } as Order));
-        recordSourceSnapshot('orders', rows.map((row) => `ord-${row.id}`));
-        setOrders(rows);
-      },
-      (err) => {
-        console.warn('Orders notification subscription failed:', err);
-        recordSourceSnapshot('orders', []);
-      },
-    );
+    const unsubs: Array<() => void> = [];
+    const startSubscriptions = () => {
+      if (cancelled) return;
+      unsubs.push(
+        onSnapshot(
+          query(collection(db, 'orders'), orderBy('createdAt', 'desc'), limit(20)),
+          (snap) => {
+            if (cancelled) return;
+            const rows: Order[] = snap.docs.map((d: any) => ({ id: d.id, ...d.data() } as Order));
+            recordSourceSnapshot('orders', rows.map((row) => `ord-${row.id}`));
+            setOrders(rows);
+          },
+          (err) => {
+            console.warn('Orders notification subscription failed:', err);
+            recordSourceSnapshot('orders', []);
+          },
+        ),
+        onSnapshot(
+          query(collection(db, 'dispatch_trips'), orderBy('dispatched_at', 'desc'), limit(20)),
+          (snap) => {
+            if (cancelled) return;
+            const rows: DispatchTripDoc[] = snap.docs.map((d: any) => ({ id: d.id, ...d.data() } as DispatchTripDoc));
+            recordSourceSnapshot('dispatch_trips', rows.map((row) => `trip-${row.id}`));
+            setTrips(rows);
+          },
+          (err) => {
+            console.warn('Dispatch trips subscription failed:', err);
+            recordSourceSnapshot('dispatch_trips', []);
+          },
+        ),
+        onSnapshot(
+          query(collection(db, 'transfers'), orderBy('createdAt', 'desc'), limit(20)),
+          (snap) => {
+            if (cancelled) return;
+            const rows: Transfer[] = snap.docs.map((d: any) => ({ id: d.id, ...d.data() } as Transfer));
+            recordSourceSnapshot('transfers', rows.map((row) => `tfr-${row.id}`));
+            setTransfers(rows);
+          },
+          (err) => {
+            console.warn('Transfers notification subscription failed:', err);
+            recordSourceSnapshot('transfers', []);
+          },
+        ),
+        onSnapshot(
+          query(collection(db, 'inventory_movements'), orderBy('createdAt', 'desc'), limit(20)),
+          (snap) => {
+            if (cancelled) return;
+            const rows: InventoryMovementDoc[] = snap.docs.map((d: any) => ({ id: d.id, ...d.data() } as InventoryMovementDoc));
+            recordSourceSnapshot('inventory_movements', rows.map((row) => `mov-${row.id}`));
+            setMovements(rows);
+          },
+          (err) => {
+            console.warn('Inventory movements notification subscription failed:', err);
+            recordSourceSnapshot('inventory_movements', []);
+          },
+        ),
+        onSnapshot(
+          query(collection(db, 'warehouses'), limit(15)),
+          (snap) => {
+            if (cancelled) return;
+            const rows: SupplyChainEntityDoc[] = snap.docs.map((d: any) => ({ id: d.id, ...d.data() } as SupplyChainEntityDoc));
+            recordSourceSnapshot('warehouses', rows.map((row) => `wh-${row.id}`));
+            setWarehousesDoc(rows);
+          },
+          (err) => {
+            console.warn('Warehouses notification subscription failed:', err);
+            recordSourceSnapshot('warehouses', []);
+          },
+        ),
+        onSnapshot(
+          query(collection(db, 'delegations'), orderBy('createdAt', 'desc'), limit(15)),
+          (snap) => {
+            if (cancelled) return;
+            const rows: DelegationRecord[] = snap.docs.map((d: any) => ({ id: d.id, ...d.data() } as DelegationRecord));
+            recordSourceSnapshot('delegations', rows.map((row) => `del-${row.id}`));
+            setDelegations(rows);
+          },
+          (err) => {
+            console.warn('Delegations notification subscription failed:', err);
+            recordSourceSnapshot('delegations', []);
+          },
+        ),
+      );
+    };
 
-    const unsubTrips = onSnapshot(
-      query(collection(db, 'dispatch_trips'), orderBy('dispatched_at', 'desc'), limit(20)),
-      (snap) => {
-        if (cancelled) return;
-        const rows: DispatchTripDoc[] = snap.docs.map((d: any) => ({ id: d.id, ...d.data() } as DispatchTripDoc));
-        recordSourceSnapshot('dispatch_trips', rows.map((row) => `trip-${row.id}`));
-        setTrips(rows);
-      },
-      (err) => {
-        console.warn('Dispatch trips subscription failed:', err);
-        recordSourceSnapshot('dispatch_trips', []);
-      },
-    );
-
-    const unsubTransfers = onSnapshot(
-      query(collection(db, 'transfers'), orderBy('createdAt', 'desc'), limit(20)),
-      (snap) => {
-        if (cancelled) return;
-        const rows: Transfer[] = snap.docs.map((d: any) => ({ id: d.id, ...d.data() } as Transfer));
-        recordSourceSnapshot('transfers', rows.map((row) => `tfr-${row.id}`));
-        setTransfers(rows);
-      },
-      (err) => {
-        console.warn('Transfers notification subscription failed:', err);
-        recordSourceSnapshot('transfers', []);
-      },
-    );
-
-    const unsubMovements = onSnapshot(
-      query(collection(db, 'inventory_movements'), orderBy('createdAt', 'desc'), limit(20)),
-      (snap) => {
-        if (cancelled) return;
-        const rows: InventoryMovementDoc[] = snap.docs.map((d: any) => ({ id: d.id, ...d.data() } as InventoryMovementDoc));
-        recordSourceSnapshot('inventory_movements', rows.map((row) => `mov-${row.id}`));
-        setMovements(rows);
-      },
-      (err) => {
-        console.warn('Inventory movements notification subscription failed:', err);
-        recordSourceSnapshot('inventory_movements', []);
-      },
-    );
-
-    const unsubWarehouses = onSnapshot(
-      query(collection(db, 'warehouses'), limit(15)),
-      (snap) => {
-        if (cancelled) return;
-        const rows: SupplyChainEntityDoc[] = snap.docs.map((d: any) => ({ id: d.id, ...d.data() } as SupplyChainEntityDoc));
-        recordSourceSnapshot('warehouses', rows.map((row) => `wh-${row.id}`));
-        setWarehousesDoc(rows);
-      },
-      (err) => {
-        console.warn('Warehouses notification subscription failed:', err);
-        recordSourceSnapshot('warehouses', []);
-      },
-    );
-
-    const unsubDelegations = onSnapshot(
-      query(collection(db, 'delegations'), orderBy('createdAt', 'desc'), limit(15)),
-      (snap) => {
-        if (cancelled) return;
-        const rows: DelegationRecord[] = snap.docs.map((d: any) => ({ id: d.id, ...d.data() } as DelegationRecord));
-        recordSourceSnapshot('delegations', rows.map((row) => `del-${row.id}`));
-        setDelegations(rows);
-      },
-      (err) => {
-        console.warn('Delegations notification subscription failed:', err);
-        recordSourceSnapshot('delegations', []);
-      },
-    );
+    // Defer the 6 background notification subscriptions past initial paint so the active route renders and fetches first
+    let startTimer: number | null = null;
+    let idleId: number | null = null;
+    if (typeof window !== 'undefined' && typeof (window as Window & { requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number }).requestIdleCallback === 'function') {
+      idleId = (window as Window & { requestIdleCallback: (cb: () => void, opts?: { timeout: number }) => number }).requestIdleCallback(startSubscriptions, { timeout: 150 });
+    } else {
+      startTimer = window.setTimeout(startSubscriptions, 80);
+    }
 
     return () => {
       cancelled = true;
       window.clearTimeout(settleTimer);
-      unsubOrders();
-      unsubTrips();
-      unsubTransfers();
-      unsubMovements();
-      unsubWarehouses();
-      unsubDelegations();
+      if (startTimer !== null) window.clearTimeout(startTimer);
+      if (idleId !== null && typeof (window as Window & { cancelIdleCallback?: (id: number) => void }).cancelIdleCallback === 'function') {
+        (window as Window & { cancelIdleCallback: (id: number) => void }).cancelIdleCallback(idleId);
+      }
+      unsubs.forEach((unsub) => unsub());
     };
   }, [isAdmin, profile?.uid]);
 

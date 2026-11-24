@@ -21,7 +21,7 @@ import { useAuth } from '../hooks/useAuth';
 import { toast } from 'sonner';
 import { WarehouseLayout } from './WarehouseLayout';
 import { ProductVariationEditor } from './ProductVariationEditor';
-import { emptyVariations, variationDraft, validateVariations, variantLabel, variantFields } from '../lib/productVariations';
+import { emptyVariations, variationDraft, validateVariations, variantLabel, variantFields, variantFieldNumber } from '../lib/productVariations';
 import { saveProductVariations } from '../lib/saveProductVariations';
 import { QuarantineLedger } from './QuarantineLedger';
 import { getLocalDefectiveTickets } from '../lib/itilService';
@@ -416,7 +416,11 @@ export function Inventory() {
   }, [products]);
   const hasStock = (ids: string[]) => inventory.some(i => ids.includes(i.productId) && i.quantity !== 0);
   const variantModeLocked = !!editingProduct && hasStock([editingProduct.id, ...childrenOf(editingProduct.id).map(p => p.id)]);
-  const adjustmentProduct = selectedProduct?.hasVariations ? childrenOf(selectedProduct.id).find(p => p.id === selectedVariantId) : selectedProduct;
+  const adjustmentProduct = selectedProduct?.hasVariations
+    ? (selectedVariantId === selectedProduct.id
+        ? selectedProduct
+        : childrenOf(selectedProduct.id).find(p => p.id === selectedVariantId))
+    : selectedProduct;
 
   useEffect(() => { setSelectedVariantId(''); setSelectedWarehouseId(''); }, [selectedProduct?.id]);
   useEffect(() => { if (!isStockUpdateOpen) { setSelectedVariantId(''); setAdjustQty(''); setSelectedWarehouseId(''); } }, [isStockUpdateOpen]);
@@ -970,7 +974,7 @@ export function Inventory() {
   const updateStock = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (adjustLockRef.current || isAdjusting) return;
-    if (!adjustmentProduct) { toast.error('Select the specific variant to adjust.'); return; }
+    if (!adjustmentProduct) { toast.error('Select the original item or specific variant to adjust.'); return; }
     const formData = new FormData(e.currentTarget);
     const warehouseId = (formData.get('warehouseId') as string) || selectedWarehouseId;
     if (!canAdjustStock || (permissions.warehouseAccess === 'selected' && !permissions.warehouseIds.includes(warehouseId))) { toast.error('You do not have permission to adjust this warehouse.'); return; }
@@ -1064,20 +1068,25 @@ export function Inventory() {
     return map;
   }, [inventory, allowedWarehouseIds]);
 
-  const getStockCount = useCallback((productId: string, warehouseId?: string) => {
+  const getOwnStockCount = useCallback((productId: string, warehouseId?: string) => {
     const targetWh = !warehouseId || warehouseId === 'all' ? 'all' : warehouseId;
+    return stockMap.get(`${productId}:${targetWh}`) || 0;
+  }, [stockMap]);
+
+  const getStockCount = useCallback((productId: string, warehouseId?: string) => {
+    const ownStock = getOwnStockCount(productId, warehouseId);
     const children = childrenMap.get(productId);
     if (children && children.length > 0) {
-      let sum = 0;
+      let sum = ownStock;
       for (const child of children) {
         if (child.variantEnabled !== false) {
-          sum += stockMap.get(`${child.id}:${targetWh}`) || 0;
+          sum += getOwnStockCount(child.id, warehouseId);
         }
       }
       return sum;
     }
-    return stockMap.get(`${productId}:${targetWh}`) || 0;
-  }, [stockMap, childrenMap]);
+    return ownStock;
+  }, [getOwnStockCount, childrenMap]);
 
   const activeWarehouseObj = useMemo(
     () => warehouses.find(w => w.id === warehouseFilter),
@@ -1108,8 +1117,8 @@ export function Inventory() {
     [suppliers],
   );
   const layoutProducts = useMemo(
-    () => products.filter(p => !p.hasVariations && p.variantEnabled !== false),
-    [products],
+    () => products.filter(p => p.variantEnabled !== false && (!p.hasVariations || getOwnStockCount(p.id) > 0)),
+    [products, getOwnStockCount],
   );
   const quarantinedTicketCount = useMemo(
     () => defectiveTickets.filter(t => t.status === 'QUARANTINED').length,
@@ -1147,7 +1156,11 @@ export function Inventory() {
     const resolveStatus = (item: Product, qty: number): 'in' | 'low' | 'out' => {
       if (item.hasVariations) {
         const variants = childrenOf(item.id).filter(p => p.variantEnabled !== false);
-        const statuses = variants.map(p => resolveStatus(p, getStockCount(p.id, _checkWarehouseId)));
+        const statuses = variants.map(p => resolveStatus(p, getOwnStockCount(p.id, _checkWarehouseId)));
+        const ownQty = getOwnStockCount(item.id, _checkWarehouseId);
+        if (ownQty > 0) {
+          statuses.unshift(resolveStatus({ ...item, hasVariations: false }, ownQty));
+        }
         if (!statuses.length || statuses.every(s => s === 'out')) return 'out';
         return statuses.some(s => s !== 'in') ? 'low' : 'in';
       }
@@ -1157,14 +1170,18 @@ export function Inventory() {
       return 'in';
     };
     return resolveStatus(product, stock);
-  }, [childrenOf, getStockCount]);
+  }, [childrenOf, getOwnStockCount]);
 
   const variantRange = useCallback((product: Product, key: typeof variantFields[number][0]) => {
-    const values = childrenOf(product.id).filter(p => p.variantEnabled !== false && (key !== 'promoPrice' || p.promoPrice != null)).map(p => Number(p[key] || 0));
+    const children = childrenOf(product.id).filter(p => p.variantEnabled !== false);
+    const pool = getOwnStockCount(product.id) > 0 ? [product, ...children] : children;
+    const values = pool
+      .map(p => variantFieldNumber(p, key))
+      .filter((value): value is number => value !== null);
     if (!values.length) return '—';
     const min = Math.min(...values), max = Math.max(...values);
     return min === max ? `₱${min.toLocaleString()}` : `₱${min.toLocaleString()}–₱${max.toLocaleString()}`;
-  }, [childrenOf]);
+  }, [childrenOf, getOwnStockCount]);
 
   const productSearchTextMap = useMemo(() => {
     const map = new Map<string, string>();
@@ -1242,9 +1259,9 @@ export function Inventory() {
 
     let totalVal = 0;
     for (const product of products) {
-      if (product.hasVariations || product.variantEnabled === false) continue;
+      if (product.variantEnabled === false) continue;
       const unitVal = (product.costPrice && product.costPrice > 0) ? product.costPrice : (product.basePrice || 0);
-      totalVal += unitVal * Math.max(0, getStockCount(product.id, warehouseFilter));
+      totalVal += unitVal * Math.max(0, getOwnStockCount(product.id, warehouseFilter));
     }
 
     return {
@@ -1252,7 +1269,7 @@ export function Inventory() {
       outOfStockProducts: out,
       inventoryValue: totalVal
     };
-  }, [productRowMetaMap, products, warehouseFilter, getStockCount]);
+  }, [productRowMetaMap, products, warehouseFilter, getOwnStockCount]);
 
   // Pagination state for rapid DOM rendering (50 rows/page)
   const [currentPage, setCurrentPage] = useState(1);
@@ -1324,19 +1341,44 @@ export function Inventory() {
     });
   }, [canViewCost, canViewWholesale]);
 
-  const renderVariantDetails = (parent: Product) => <section className="space-y-3 py-3">
-    <p className="text-xs text-muted-foreground">Stock is tracked separately for each variant and warehouse. Disabled variants retain their history and any remaining stock.</p>
-    <div className="overflow-x-auto rounded-lg border"><Table>
-      <TableHeader><TableRow><TableHead className="min-w-40">Variant</TableHead><TableHead>Variant SKU</TableHead>{allowedVariantFields.map(([key, label]) => <TableHead key={key}>{label}</TableHead>)}{warehouses.map(w => <TableHead key={w.id}>{w.name}</TableHead>)}<TableHead>Total Stock</TableHead><TableHead>Status</TableHead><TableHead>Actions</TableHead></TableRow></TableHeader>
-      <TableBody>{childrenOf(parent.id).map(v => <TableRow key={v.id} className={v.variantEnabled === false ? 'bg-muted/30' : ''}>
-        <TableCell className="font-medium"><div className="flex items-center gap-2">{v.photoUrl && <img src={v.photoUrl} alt={variantLabel(v)} className="h-12 w-12 shrink-0 rounded-lg border border-border object-cover" />}<span>{variantLabel(v)}{v.variantEnabled === false && <Badge variant="secondary" className="ml-2">Disabled</Badge>}</span></div></TableCell><TableCell className="font-mono text-xs">{v.sku}</TableCell>
-        {allowedVariantFields.map(([key]) => <TableCell key={key}>{v[key] == null ? '—' : Number(v[key]).toLocaleString()}</TableCell>)}
-        {warehouses.map(w => <TableCell key={w.id}>{getStockCount(v.id, w.id).toLocaleString()}</TableCell>)}
-        <TableCell className="font-bold">{getStockCount(v.id).toLocaleString()}</TableCell><TableCell>{getProductStatus(v, getStockCount(v.id)) === 'out' ? 'Out of Stock' : getProductStatus(v, getStockCount(v.id)) === 'low' ? 'Low Stock' : 'In Stock'}</TableCell>
-        <TableCell><div className="flex gap-1"><Button type="button" variant="outline" size="icon" aria-label={`QR label for ${v.sku}`} onClick={() => setQrProduct(v)}><QrCode className="h-4 w-4" /></Button>{canAdjustStock && <Button type="button" variant="outline" size="icon" aria-label={`Adjust ${v.sku}`} onClick={() => { setSelectedVariantId(v.id); setIsDetailOpen(false); setIsStockUpdateOpen(true); }}><SlidersHorizontal className="h-4 w-4" /></Button>}</div></TableCell>
-      </TableRow>)}</TableBody>
-    </Table></div>
-  </section>;
+  const renderVariantDetails = (parent: Product) => {
+    const variantEntries = [parent, ...childrenOf(parent.id)];
+    return (
+      <section className="space-y-3 py-3">
+        <p className="text-xs text-muted-foreground">Stock is tracked separately for the original item and each variant across warehouses. Disabled variants retain their history and any remaining stock.</p>
+        <div className="overflow-x-auto rounded-lg border"><Table>
+          <TableHeader><TableRow><TableHead className="min-w-40">Item / Variant</TableHead><TableHead>SKU</TableHead>{allowedVariantFields.map(([key, label]) => <TableHead key={key}>{label}</TableHead>)}{warehouses.map(w => <TableHead key={w.id}>{w.name}</TableHead>)}<TableHead>Total Stock</TableHead><TableHead>Status</TableHead><TableHead>Actions</TableHead></TableRow></TableHeader>
+          <TableBody>{variantEntries.map(v => {
+            const isOriginal = v.id === parent.id;
+            const rowTotal = getOwnStockCount(v.id);
+            const rowStatus = getProductStatus(isOriginal ? { ...v, hasVariations: false } : v, rowTotal);
+            return (
+              <TableRow key={v.id} className={!isOriginal && v.variantEnabled === false ? 'bg-muted/30' : isOriginal ? 'bg-muted/15' : ''}>
+                <TableCell className="font-medium">
+                  <div className="flex items-center gap-2">
+                    {v.photoUrl && <img src={v.photoUrl} alt={isOriginal ? 'Original' : variantLabel(v)} className="h-12 w-12 shrink-0 rounded-lg border border-border object-cover" />}
+                    <span className="flex items-center gap-1.5 flex-wrap">
+                      {isOriginal ? <><span>Original</span><Badge variant="outline" className="text-[10px]">Base SKU</Badge></> : variantLabel(v)}
+                      {!isOriginal && v.variantEnabled === false && <Badge variant="secondary" className="ml-1">Disabled</Badge>}
+                    </span>
+                  </div>
+                </TableCell>
+                <TableCell className="font-mono text-xs">{v.sku}</TableCell>
+                {allowedVariantFields.map(([key]) => {
+                  const fieldVal = variantFieldNumber(v, key);
+                  return <TableCell key={key}>{fieldVal == null ? '—' : fieldVal.toLocaleString()}</TableCell>;
+                })}
+                {warehouses.map(w => <TableCell key={w.id}>{getOwnStockCount(v.id, w.id).toLocaleString()}</TableCell>)}
+                <TableCell className="font-bold">{rowTotal.toLocaleString()}</TableCell>
+                <TableCell>{rowStatus === 'out' ? 'Out of Stock' : rowStatus === 'low' ? 'Low Stock' : 'In Stock'}</TableCell>
+                <TableCell><div className="flex gap-1"><Button type="button" variant="outline" size="icon" aria-label={`QR label for ${v.sku}`} onClick={() => setQrProduct(v)}><QrCode className="h-4 w-4" /></Button>{canAdjustStock && <Button type="button" variant="outline" size="icon" aria-label={`Adjust ${v.sku}`} onClick={() => { setSelectedVariantId(v.id); setIsDetailOpen(false); setIsStockUpdateOpen(true); }}><SlidersHorizontal className="h-4 w-4" /></Button>}</div></TableCell>
+              </TableRow>
+            );
+          })}</TableBody>
+        </Table></div>
+      </section>
+    );
+  };
 
   const printThermalLabel = (product: Product, svgContainerId?: string) => {
     let svgHtml = '';
@@ -1568,6 +1610,17 @@ export function Inventory() {
       const category = p.category || 'N/A';
       const aisleBin = `${p.locationAisle || ''}/${p.locationBin || ''}`;
       if (p.hasVariations) {
+        if (getOwnStockCount(p.id) > 0) {
+          appendCsvRow(
+            p.id,
+            p.sku || '',
+            `${p.name} (Original)`,
+            supplier,
+            category,
+            aisleBin,
+            p.costPrice || 0,
+          );
+        }
         for (const v of childrenOf(p.id)) {
           if (v.variantEnabled === false) continue;
           appendCsvRow(
@@ -1601,7 +1654,7 @@ export function Inventory() {
     link.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
     toast.success('Multi-Warehouse Ledger exported successfully');
-  }, [visibleWarehouses, inventory, allowedWarehouseIds, products, childrenOf, canViewCost]);
+  }, [visibleWarehouses, inventory, allowedWarehouseIds, products, childrenOf, canViewCost, getOwnStockCount]);
 
   const inventoryNavigation = useMemo(() => <div className="flex gap-1 rounded-xl bg-muted/60 p-1 w-fit" aria-label="Inventory views">
     <Button variant={inventoryView === 'stock' ? 'default' : 'ghost'} aria-pressed={inventoryView === 'stock'} onClick={() => setInventoryView('stock')}><Package className="size-4" />Products & Stock</Button>
@@ -2420,7 +2473,7 @@ export function Inventory() {
           <form onSubmit={updateStock} className="space-y-4 pt-2">
             {selectedProduct?.hasVariations && (
               <div className="space-y-2">
-                <Label htmlFor="adjust-variant">Variant</Label>
+                <Label htmlFor="adjust-variant">Item / Variant</Label>
                 <select
                   id="adjust-variant"
                   required
@@ -2428,14 +2481,17 @@ export function Inventory() {
                   value={selectedVariantId}
                   onChange={e => setSelectedVariantId(e.target.value)}
                 >
-                  <option value="">Select a variant...</option>
+                  <option value="">Select original or variant...</option>
+                  <option value={selectedProduct.id}>
+                    Original (Base SKU) — {selectedProduct.sku} ({getOwnStockCount(selectedProduct.id).toLocaleString()} units)
+                  </option>
                   {childrenOf(selectedProduct.id).map(v => (
                     <option key={v.id} value={v.id}>
-                      {variantLabel(v)} — {v.sku}{v.variantEnabled === false ? ' (disabled)' : ''}
+                      {variantLabel(v)} — {v.sku} ({getOwnStockCount(v.id).toLocaleString()} units){v.variantEnabled === false ? ' (disabled)' : ''}
                     </option>
                   ))}
                 </select>
-                <p className="text-xs text-muted-foreground">Adjustments apply only to the selected variant and warehouse.</p>
+                <p className="text-xs text-muted-foreground">Choose the original base SKU or a specific variant. Adjustments apply only to your selection and warehouse.</p>
               </div>
             )}
 
@@ -2447,13 +2503,13 @@ export function Inventory() {
                   <span>Current Warehouse Stock</span>
                 </div>
                 <div className="text-xs font-bold text-muted-foreground">
-                  Total Across All: <span className="font-black text-[#d97706]">{adjustmentProduct ? getStockCount(adjustmentProduct.id).toLocaleString() : 0} units</span>
+                  Total Across All: <span className="font-black text-[#d97706]">{adjustmentProduct ? getOwnStockCount(adjustmentProduct.id).toLocaleString() : 0} units</span>
                 </div>
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-0.5">
                 {visibleWarehouses.map((wh) => {
-                  const whCount = adjustmentProduct ? getStockCount(adjustmentProduct.id, wh.id) : 0;
+                  const whCount = adjustmentProduct ? getOwnStockCount(adjustmentProduct.id, wh.id) : 0;
                   const isSelected = selectedWarehouseId === wh.id;
                   return (
                     <button
@@ -2497,7 +2553,7 @@ export function Inventory() {
                 </SelectTrigger>
                 <SelectContent>
                   {visibleWarehouses.map(wh => {
-                    const whCount = adjustmentProduct ? getStockCount(adjustmentProduct.id, wh.id) : 0;
+                    const whCount = adjustmentProduct ? getOwnStockCount(adjustmentProduct.id, wh.id) : 0;
                     return (
                       <SelectItem key={wh.id} value={wh.id}>
                         <div className="flex items-center justify-between w-full gap-4">
@@ -2534,18 +2590,18 @@ export function Inventory() {
                   </span>
                   {selectedWarehouseId ? (
                     <span className="font-bold">
-                      {adjustmentProduct ? getStockCount(adjustmentProduct.id, selectedWarehouseId) : 0}
+                      {adjustmentProduct ? getOwnStockCount(adjustmentProduct.id, selectedWarehouseId) : 0}
                       {adjustQty && Number(adjustQty) !== 0 && (
                         <>
                           <span className="text-muted-foreground mx-1">
                             {Number(adjustQty) > 0 ? `+ ${Number(adjustQty)}` : `- ${Math.abs(Number(adjustQty))}`} =
                           </span>
                           <span className={`font-black ${
-                            (adjustmentProduct ? getStockCount(adjustmentProduct.id, selectedWarehouseId) : 0) + Number(adjustQty) < 0
+                            (adjustmentProduct ? getOwnStockCount(adjustmentProduct.id, selectedWarehouseId) : 0) + Number(adjustQty) < 0
                               ? 'text-red-500'
                               : 'text-emerald-600 dark:text-emerald-400'
                           }`}>
-                            {(adjustmentProduct ? getStockCount(adjustmentProduct.id, selectedWarehouseId) : 0) + Number(adjustQty)} units
+                            {(adjustmentProduct ? getOwnStockCount(adjustmentProduct.id, selectedWarehouseId) : 0) + Number(adjustQty)} units
                           </span>
                         </>
                       )}
@@ -2668,10 +2724,10 @@ export function Inventory() {
                     </div>
                     <p className="mt-4 text-xs text-muted-foreground">Scan or print the product identity record associated with this item.</p>
                     <div className="mt-4 flex flex-1 flex-col items-center justify-center gap-4 rounded-lg border border-border p-5">
-                      <div id={`qr-svg-detail-${selectedProduct.id}`} className="rounded-lg bg-white p-2">{selectedProduct.hasVariations ? <p className="max-w-40 text-center text-sm text-muted-foreground">Choose a variant to view and print its QR label.</p> : <QRCodeSVG value={selectedProduct.id} size={150} />}</div>
-                      <div className="text-center"><p className="text-xs uppercase tracking-wider text-muted-foreground">SKU</p><p className="font-bold">{selectedProduct.sku}</p><p className="mt-4 text-xs uppercase tracking-wider text-muted-foreground">Unique node ID</p><p className="mt-1 break-all font-mono text-xs">{selectedProduct.id}</p></div>
+                      <div id={`qr-svg-detail-${selectedProduct.id}`} className="rounded-lg bg-white p-2"><QRCodeSVG value={selectedProduct.id} size={150} /></div>
+                      <div className="text-center"><p className="text-xs uppercase tracking-wider text-muted-foreground">SKU</p><p className="font-bold">{selectedProduct.sku}</p>{selectedProduct.hasVariations && <p className="mt-1 text-[11px] text-muted-foreground">Base SKU · open Variants tab for variant QR labels</p>}<p className="mt-4 text-xs uppercase tracking-wider text-muted-foreground">Unique node ID</p><p className="mt-1 break-all font-mono text-xs">{selectedProduct.id}</p></div>
                     </div>
-                    <Button variant="outline" className="mt-4 h-11" onClick={() => selectedProduct.hasVariations ? setDetailTab('variants') : printThermalLabel(selectedProduct, `qr-svg-detail-${selectedProduct.id}`)}><Printer className="mr-2 h-4 w-4" />Print Label</Button>
+                    <Button variant="outline" className="mt-4 h-11" onClick={() => printThermalLabel(selectedProduct, `qr-svg-detail-${selectedProduct.id}`)}><Printer className="mr-2 h-4 w-4" />Print Label</Button>
                   </section>
                 </div>}</>
             </div>;

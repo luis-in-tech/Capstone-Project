@@ -58,7 +58,7 @@ import {
 } from "../lib/orderEntry";
 
 const productVariation = (p: Product & { variation?: string }) =>
-  variantLabel(p) || p.variation || "";
+  variantLabel(p) || p.variation || (p.hasVariations ? "Original" : "");
 
 const selectClass =
   "h-10 w-full rounded-lg border border-input bg-background px-3 text-sm";
@@ -253,9 +253,21 @@ export const OrderEntry = React.memo(function OrderEntry({
         ? ["regular", "mm", "provincial", "promo", "cost"]
         : ["regular", "mm", "provincial", "promo"]
   ) as ReadonlyArray<"regular" | "mm" | "provincial" | "promo" | "cost">;
+  const stockedProductIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const item of inventory) {
+      if (Number(item.quantity) > 0 && item.productId) ids.add(item.productId);
+    }
+    return ids;
+  }, [inventory]);
   const orderableProducts = useMemo(
-    () => products.filter((p) => !p.hasVariations && p.variantEnabled !== false),
-    [products],
+    () =>
+      products.filter(
+        (p) =>
+          p.variantEnabled !== false &&
+          (!p.hasVariations || stockedProductIds.has(p.id)),
+      ),
+    [products, stockedProductIds],
   );
   const normalizedSearch = search.trim().toLowerCase();
   const filteredProducts = useMemo(() => {
@@ -399,7 +411,9 @@ export const OrderEntry = React.memo(function OrderEntry({
       );
       toast.error(
         rawMatch
-          ? "Parent product shells and disabled variations cannot be ordered directly."
+          ? rawMatch.hasVariations
+            ? "Original SKU has no available stock. Select a stocked variant or adjust stock first."
+            : "Disabled variations cannot be ordered directly."
           : "No product matches this SKU.",
       );
       return false;

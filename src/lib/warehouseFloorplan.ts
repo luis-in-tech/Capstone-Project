@@ -1085,6 +1085,50 @@ export function computeRotatedRect90(
   return { x: nextX, y: nextY, w: nextW, h: nextH, rotate: nextRotate };
 }
 
+export interface CachedFloorplanMeta {
+  height: number;
+  hasTabs: boolean;
+}
+
+export function readCachedFloorplanMeta(storageKey: string): CachedFloorplanMeta | null {
+  if (!storageKey || typeof window === 'undefined' || !window.localStorage) return null;
+  try {
+    const raw = window.localStorage.getItem(`${storageKey}:floorplan:meta`);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<CachedFloorplanMeta> | null;
+    if (
+      !parsed ||
+      typeof parsed !== 'object' ||
+      typeof parsed.height !== 'number' ||
+      !Number.isFinite(parsed.height) ||
+      parsed.height < 300 ||
+      parsed.height > 1600
+    ) {
+      return null;
+    }
+    return {
+      height: parsed.height,
+      hasTabs: Boolean(parsed.hasTabs),
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function writeCachedFloorplanMeta(storageKey: string, data: FloorplanData): void {
+  if (!storageKey || typeof window === 'undefined' || !window.localStorage) return;
+  try {
+    const height = clampPct(data.height ?? INITIAL_FLOORPLAN.height ?? 520, 300, 1600);
+    const meta: CachedFloorplanMeta = {
+      height,
+      hasTabs: Boolean(data.floors && data.floors.length > 1),
+    };
+    window.localStorage.setItem(`${storageKey}:floorplan:meta`, JSON.stringify(meta));
+  } catch {
+    // Ignore storage quota or private mode restrictions
+  }
+}
+
 export function parseFloorplanImport(rawJson: string): FloorplanData {
   let parsed: unknown;
   try {

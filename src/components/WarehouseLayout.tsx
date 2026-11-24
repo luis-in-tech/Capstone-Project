@@ -15,7 +15,7 @@ import { useStaffAccess } from '../hooks/useStaffAccess';
 import { useAuth } from '../hooks/useAuth';
 import { hasAdminRole } from '../lib/staffPermissions';
 import { assignLocalQuantity, localLayoutKey, readLocalLayout, validLocalAllocations } from '../lib/warehouseLayoutLocal';
-import { boxPropsFromShape, suggestZoneNameFromShape, type FloorplanShape } from '../lib/warehouseFloorplan';
+import { boxPropsFromShape, readCachedFloorplanMeta, suggestZoneNameFromShape, type FloorplanShape } from '../lib/warehouseFloorplan';
 import { supabase } from '../lib/supabase';
 import { pickDefaultWarehouse, sortWarehousesForLayout, type WarehouseZone, type ZoneAllocation } from '../lib/warehouseLayout';
 import type { Product, InventoryItem, Warehouse } from '../types';
@@ -55,6 +55,7 @@ export function WarehouseLayout({ warehouses, products, inventory }: { warehouse
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [reload, setReload] = useState(0);
+  const cachedFloorplanMeta = useMemo(() => readCachedFloorplanMeta(storageKey), [storageKey, mapResetKey, reload]);
   const [saving, setSaving] = useState(false);
   const [editor, setEditor] = useState<{ mode: 'add' | 'rename' | 'delete'; zone?: WarehouseZone; fromShape?: FloorplanShape } | null>(null);
   const [pendingZoneConversion, setPendingZoneConversion] = useState<PendingZoneConversion | null>(null);
@@ -737,8 +738,8 @@ export function WarehouseLayout({ warehouses, products, inventory }: { warehouse
   return <div className="space-y-5">
     <div className="flex flex-wrap items-center gap-3"><h2 className="text-xl font-bold">{selectedName ? 'Zone Inventory' : 'Warehouse Layout'}</h2><Badge variant="outline" className="gap-1.5"><Grid2X2 className="size-3" />Not to Scale</Badge></div>
     {temporary && !error && <div role="status" className="flex items-start gap-2 rounded-lg border border-gold/30 bg-gold/10 px-3 py-2 text-xs"><Info className="mt-0.5 size-4 shrink-0" /><div><p className="font-medium">Temporary layout · Saved in this browser</p><p className="mt-1 text-muted-foreground">Zones and allocations are local to your account in this browser; they do not sync with Inventory Movement.</p><details className="mt-1 text-muted-foreground"><summary className="w-fit cursor-pointer">Storage details</summary><p className="mt-1">Clearing browser data removes this layout. If stock falls below temporary allocations, that product appears as Unassigned. Temporary data is not automatically imported when database storage becomes available.</p></details></div></div>}
-    <div className="flex min-h-17 flex-wrap items-end justify-between gap-3">
-      <div className="flex w-full flex-col gap-2 sm:w-auto">
+    <div className="grid min-h-17 gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
+      <div className="flex w-full min-w-0 flex-col gap-2">
         <Label htmlFor="layout-warehouse">Warehouse</Label>
         <div className="flex flex-wrap items-center gap-2">
           <div className="min-w-0 flex-1 sm:w-72 sm:flex-none">
@@ -761,6 +762,7 @@ export function WarehouseLayout({ warehouses, products, inventory }: { warehouse
             <Button
               type="button"
               variant="outline"
+              className="shrink-0"
               onClick={() => {
                 if (floorplanDirty) {
                   setPendingLeaveAction({ kind: 'add-warehouse' });
@@ -775,7 +777,7 @@ export function WarehouseLayout({ warehouses, products, inventory }: { warehouse
           )}
         </div>
       </div>
-      {!selectedName && !error && warehouse && (
+      {!selectedName && !error && (
         <div className="flex w-full flex-col gap-2 sm:w-80">
           <Label htmlFor="map-sku-finder">Find Product / SKU on Map</Label>
           <SearchBar
@@ -783,7 +785,7 @@ export function WarehouseLayout({ warehouses, products, inventory }: { warehouse
             aria-label="Find product or SKU on map"
             placeholder="Search SKU, item name, or category..."
             value={mapSearch}
-            disabled={loading}
+            disabled={loading || !warehouse}
             onValueChange={setMapSearch}
           />
         </div>
@@ -811,8 +813,19 @@ export function WarehouseLayout({ warehouses, products, inventory }: { warehouse
               <div className="h-3 w-32 rounded bg-muted/70" />
             </div>
           </div>
-          <div role="status" className="flex h-130 items-center justify-center rounded-lg border bg-muted/15 text-sm text-muted-foreground">
-            <Loader2 className="mr-2 size-5 animate-spin" />Loading warehouse layout...
+          <div className="space-y-4">
+            {canEdit && <div className="h-9 w-28 rounded-md bg-muted/50" />}
+            {cachedFloorplanMeta?.hasTabs && <div className="h-8 w-64 rounded-md bg-muted/40" />}
+            <div className="p-4">
+              <div
+                role="status"
+                style={{ height: `${cachedFloorplanMeta?.height ?? 520}px` }}
+                className="flex items-center justify-center border-[3px] border-foreground/20 bg-muted/15 text-sm text-muted-foreground"
+              >
+                <Loader2 className="mr-2 size-5 animate-spin" />Loading warehouse layout...
+              </div>
+            </div>
+            <div className="h-4" />
           </div>
           <div className="mt-5 h-4 w-80 max-w-full rounded bg-muted/60" />
         </section>

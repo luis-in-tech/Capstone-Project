@@ -260,7 +260,7 @@ export const SupplyChainWorkspace = memo(function SupplyChainWorkspace({ sourceL
   const customer = view === 'customers';
   const singular = warehouse ? 'warehouse' : customer ? 'customer' : 'supplier';
   const title = views.find(item => item.id === view)!.name;
-  const requiredTables = customer ? ['orders', 'order_items'] : warehouse ? ['orders', 'order_items', 'inventory_movements', 'transfers'] : ['inventory_movements'];
+  const requiredTables = customer ? ['orders', 'order_items', 'customers'] : warehouse ? ['orders', 'order_items', 'inventory_movements', 'transfers'] : ['inventory_movements'];
   const loading = sourceLoading || requiredTables.some(table => !loaded[table]);
   const loadError = sourceError || requiredTables.some(table => errors[table]);
 
@@ -914,7 +914,7 @@ export const SupplyChainWorkspace = memo(function SupplyChainWorkspace({ sourceL
       <aside className="overflow-hidden rounded-2xl border bg-card shadow-sm">
         <div className="space-y-3 border-b p-4"><div className="flex min-h-8 items-center justify-between"><h2 className="font-semibold">{title} <span className="ml-1 inline-block min-w-4 text-xs font-normal tabular-nums text-muted-foreground">{loading && entities.length === 0 ? '—' : entities.length}</span></h2>{canManage && <Button size="sm" onClick={() => { setEditError(''); setEditor({ id: '', name: '', active: true }); }}><Plus className="size-4" />Add</Button>}</div><SearchBar value={directorySearch} onValueChange={setDirectorySearch} placeholder={`Search ${title.toLowerCase()}…`} /></div>
         <div className="h-64 overflow-y-auto p-2 xl:h-136">
-          {loading && !visibleEntities.length ? (
+          {loading ? (
             <div aria-label={`Loading ${title.toLowerCase()}`} className="space-y-1.5">
               {[0, 1, 2, 3].map(idx => (
                 <div key={idx} className="h-14 rounded-xl border border-transparent bg-muted/40 p-3">

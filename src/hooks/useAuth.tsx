@@ -21,14 +21,98 @@ interface AuthContextType {
 }
 
 const AuthContext = createContext<AuthContextType | null>(null);
+const AUTH_PROFILE_CACHE_KEY = 'activepro.auth_profile_cache';
+const VALID_ROLES = new Set(['admin', 'secretary', 'agent', 'staff']);
+
+function getSupabaseSessionStorageKey(): string | null {
+  try {
+    const rawUrl = import.meta.env?.VITE_SUPABASE_URL?.trim();
+    if (!rawUrl) return null;
+    const projectRef = new URL(rawUrl).hostname.split('.')[0];
+    return projectRef ? `sb-${projectRef}-auth-token` : null;
+  } catch {
+    return null;
+  }
+}
+
+function readPersistedSupabaseSessionUser(): User | null {
+  if (typeof window === 'undefined' || !window.localStorage) return null;
+  const key = getSupabaseSessionStorageKey();
+  if (!key) return null;
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { access_token?: unknown; expires_at?: unknown; user?: User } | null;
+    if (
+      !parsed ||
+      typeof parsed !== 'object' ||
+      typeof parsed.access_token !== 'string' ||
+      !parsed.access_token ||
+      typeof parsed.expires_at !== 'number' ||
+      parsed.expires_at * 1000 <= Date.now() + 10_000 ||
+      !parsed.user?.id
+    ) {
+      return null;
+    }
+    return parsed.user;
+  } catch {
+    return null;
+  }
+}
+
+function readCachedAuthProfile(uid: string): UserProfile | null {
+  if (typeof window === 'undefined' || !window.localStorage) return null;
+  try {
+    const raw = window.localStorage.getItem(AUTH_PROFILE_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as UserProfile | null;
+    if (!parsed || typeof parsed !== 'object' || parsed.uid !== uid || !VALID_ROLES.has(parsed.role)) {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function writeCachedAuthProfile(profile: UserProfile | null): void {
+  if (typeof window === 'undefined' || !window.localStorage) return;
+  try {
+    if (!profile) {
+      window.localStorage.removeItem(AUTH_PROFILE_CACHE_KEY);
+    } else {
+      window.localStorage.setItem(AUTH_PROFILE_CACHE_KEY, JSON.stringify(profile));
+    }
+  } catch {
+    // Ignore storage quota or private browsing errors
+  }
+}
+
+export function peekCachedAuthRole(): UserProfile['role'] | null {
+  if (!isSupabaseConfigured) return null;
+  const persistedUser = readPersistedSupabaseSessionUser();
+  if (!persistedUser?.id) return null;
+  return readCachedAuthProfile(persistedUser.id)?.role ?? null;
+}
+
+function readInitialAuthHydration(): { user: User; profile: UserProfile } | null {
+  if (!isSupabaseConfigured) return null;
+  const persistedUser = readPersistedSupabaseSessionUser();
+  if (!persistedUser?.id) return null;
+  const cachedProfile = readCachedAuthProfile(persistedUser.id);
+  if (!cachedProfile) return null;
+  return { user: persistedUser, profile: cachedProfile };
+}
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [user, setUser] = useState<User | null>(null);
-  const [profile, setProfile] = useState<UserProfile | null>(null);
+  const [initialAuth] = useState<{ user: User; profile: UserProfile } | null>(() => readInitialAuthHydration());
+  const [user, setUser] = useState<User | null>(() => initialAuth?.user ?? null);
+  const [profile, setProfile] = useState<UserProfile | null>(() => initialAuth?.profile ?? null);
   const [profileError, setProfileError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(() => !initialAuth);
   const inactivityTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const loadedUidRef = useRef<string | null>(null);
+  const serverVerifiedUidRef = useRef<string | null>(null);
   const authSeqRef = useRef(0);
   const inFlightProfileRef = useRef<{ uid: string; seq: number; promise: Promise<void> } | null>(null);
   const isMountedRef = useRef(true);
@@ -76,11 +160,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const initialSeq = authSeqRef.current;
     supabase.auth.getSession().then(({ data: { session } }) => {
       if (isMountedRef.current && authSeqRef.current === initialSeq) {
-        handleUserChange(session?.user ?? null, { seq: initialSeq });
+        handleUserChange(session?.user ?? null, { force: true, seq: initialSeq });
       }
     }).catch((err) => {
       console.error('Failed to retrieve auth session:', err);
       if (isMountedRef.current && authSeqRef.current === initialSeq) {
+        writeCachedAuthProfile(null);
+        if (!serverVerifiedUidRef.current) {
+          setProfile(null);
+        }
         setProfileError('Unable to verify session. Please retry.');
         setLoading(false);
       }
@@ -121,7 +209,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     if (!currentUser) {
       clearLocalCaches();
+      writeCachedAuthProfile(null);
       loadedUidRef.current = null;
+      serverVerifiedUidRef.current = null;
       inFlightProfileRef.current = null;
       setProfile(null);
       setProfileError(null);
@@ -155,8 +245,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (!isMountedRef.current || authSeqRef.current !== activeSeq) return;
 
         if (docSnap) {
+          const verified = docSnap as UserProfile;
           loadedUidRef.current = currentUser.id;
-          setProfile(docSnap as UserProfile);
+          serverVerifiedUidRef.current = currentUser.id;
+          writeCachedAuthProfile(verified);
+          setProfile(verified);
           setProfileError(null);
         } else {
           // Profile row genuinely does not exist yet: provision default 'agent' profile
@@ -180,15 +273,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             .maybeSingle();
           if (insertError) throw insertError;
           if (!isMountedRef.current || authSeqRef.current !== activeSeq) return;
+          const resolvedProfile = (insertedSnap as UserProfile) || newProfile;
           loadedUidRef.current = currentUser.id;
-          setProfile((insertedSnap as UserProfile) || newProfile);
+          serverVerifiedUidRef.current = currentUser.id;
+          writeCachedAuthProfile(resolvedProfile);
+          setProfile(resolvedProfile);
           setProfileError(null);
         }
       } catch (error) {
         handleSupabaseError(error, OperationType.GET, `users/${currentUser.id}`);
         if (!isMountedRef.current || authSeqRef.current !== activeSeq) return;
-        // Preserve already-verified profile if refreshing for same user, but never downgrade/fabricate a default role
-        setProfile(prev => (prev?.uid === currentUser.id ? prev : null));
+        writeCachedAuthProfile(null);
+        // Preserve already-verified profile only if server verified this user in this session; never preserve unverified cache
+        setProfile(prev => (serverVerifiedUidRef.current === currentUser.id && prev?.uid === currentUser.id ? prev : null));
         setProfileError('Failed to verify your user profile from the server. Please retry.');
       } finally {
         if (inFlightProfileRef.current?.uid === currentUser.id && inFlightProfileRef.current.seq === activeSeq) {
@@ -270,8 +367,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const logout = async () => {
     clearInactivityTimer();
     clearLocalCaches();
+    writeCachedAuthProfile(null);
     authSeqRef.current++;
     loadedUidRef.current = null;
+    serverVerifiedUidRef.current = null;
     inFlightProfileRef.current = null;
     try {
       if (isSupabaseConfigured) {
@@ -350,7 +449,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       if (error) throw error;
       if (!updatedRow) throw new Error('Profile record could not be updated.');
-      setProfile(prev => prev ? { ...prev, ...(updatedRow as Partial<UserProfile>), ...updatedData } : null);
+      setProfile(prev => {
+        const next = prev ? { ...prev, ...(updatedRow as Partial<UserProfile>), ...updatedData } : null;
+        if (next) writeCachedAuthProfile(next);
+        return next;
+      });
       toast.success('Profile updated successfully');
     } catch (error) {
       handleSupabaseError(error, OperationType.UPDATE, `users/${user.id}`);

@@ -24,6 +24,7 @@ import {
   normalizeHexColor,
   normalizeRectFromPoints,
   parseFloorplanImport,
+  readCachedFloorplanMeta,
   rectIntersects,
   resizeLineLength,
   resolveEffectiveFloorId,
@@ -37,6 +38,7 @@ import {
   suggestZoneNameFromShape,
   updateLineEndpoint,
   validFloorplan,
+  writeCachedFloorplanMeta,
   type FloorplanData,
 } from './warehouseFloorplan';
 
@@ -471,6 +473,40 @@ test('180deg upside-down rotation, RGB/hex colors, text formatting, and onion la
   assert.deepEqual(turned, { x: 25, y: 25, w: 10, h: 20, rotate: 90 });
   const flipped = computeRotatedRect90({ x: 20, y: 30, w: 20, h: 10 }, 0, 'flip180', 1);
   assert.deepEqual(flipped, { x: 20, y: 30, w: 20, h: 10, rotate: 180 });
+});
+
+test('readCachedFloorplanMeta and writeCachedFloorplanMeta safely persist height and floor-tab metadata', () => {
+  assert.equal(readCachedFloorplanMeta('wh-1'), null);
+
+  const store = new Map<string, string>();
+  const origWindow = (globalThis as { window?: unknown }).window;
+  (globalThis as { window?: unknown }).window = {
+    localStorage: {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => store.set(k, v),
+    },
+  };
+  try {
+    writeCachedFloorplanMeta('storage:wh-1', {
+      height: 1100,
+      boxes: {},
+      doors: [],
+      floors: [
+        { id: 'f1', name: '6001-D' },
+        { id: 'f2', name: '6001-E' },
+      ],
+    });
+    assert.deepEqual(readCachedFloorplanMeta('storage:wh-1'), { height: 1100, hasTabs: true });
+
+    store.set('bad:floorplan:meta', JSON.stringify({ height: 9999, hasTabs: false }));
+    assert.equal(readCachedFloorplanMeta('bad'), null);
+  } finally {
+    if (origWindow === undefined) {
+      delete (globalThis as { window?: unknown }).window;
+    } else {
+      (globalThis as { window?: unknown }).window = origWindow;
+    }
+  }
 });
 
 

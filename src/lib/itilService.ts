@@ -19,46 +19,63 @@ function buildOrdersSlaSignature(orders: Order[]): string {
     .join('|');
 }
 
-export function getLocalIncidents(): ITILIncident[] {
+function dedupeById<T extends { id?: string }>(items: T[]): T[] {
+  const seen = new Set<string>();
+  const result: T[] = [];
+  for (const item of items) {
+    const id = item?.id;
+    if (id) {
+      if (seen.has(id)) continue;
+      seen.add(id);
+    }
+    result.push(item);
+  }
+  return result;
+}
+
+function readLocalRecords<T extends { id?: string }>(storageKey: string): T[] {
   if (typeof window === 'undefined' || !window.localStorage) return [];
   try {
-    const raw = localStorage.getItem(ITIL_INCIDENTS_STORAGE_KEY);
+    const raw = localStorage.getItem(storageKey);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
+    if (!Array.isArray(parsed)) return [];
+    const deduped = dedupeById(parsed as T[]);
+    if (deduped.length !== parsed.length) {
+      localStorage.setItem(storageKey, JSON.stringify(deduped));
+    }
+    return deduped;
   } catch {
     return [];
   }
 }
 
+export function getLocalIncidents(): ITILIncident[] {
+  return readLocalRecords<ITILIncident>(ITIL_INCIDENTS_STORAGE_KEY);
+}
+
 export function saveLocalIncidents(incidents: ITILIncident[]) {
-  lastSlaResult = incidents;
+  const deduped = dedupeById(incidents);
+  lastSlaResult = deduped;
   if (typeof window === 'undefined' || !window.localStorage) return;
   try {
-    localStorage.setItem(ITIL_INCIDENTS_STORAGE_KEY, JSON.stringify(incidents));
-    window.dispatchEvent(new CustomEvent('activepro_incidents_changed', { detail: { incidents } }));
+    localStorage.setItem(ITIL_INCIDENTS_STORAGE_KEY, JSON.stringify(deduped));
+    window.dispatchEvent(new CustomEvent('activepro_incidents_changed', { detail: { incidents: deduped } }));
   } catch (e) {
     console.warn('Failed to persist ITIL incidents:', e);
   }
 }
 
 export function getLocalDefectiveTickets(): DefectiveStockTicket[] {
-  if (typeof window === 'undefined' || !window.localStorage) return [];
-  try {
-    const raw = localStorage.getItem(DEFECTIVE_TICKETS_STORAGE_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
+  return readLocalRecords<DefectiveStockTicket>(DEFECTIVE_TICKETS_STORAGE_KEY);
 }
 
 export function saveLocalDefectiveTickets(tickets: DefectiveStockTicket[]) {
+  const deduped = dedupeById(tickets);
   if (typeof window === 'undefined' || !window.localStorage) return;
   try {
-    localStorage.setItem(DEFECTIVE_TICKETS_STORAGE_KEY, JSON.stringify(tickets));
-    window.dispatchEvent(new CustomEvent('activepro_defective_tickets_changed', { detail: { tickets } }));
+    localStorage.setItem(DEFECTIVE_TICKETS_STORAGE_KEY, JSON.stringify(deduped));
+    window.dispatchEvent(new CustomEvent('activepro_defective_tickets_changed', { detail: { tickets: deduped } }));
   } catch (e) {
     console.warn('Failed to persist defective tickets:', e);
   }
@@ -409,12 +426,12 @@ export async function logDefectiveStockException(params: {
     throw err;
   }
 
-  // 4. Sync local caches after confirmed persistence
+  // 4. Sync local caches after confirmed persistence (avoid duplicating records already written by setDoc)
   const currentIncidents = getLocalIncidents();
-  saveLocalIncidents([incident, ...currentIncidents]);
+  saveLocalIncidents([incident, ...currentIncidents.filter((i) => i.id !== incident.id)]);
 
   const currentTickets = getLocalDefectiveTickets();
-  saveLocalDefectiveTickets([defectiveTicket, ...currentTickets]);
+  saveLocalDefectiveTickets([defectiveTicket, ...currentTickets.filter((t) => t.id !== defectiveTicket.id)]);
 
   return { ticket: defectiveTicket, incident };
 }
