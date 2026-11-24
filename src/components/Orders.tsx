@@ -786,7 +786,7 @@ export function Orders() {
     const q = editAddSearch.trim().toLowerCase();
     const { stockByProduct } = editProductInventoryIndex;
     return products
-      .filter(p => !p.hasVariations && p.variantEnabled !== false && (!q || `${p.name} ${p.sku}`.toLowerCase().includes(q)))
+      .filter(p => p.variantEnabled !== false && (!p.hasVariations || (stockByProduct.get(p.id) ?? 0) > 0) && (!q || `${p.name} ${p.sku}${p.hasVariations ? ' original' : ''}`.toLowerCase().includes(q)))
       .sort((a, b) => {
         const stockA = stockByProduct.get(a.id) ?? 0;
         const stockB = stockByProduct.get(b.id) ?? 0;
@@ -2201,7 +2201,7 @@ export function Orders() {
                             <div className="min-w-0 flex-1">
                               <p className="font-semibold truncate">{p.name}</p>
                               <p className="text-[10px] text-muted-foreground">
-                                <span className="font-mono">{p.sku}</span> ·{' '}
+                                <span className="font-mono">{p.sku}</span>{p.hasVariations ? ' · Original' : ''} ·{' '}
                                 <span className={totalStock <= 0 ? 'text-destructive font-semibold' : ''}>
                                   {totalStock > 0 ? `${totalStock} available` : 'Out of stock'}
                                 </span>

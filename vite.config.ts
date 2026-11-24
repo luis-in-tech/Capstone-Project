@@ -1,11 +1,40 @@
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
-import {defineConfig} from 'vite';
+import {defineConfig, loadEnv} from 'vite';
 
-export default defineConfig(() => {
+export default defineConfig(({mode}) => {
+  const env = loadEnv(mode, process.cwd(), 'VITE_');
+  let supabaseOrigin: string | null = null;
+  try {
+    if (env.VITE_SUPABASE_URL) {
+      const parsed = new URL(env.VITE_SUPABASE_URL.trim());
+      if (parsed.protocol === 'https:' || parsed.protocol === 'http:') {
+        supabaseOrigin = parsed.origin;
+      }
+    }
+  } catch {
+    supabaseOrigin = null;
+  }
+
   return {
-    plugins: [react(), tailwindcss()],
+    plugins: [
+      react(),
+      tailwindcss(),
+      ...(supabaseOrigin
+        ? [
+            {
+              name: 'supabase-preconnect',
+              transformIndexHtml(html: string) {
+                return html.replace(
+                  '<title>',
+                  `<link rel="preconnect" href="${supabaseOrigin}" crossorigin />\n    <title>`,
+                );
+              },
+            },
+          ]
+        : []),
+    ],
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),

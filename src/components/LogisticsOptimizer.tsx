@@ -541,7 +541,7 @@ export function LogisticsOptimizer() {
       }
 
       for (const prod of dbProducts) {
-        if (prod.hasVariations || prod.variantEnabled === false) continue;
+        if (prod.variantEnabled === false) continue;
         const stocks = invByProduct.get(prod.id) || [];
         const depleted = stocks.find(s => s.quantity === 0);
         const surplus = stocks.find(s => s.quantity >= 30);

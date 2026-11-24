@@ -1,7 +1,7 @@
 export type DoorEdge = 'top' | 'bottom' | 'left' | 'right';
 export type ShapeKind = 'box' | 'label' | 'line';
 export type TextSize = 'xs' | 'sm' | 'base' | 'lg';
-export type TextRotation = 0 | 90 | -90;
+export type TextRotation = 0 | 90 | -90 | 180;
 export type LineColor = 'dark' | 'blue' | 'muted' | 'gold' | 'red';
 export type LineStyle = 'solid' | 'dashed' | 'dotted';
 export type BorderStyle = 'solid' | 'dashed' | 'none';
@@ -25,6 +25,12 @@ export interface FloorplanBox {
   w: number;
   h: number;
   color: number;
+  fillColor?: string;
+  fillOpacity?: number;
+  textColor?: string;
+  bold?: boolean;
+  italic?: boolean;
+  underline?: boolean;
   sublabel?: string;
   fontSize?: TextSize;
   rotate?: TextRotation;
@@ -50,6 +56,12 @@ export interface FloorplanShape {
   w: number;
   h: number;
   color: number;
+  fillColor?: string;
+  fillOpacity?: number;
+  textColor?: string;
+  bold?: boolean;
+  italic?: boolean;
+  underline?: boolean;
   border?: BorderStyle;
   lineColor?: LineColor;
   lineAxis?: LineAxis;
@@ -123,7 +135,121 @@ export const snapPct = (value: number, step: number): number => {
 const r1 = (n: number) => Math.round(n * 10) / 10;
 
 const VALID_FONT_SIZES: TextSize[] = ['xs', 'sm', 'base', 'lg'];
-const VALID_ROTATIONS: TextRotation[] = [0, 90, -90];
+const VALID_ROTATIONS: TextRotation[] = [0, 90, -90, 180];
+
+export const FLOORPLAN_FILL_PALETTE: ReadonlyArray<{ hex: string; name: string }> = [
+  { hex: '#FFFFFF', name: 'Pure White' },
+  { hex: '#F8FAFC', name: 'Soft Chalk' },
+  { hex: '#E2E8F0', name: 'Cool Slate' },
+  { hex: '#94A3B8', name: 'Steel Gray' },
+  { hex: '#334155', name: 'Dark Slate' },
+  { hex: '#111827', name: 'Charcoal' },
+  { hex: '#FEF3C7', name: 'Warm Cream' },
+  { hex: '#FDE047', name: 'Canary Gold' },
+  { hex: '#F59E0B', name: 'Amber Gold' },
+  { hex: '#FFEDD5', name: 'Soft Peach' },
+  { hex: '#F97316', name: 'Safety Orange' },
+  { hex: '#FEE2E2', name: 'Blush Rose' },
+  { hex: '#EF4444', name: 'Signal Red' },
+  { hex: '#FCE7F3', name: 'Light Pink' },
+  { hex: '#EC4899', name: 'Magenta' },
+  { hex: '#EDE9FE', name: 'Soft Lavender' },
+  { hex: '#8B5CF6', name: 'Royal Violet' },
+  { hex: '#DBEAFE', name: 'Ice Blue' },
+  { hex: '#3B82F6', name: 'Warehouse Blue' },
+  { hex: '#1E40AF', name: 'Deep Navy' },
+  { hex: '#CCFBF1', name: 'Aqua Mint' },
+  { hex: '#14B8A6', name: 'Teal' },
+  { hex: '#DCFCE7', name: 'Mint Green' },
+  { hex: '#16A34A', name: 'Emerald' },
+];
+
+export const FLOORPLAN_TEXT_PALETTE: ReadonlyArray<{ hex: string; name: string }> = [
+  { hex: '#111827', name: 'Charcoal' },
+  { hex: '#475569', name: 'Slate' },
+  { hex: '#FFFFFF', name: 'White' },
+  { hex: '#DC2626', name: 'Red' },
+  { hex: '#EA580C', name: 'Orange' },
+  { hex: '#D97706', name: 'Amber' },
+  { hex: '#CA8A04', name: 'Gold' },
+  { hex: '#16A34A', name: 'Green' },
+  { hex: '#0D9488', name: 'Teal' },
+  { hex: '#0284C7', name: 'Sky Blue' },
+  { hex: '#2563EB', name: 'Blue' },
+  { hex: '#1E3A8A', name: 'Navy' },
+  { hex: '#4F46E5', name: 'Indigo' },
+  { hex: '#7C3AED', name: 'Violet' },
+  { hex: '#DB2777', name: 'Pink' },
+];
+
+const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
+
+export function isValidHexColor(val: unknown): val is string {
+  return typeof val === 'string' && HEX_COLOR_RE.test(val);
+}
+
+export function normalizeHexColor(val: string): string | null {
+  const trimmed = val.trim();
+  const clean = trimmed.startsWith('#') ? trimmed.slice(1) : trimmed;
+  if (/^[0-9a-fA-F]{3}$/.test(clean)) {
+    return `#${clean[0]}${clean[0]}${clean[1]}${clean[1]}${clean[2]}${clean[2]}`.toUpperCase();
+  }
+  if (/^[0-9a-fA-F]{6}$/.test(clean)) {
+    return `#${clean}`.toUpperCase();
+  }
+  return null;
+}
+
+export function hexToRgb(hex: string): { r: number; g: number; b: number } {
+  const normalized = normalizeHexColor(hex) ?? '#000000';
+  return {
+    r: parseInt(normalized.slice(1, 3), 16),
+    g: parseInt(normalized.slice(3, 5), 16),
+    b: parseInt(normalized.slice(5, 7), 16),
+  };
+}
+
+export function rgbToHex(r: number, g: number, b: number): string {
+  const clampByte = (v: number) =>
+    Math.round(Math.min(255, Math.max(0, Number.isFinite(v) ? v : 0)))
+      .toString(16)
+      .padStart(2, '0');
+  return `#${clampByte(r)}${clampByte(g)}${clampByte(b)}`.toUpperCase();
+}
+
+export function hexToRgba(hex: string, alpha: number): string {
+  const { r, g, b } = hexToRgb(hex);
+  const clampedAlpha = Math.min(1, Math.max(0, Number.isFinite(alpha) ? alpha : 1));
+  return `rgba(${r}, ${g}, ${b}, ${Math.round(clampedAlpha * 100) / 100})`;
+}
+
+export function relativeLuminance(hex: string): number {
+  const { r, g, b } = hexToRgb(hex);
+  const toLinear = (channel: number) => {
+    const s = channel / 255;
+    return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+  };
+  return 0.2126 * toLinear(r) + 0.7152 * toLinear(g) + 0.0722 * toLinear(b);
+}
+
+export function isDarkHexColor(hex: string): boolean {
+  return relativeLuminance(hex) < 0.36;
+}
+
+export function computeContrastBorderHex(hex: string): string {
+  const { r, g, b } = hexToRgb(hex);
+  const lum = relativeLuminance(hex);
+  if (lum > 0.72) {
+    const mix = 0.42;
+    return rgbToHex(r * (1 - mix) + 30 * mix, g * (1 - mix) + 41 * mix, b * (1 - mix) + 59 * mix);
+  }
+  if (lum < 0.12) {
+    const mix = 0.28;
+    return rgbToHex(r * (1 - mix) + 255 * mix, g * (1 - mix) + 255 * mix, b * (1 - mix) + 255 * mix);
+  }
+  const mix = 0.2;
+  return rgbToHex(r * (1 - mix) + 15 * mix, g * (1 - mix) + 23 * mix, b * (1 - mix) + 42 * mix);
+}
 const VALID_BORDERS: BorderStyle[] = ['solid', 'dashed', 'none'];
 const VALID_LINE_COLORS: LineColor[] = ['dark', 'blue', 'muted', 'gold', 'red'];
 const VALID_LINE_STYLES: LineStyle[] = ['solid', 'dashed', 'dotted'];
@@ -161,6 +287,14 @@ function validOptionalBoxProps(b: Partial<FloorplanBox>): boolean {
   if (b.align !== undefined && b.align !== 'left' && b.align !== 'center') return false;
   if (b.border !== undefined && !VALID_BORDERS.includes(b.border)) return false;
   if (b.z !== undefined && !Number.isFinite(b.z)) return false;
+  if (b.fillColor !== undefined && !isValidHexColor(b.fillColor)) return false;
+  if (b.fillOpacity !== undefined && (typeof b.fillOpacity !== 'number' || !Number.isFinite(b.fillOpacity) || b.fillOpacity < 0 || b.fillOpacity > 1)) {
+    return false;
+  }
+  if (b.textColor !== undefined && !isValidHexColor(b.textColor)) return false;
+  if (b.bold !== undefined && typeof b.bold !== 'boolean') return false;
+  if (b.italic !== undefined && typeof b.italic !== 'boolean') return false;
+  if (b.underline !== undefined && typeof b.underline !== 'boolean') return false;
   if (!validFloorId(b.floor)) return false;
   return true;
 }
@@ -615,6 +749,12 @@ export function boxPropsFromShape(shape: FloorplanShape): FloorplanBox {
     w: shape.w,
     h: shape.h,
     color: shape.color,
+    ...(shape.fillColor ? { fillColor: shape.fillColor } : {}),
+    ...(shape.fillOpacity !== undefined ? { fillOpacity: shape.fillOpacity } : {}),
+    ...(shape.textColor ? { textColor: shape.textColor } : {}),
+    ...(shape.bold !== undefined ? { bold: shape.bold } : {}),
+    ...(shape.italic !== undefined ? { italic: shape.italic } : {}),
+    ...(shape.underline !== undefined ? { underline: shape.underline } : {}),
     fontSize: shape.fontSize ?? 'sm',
     rotate: shape.rotate ?? 0,
     align: shape.align ?? 'center',
@@ -816,6 +956,12 @@ export type CopiedFloorplanStyle =
   | {
       styleKind: 'rect';
       color: number;
+      fillColor?: string;
+      fillOpacity?: number;
+      textColor?: string;
+      bold?: boolean;
+      italic?: boolean;
+      underline?: boolean;
       border: BorderStyle;
       fontSize: TextSize;
       rotate: TextRotation;
@@ -840,11 +986,147 @@ export function extractBoxStyle(box: FloorplanBox | FloorplanShape): CopiedFloor
   return {
     styleKind: 'rect',
     color: box.color,
+    ...(box.fillColor ? { fillColor: box.fillColor } : {}),
+    ...(box.fillOpacity !== undefined ? { fillOpacity: box.fillOpacity } : {}),
+    ...(box.textColor ? { textColor: box.textColor } : {}),
+    ...(box.bold !== undefined ? { bold: box.bold } : {}),
+    ...(box.italic !== undefined ? { italic: box.italic } : {}),
+    ...(box.underline !== undefined ? { underline: box.underline } : {}),
     border: box.border ?? ('kind' in box && box.kind === 'label' ? 'none' : 'solid'),
     fontSize: box.fontSize ?? 'sm',
     rotate: box.rotate ?? 0,
     align: box.align ?? ('kind' in box ? 'center' : 'left'),
   };
+}
+
+export type LayerAction = 'back-one' | 'front-one' | 'to-back' | 'to-front';
+
+export interface LayerOrderedItem {
+  kind: 'zone' | 'shape';
+  id: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  zOrder: number;
+}
+
+export function computeReorderedZIndices(
+  items: LayerOrderedItem[],
+  targetKey: string,
+  action: LayerAction,
+): Record<string, number> {
+  const ordered = [...items].sort((a, b) => a.zOrder - b.zOrder);
+  const idx = ordered.findIndex(item => itemSelectionKey(item.kind, item.id) === targetKey);
+  if (idx === -1) return {};
+  const target = ordered[idx];
+
+  let nextIdx = idx;
+  if (action === 'to-back') {
+    nextIdx = 0;
+  } else if (action === 'to-front') {
+    nextIdx = ordered.length - 1;
+  } else if (action === 'back-one') {
+    let overlapIdx = -1;
+    for (let j = idx - 1; j >= 0; j--) {
+      if (rectIntersects(target, ordered[j])) {
+        overlapIdx = j;
+        break;
+      }
+    }
+    nextIdx = overlapIdx !== -1 ? overlapIdx : Math.max(0, idx - 1);
+  } else if (action === 'front-one') {
+    let overlapIdx = -1;
+    for (let j = idx + 1; j < ordered.length; j++) {
+      if (rectIntersects(target, ordered[j])) {
+        overlapIdx = j;
+        break;
+      }
+    }
+    nextIdx = overlapIdx !== -1 ? overlapIdx : Math.min(ordered.length - 1, idx + 1);
+  }
+
+  if (nextIdx !== idx) {
+    ordered.splice(idx, 1);
+    ordered.splice(nextIdx, 0, target);
+  }
+
+  const out: Record<string, number> = {};
+  ordered.forEach((item, pos) => {
+    out[itemSelectionKey(item.kind, item.id)] = pos + 1;
+  });
+  return out;
+}
+
+const ROTATION_CYCLE: readonly TextRotation[] = [0, 90, 180, -90];
+
+export function computeRotatedRect90(
+  rect: { x: number; y: number; w: number; h: number },
+  currentRotate: TextRotation | undefined,
+  dir: 'cw' | 'ccw' | 'flip180',
+  canvasAspectRatio = 1,
+): { x: number; y: number; w: number; h: number; rotate: TextRotation } {
+  const normalizedRot: TextRotation = VALID_ROTATIONS.includes(currentRotate ?? 0) ? (currentRotate ?? 0) : 0;
+  if (dir === 'flip180') {
+    const flippedRot: TextRotation =
+      normalizedRot === 0 ? 180 : normalizedRot === 180 ? 0 : normalizedRot === 90 ? -90 : 90;
+    return { ...rect, rotate: flippedRot };
+  }
+
+  const rotIdx = ROTATION_CYCLE.indexOf(normalizedRot);
+  const nextRotate = ROTATION_CYCLE[(rotIdx + (dir === 'cw' ? 1 : 3)) % 4];
+  const ratio = Number.isFinite(canvasAspectRatio) && canvasAspectRatio > 0.1 ? canvasAspectRatio : 1;
+  const cx = rect.x + rect.w / 2;
+  const cy = rect.y + rect.h / 2;
+  const nextW = r1(clampPct(rect.h / ratio, 2, 100));
+  const nextH = r1(clampPct(rect.w * ratio, 2, 100));
+  const nextX = r1(clampPct(cx - nextW / 2, 0, 100 - nextW));
+  const nextY = r1(clampPct(cy - nextH / 2, 0, 100 - nextH));
+  return { x: nextX, y: nextY, w: nextW, h: nextH, rotate: nextRotate };
+}
+
+export interface CachedFloorplanMeta {
+  height: number;
+  hasTabs: boolean;
+}
+
+export function readCachedFloorplanMeta(storageKey: string): CachedFloorplanMeta | null {
+  if (!storageKey || typeof window === 'undefined' || !window.localStorage) return null;
+  try {
+    const raw = window.localStorage.getItem(`${storageKey}:floorplan:meta`);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<CachedFloorplanMeta> | null;
+    if (
+      !parsed ||
+      typeof parsed !== 'object' ||
+      typeof parsed.height !== 'number' ||
+      !Number.isFinite(parsed.height) ||
+      parsed.height < 300 ||
+      parsed.height > 1600
+    ) {
+      return null;
+    }
+    return {
+      height: parsed.height,
+      hasTabs: Boolean(parsed.hasTabs),
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function writeCachedFloorplanMeta(storageKey: string, data: FloorplanData): void {
+  if (!storageKey || typeof window === 'undefined' || !window.localStorage) return;
+  try {
+    const height = clampPct(data.height ?? INITIAL_FLOORPLAN.height ?? 520, 300, 1600);
+    const meta: CachedFloorplanMeta = {
+      height,
+      hasTabs: Boolean(data.floors && data.floors.length > 1),
+    };
+    window.localStorage.setItem(`${storageKey}:floorplan:meta`, JSON.stringify(meta));
+  } catch {
+    // Ignore storage quota or private mode restrictions
+  }
 }
 
 export function parseFloorplanImport(rawJson: string): FloorplanData {

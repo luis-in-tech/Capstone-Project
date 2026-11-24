@@ -98,7 +98,7 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
     }
   }, [transferIdParam, transfers]);
 
-  const orderableProducts = products.filter(p => !p.hasVariations && p.variantEnabled !== false);
+  const orderableProducts = products.filter(p => p.variantEnabled !== false);
 
   const handleInitiateTransfer = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();

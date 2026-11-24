@@ -7,21 +7,30 @@ import {
   boxPropsFromShape,
   clampGroupDelta,
   computeAlignDeltas,
+  computeContrastBorderHex,
   computeDistributeDeltas,
   computeMatchSizes,
+  computeReorderedZIndices,
+  computeRotatedRect90,
   createDrawnLineGeometry,
   duplicateShape,
   extractBoxStyle,
   getLineEndpoints,
   getLineMetrics,
+  hexToRgb,
+  hexToRgba,
+  isDarkHexColor,
   moveLinePoints,
+  normalizeHexColor,
   normalizeRectFromPoints,
   parseFloorplanImport,
+  readCachedFloorplanMeta,
   rectIntersects,
   resizeLineLength,
   resolveEffectiveFloorId,
   resolveLineDash,
   resolveLineWidth,
+  rgbToHex,
   rotateLineAngle,
   shapeGeometryFromLinePoints,
   snapPct,
@@ -29,6 +38,7 @@ import {
   suggestZoneNameFromShape,
   updateLineEndpoint,
   validFloorplan,
+  writeCachedFloorplanMeta,
   type FloorplanData,
 } from './warehouseFloorplan';
 
@@ -353,6 +363,150 @@ test('multi-floor filtering, validation, and JSON floorplan import handle legacy
 
   assert.throws(() => parseFloorplanImport('{not json'), /not valid JSON/i);
   assert.throws(() => parseFloorplanImport(JSON.stringify({ floors: [{ id: '', name: 'Bad' }], boxes: {}, doors: [] })), /floorplan format/i);
+});
+
+test('180deg upside-down rotation, RGB/hex colors, text formatting, and onion layer reordering work cleanly', () => {
+  assert.equal(normalizeHexColor('abc'), '#AABBCC');
+  assert.equal(normalizeHexColor('#3b82f6'), '#3B82F6');
+  assert.equal(normalizeHexColor('badhex'), null);
+  assert.deepEqual(hexToRgb('#FF8000'), { r: 255, g: 128, b: 0 });
+  assert.equal(rgbToHex(255, 128, 0), '#FF8000');
+  assert.equal(hexToRgba('#102030', 0.5), 'rgba(16, 32, 48, 0.5)');
+  assert.equal(isDarkHexColor('#111827'), true);
+  assert.equal(isDarkHexColor('#FEF3C7'), false);
+  assert.ok(computeContrastBorderHex('#FFFFFF') !== '#FFFFFF');
+
+  const styledPlan: FloorplanData = {
+    boxes: {
+      z1: {
+        x: 10,
+        y: 10,
+        w: 24,
+        h: 14,
+        color: 4,
+        fillColor: '#1E40AF',
+        fillOpacity: 0.75,
+        textColor: '#FFFFFF',
+        bold: true,
+        italic: true,
+        underline: true,
+        rotate: 180,
+        z: 2,
+      },
+    },
+    doors: [],
+    shapes: [
+      {
+        id: 'lbl-1',
+        kind: 'label',
+        label: 'CHAIN WHEEL',
+        x: 20,
+        y: 30,
+        w: 12,
+        h: 6,
+        color: 4,
+        fillColor: '#FEF3C7',
+        fillOpacity: 0.5,
+        textColor: '#DC2626',
+        bold: true,
+        italic: false,
+        underline: true,
+        rotate: 180,
+        z: 3,
+      },
+    ],
+  };
+  assert.equal(validFloorplan(styledPlan), true);
+
+  // Invalid custom color / opacity must still be rejected
+  assert.equal(
+    validFloorplan({
+      boxes: { zbad: { x: 10, y: 10, w: 10, h: 10, color: 4, fillColor: 'red' } },
+      doors: [],
+    }),
+    false,
+  );
+  assert.equal(
+    validFloorplan({
+      boxes: { zbad2: { x: 10, y: 10, w: 10, h: 10, color: 4, fillOpacity: 1.5 } },
+      doors: [],
+    }),
+    false,
+  );
+
+  const zoneFromShape = boxPropsFromShape(styledPlan.shapes![0]);
+  assert.equal(zoneFromShape.fillColor, '#FEF3C7');
+  assert.equal(zoneFromShape.fillOpacity, 0.5);
+  assert.equal(zoneFromShape.textColor, '#DC2626');
+  assert.equal(zoneFromShape.bold, true);
+  assert.equal(zoneFromShape.underline, true);
+  assert.equal(zoneFromShape.rotate, 180);
+
+  const copied = extractBoxStyle(styledPlan.boxes.z1);
+  assert.equal(copied.styleKind, 'rect');
+  if (copied.styleKind === 'rect') {
+    assert.equal(copied.fillColor, '#1E40AF');
+    assert.equal(copied.fillOpacity, 0.75);
+    assert.equal(copied.textColor, '#FFFFFF');
+    assert.equal(copied.bold, true);
+    assert.equal(copied.italic, true);
+    assert.equal(copied.underline, true);
+    assert.equal(copied.rotate, 180);
+  }
+
+  // Onion layer ordering: back-one skips past distant non-overlapping shapes to go directly behind nearest overlapping layer
+  const items = [
+    { kind: 'shape' as const, id: 'bg', x: 10, y: 10, w: 30, h: 30, zOrder: 10 },
+    { kind: 'shape' as const, id: 'distant', x: 80, y: 80, w: 10, h: 10, zOrder: 20 },
+    { kind: 'zone' as const, id: 'z1', x: 15, y: 15, w: 20, h: 20, zOrder: 20 },
+  ];
+  const stepBack = computeReorderedZIndices(items, 'zone:z1', 'back-one');
+  // zone:z1 overlaps shape:bg (rank 1), skips non-overlapping shape:distant, moves directly below shape:bg!
+  assert.ok(stepBack['zone:z1'] < stepBack['shape:bg']);
+  assert.equal(stepBack['zone:z1'], 1);
+
+  const toFront = computeReorderedZIndices(items, 'shape:bg', 'to-front');
+  assert.equal(toFront['shape:bg'], 3);
+
+  // 90deg box/zone rotation swaps visual proportions cleanly around center
+  const turned = computeRotatedRect90({ x: 20, y: 30, w: 20, h: 10 }, 0, 'cw', 1);
+  assert.deepEqual(turned, { x: 25, y: 25, w: 10, h: 20, rotate: 90 });
+  const flipped = computeRotatedRect90({ x: 20, y: 30, w: 20, h: 10 }, 0, 'flip180', 1);
+  assert.deepEqual(flipped, { x: 20, y: 30, w: 20, h: 10, rotate: 180 });
+});
+
+test('readCachedFloorplanMeta and writeCachedFloorplanMeta safely persist height and floor-tab metadata', () => {
+  assert.equal(readCachedFloorplanMeta('wh-1'), null);
+
+  const store = new Map<string, string>();
+  const origWindow = (globalThis as { window?: unknown }).window;
+  (globalThis as { window?: unknown }).window = {
+    localStorage: {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => store.set(k, v),
+    },
+  };
+  try {
+    writeCachedFloorplanMeta('storage:wh-1', {
+      height: 1100,
+      boxes: {},
+      doors: [],
+      floors: [
+        { id: 'f1', name: '6001-D' },
+        { id: 'f2', name: '6001-E' },
+      ],
+    });
+    assert.deepEqual(readCachedFloorplanMeta('storage:wh-1'), { height: 1100, hasTabs: true });
+
+    store.set('bad:floorplan:meta', JSON.stringify({ height: 9999, hasTabs: false }));
+    assert.equal(readCachedFloorplanMeta('bad'), null);
+  } finally {
+    if (origWindow === undefined) {
+      delete (globalThis as { window?: unknown }).window;
+    } else {
+      (globalThis as { window?: unknown }).window = origWindow;
+    }
+  }
 });
 
 

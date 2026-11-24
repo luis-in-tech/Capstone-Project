@@ -53,12 +53,25 @@ export function generateVariants(attributes: VariationAttribute[], previous: Var
   // Retain identities and edits when an attribute/value is removed. Never delete stock history.
   return [...generated, ...previous.filter(v => v.persisted && !ids.has(v.id)).map(v => ({ ...v, enabled: false }))];
 }
+export function variantFieldNumber(product: Product, key: VariantField): number | null {
+  const raw = key === 'mmPrice'
+    ? product.mmPrice ?? product.wholesalePrice
+    : key === 'provincialPrice'
+      ? product.provincialPrice ?? product.dealerPrice
+      : product[key];
+  if (raw == null || String(raw).trim() === '') return key === 'promoPrice' ? null : 0;
+  const num = Number(raw);
+  return Number.isFinite(num) ? num : (key === 'promoPrice' ? null : 0);
+}
 export function variationDraft(product: Product, children: Product[]): VariationDraft {
   return {
     enabled: !!product.hasVariations,
     attributes: product.variationAttributes?.length ? product.variationAttributes.map(a => ({ name: a.name, values: a.values.join(', ') })) : [{ name: '', values: '' }],
     variants: children.map(p => ({ id: p.id, persisted: true, photoUrl: p.photoUrl, values: p.variantValues || {}, sku: p.sku, enabled: p.variantEnabled !== false,
-      ...Object.fromEntries(variantFields.map(([key]) => [key, String(p[key] ?? (key === 'mmPrice' ? p.wholesalePrice ?? 0 : key === 'provincialPrice' ? p.dealerPrice ?? 0 : key === 'promoPrice' ? '' : 0))])) } as VariantDraft)),
+      ...Object.fromEntries(variantFields.map(([key]) => {
+        const val = variantFieldNumber(p, key);
+        return [key, val === null ? '' : String(val)];
+      })) } as VariantDraft)),
   };
 }
 export function validateVariations(draft: VariationDraft, parentSku: string, products: Product[], parentId?: string): string {
@@ -82,7 +95,7 @@ export function validateVariations(draft: VariationDraft, parentSku: string, pro
 }
 export function stockForProduct(products: Product[], inventory: InventoryItem[], productId: string, warehouseId?: string) {
   const product = products.find(p => p.id === productId);
-  const ids = new Set(product?.hasVariations ? products.filter(p => p.parentProductId === productId).map(p => p.id) : [productId]);
+  const ids = new Set(product?.hasVariations ? [productId, ...products.filter(p => p.parentProductId === productId).map(p => p.id)] : [productId]);
   return inventory.filter(i => ids.has(i.productId) && (!warehouseId || warehouseId === 'all' || i.warehouseId === warehouseId))
     .reduce((sum, i) => sum + (warehouseId && warehouseId !== 'all' ? i.quantity : Math.max(0, i.quantity)), 0);
 }
