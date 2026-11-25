@@ -113,15 +113,16 @@ const TUTORIAL_PAGES: TutorialPage[] = [
     id: 'orders',
     title: 'Order Entry',
     icon: <ShoppingCart className="w-8 h-8 text-white" />,
-    content: 'Orders follow a strict lifecycle: Pending → Preparing → Out for Delivery → Delivered → Completed. The system uses photo validation during dispatch for accountability. Create new orders with multiple line items, assign warehouses, and track the full order history with status updates.',
+    content: 'Create customer orders with multi-warehouse stock selection, FIFO/LIFO batch queuing, pricing tiers, and discounts, then generate printable Delivery Receipts. Track every order through Pending → Preparing → Out for Delivery → Delivered → Completed with dispatch photo proof, pending-order editing, and full status history.',
     highlights: [
-      'Full Order Lifecycle Management',
-      'Photo Evidence for Dispatch',
-      'Automatic Stock Decrementing',
-      'Multi-Item Order Creation',
-      'Order History & Status Tracking'
+      'Multi-Item Order Creation & Pricing Tiers',
+      'FIFO/LIFO Queue & Stock Reservation',
+      'Printable Delivery Receipt Generation',
+      'Dispatch Photo Proof & Status Lifecycle',
+      'Pending Order Editing & Status History'
     ],
-    videoLabel: 'Order Entry Walkthrough'
+    videoLabel: 'Order Entry Walkthrough',
+    videoSrc: '/guides/orders.mp4'
   },
   {
     id: 'transport',
@@ -141,14 +142,16 @@ const TUTORIAL_PAGES: TutorialPage[] = [
     id: 'finance',
     title: 'Financials',
     icon: <DollarSign className="w-8 h-8 text-white" />,
-    content: 'The Financials module tracks revenue from orders against operational expenses. Record expenses by category, view profit & loss summaries, and monitor financial health with trajectory charts. Understand your margins with categorized expenditure breakdowns.',
+    content: 'The Financials module tracks revenue, COGS, and operational expenses across audited and live periods. Switch between P&L statements and itemized expense ledgers, import or export CSV financial reports, record operational expenses, manage expense categories, and monitor financial trajectory charts.',
     highlights: [
-      'Profit & Loss Ledgers',
-      'Categorized Expense Recording',
-      'Revenue vs. Cost Analytics',
-      'Financial Trajectory Charts'
+      'Audited & Live Profit & Loss Statements',
+      'CSV Financial Import & P&L Export',
+      'Operational Expense Recording & Ledger',
+      'Expense Category Management',
+      'Performance & Trajectory Charts'
     ],
-    videoLabel: 'Financials Walkthrough'
+    videoLabel: 'Financials Walkthrough',
+    videoSrc: '/guides/finance.mp4'
   },
   {
     id: 'logistics',
@@ -167,14 +170,16 @@ const TUTORIAL_PAGES: TutorialPage[] = [
     id: 'pricelist',
     title: 'Pricelist',
     icon: <Tag className="w-8 h-8 text-white" />,
-    content: 'The Pricelist module provides a centralized catalog of all product pricing. Browse products by category tabs, search by name or SKU, and view base prices. Admins and delegated staff can add new products or edit existing pricing directly from this view.',
+    content: 'Build, save, and export custom product pricelists from your inventory catalog. Organize items into category or custom sections, apply master or per-item price schemes (Regular, Metro Manila, Provincial, Promo), preview and download printable PDFs, and filter saved pricelists by date, type, or export status.',
     highlights: [
-      'Category-Based Product Tabs',
-      'Search by Name or SKU',
-      'Add & Edit Product Pricing',
+      'Custom & Category Pricelist Builder',
+      'Master, Section & Mixed Price Schemes',
+      'Printable PDF Preview & Export',
+      'Draft Saving & Pricelist Filters',
       'Delegated Access for Staff'
     ],
-    videoLabel: 'Pricelist Walkthrough'
+    videoLabel: 'Pricelist Walkthrough',
+    videoSrc: '/guides/pricelist.mp4'
   },
   {
     id: 'delegation',
@@ -193,14 +198,16 @@ const TUTORIAL_PAGES: TutorialPage[] = [
     id: 'settings',
     title: 'Settings',
     icon: <Settings className="w-8 h-8 text-white" />,
-    content: 'Configure your Active Pro experience. Manage your profile information, toggle between light and dark themes, view notification preferences, and check system health status including database connectivity and regional cluster info.',
+    content: 'Configure your Active Pro workspace and system operations. Update your account profile, monitor the Live System Activity feed across modules, switch between FIFO and LIFO queuing strategies, export automated SQL database CSV backups, and toggle between light and dark themes.',
     highlights: [
-      'Profile Management',
-      'Light / Dark Theme Toggle',
-      'Notification Preferences',
-      'System Health & Status'
+      'Account Profile & Identity Editing',
+      'Live System Activity & Alert Filters',
+      'FIFO / LIFO Queuing Strategy Toggle',
+      'Automated SQL Database CSV Backups',
+      'Light / Dark Theme Switcher'
     ],
-    videoLabel: 'Settings Walkthrough'
+    videoLabel: 'Settings Walkthrough',
+    videoSrc: '/guides/settings.mp4'
   }
 ];
 
@@ -312,13 +319,13 @@ export const TutorialOverlay = ({ open, onOpenChange }: { open: boolean, onOpenC
                           {current.id === 'dashboard' && 'Analytics is accessible to Admin users and reports on Active Pro order and fulfillment performance.'}
                           {current.id === 'inventory' && 'Inventory is visible to all roles. Stock adjustments require Admin access or a specific delegation from the Staff Delegation panel.'}
                           {current.id === 'supply-chain' && 'Supply Chain access is scoped by staff permissions across Customers, Suppliers, Warehouses, and Categories. Admins manage all directories while delegated staff view or edit assigned tabs.'}
-                          {current.id === 'orders' && 'Order Entry is available to all roles. Agents can create and manage their own orders, while Admins and Secretaries can view all orders system-wide.'}
+                          {current.id === 'orders' && 'Order Entry access is managed by role and Staff Delegation permissions. Admins and Secretaries view and manage orders system-wide, Agents manage their own orders, and Staff receive View or Create access when delegated.'}
                           {current.id === 'transport' && 'Inventory Movement is available to Admin and Secretary roles for recording supplier receipts and warehouse transfers.'}
-                          {current.id === 'finance' && 'The Financials module is Admin-only. It contains sensitive revenue and expense data used for business decision-making.'}
+                          {current.id === 'finance' && 'Financials access is controlled by role and Staff Delegation permissions. Admins have full access to P&L statements and exports, while Secretaries and delegated staff with Expense Entry access can log operational expenses.'}
                           {current.id === 'logistics' && 'The Logistics Optimizer is available to Admin and Secretary roles for reviewing and applying AI-driven operational recommendations.'}
-                          {current.id === 'pricelist' && 'The Pricelist is visible to all roles. Editing privileges require Admin access or a pricelist delegation from Staff Delegation.'}
+                          {current.id === 'pricelist' && 'The Pricelist is visible to all roles with price-tier visibility controlled by permissions. Creating or editing pricelists requires Admin access or pricelist edit delegation from Staff Delegation.'}
                           {current.id === 'delegation' && 'Staff Delegation is Admin-only. It controls which staff members receive elevated permissions for Inventory and Pricelist modules.'}
-                          {current.id === 'settings' && 'Settings is available to all roles. Users can manage their own profile, theme preferences, and view system status.'}
+                          {current.id === 'settings' && 'Settings is available to all roles for managing account profile details and Light/Dark theme preferences. Live System Activity feeds and Automated SQL Database Backups are restricted to Admins.'}
                        </p>
                     </div>
                  </motion.div>
