@@ -6,11 +6,13 @@
  *   idempotent event broadcasting, and automatic reconnection support.
  */
 
+import { IncomingMessage } from 'http';
 import { WebSocket, WebSocketServer } from 'ws';
 import { WsPnLEvent } from '../types/pnl.types';
+import { UserRole } from '../middleware/rbac.middleware';
 
 const subscribers: Set<WebSocket> = new Set();
-let attachedWss: WebSocketServer | null = null;
+const FINANCE_WS_ROLES: ReadonlySet<UserRole> = new Set(['admin', 'cmo', 'secretary']);
 
 /**
  * Registers an active WebSocket connection to receive live P&L updates.
@@ -27,14 +29,18 @@ export function registerSubscriber(socket: WebSocket): void {
 
 /**
  * Attaches the broadcaster to an existing WebSocketServer instance.
- * Automatically inspects incoming client messages for P&L subscription requests
- * or broadcasts to all active open clients.
+ * Only registers finance-authorized roles ('admin', 'cmo', 'secretary').
  */
 export function attachPnLBroadcaster(wss: WebSocketServer): void {
-  attachedWss = wss;
+  wss.on('connection', (socket: WebSocket, req?: IncomingMessage) => {
+    const socketRole =
+      (socket as WebSocket & { userRole?: UserRole }).userRole ??
+      (req as (IncomingMessage & { wsRole?: UserRole }) | undefined)?.wsRole;
 
-  wss.on('connection', (socket: WebSocket) => {
-    // Automatically register all connected clients to P&L broadcasts
+    if (!socketRole || !FINANCE_WS_ROLES.has(socketRole)) {
+      return;
+    }
+
     registerSubscriber(socket);
 
     socket.on('message', (raw: any) => {
@@ -54,37 +60,23 @@ export function attachPnLBroadcaster(wss: WebSocketServer): void {
 }
 
 /**
- * Broadcasts a P&L telemetry event to all connected clients.
+ * Broadcasts a P&L telemetry event to registered authorized subscribers.
  * Safely ignores closed/terminated sockets.
  */
 export function broadcastPnLEvent(event: WsPnLEvent): void {
   const payload = JSON.stringify(event);
 
-  // Broadcast to explicit subscribers
   subscribers.forEach((client) => {
     if (client.readyState === WebSocket.OPEN) {
       try {
         client.send(payload);
-      } catch (err) {
+      } catch {
         subscribers.delete(client);
       }
     } else {
       subscribers.delete(client);
     }
   });
-
-  // Also broadcast to attached WebSocketServer if available
-  if (attachedWss) {
-    attachedWss.clients.forEach((client) => {
-      if (!subscribers.has(client) && client.readyState === WebSocket.OPEN) {
-        try {
-          client.send(payload);
-        } catch {
-          // Ignore
-        }
-      }
-    });
-  }
 }
 
 /**

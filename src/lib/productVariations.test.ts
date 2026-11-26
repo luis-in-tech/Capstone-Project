@@ -50,12 +50,38 @@ test('editing saved variants preserves IDs and permits their existing SKUs', () 
   assert.equal(renamed.length, 1);
   assert.equal(renamed[0].id, child.id);
   assert.deepEqual(renamed[0].values, { Finish: 'Black' });
+
+  const multiChild = generateVariants(
+    [{ name: 'Color', values: ['Black'] }, { name: 'Size', values: ['Small'] }],
+    [],
+    'BIKE',
+  );
+  const renamedAndReordered = generateVariants(
+    [{ name: 'Fit', values: ['Small'] }, { name: 'Finish', values: ['Black'] }],
+    multiChild,
+    'BIKE',
+  );
+  assert.equal(renamedAndReordered[0].id, multiChild[0].id);
 });
-test('parent stock aggregates variant warehouse balances including disabled variants without double-counting', () => {
+test('parent stock aggregates original parent and variant warehouse balances without double-counting', () => {
   const products = [product('parent', { hasVariations: true }), product('a', { parentProductId: 'parent' }), product('b', { parentProductId: 'parent', variantEnabled: false }), product('simple')];
   const inventory = [['a', 'w1', 10], ['a', 'w2', -2], ['b', 'w1', 3], ['simple', 'w1', 9]].map(([productId, warehouseId, quantity], i) => ({ id: String(i), productId: String(productId), warehouseId: String(warehouseId), quantity: Number(quantity), lastUpdated: '' }));
   assert.equal(stockForProduct(products, inventory, 'parent'), 13);
   assert.equal(stockForProduct(products, inventory, 'parent', 'w2'), -2);
   assert.equal(stockForProduct(products, inventory, 'a', 'w1'), 10);
   assert.equal(stockForProduct(products, inventory, 'simple'), 9);
+
+  const withOriginal = [...inventory, { id: 'orig', productId: 'parent', warehouseId: 'w1', quantity: 7, lastUpdated: '' }];
+  assert.equal(stockForProduct(products, withOriginal, 'parent'), 20);
+  assert.equal(stockForProduct(products, withOriginal, 'parent', 'w1'), 20);
+});
+
+test('generateVariants disambiguates duplicate or parent-colliding SKUs and validateVariations trims input', () => {
+  const sameSuffixAttrs = [{ name: 'Color', values: ['A B', 'A-B'] }];
+  const generated = generateVariants(sameSuffixAttrs, [], 'PARENT');
+  assert.equal(generated.length, 2);
+  assert.notEqual(generated[0].sku, generated[1].sku);
+  assert.notEqual(generated[0].sku, 'PARENT');
+  const trimmedDraft = { enabled: true, attributes: [{ name: 'Color', values: 'Black, Red' }], variants: generated.map(v => ({ ...v, sku: `  ${v.sku}  `, basePrice: ' 100 ' })) };
+  assert.equal(validateVariations(trimmedDraft, 'PARENT', []), '');
 });

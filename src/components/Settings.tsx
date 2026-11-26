@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { PageHeading } from './PageHeading';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import {
   UserIcon as User,
@@ -29,10 +30,12 @@ import {
   FileXlsIcon as FileSpreadsheet,
   SpinnerGapIcon as Loader2
 } from '@phosphor-icons/react';
-import * as XLSX from 'xlsx';
 import { cn } from '@/lib/utils';
+import { Link, useNavigate } from 'react-router-dom';
 import { useTheme } from './ThemeProvider';
 import { useAuth } from '../hooks/useAuth';
+import { formatNotificationRelativeTime, useAdminNotifications } from '../hooks/useStaffAccess';
+import { hasAdminRole } from '../lib/staffPermissions';
 import { Button, buttonVariants } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter, DialogDescription } from '@/components/ui/dialog';
@@ -48,86 +51,75 @@ import {
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { toast } from 'sonner';
-import { collection, db, onSnapshot, query, orderBy, limit, getDocs } from '../lib/supabaseAdapter';
-import { Order, Transfer } from '../types';
+import { collection, db, getDocs } from '../lib/supabaseAdapter';
 
-interface DispatchTrip {
-  id: string;
-  vehicle_name?: string;
-  driver?: string;
-  plate?: string;
-  region?: string;
-  total_units?: number;
-  savings_php?: number;
-  status?: string;
-  dispatched_at?: string | { toDate?: () => Date };
-  dispatched_by?: string;
-}
+const safeReadStorage = (key: string): string | null => {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+};
 
-interface InventoryMovementDoc {
-  id: string;
-  movementNumber?: string;
-  type?: string;
-  supplierName?: string;
-  sourceWarehouseName?: string;
-  destinationWarehouseName?: string;
-  totalValue?: number;
-  items?: Array<{ name?: string; quantity: number }>;
-  recordedByName?: string;
-  createdAt?: string | { toDate?: () => Date };
-}
-
-interface SupplyChainEntityDoc {
-  id: string;
-  name?: string;
-  location?: string;
-  active?: boolean;
-  createdAt?: string | { toDate?: () => Date };
-  updatedAt?: string | { toDate?: () => Date };
-}
-
-interface DelegationDoc {
-  id: string;
-  staffEmail?: string;
-  agentId?: string;
-  canAdjustInventory?: boolean;
-  canAdjustPricelist?: boolean;
-  active?: boolean;
-  createdAt?: string | { toDate?: () => Date };
-}
-
-interface NotificationItem {
-  id: string;
-  type: 'order' | 'logistics' | 'transfer' | 'movement' | 'supply_chain';
-  title: string;
-  description: string;
-  timestamp: Date;
-  meta?: string;
-  statusBadge?: string;
-  statusColor?: string;
-}
-
-const NOTIF_PREFS_KEY = 'activepro.notification_prefs';
-const NOTIF_READ_KEY = 'activepro.read_notifications';
+const safeWriteStorage = (key: string, value: string): void => {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // Ignore storage quota or private-mode restrictions
+  }
+};
 
 export function Settings() {
   const { profile, updateProfileData } = useAuth();
+  const isAdmin = hasAdminRole(profile);
   const [isEditProfileOpen, setIsEditProfileOpen] = useState(false);
+  const [isSavingProfile, setIsSavingProfile] = useState(false);
   const { theme, setTheme } = useTheme();
 
   const [fulfillmentStrategy, setFulfillmentStrategy] = useState<'FIFO'|'LIFO'>(
-    (localStorage.getItem('activepro.fulfillment_strategy') as 'FIFO'|'LIFO') || 'FIFO'
+    () => (safeReadStorage('activepro.fulfillment_strategy') === 'LIFO' ? 'LIFO' : 'FIFO')
   );
+
+  useEffect(() => {
+    const syncStrategy = () => {
+      setFulfillmentStrategy(safeReadStorage('activepro.fulfillment_strategy') === 'LIFO' ? 'LIFO' : 'FIFO');
+    };
+    const handleStorage = (e: StorageEvent) => {
+      if (!e.key || e.key === 'activepro.fulfillment_strategy') syncStrategy();
+    };
+    window.addEventListener('storage', handleStorage);
+    window.addEventListener('activepro_fulfillment_strategy_changed', syncStrategy);
+    return () => {
+      window.removeEventListener('storage', handleStorage);
+      window.removeEventListener('activepro_fulfillment_strategy_changed', syncStrategy);
+    };
+  }, []);
 
   const handleStrategyChange = (val: 'FIFO'|'LIFO') => {
     setFulfillmentStrategy(val);
-    localStorage.setItem('activepro.fulfillment_strategy', val);
+    safeWriteStorage('activepro.fulfillment_strategy', val);
+    window.dispatchEvent(new CustomEvent('activepro_fulfillment_strategy_changed', { detail: { strategy: val } }));
     toast.success(`Fulfillment Strategy updated to ${val}`);
   };
+
+  const exportTimersRef = useRef<Map<number, string | undefined>>(new Map());
+  useEffect(() => {
+    return () => {
+      exportTimersRef.current.forEach((blobUrl, timerId) => {
+        window.clearTimeout(timerId);
+        if (blobUrl) URL.revokeObjectURL(blobUrl);
+      });
+      exportTimersRef.current.clear();
+    };
+  }, []);
 
   const [isExporting, setIsExporting] = useState(false);
 
   const handleExportBackup = async (target: 'all-xlsx' | 'all-csv' | 'products' | 'orders' | 'expenses' | 'transfers') => {
+    if (!isAdmin) {
+      toast.error('Administrator access required for database backups.');
+      return;
+    }
     setIsExporting(true);
     toast.info('Preparing live database backup...');
 
@@ -162,33 +154,57 @@ export function Settings() {
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
-        setTimeout(() => URL.revokeObjectURL(url), 60000);
+        const timerId = window.setTimeout(() => {
+          URL.revokeObjectURL(url);
+          exportTimersRef.current.delete(timerId);
+        }, 60000);
+        exportTimersRef.current.set(timerId, url);
       };
 
-      const serializeCollection = (snap: any, defaultHeaders: string[], fallbackRows: any[][]) => {
+      const sanitizeExcelCell = (val: unknown): string | number | boolean => {
+        if (val === undefined || val === null) return '';
+        if (typeof val === 'number') return Number.isFinite(val) ? val : '';
+        if (typeof val === 'boolean') return val;
+        let str = '';
+        if (typeof val === 'object') {
+          str = typeof (val as any).toDate === 'function'
+            ? (val as any).toDate().toISOString()
+            : JSON.stringify(val);
+        } else {
+          str = String(val);
+        }
+        return /^[=+\-@\t\r]/.test(str) ? `'${str}` : str;
+      };
+
+      const serializeCollection = (snap: any, defaultHeaders: string[]) => {
         if (snap.docs.length > 0) {
-          const docKeys = Array.from(new Set(snap.docs.flatMap((d: any) => Object.keys(d.data())))) as string[];
+          const docKeys = (Array.from(new Set(snap.docs.flatMap((d: any) => Object.keys(d.data())))) as string[])
+            .filter((k) => k !== 'id');
           const headers = ['id', ...docKeys];
           const rows = snap.docs.map((d: any) => {
             const data = d.data();
             return [escapeField(d.id), ...docKeys.map(k => escapeField(data[k]))];
           });
+          const rawData = snap.docs.map((d: any) => {
+            const data = d.data();
+            const cleanRow: Record<string, string | number | boolean> = { id: sanitizeExcelCell(d.id) };
+            docKeys.forEach(k => {
+              cleanRow[k] = sanitizeExcelCell(data[k]);
+            });
+            return cleanRow;
+          });
           return {
             headers,
             rows,
             count: snap.docs.length,
-            rawData: snap.docs.map((d: any) => ({ id: d.id, ...d.data() }))
+            rawData,
           };
         } else {
           return {
             headers: defaultHeaders,
-            rows: fallbackRows.map(row => row.map(escapeField)),
-            count: fallbackRows.length,
-            rawData: fallbackRows.map(row => {
-              const obj: Record<string, any> = {};
-              defaultHeaders.forEach((h, i) => { obj[h] = row[i]; });
-              return obj;
-            })
+            rows: [] as string[][],
+            count: 0,
+            rawData: [] as Record<string, string | number | boolean>[],
           };
         }
       };
@@ -197,8 +213,7 @@ export function Settings() {
         const snap = await getDocs(collection(db, 'products'));
         const { headers, rows, count } = serializeCollection(
           snap,
-          ['id', 'name', 'sku', 'category', 'supplier', 'basePrice', 'costPrice', 'quantity', 'reorderPoint', 'status', 'createdAt'],
-          [['prod-001', 'Heavy Duty Brake Pad Set', 'AC-BRK-001', 'Brakes', 'AutoCraft Supplies', 1850.00, 1250.00, 235, 20, 'active', new Date().toISOString()]]
+          ['id', 'name', 'sku', 'category', 'supplier', 'basePrice', 'costPrice', 'quantity', 'reorderPoint', 'status', 'createdAt']
         );
         downloadCsv('products_cmdb_backup', headers, rows);
         toast.success(`Products CMDB exported (${count.toLocaleString()} records).`);
@@ -206,8 +221,7 @@ export function Settings() {
         const snap = await getDocs(collection(db, 'orders'));
         const { headers, rows, count } = serializeCollection(
           snap,
-          ['id', 'orderNumber', 'clientName', 'clientId', 'deliveryRegion', 'deliveryCity', 'status', 'paymentStatus', 'totalAmount', 'stockReserved', 'createdAt'],
-          [['ord-001', 'ORD-20261016-101', 'Metro Fleet Logistics', 'CLI-001', 'Metro Manila', 'Quezon City', 'completed', 'paid', 28500.00, 'YES', new Date().toISOString()]]
+          ['id', 'orderNumber', 'clientName', 'clientId', 'deliveryRegion', 'deliveryCity', 'status', 'paymentStatus', 'totalAmount', 'stockReserved', 'createdAt']
         );
         downloadCsv('orders_ledger_backup', headers, rows);
         toast.success(`Orders Ledger exported (${count.toLocaleString()} records).`);
@@ -215,8 +229,7 @@ export function Settings() {
         const snap = await getDocs(collection(db, 'expenses'));
         const { headers, rows, count } = serializeCollection(
           snap,
-          ['id', 'category', 'amount', 'description', 'date', 'type', 'recordedBy', 'createdAt'],
-          [['exp-001', 'Cost of Goods Sold', 15200.00, 'Direct inventory replenishment from supplier', new Date().toISOString().split('T')[0], 'expense', 'system', new Date().toISOString()]]
+          ['id', 'category', 'amount', 'description', 'date', 'type', 'recordedBy', 'createdAt']
         );
         downloadCsv('financial_expenses_backup', headers, rows);
         toast.success(`Financial Expenses exported (${count.toLocaleString()} records).`);
@@ -224,8 +237,7 @@ export function Settings() {
         const snap = await getDocs(collection(db, 'transfers'));
         const { headers, rows, count } = serializeCollection(
           snap,
-          ['id', 'manifestId', 'sourceWarehouseId', 'destinationWarehouseId', 'productId', 'quantity', 'status', 'driverName', 'vehiclePlate', 'initiatedBy', 'createdAt'],
-          [['trf-001', 'TRF-MNF-20261016-01', 'wh-north-01', 'wh-south-02', 'prod-001', 25, 'received', 'Juan Dela Cruz', 'ABC-1234', 'system', new Date().toISOString()]]
+          ['id', 'manifestId', 'sourceWarehouseId', 'destinationWarehouseId', 'productId', 'quantity', 'status', 'driverName', 'vehiclePlate', 'initiatedBy', 'createdAt']
         );
         downloadCsv('transfers_backup', headers, rows);
         toast.success(`Transfers Ledger exported (${count.toLocaleString()} records).`);
@@ -237,16 +249,17 @@ export function Settings() {
           getDocs(collection(db, 'transfers')),
         ]);
 
-        const prod = serializeCollection(prodSnap, ['id', 'name', 'sku', 'category', 'supplier', 'basePrice', 'costPrice', 'quantity', 'status'], []);
-        const ord = serializeCollection(ordSnap, ['id', 'orderNumber', 'clientName', 'deliveryRegion', 'status', 'paymentStatus', 'totalAmount'], []);
-        const exp = serializeCollection(expSnap, ['id', 'category', 'amount', 'description', 'date', 'type'], []);
-        const trf = serializeCollection(trfSnap, ['id', 'manifestId', 'sourceWarehouseId', 'destinationWarehouseId', 'productId', 'quantity', 'status'], []);
+        const prod = serializeCollection(prodSnap, ['id', 'name', 'sku', 'category', 'supplier', 'basePrice', 'costPrice', 'quantity', 'status']);
+        const ord = serializeCollection(ordSnap, ['id', 'orderNumber', 'clientName', 'deliveryRegion', 'status', 'paymentStatus', 'totalAmount']);
+        const exp = serializeCollection(expSnap, ['id', 'category', 'amount', 'description', 'date', 'type']);
+        const trf = serializeCollection(trfSnap, ['id', 'manifestId', 'sourceWarehouseId', 'destinationWarehouseId', 'productId', 'quantity', 'status']);
 
+        const XLSX = await import('xlsx');
         const wb = XLSX.utils.book_new();
-        XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(prod.rawData), 'Products CMDB');
-        XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(ord.rawData), 'Orders Ledger');
-        XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(exp.rawData), 'Financial Expenses');
-        XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(trf.rawData), 'Transfers');
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(prod.rawData, { header: prod.headers }), 'Products CMDB');
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(ord.rawData, { header: ord.headers }), 'Orders Ledger');
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(exp.rawData, { header: exp.headers }), 'Financial Expenses');
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(trf.rawData, { header: trf.headers }), 'Transfers');
 
         XLSX.writeFile(wb, `activepro_database_full_backup_${dateStr}.xlsx`);
         toast.success('Complete database exported as a single Excel workbook (.xlsx).');
@@ -259,16 +272,18 @@ export function Settings() {
         ]);
 
         const configs = [
-          { name: 'products_cmdb_backup', ...serializeCollection(prodSnap, ['id', 'name', 'sku'], []) },
-          { name: 'orders_ledger_backup', ...serializeCollection(ordSnap, ['id', 'orderNumber', 'clientName'], []) },
-          { name: 'financial_expenses_backup', ...serializeCollection(expSnap, ['id', 'category', 'amount'], []) },
-          { name: 'transfers_backup', ...serializeCollection(trfSnap, ['id', 'manifestId', 'quantity'], []) },
+          { name: 'products_cmdb_backup', ...serializeCollection(prodSnap, ['id', 'name', 'sku']) },
+          { name: 'orders_ledger_backup', ...serializeCollection(ordSnap, ['id', 'orderNumber', 'clientName']) },
+          { name: 'financial_expenses_backup', ...serializeCollection(expSnap, ['id', 'category', 'amount']) },
+          { name: 'transfers_backup', ...serializeCollection(trfSnap, ['id', 'manifestId', 'quantity']) },
         ];
 
         configs.forEach((cfg, idx) => {
-          setTimeout(() => {
+          const timerId = window.setTimeout(() => {
+            exportTimersRef.current.delete(timerId);
             downloadCsv(cfg.name, cfg.headers, cfg.rows);
           }, idx * 250);
+          exportTimersRef.current.set(timerId, undefined);
         });
         toast.success('All 4 CSV backups generated and downloaded.');
       }
@@ -280,301 +295,60 @@ export function Settings() {
     }
   };
 
-  // Raw data collections from Supabase
-  const [orders, setOrders] = useState<Order[]>([]);
-  const [trips, setTrips] = useState<DispatchTrip[]>([]);
-  const [transfers, setTransfers] = useState<Transfer[]>([]);
-  const [movements, setMovements] = useState<InventoryMovementDoc[]>([]);
-  const [warehousesDoc, setWarehousesDoc] = useState<SupplyChainEntityDoc[]>([]);
-  const [delegations, setDelegations] = useState<DelegationDoc[]>([]);
+  const {
+    allNotifications,
+    unreadCount,
+    readIds,
+    prefs,
+    markItemAsRead,
+    markAllAsRead,
+    togglePref,
+  } = useAdminNotifications();
 
-  // Filter and preference states
+  const navigate = useNavigate();
+
+  // Filter and preference panel states
   const [activeFilter, setActiveFilter] = useState<'all' | 'order' | 'logistics' | 'transfer' | 'movement' | 'supply_chain'>('all');
-  const [readIds, setReadIds] = useState<Set<string>>(() => {
-    try {
-      const saved = localStorage.getItem(NOTIF_READ_KEY);
-      return saved ? new Set(JSON.parse(saved)) : new Set();
-    } catch {
-      return new Set();
-    }
-  });
-
-  const [prefs, setPrefs] = useState<{
-    orderAlerts: boolean;
-    logisticsAlerts: boolean;
-    transferAlerts: boolean;
-    movementAlerts: boolean;
-    supplyChainAlerts: boolean;
-    toastAlerts: boolean;
-  }>(() => {
-    try {
-      const saved = localStorage.getItem(NOTIF_PREFS_KEY);
-      return saved
-        ? JSON.parse(saved)
-        : { orderAlerts: true, logisticsAlerts: true, transferAlerts: true, movementAlerts: true, supplyChainAlerts: true, toastAlerts: true };
-    } catch {
-      return { orderAlerts: true, logisticsAlerts: true, transferAlerts: true, movementAlerts: true, supplyChainAlerts: true, toastAlerts: true };
-    }
-  });
-
   const [showPreferences, setShowPreferences] = useState(false);
-
-  // Subscribe to live collections
-  useEffect(() => {
-    const unsubOrders = onSnapshot(
-      query(collection(db, 'orders'), orderBy('createdAt', 'desc'), limit(20)),
-      (snap) => {
-        setOrders(snap.docs.map(d => ({ id: d.id, ...d.data() } as Order)));
-      },
-      (err) => console.warn('Orders notification subscription failed:', err)
-    );
-
-    const unsubTrips = onSnapshot(
-      query(collection(db, 'dispatch_trips'), orderBy('dispatched_at', 'desc'), limit(20)),
-      (snap) => {
-        setTrips(snap.docs.map(d => ({ id: d.id, ...d.data() } as DispatchTrip)));
-      },
-      (err) => console.warn('Dispatch trips subscription failed:', err)
-    );
-
-    const unsubTransfers = onSnapshot(
-      query(collection(db, 'transfers'), orderBy('createdAt', 'desc'), limit(20)),
-      (snap) => {
-        setTransfers(snap.docs.map(d => ({ id: d.id, ...d.data() } as Transfer)));
-      },
-      (err) => console.warn('Transfers notification subscription failed:', err)
-    );
-
-    const unsubMovements = onSnapshot(
-      query(collection(db, 'inventory_movements'), orderBy('createdAt', 'desc'), limit(20)),
-      (snap) => {
-        setMovements(snap.docs.map(d => ({ id: d.id, ...d.data() } as InventoryMovementDoc)));
-      },
-      (err) => console.warn('Inventory movements notification subscription failed:', err)
-    );
-
-    const unsubWarehouses = onSnapshot(
-      query(collection(db, 'warehouses'), limit(15)),
-      (snap) => {
-        setWarehousesDoc(snap.docs.map(d => ({ id: d.id, ...d.data() } as SupplyChainEntityDoc)));
-      },
-      (err) => console.warn('Warehouses notification subscription failed:', err)
-    );
-
-    const unsubDelegations = onSnapshot(
-      query(collection(db, 'delegations'), orderBy('createdAt', 'desc'), limit(15)),
-      (snap) => {
-        setDelegations(snap.docs.map(d => ({ id: d.id, ...d.data() } as DelegationDoc)));
-      },
-      (err) => console.warn('Delegations notification subscription failed:', err)
-    );
-
-    return () => {
-      unsubOrders();
-      unsubTrips();
-      unsubTransfers();
-      unsubMovements();
-      unsubWarehouses();
-      unsubDelegations();
-    };
-  }, []);
-
-  // Format date helper
-  const parseDate = (val: any): Date => {
-    if (!val) return new Date();
-    if (typeof val?.toDate === 'function') return val.toDate();
-    if (val instanceof Date) return isNaN(val.getTime()) ? new Date() : val;
-    const parsed = new Date(val);
-    return isNaN(parsed.getTime()) ? new Date() : parsed;
-  };
-
-  const getRelativeTime = (d: Date): string => {
-    const now = Date.now();
-    const diff = Math.max(0, now - d.getTime());
-    const mins = Math.floor(diff / 60000);
-    if (mins < 1) return 'Just now';
-    if (mins < 60) return `${mins}m ago`;
-    const hours = Math.floor(mins / 60);
-    if (hours < 24) return `${hours}h ago`;
-    const days = Math.floor(hours / 24);
-    if (days < 7) return `${days}d ago`;
-    return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
-  };
-
-  // Compile combined notifications stream
-  const allNotifications = useMemo<NotificationItem[]>(() => {
-    const list: NotificationItem[] = [];
-
-    if (prefs.orderAlerts) {
-      orders.forEach(o => {
-        const date = parseDate(o.createdAt);
-        const skuCount = o.skus?.length || 0;
-        const totalFormatted = (o.totalAmount || 0).toLocaleString();
-        list.push({
-          id: `ord-${o.id}`,
-          type: 'order',
-          title: `Order #${o.orderNumber || o.id.slice(-6)} ${o.status ? `(${o.status.toUpperCase().replace(/_/g, ' ')})` : ''}`,
-          description: `${o.clientName || 'Customer'} • ${skuCount > 0 ? `${skuCount} SKU(s)` : 'Sales Order'} • ₱${totalFormatted}`,
-          timestamp: date,
-          statusBadge: o.status ? o.status.replace(/_/g, ' ') : 'pending',
-          statusColor: o.status === 'delivered' || o.status === 'completed'
-            ? 'bg-emerald-500/10 text-emerald-600 border-emerald-500/20'
-            : o.status === 'out_for_delivery' || o.status === 'preparing'
-              ? 'bg-blue-500/10 text-blue-600 border-blue-500/20'
-              : 'bg-amber-500/10 text-amber-600 border-amber-500/20',
-          meta: o.deliveryCity ? `Delivery: ${o.deliveryCity}` : undefined
-        });
-      });
-    }
-
-    if (prefs.logisticsAlerts) {
-      trips.forEach(t => {
-        const date = parseDate(t.dispatched_at);
-        const savingsFormatted = t.savings_php ? `₱${t.savings_php.toLocaleString()}` : 'Optimized';
-        list.push({
-          id: `trip-${t.id}`,
-          type: 'logistics',
-          title: `Fleet Dispatched: ${t.vehicle_name || 'Delivery Truck'}`,
-          description: `Driver: ${t.driver || 'Assigned Driver'} • Region: ${t.region || 'Metro Manila'} (${t.total_units || 0} units)`,
-          timestamp: date,
-          statusBadge: t.status || 'in_transit',
-          statusColor: 'bg-indigo-500/10 text-indigo-600 border-indigo-500/20',
-          meta: `Savings: ${savingsFormatted}`
-        });
-      });
-    }
-
-    if (prefs.transferAlerts) {
-      transfers.forEach(tr => {
-        const date = parseDate(tr.updatedAt || tr.dispatchedAt || tr.createdAt);
-        list.push({
-          id: `tfr-${tr.id}`,
-          type: 'transfer',
-          title: `Stock Transfer: TFR-${tr.id.slice(-6).toUpperCase()}`,
-          description: `${tr.quantity} unit(s) • ${tr.driverName ? `Driver: ${tr.driverName}` : 'Inter-facility Transport'}`,
-          timestamp: date,
-          statusBadge: tr.status || 'pending',
-          statusColor: tr.status === 'received'
-            ? 'bg-emerald-500/10 text-emerald-600 border-emerald-500/20'
-            : tr.status === 'in_transit'
-              ? 'bg-sky-500/10 text-sky-600 border-sky-500/20'
-              : 'bg-amber-500/10 text-amber-600 border-amber-500/20',
-          meta: tr.status === 'in_transit' ? 'In Transit' : tr.status === 'received' ? 'Received' : 'Pending'
-        });
-      });
-    }
-
-    if (prefs.movementAlerts) {
-      movements.forEach(m => {
-        const date = parseDate(m.createdAt);
-        const totalUnits = m.items?.reduce((sum, item) => sum + (item.quantity || 0), 0) || 0;
-        const isExternal = m.type === 'external';
-        const valFormatted = m.totalValue ? `₱${Number(m.totalValue).toLocaleString()}` : undefined;
-
-        list.push({
-          id: `mov-${m.id}`,
-          type: 'movement',
-          title: `Inventory Movement ${m.movementNumber || m.id.slice(-6).toUpperCase()}`,
-          description: isExternal
-            ? `Supplier Receipt: ${m.supplierName || 'Supplier'} → ${m.destinationWarehouseName || 'Warehouse'} (${totalUnits} units)`
-            : `Internal Transfer: ${m.sourceWarehouseName || 'Source'} → ${m.destinationWarehouseName || 'Destination'} (${totalUnits} units)`,
-          timestamp: date,
-          statusBadge: isExternal ? 'Supplier Receipt' : 'Warehouse Transfer',
-          statusColor: isExternal
-            ? 'bg-blue-500/10 text-blue-600 border-blue-500/20'
-            : 'bg-purple-500/10 text-purple-600 border-purple-500/20',
-          meta: valFormatted ? `Purchase Value: ${valFormatted} • Recorded by ${m.recordedByName || 'Staff'}` : `Recorded by ${m.recordedByName || 'Staff'}`
-        });
-      });
-    }
-
-    if (prefs.supplyChainAlerts) {
-      warehousesDoc.forEach(w => {
-        const date = parseDate(w.updatedAt || w.createdAt);
-        list.push({
-          id: `wh-${w.id}`,
-          type: 'supply_chain',
-          title: `Facility Node: ${w.name || 'Warehouse'}`,
-          description: `Location: ${w.location || 'Facility Hub'} • Status: ${w.active === false ? 'Inactive' : 'Active Facility'}`,
-          timestamp: date,
-          statusBadge: w.active === false ? 'Inactive Facility' : 'Active Facility',
-          statusColor: w.active === false
-            ? 'bg-amber-500/10 text-amber-600 border-amber-500/20'
-            : 'bg-emerald-500/10 text-emerald-600 border-emerald-500/20',
-          meta: 'Supply Chain Infrastructure'
-        });
-      });
-
-      delegations.forEach(del => {
-        const date = parseDate(del.createdAt);
-        list.push({
-          id: `del-${del.id}`,
-          type: 'supply_chain',
-          title: `Executive Access Delegation: ${del.staffEmail || 'Staff User'}`,
-          description: `Permissions: ${del.canAdjustInventory ? 'Inventory Adjust Enabled' : 'View Only'} • ${del.canAdjustPricelist ? 'Pricelist Edit Enabled' : 'Pricelist Locked'}`,
-          timestamp: date,
-          statusBadge: del.active === false ? 'Access Revoked' : 'Access Granted',
-          statusColor: del.active === false
-            ? 'bg-red-500/10 text-red-600 border-red-500/20'
-            : 'bg-emerald-500/10 text-emerald-600 border-emerald-500/20',
-          meta: 'Security & Key Personnel Access'
-        });
-      });
-    }
-
-    return list.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
-  }, [orders, trips, transfers, movements, warehousesDoc, delegations, prefs]);
 
   const filteredNotifications = useMemo(() => {
     if (activeFilter === 'all') return allNotifications;
     return allNotifications.filter(n => n.type === activeFilter);
   }, [allNotifications, activeFilter]);
 
-  const unreadCount = useMemo(() => {
-    return allNotifications.filter(n => !readIds.has(n.id)).length;
-  }, [allNotifications, readIds]);
-
-  const markAllAsRead = () => {
-    const nextSet = new Set([...readIds, ...allNotifications.map(n => n.id)]);
-    setReadIds(nextSet);
-    localStorage.setItem(NOTIF_READ_KEY, JSON.stringify(Array.from(nextSet)));
-    toast.success('All notifications marked as read');
-  };
-
-  const markItemAsRead = (id: string) => {
-    if (readIds.has(id)) return;
-    const nextSet = new Set(readIds);
-    nextSet.add(id);
-    setReadIds(nextSet);
-    localStorage.setItem(NOTIF_READ_KEY, JSON.stringify(Array.from(nextSet)));
-  };
-
-  const togglePref = (key: keyof typeof prefs) => {
-    const updated = { ...prefs, [key]: !prefs[key] };
-    setPrefs(updated);
-    localStorage.setItem(NOTIF_PREFS_KEY, JSON.stringify(updated));
-    toast.success('Notification preferences updated');
-  };
-
   const handleUpdateProfile = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
+    if (isSavingProfile) return;
     const formData = new FormData(e.currentTarget);
-    const firstName = formData.get('firstName') as string;
-    const lastName = formData.get('lastName') as string;
+    const firstName = String(formData.get('firstName') ?? '').trim();
+    const lastName = String(formData.get('lastName') ?? '').trim();
 
-    await updateProfileData({
-      firstName,
-      lastName
-    });
-    setIsEditProfileOpen(false);
+    if (!firstName || !lastName) {
+      toast.error('First and last name are required.');
+      return;
+    }
+
+    setIsSavingProfile(true);
+    try {
+      await updateProfileData({
+        firstName,
+        lastName
+      });
+      setIsEditProfileOpen(false);
+    } catch {
+      // Error surfaced via handleSupabaseError inside updateProfileData
+    } finally {
+      setIsSavingProfile(false);
+    }
   };
 
   return (
     <div className="space-y-8 pb-12">
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <div>
-          <p className="text-muted-foreground font-medium">Manage your personal preferences, live alerts, and system telemetry.</p>
-        </div>
+        <PageHeading
+          title="Settings"
+          subtitle="Manage your personal preferences, live alerts, and system telemetry."
+        />
         <div className="flex items-center gap-2 self-start md:self-center bg-muted/50 p-1.5 rounded-2xl border border-border">
           <Button
             variant={theme === 'light' ? 'default' : 'ghost'}
@@ -597,7 +371,7 @@ export function Settings() {
 
       <div className="grid gap-6 lg:grid-cols-12">
         {/* Left Card: Account Profile */}
-        <Card className="lg:col-span-5 border-border overflow-hidden group hover:border-primary/40 transition-colors h-fit">
+        <Card className={cn("border-border overflow-hidden group hover:border-primary/40 transition-colors h-fit", isAdmin ? "lg:col-span-5" : "lg:col-span-12")}>
           <CardHeader>
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
@@ -628,8 +402,12 @@ export function Settings() {
                     </div>
 
                     <DialogFooter className="pt-4">
-                      <Button type="submit" className="w-full h-14 bg-primary text-primary-foreground font-black uppercase tracking-widest text-xs rounded-2xl group">
-                        Confirm <CheckCircle className="w-4 h-4 ml-2 group-hover:scale-110 transition-transform" />
+                      <Button type="submit" disabled={isSavingProfile} className="w-full h-14 bg-primary text-primary-foreground font-black uppercase tracking-widest text-xs rounded-2xl group">
+                        {isSavingProfile ? (
+                          <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Saving...</>
+                        ) : (
+                          <>Confirm <CheckCircle className="w-4 h-4 ml-2 group-hover:scale-110 transition-transform" /></>
+                        )}
                       </Button>
                     </DialogFooter>
                   </form>
@@ -679,7 +457,8 @@ export function Settings() {
           </CardContent>
         </Card>
 
-        {/* Right Card: Live Notifications & Activity Stream */}
+        {/* Right Card: Live Notifications & Activity Stream (Admin only) */}
+        {isAdmin && (
         <Card className="lg:col-span-7 border-border overflow-hidden group hover:border-primary/40 transition-colors">
           <CardHeader className="pb-3">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -850,14 +629,21 @@ export function Settings() {
                   return (
                     <div
                       key={item.id}
-                      onClick={() => markItemAsRead(item.id)}
-                      className={`p-3.5 rounded-2xl border transition-all cursor-pointer relative group ${isRead
+                      className={`w-full text-left p-3.5 rounded-2xl border transition-all relative group ${isRead
                           ? 'bg-muted/20 border-border opacity-75 hover:opacity-100 hover:border-primary/30'
                           : 'bg-card border-border hover:border-primary/40 shadow-xs'
                         }`}
                     >
                       <div className="flex items-start justify-between gap-3">
-                        <div className="flex items-start gap-3 min-w-0">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            markItemAsRead(item.id);
+                            navigate(item.href);
+                          }}
+                          title="Open related record"
+                          className="flex items-start gap-3 min-w-0 flex-1 text-left cursor-pointer"
+                        >
                           <div className={`p-2 rounded-xl shrink-0 mt-0.5 ${item.type === 'order'
                               ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
                               : item.type === 'logistics'
@@ -901,16 +687,25 @@ export function Settings() {
                               </p>
                             )}
                           </div>
-                        </div>
+                        </button>
 
-                        <div className="flex flex-col items-end shrink-0">
+                        <div className="flex flex-col items-end shrink-0 gap-1.5">
                           <span className="text-[10px] font-bold text-muted-foreground whitespace-nowrap flex items-center gap-1">
                             <Clock className="w-2.5 h-2.5" />
-                            {getRelativeTime(item.timestamp)}
+                            {formatNotificationRelativeTime(item.timestamp)}
                           </span>
-                          {!isRead && (
-                            <span className="w-2 h-2 rounded-full bg-primary mt-1.5 animate-pulse" title="Unread" />
-                          )}
+                          <div className="flex items-center gap-2">
+                            <Link
+                              to={item.href}
+                              onClick={() => markItemAsRead(item.id)}
+                              className="text-[10px] font-bold text-primary hover:underline whitespace-nowrap"
+                            >
+                              Open
+                            </Link>
+                            {!isRead && (
+                              <span className="w-2 h-2 rounded-full bg-primary animate-pulse" title="Unread" />
+                            )}
+                          </div>
                         </div>
                       </div>
                     </div>
@@ -930,6 +725,7 @@ export function Settings() {
             </div>
           </CardContent>
         </Card>
+        )}
 
         <Card className="lg:col-span-12 border-border overflow-hidden group hover:border-primary/40 transition-colors">
           <CardHeader>
@@ -969,6 +765,7 @@ export function Settings() {
           </CardContent>
         </Card>
 
+        {isAdmin && (
         <Card className="lg:col-span-12 border-border overflow-hidden group hover:border-primary/40 transition-colors">
           <CardHeader>
             <div className="flex items-center gap-2">
@@ -1080,6 +877,7 @@ export function Settings() {
             </div>
           </CardContent>
         </Card>
+        )}
       </div>
     </div>
   );

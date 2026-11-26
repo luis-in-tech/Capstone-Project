@@ -11,7 +11,7 @@
  */
 
 import { AppError } from '../middleware/errorHandler';
-import { listOrders } from './orders.service';
+import { getAllOrders } from './orders.service';
 import { broadcastPnLEvent } from '../ws/pnlBroadcaster';
 import {
   PnLSummaryDto,
@@ -45,31 +45,31 @@ function safeMargin(profitCents: number, revenueCents: number): number {
 
 const DEFAULT_EXPENSES: Array<Omit<ExpenseDto, 'id' | 'createdAt' | 'updatedAt'>> = [
   // Jan 2025
-  { category: 'Cost of Goods Sold', amount: 5904520.17, description: 'Jan 2025 Direct Cost of Goods Sold', date: '2025-01-31T20:00:00.000Z', recordedBy: 'accountant', orderId: 'ord_jan_2025' },
-  { category: 'Freight and Shipping Costs', amount: -405.00, description: 'Jan 2025 Freight and Shipping Cost Adjustment', date: '2025-01-31T20:10:00.000Z', recordedBy: 'accountant' },
-  { category: 'Office Supplies', amount: -230.00, description: 'Jan 2025 Office Supplies Credit Adjustment', date: '2025-01-31T20:20:00.000Z', recordedBy: 'accountant' },
-  { category: 'Travel Expense', amount: 2500.00, description: 'Jan 2025 Operational Travel Expense', date: '2025-01-31T20:30:00.000Z', recordedBy: 'accountant' },
-  { category: 'Utilities', amount: 0.00, description: 'Jan 2025 Facility Utilities', date: '2025-01-31T20:40:00.000Z', recordedBy: 'accountant' },
-  { category: 'Ask My Accountant', amount: -2515.17, description: 'Jan 2025 CPA & Accountant Reconciled Credit', date: '2025-01-31T20:50:00.000Z', recordedBy: 'accountant' },
-  { category: 'OTHER EXPENSE', amount: 12670.27, description: 'Jan 2025 General Operational & Other Expense', date: '2025-01-31T21:00:00.000Z', recordedBy: 'accountant' },
+  { category: 'Cost of Goods Sold', amount: 5904520.17, description: 'Jan 2025 Direct Cost of Goods Sold', date: '2025-01-31T12:00:00.000Z', recordedBy: 'accountant', orderId: 'ord_jan_2025' },
+  { category: 'Freight and Shipping Costs', amount: -405.00, description: 'Jan 2025 Freight and Shipping Cost Adjustment', date: '2025-01-31T12:10:00.000Z', recordedBy: 'accountant' },
+  { category: 'Office Supplies', amount: -230.00, description: 'Jan 2025 Office Supplies Credit Adjustment', date: '2025-01-31T12:20:00.000Z', recordedBy: 'accountant' },
+  { category: 'Travel Expense', amount: 2500.00, description: 'Jan 2025 Operational Travel Expense', date: '2025-01-31T12:30:00.000Z', recordedBy: 'accountant' },
+  { category: 'Utilities', amount: 0.00, description: 'Jan 2025 Facility Utilities', date: '2025-01-31T12:40:00.000Z', recordedBy: 'accountant' },
+  { category: 'Ask My Accountant', amount: -2515.17, description: 'Jan 2025 CPA & Accountant Reconciled Credit', date: '2025-01-31T12:50:00.000Z', recordedBy: 'accountant' },
+  { category: 'OTHER EXPENSE', amount: 12670.27, description: 'Jan 2025 General Operational & Other Expense', date: '2025-01-31T13:00:00.000Z', recordedBy: 'accountant' },
 
   // Feb 2025
-  { category: 'Cost of Goods Sold', amount: 6100297.72, description: 'Feb 2025 Direct Cost of Goods Sold', date: '2025-02-28T20:00:00.000Z', recordedBy: 'accountant', orderId: 'ord_feb_2025' },
-  { category: 'Freight and Shipping Costs', amount: -185.00, description: 'Feb 2025 Freight and Shipping Cost Adjustment', date: '2025-02-28T20:10:00.000Z', recordedBy: 'accountant' },
-  { category: 'Office Supplies', amount: -345.00, description: 'Feb 2025 Office Supplies Credit Adjustment', date: '2025-02-28T20:20:00.000Z', recordedBy: 'accountant' },
-  { category: 'Travel Expense', amount: 9000.00, description: 'Feb 2025 Operational Travel & Logistics Expense', date: '2025-02-28T20:30:00.000Z', recordedBy: 'accountant' },
-  { category: 'Utilities', amount: 0.00, description: 'Feb 2025 Facility Utilities', date: '2025-02-28T20:40:00.000Z', recordedBy: 'accountant' },
-  { category: 'Ask My Accountant', amount: -13735.76, description: 'Feb 2025 Accountant Audit Adjustments (Credit)', date: '2025-02-28T20:50:00.000Z', recordedBy: 'accountant' },
-  { category: 'OTHER EXPENSE', amount: 4000.00, description: 'Feb 2025 General Operational & Other Expense', date: '2025-02-28T21:00:00.000Z', recordedBy: 'accountant' },
+  { category: 'Cost of Goods Sold', amount: 6100297.72, description: 'Feb 2025 Direct Cost of Goods Sold', date: '2025-02-28T12:00:00.000Z', recordedBy: 'accountant', orderId: 'ord_feb_2025' },
+  { category: 'Freight and Shipping Costs', amount: -185.00, description: 'Feb 2025 Freight and Shipping Cost Adjustment', date: '2025-02-28T12:10:00.000Z', recordedBy: 'accountant' },
+  { category: 'Office Supplies', amount: -345.00, description: 'Feb 2025 Office Supplies Credit Adjustment', date: '2025-02-28T12:20:00.000Z', recordedBy: 'accountant' },
+  { category: 'Travel Expense', amount: 9000.00, description: 'Feb 2025 Operational Travel & Logistics Expense', date: '2025-02-28T12:30:00.000Z', recordedBy: 'accountant' },
+  { category: 'Utilities', amount: 0.00, description: 'Feb 2025 Facility Utilities', date: '2025-02-28T12:40:00.000Z', recordedBy: 'accountant' },
+  { category: 'Ask My Accountant', amount: -13735.76, description: 'Feb 2025 Accountant Audit Adjustments (Credit)', date: '2025-02-28T12:50:00.000Z', recordedBy: 'accountant' },
+  { category: 'OTHER EXPENSE', amount: 4000.00, description: 'Feb 2025 General Operational & Other Expense', date: '2025-02-28T13:00:00.000Z', recordedBy: 'accountant' },
 
   // Mar 2025
-  { category: 'Cost of Goods Sold', amount: 5082247.40, description: 'Mar 2025 Direct Cost of Goods Sold', date: '2025-03-31T20:00:00.000Z', recordedBy: 'accountant', orderId: 'ord_mar_2025' },
-  { category: 'Freight and Shipping Costs', amount: -640.00, description: 'Mar 2025 Freight and Shipping Cost Adjustment', date: '2025-03-31T20:10:00.000Z', recordedBy: 'accountant' },
-  { category: 'Office Supplies', amount: -690.00, description: 'Mar 2025 Office Supplies Credit Adjustment', date: '2025-03-31T20:20:00.000Z', recordedBy: 'accountant' },
-  { category: 'Travel Expense', amount: 3000.00, description: 'Mar 2025 Operational Travel Expense', date: '2025-03-31T20:30:00.000Z', recordedBy: 'accountant' },
-  { category: 'Utilities', amount: 0.00, description: 'Mar 2025 Facility Utilities', date: '2025-03-31T20:40:00.000Z', recordedBy: 'accountant' },
-  { category: 'Ask My Accountant', amount: -2611.22, description: 'Mar 2025 Accountant Reconciliation Credit', date: '2025-03-31T20:50:00.000Z', recordedBy: 'accountant' },
-  { category: 'OTHER EXPENSE', amount: 25710.23, description: 'Mar 2025 General Operational & Other Expense', date: '2025-03-31T21:00:00.000Z', recordedBy: 'accountant' },
+  { category: 'Cost of Goods Sold', amount: 5082247.40, description: 'Mar 2025 Direct Cost of Goods Sold', date: '2025-03-31T12:00:00.000Z', recordedBy: 'accountant', orderId: 'ord_mar_2025' },
+  { category: 'Freight and Shipping Costs', amount: -640.00, description: 'Mar 2025 Freight and Shipping Cost Adjustment', date: '2025-03-31T12:10:00.000Z', recordedBy: 'accountant' },
+  { category: 'Office Supplies', amount: -690.00, description: 'Mar 2025 Office Supplies Credit Adjustment', date: '2025-03-31T12:20:00.000Z', recordedBy: 'accountant' },
+  { category: 'Travel Expense', amount: 3000.00, description: 'Mar 2025 Operational Travel Expense', date: '2025-03-31T12:30:00.000Z', recordedBy: 'accountant' },
+  { category: 'Utilities', amount: 0.00, description: 'Mar 2025 Facility Utilities', date: '2025-03-31T12:40:00.000Z', recordedBy: 'accountant' },
+  { category: 'Ask My Accountant', amount: -2611.22, description: 'Mar 2025 Accountant Reconciliation Credit', date: '2025-03-31T12:50:00.000Z', recordedBy: 'accountant' },
+  { category: 'OTHER EXPENSE', amount: 25710.23, description: 'Mar 2025 General Operational & Other Expense', date: '2025-03-31T13:00:00.000Z', recordedBy: 'accountant' },
 ];
 
 function seedDefaultExpenses(): void {
@@ -100,10 +100,35 @@ function isCogsCategory(category: string): boolean {
 /**
  * Parses timestamp string or Date object safely.
  */
-function parseDate(val: any): Date | null {
+function parseDate(val: unknown): Date | null {
   if (!val) return null;
-  const d = new Date(val);
+  if (val instanceof Date) {
+    return Number.isNaN(val.getTime()) ? null : val;
+  }
+  if (typeof val !== 'string') return null;
+  const trimmed = val.trim();
+  if (!trimmed) return null;
+  // Parse bare YYYY-MM-DD in local time so midnight boundaries match the local calendar day
+  const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(trimmed);
+  if (dateOnly) {
+    const year = Number(dateOnly[1]);
+    const month = Number(dateOnly[2]) - 1;
+    const day = Number(dateOnly[3]);
+    const local = new Date(year, month, day);
+    if (local.getFullYear() === year && local.getMonth() === month && local.getDate() === day) {
+      return local;
+    }
+    return null;
+  }
+  const d = new Date(trimmed);
   return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function formatLocalDate(d: Date): string {
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
 }
 
 // ─── Public API Services ─────────────────────────────────────────────────────
@@ -116,12 +141,13 @@ export async function getTodayPulse(): Promise<TodayPnLPulseDto> {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
-  const { items: orders } = await listOrders({ pageSize: 1000 });
+  const orders = getAllOrders();
 
   let revenueCents = 0;
   let ordersToday = 0;
 
   for (const o of orders) {
+    if (o.status === 'cancelled') continue;
     const orderDate = parseDate(o.createdAt);
     if (orderDate && orderDate >= today) {
       ordersToday++;
@@ -165,6 +191,9 @@ export async function getTodayPulse(): Promise<TodayPnLPulseDto> {
  * Calculates aggregated P&L Summary over a given timeframe (today, 7d, 30d, 90d, all).
  */
 export async function getPnLSummary(timeframe: PnLTimeframe = '30d'): Promise<PnLSummaryDto> {
+  if (!['today', '7d', '30d', '90d', 'all'].includes(timeframe)) {
+    throw new AppError(400, 'VALIDATION_ERROR', `Invalid timeframe "${timeframe}". Expected today, 7d, 30d, 90d, or all.`);
+  }
   const now = new Date();
   let startDate: Date | null = null;
 
@@ -182,25 +211,30 @@ export async function getPnLSummary(timeframe: PnLTimeframe = '30d'): Promise<Pn
     startDate.setDate(now.getDate() - 90);
   }
 
-  const { items: orders } = await listOrders({ pageSize: 1000 });
+  const orders = getAllOrders();
 
   let revenueCents = 0;
   let totalOrders = 0;
   let deliveredOrders = 0;
+  let hasLiveQ12025Delivered = false;
 
   for (const o of orders) {
+    if (o.status === 'cancelled') continue;
     const d = parseDate(o.createdAt);
     if (!startDate || (d && d >= startDate)) {
       totalOrders++;
       if (['delivered', 'completed'].includes(o.status)) {
         deliveredOrders++;
         revenueCents += toCents(o.totalAmount);
+        if (d && d.getFullYear() === 2025 && d.getMonth() <= 2) {
+          hasLiveQ12025Delivered = true;
+        }
       }
     }
   }
 
-  // Include 2025 audited sales base if querying 'all'
-  if (timeframe === 'all') {
+  // Include 2025 Q1 audited sales base if querying 'all' and live Q1 2025 orders are not already loaded
+  if (timeframe === 'all' && !hasLiveQ12025Delivered) {
     revenueCents += toCents(21502353.40); // Q1 2025 base from Finance.tsx
   }
 
@@ -242,6 +276,9 @@ export async function getPnLSummary(timeframe: PnLTimeframe = '30d'): Promise<Pn
  * Dedicated P&L Flow / Waterfall Chart directly under 'Revenue and order trend' in Analytics.
  */
 export async function getPnLTrend(days: 7 | 30 | 90 = 30): Promise<DailyPnLBucketDto[]> {
+  if (![7, 30, 90].includes(days)) {
+    throw new AppError(400, 'VALIDATION_ERROR', 'Trend days parameter must be 7, 30, or 90.');
+  }
   const bucketCount = days === 7 ? 7 : days === 30 ? 10 : 12;
   const bucketSizeDays = Math.ceil(days / bucketCount);
 
@@ -251,7 +288,7 @@ export async function getPnLTrend(days: 7 | 30 | 90 = 30): Promise<DailyPnLBucke
   start.setDate(end.getDate() - days + 1);
   start.setHours(0, 0, 0, 0);
 
-  const { items: orders } = await listOrders({ pageSize: 1000 });
+  const orders = getAllOrders();
   const allExpenses = Array.from(expensesStore.values());
 
   const buckets: DailyPnLBucketDto[] = [];
@@ -293,7 +330,7 @@ export async function getPnLTrend(days: 7 | 30 | 90 = 30): Promise<DailyPnLBucke
     const netCents = gpCents - expCents;
 
     buckets.push({
-      date: bucketStart.toISOString().split('T')[0],
+      date: formatLocalDate(bucketStart),
       name: bucketStart.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }),
       revenue: fromCents(revCents),
       cogs: fromCents(cogsCents),
@@ -313,57 +350,80 @@ export async function getPnLTrend(days: 7 | 30 | 90 = 30): Promise<DailyPnLBucke
  */
 export async function getPerformanceBreakdown(): Promise<MonthlyPerformanceDto[]> {
   // Pre-configured historical baseline matching Finance.tsx Q1 2025
-  const baseline2025: MonthlyPerformanceDto[] = [
+  const breakdown: MonthlyPerformanceDto[] = [
     { name: 'Jan 25', Revenue: 8118370.93, Expenses: 5916540.27, Net: 2201830.66, cogs: 5904115.17 },
     { name: 'Feb 25', Revenue: 7073596.25, Expenses: 6099031.96, Net: 974564.29, cogs: 6100112.72 },
     { name: 'Mar 25', Revenue: 6310386.22, Expenses: 5107016.41, Net: 1203369.81, cogs: 5081607.40 },
   ];
 
-  // Also compute live 2026 months from stores
-  const { items: orders } = await listOrders({ pageSize: 1000 });
+  // Dynamically aggregate post-Q1-2025 months across any year present in live stores
+  const orders = getAllOrders();
   const allExpenses = Array.from(expensesStore.values());
+  const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
-  const currentYear = new Date().getFullYear();
-  if (currentYear >= 2026) {
-    const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-    const currentMonthIdx = new Date().getMonth();
+  interface MonthlyBucket {
+    sortKey: number;
+    year: number;
+    month: number;
+    revCents: number;
+    expCents: number;
+    cogsCents: number;
+  }
 
-    for (let m = 0; m <= currentMonthIdx; m++) {
-      let revCents = 0;
-      for (const o of orders) {
-        if (['delivered', 'completed'].includes(o.status)) {
-          const d = parseDate(o.createdAt);
-          if (d && d.getFullYear() === currentYear && d.getMonth() === m) {
-            revCents += toCents(o.totalAmount);
-          }
-        }
-      }
+  const buckets = new Map<number, MonthlyBucket>();
+  const ensureBucket = (d: Date): MonthlyBucket | null => {
+    const year = d.getFullYear();
+    const month = d.getMonth();
+    const isQ12025OrEarlier = year < 2025 || (year === 2025 && month <= 2);
+    if (isQ12025OrEarlier) return null;
 
-      let expCents = 0;
-      let cogsCents = 0;
-      for (const e of allExpenses) {
-        const d = parseDate(e.date);
-        if (d && d.getFullYear() === currentYear && d.getMonth() === m) {
-          expCents += toCents(e.amount);
-          if (isCogsCategory(e.category)) {
-            cogsCents += toCents(e.amount);
-          }
-        }
-      }
+    const sortKey = year * 12 + month;
+    let bucket = buckets.get(sortKey);
+    if (!bucket) {
+      bucket = { sortKey, year, month, revCents: 0, expCents: 0, cogsCents: 0 };
+      buckets.set(sortKey, bucket);
+    }
+    return bucket;
+  };
 
-      if (revCents > 0 || expCents > 0) {
-        baseline2025.push({
-          name: `${monthNames[m]} ${currentYear.toString().slice(-2)}`,
-          Revenue: fromCents(revCents),
-          Expenses: fromCents(expCents),
-          Net: fromCents(revCents - expCents),
-          cogs: fromCents(cogsCents),
-        });
+  for (const o of orders) {
+    if (!['delivered', 'completed'].includes(o.status)) continue;
+    const d = parseDate(o.createdAt);
+    if (!d) continue;
+    const bucket = ensureBucket(d);
+    if (bucket) {
+      bucket.revCents += toCents(o.totalAmount);
+    }
+  }
+
+  for (const e of allExpenses) {
+    if (e.id.startsWith('exp_seed_')) continue;
+    const d = parseDate(e.date);
+    if (!d) continue;
+    const bucket = ensureBucket(d);
+    if (bucket) {
+      const amtCents = toCents(e.amount);
+      bucket.expCents += amtCents;
+      if (isCogsCategory(e.category)) {
+        bucket.cogsCents += amtCents;
       }
     }
   }
 
-  return baseline2025;
+  const sorted = Array.from(buckets.values()).sort((a, b) => a.sortKey - b.sortKey);
+  for (const bucket of sorted) {
+    if (bucket.revCents !== 0 || bucket.expCents !== 0) {
+      breakdown.push({
+        name: `${monthNames[bucket.month]} ${String(bucket.year).slice(-2)}`,
+        Revenue: fromCents(bucket.revCents),
+        Expenses: fromCents(bucket.expCents),
+        Net: fromCents(bucket.revCents - bucket.expCents),
+        cogs: fromCents(bucket.cogsCents),
+      });
+    }
+  }
+
+  return breakdown;
 }
 
 /**
@@ -375,19 +435,28 @@ export async function recordExpense(payload: RecordExpensePayload): Promise<Expe
     throw new AppError(400, 'VALIDATION_ERROR', 'Expense category is required.');
   }
 
-  if (typeof payload.amount !== 'number' || Number.isNaN(payload.amount)) {
+  if (typeof payload.amount !== 'number' || !Number.isFinite(payload.amount)) {
     throw new AppError(400, 'VALIDATION_ERROR', 'A valid expense amount is required.');
   }
 
-  const id = `exp_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
   const now = new Date().toISOString();
+  let resolvedDate = now;
+  if (payload.date !== undefined) {
+    const parsed = parseDate(payload.date);
+    if (!parsed) {
+      throw new AppError(400, 'VALIDATION_ERROR', 'Expense date is invalid.');
+    }
+    resolvedDate = parsed.toISOString();
+  }
+
+  const id = `exp_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
 
   const expense: ExpenseDto = {
     id,
     category: payload.category.trim(),
     amount: Math.round(payload.amount * 100) / 100,
     description: payload.description ? payload.description.trim() : '',
-    date: payload.date || now,
+    date: resolvedDate,
     orderId: payload.orderId || null,
     recordedBy: payload.recordedBy || 'admin',
     createdAt: now,
@@ -414,7 +483,10 @@ export async function listExpenses(query: PnLFilterQuery = {}): Promise<ExpenseD
   let list = Array.from(expensesStore.values());
 
   if (query.startDate) {
-    const start = new Date(query.startDate);
+    const start = parseDate(query.startDate);
+    if (!start) {
+      throw new AppError(400, 'VALIDATION_ERROR', 'Invalid startDate filter.');
+    }
     list = list.filter((e) => {
       const d = parseDate(e.date);
       return d && d >= start;
@@ -422,7 +494,13 @@ export async function listExpenses(query: PnLFilterQuery = {}): Promise<ExpenseD
   }
 
   if (query.endDate) {
-    const end = new Date(query.endDate);
+    const end = parseDate(query.endDate);
+    if (!end) {
+      throw new AppError(400, 'VALIDATION_ERROR', 'Invalid endDate filter.');
+    }
+    if (/^\d{4}-\d{2}-\d{2}$/.test(query.endDate.trim())) {
+      end.setHours(23, 59, 59, 999);
+    }
     list = list.filter((e) => {
       const d = parseDate(e.date);
       return d && d <= end;

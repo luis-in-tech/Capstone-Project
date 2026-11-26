@@ -1,4 +1,3 @@
-import React from 'react';
 import { motion } from 'motion/react';
 import { Link } from 'react-router-dom';
 import { ArrowLeftIcon as ArrowLeft, ShieldIcon as Shield } from '@phosphor-icons/react';
@@ -32,13 +31,13 @@ export const Privacy = () => {
             <h1 className="text-4xl font-black tracking-tighter text-zinc-900 uppercase">Privacy Policy</h1>
           </div>
 
-          <p className="text-sm text-zinc-400 font-bold uppercase tracking-widest mb-12">Last Updated: May 2024</p>
+          <p className="text-sm text-zinc-600 font-bold uppercase tracking-widest mb-12">Last Updated: May 2024</p>
 
           <div className="prose prose-zinc prose-sm md:prose-base max-w-none space-y-12">
             <section>
               <h2 className="text-xl font-black tracking-tight text-zinc-900 mb-4">1. DATA ENCAPSULATION</h2>
               <p className="text-zinc-600 leading-relaxed font-medium">
-                Active Pro ("The System") prioritizes the absolute integrity of your logistics data. We operate on a principle of "Zero-Knowledge" for your proprietary supply chain data. All warehouse records, agent details, and financialTrajectories are stored using enterprise-grade encryption.
+                Active Pro ("The System") prioritizes the absolute integrity of your logistics data. We operate on a principle of "Zero-Knowledge" for your proprietary supply chain data. All warehouse records, agent details, and financial trajectories are stored using enterprise-grade encryption.
               </p>
             </section>
 

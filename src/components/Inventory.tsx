@@ -1,16 +1,17 @@
 import { hasAdminRole } from '../lib/staffPermissions';
 import { useStaffAccess } from '../hooks/useStaffAccess';
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { lazy, Suspense, useCallback, useDeferredValue, useState, useEffect, useMemo, useRef } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { db } from '../lib/supabaseAdapter';
-import { collection, onSnapshot, query, where, addDoc, updateDoc, doc, serverTimestamp, deleteDoc } from '../lib/supabaseAdapter';
+import { db, storage, collection, onSnapshot, addDoc, getDoc, updateDoc, doc, serverTimestamp, deleteDoc, ref, uploadBytes, getDownloadURL } from '../lib/supabaseAdapter';
+import { supabase } from '../lib/supabase';
+import { escapeCsvCell, escapeHtml } from '../lib/exportUtils';
 import { Product, InventoryItem, Warehouse } from '../types';
 import { handleSupabaseError, OperationType } from '../lib/supabaseErrorHandler';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Card, CardContent } from '@/components/ui/card';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter, DialogDescription } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
 import { MagnifyingGlassIcon as Search, PlusIcon as Plus, QrCodeIcon as QrCode, PackageIcon as Package, WarehouseIcon, WarningIcon as AlertTriangle, EyeIcon as Eye, CurrencyCircleDollarIcon as CircleDollarSign, SlidersHorizontalIcon as SlidersHorizontal, TagIcon as Tag, PencilIcon as Pencil, TrashIcon as Trash2, ImageSquareIcon as ImagePlus, XIcon as X, DownloadIcon as Download, UploadSimpleIcon as Upload, FileXlsIcon as FileSpreadsheet, FileTextIcon as FileText, ChartBarIcon as BarChart3, InfoIcon as Info, PrinterIcon as Printer, CaretLeftIcon as ChevronLeft, CaretRightIcon as ChevronRight } from '@phosphor-icons/react';
 import { QRCodeSVG } from 'qrcode.react';
@@ -18,17 +19,20 @@ import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useAuth } from '../hooks/useAuth';
 import { toast } from 'sonner';
-import * as XLSX from 'xlsx';
 import { WarehouseLayout } from './WarehouseLayout';
 import { ProductVariationEditor } from './ProductVariationEditor';
-import { emptyVariations, variationDraft, validateVariations, variantLabel, variantFields, stockForProduct } from '../lib/productVariations';
+import { emptyVariations, variationDraft, validateVariations, variantLabel, variantFields, variantFieldNumber } from '../lib/productVariations';
 import { saveProductVariations } from '../lib/saveProductVariations';
-import { DefectiveStockModal } from './DefectiveStockModal';
 import { QuarantineLedger } from './QuarantineLedger';
-import { getLocalDefectiveTickets, exportDefectiveProductsReportCSV } from '../lib/itilService';
+import { getLocalDefectiveTickets } from '../lib/itilService';
 import type { DefectiveStockTicket } from '../types';
 
-const PRODUCT_TEMPLATE_HEADERS = ['SKU Code', 'Item Name', 'Category', 'Supplier Name', 'Base Price / Retail Price', 'Metro Manila Price', 'Provincial Price', 'Cost', 'Minimum Stock Level', 'Reorder Point'];
+const loadDefectiveStockModalModule = () => import('./DefectiveStockModal');
+const DefectiveStockModalLazy = lazy(() =>
+  loadDefectiveStockModalModule().then((m) => ({ default: m.DefectiveStockModal })),
+);
+
+const PRODUCT_TEMPLATE_HEADERS = ['SKU Code', 'Item Name', 'Category', 'Supplier Name', 'Base Price / Retail Price', 'Metro Manila Price', 'Provincial Price', 'Cost', 'Minimum Stock Level', 'Reorder Point', 'Unit'];
 type ImportRow = Record<string, string | number | undefined>;
 interface ProductImportPreview { row: number; data: Omit<Product, 'id'>; errors: string[]; }
 interface NamedOption { id: string; name: string; active?: boolean; }
@@ -44,6 +48,216 @@ export const cleanItemName = (name: string): string => {
     .trim();
 };
 
+function useMountedOnce(active: boolean): boolean {
+  const [mounted, setMounted] = useState(active);
+  useEffect(() => {
+    if (active) setMounted(true);
+  }, [active]);
+  return active || mounted;
+}
+
+const ROW_ACTION_BTN_CLASS =
+  'inline-flex shrink-0 items-center justify-center rounded-lg border border-border bg-background text-sm font-medium whitespace-nowrap transition-colors outline-none select-none hover:bg-muted hover:text-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 dark:border-input dark:bg-input/30 dark:hover:bg-input/50 h-8 w-8';
+const ROW_DELETE_BTN_CLASS =
+  'inline-flex shrink-0 items-center justify-center rounded-lg border border-border bg-background text-sm font-medium whitespace-nowrap transition-colors outline-none select-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 dark:border-input dark:bg-input/30 h-8 w-8 text-red-500 hover:text-red-600 hover:bg-red-50 hover:border-red-200';
+const ROW_PILL_BASE_CLASS =
+  'inline-flex h-5 w-fit shrink-0 items-center justify-center gap-1 overflow-hidden rounded-full border font-medium whitespace-nowrap';
+
+interface InventoryRowSummary {
+  displayName: string;
+  stock: number;
+  status: 'in' | 'low' | 'out';
+  enabledVariantCount: number;
+  variantPriceRows: Array<{ key: string; label: string; range: string }>;
+  costText: string;
+}
+
+interface InventoryProductRowProps {
+  rowNumber: number;
+  product: Product;
+  summary: InventoryRowSummary;
+  isAdmin: boolean;
+  canAdjustStock: boolean;
+  canViewWholesale: boolean;
+  onView: (product: Product) => void;
+  onEdit: (product: Product) => void;
+  onDelete: (product: Product) => void;
+  onQr: (product: Product) => void;
+  onAdjust: (product: Product) => void;
+}
+
+const InventoryProductRow = React.memo(function InventoryProductRow({
+  rowNumber,
+  product,
+  summary,
+  isAdmin,
+  canAdjustStock,
+  canViewWholesale,
+  onView,
+  onEdit,
+  onDelete,
+  onQr,
+  onAdjust,
+}: InventoryProductRowProps) {
+  const { displayName, stock, status, enabledVariantCount, variantPriceRows, costText } = summary;
+  const statusClass =
+    status === 'out'
+      ? 'border-red-500/30 bg-red-500/10 text-red-600 dark:text-red-400'
+      : status === 'low'
+        ? 'border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400'
+        : 'border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400';
+
+  return (
+    <tr
+      data-slot="table-row"
+      tabIndex={0}
+      className="group cursor-pointer border-b transition-colors hover:bg-muted/40 focus-visible:outline-2 focus-visible:outline-primary"
+      onClick={() => onView(product)}
+      onKeyDown={(e) => {
+        if (e.target !== e.currentTarget) return;
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onView(product);
+        }
+      }}
+    >
+      <td className="w-10 text-center align-middle whitespace-nowrap font-mono text-xs text-muted-foreground px-2 py-2">
+        {rowNumber}
+      </td>
+      <td className="w-28 align-middle whitespace-nowrap font-mono text-xs text-muted-foreground px-2 py-2 truncate" title={product.sku}>
+        {product.sku}
+      </td>
+      <td className="min-w-47.5 max-w-65 align-middle whitespace-nowrap px-2 py-2">
+        <div className="flex items-center gap-2.5">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-border bg-muted">
+            {product.photoUrl ? (
+              <img src={product.photoUrl} alt={displayName} width={40} height={40} loading="lazy" decoding="async" className="h-full w-full object-cover" />
+            ) : (
+              <Package className="h-4 w-4 text-muted-foreground" />
+            )}
+          </div>
+          <div className="min-w-0">
+            <p className="truncate text-xs font-bold" title={displayName}>{displayName}</p>
+            {product.hasVariations && (
+              <span className="inline-flex w-fit shrink-0 items-center justify-center rounded-4xl border border-transparent bg-secondary text-secondary-foreground font-medium whitespace-nowrap my-0.5 text-[9px] px-1.5 py-0 h-4">
+                {enabledVariantCount} Variants
+              </span>
+            )}
+            <p className="truncate text-[11px] text-muted-foreground">{product.category || 'Uncategorized'}</p>
+          </div>
+        </div>
+      </td>
+      <td className="w-32 align-middle whitespace-nowrap px-2 py-2">
+        {product.hasVariations ? (
+          <div className="space-y-0.5 text-[11px]">
+            {variantPriceRows.map((row) => (
+              <p key={row.key} className="truncate">
+                <span className="text-muted-foreground">{row.label}: </span>
+                <strong>{row.range}</strong>
+              </p>
+            ))}
+          </div>
+        ) : (
+          <div className="grid grid-cols-[2.4rem_auto] text-[11px] leading-tight">
+            <span className="text-muted-foreground">Retail:</span><strong>₱{(product.basePrice || 0).toLocaleString()}</strong>
+            {canViewWholesale && (
+              <>
+                <span className="text-muted-foreground">MM:</span><strong>₱{(product.mmPrice ?? product.wholesalePrice ?? 0).toLocaleString()}</strong>
+                <span className="text-muted-foreground">Prov.:</span><strong>₱{(product.provincialPrice ?? product.dealerPrice ?? 0).toLocaleString()}</strong>
+              </>
+            )}
+          </div>
+        )}
+      </td>
+      <td className="w-20 align-middle whitespace-nowrap px-2 py-2 text-xs font-semibold">
+        {costText}
+      </td>
+      <td className="w-24 align-middle whitespace-nowrap px-2 py-2 text-center">
+        <span className={`${ROW_PILL_BASE_CLASS} px-2.5 py-0.5 text-[11px] ${statusClass}`}>
+          {stock.toLocaleString()} units
+        </span>
+      </td>
+      <td className="w-24 align-middle whitespace-nowrap px-2 py-2">
+        {product.hasVariations ? (
+          <span className="text-[11px] text-muted-foreground">Per variant</span>
+        ) : (
+          <div className="text-[11px] space-y-0.5">
+            <p><span className="text-muted-foreground">Min:</span> <strong>{product.minStockLevel || 0}</strong></p>
+            <p><span className="text-muted-foreground">Reorder:</span> <strong>{product.reorderPoint || 0}</strong></p>
+          </div>
+        )}
+      </td>
+      <td className="w-28 align-middle whitespace-nowrap px-2 py-2">
+        <p className="truncate text-xs font-bold" title={product.supplier || 'Supplier'}>{product.supplier || 'Supplier'}</p>
+        <p className="truncate text-[10px] text-muted-foreground">Main Supplier</p>
+      </td>
+      <td className="w-24 align-middle whitespace-nowrap px-2 py-2 text-center">
+        <span className={`${ROW_PILL_BASE_CLASS} text-[10px] py-0.5 px-2 ${statusClass}`}>
+          {status === 'out' ? '● Out of Stock' : status === 'low' ? '● Low Stock' : '● In Stock'}
+        </span>
+      </td>
+      <td
+        className="w-45 align-middle whitespace-nowrap text-center px-3 py-2"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="flex justify-center gap-1">
+          <button
+            type="button"
+            className={ROW_ACTION_BTN_CLASS}
+            title="View product"
+            aria-label={`View ${displayName}`}
+            onClick={() => onView(product)}
+          >
+            <Eye className="h-3.5 w-3.5 pointer-events-none" />
+          </button>
+          {isAdmin && (
+            <button
+              type="button"
+              className={ROW_ACTION_BTN_CLASS}
+              title="Edit product"
+              aria-label={`Edit ${displayName}`}
+              onClick={() => onEdit(product)}
+            >
+              <Pencil className="h-3.5 w-3.5 pointer-events-none" />
+            </button>
+          )}
+          {isAdmin && (
+            <button
+              type="button"
+              className={ROW_DELETE_BTN_CLASS}
+              title="Delete product"
+              aria-label={`Delete ${displayName}`}
+              onClick={() => onDelete(product)}
+            >
+              <Trash2 className="h-3.5 w-3.5 pointer-events-none" />
+            </button>
+          )}
+          <button
+            type="button"
+            className={ROW_ACTION_BTN_CLASS}
+            title={product.hasVariations ? 'Variant QR labels' : 'QR Label'}
+            aria-label={product.hasVariations ? `Variant QR labels for ${displayName}` : `QR label for ${displayName}`}
+            onClick={() => onQr(product)}
+          >
+            <QrCode className="h-3.5 w-3.5 pointer-events-none" />
+          </button>
+          {canAdjustStock && (
+            <button
+              type="button"
+              className={ROW_ACTION_BTN_CLASS}
+              title="Adjust stock"
+              aria-label={`Adjust stock for ${displayName}`}
+              onClick={() => onAdjust(product)}
+            >
+              <SlidersHorizontal className="h-3.5 w-3.5 pointer-events-none" />
+            </button>
+          )}
+        </div>
+      </td>
+    </tr>
+  );
+});
+
 export function Inventory() {
   const { profile } = useAuth();
   const { permissions } = useStaffAccess();
@@ -53,6 +267,7 @@ export function Inventory() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const [products, setProducts] = useState<Product[]>([]);
+  const [hasLoadedProducts, setHasLoadedProducts] = useState(false);
   const [addVariations, setAddVariations] = useState(emptyVariations);
   const [editVariations, setEditVariations] = useState(emptyVariations);
   const [selectedVariantId, setSelectedVariantId] = useState('');
@@ -104,12 +319,10 @@ export function Inventory() {
   const [inventoryView, setInventoryView] = useState<'stock' | 'layout' | 'quarantine'>('stock');
   const [managedCategories, setManagedCategories] = useState<NamedOption[]>([]);
   const [managedSuppliers, setManagedSuppliers] = useState<NamedOption[]>([]);
-  const [hasDelegatedAccess, setHasDelegatedAccess] = useState(false);
 
   // FR-11: Defective Stock Exception Logging & Quarantine
   const [isDefectiveModalOpen, setIsDefectiveModalOpen] = useState(false);
   const [defectiveTickets, setDefectiveTickets] = useState<DefectiveStockTicket[]>(() => getLocalDefectiveTickets());
-  const cleanedProductIdsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     const handleTicketsChanged = () => setDefectiveTickets(getLocalDefectiveTickets());
@@ -129,6 +342,7 @@ export function Inventory() {
     const next = new URLSearchParams(searchParams);
     if (category !== null) {
       setCategoryFilter(category || 'all');
+      setCurrentPage(1);
       next.delete('category');
     }
     if (product) {
@@ -142,6 +356,18 @@ export function Inventory() {
 
   const isAdmin = hasAdminRole(profile) && permissions.inventory === 'adjust';
   const canAdjustStock = permissions.inventory === 'adjust';
+  const allowedWarehouseIds = useMemo(
+    () => (hasAdminRole(profile) || permissions.warehouseAccess === 'all' ? null : permissions.warehouseIds),
+    [profile, permissions.warehouseAccess, permissions.warehouseIds],
+  );
+  const visibleWarehouses = useMemo(
+    () => (allowedWarehouseIds ? warehouses.filter(w => allowedWarehouseIds.includes(w.id)) : warehouses),
+    [warehouses, allowedWarehouseIds],
+  );
+  const printCleanupRef = useRef<(() => void) | null>(null);
+  const deleteLockRef = useRef(false);
+  const adjustLockRef = useRef(false);
+  useEffect(() => () => { printCleanupRef.current?.(); }, []);
   const extractSkuNumber = (sku?: string): number | null => {
     if (!sku) return null;
     const match = sku.match(/(\d+)/);
@@ -181,7 +407,7 @@ export function Inventory() {
     return map;
   }, [products]);
 
-  const childrenOf = (id: string) => childrenMap.get(id) || [];
+  const childrenOf = useCallback((id: string) => childrenMap.get(id) || [], [childrenMap]);
 
   const parentProducts = useMemo(() => {
     return products
@@ -190,10 +416,14 @@ export function Inventory() {
   }, [products]);
   const hasStock = (ids: string[]) => inventory.some(i => ids.includes(i.productId) && i.quantity !== 0);
   const variantModeLocked = !!editingProduct && hasStock([editingProduct.id, ...childrenOf(editingProduct.id).map(p => p.id)]);
-  const adjustmentProduct = selectedProduct?.hasVariations ? childrenOf(selectedProduct.id).find(p => p.id === selectedVariantId) : selectedProduct;
+  const adjustmentProduct = selectedProduct?.hasVariations
+    ? (selectedVariantId === selectedProduct.id
+        ? selectedProduct
+        : childrenOf(selectedProduct.id).find(p => p.id === selectedVariantId))
+    : selectedProduct;
 
-  useEffect(() => { setSelectedVariantId(''); }, [selectedProduct?.id]);
-  useEffect(() => { if (!isStockUpdateOpen) { setSelectedVariantId(''); setAdjustQty(''); } }, [isStockUpdateOpen]);
+  useEffect(() => { setSelectedVariantId(''); setSelectedWarehouseId(''); }, [selectedProduct?.id]);
+  useEffect(() => { if (!isStockUpdateOpen) { setSelectedVariantId(''); setAdjustQty(''); setSelectedWarehouseId(''); } }, [isStockUpdateOpen]);
   useEffect(() => {
     if (selectedProduct) {
       const latest = products.find(p => p.id === selectedProduct.id);
@@ -256,14 +486,6 @@ export function Inventory() {
         const rawName = String(data.name || '');
         const sanitizedName = cleanItemName(rawName);
 
-        // Auto-clean database record if it contains '#000' or '#12' format in the name (once per document)
-        if (rawName && rawName !== sanitizedName && !cleanedProductIdsRef.current.has(d.id)) {
-          cleanedProductIdsRef.current.add(d.id);
-          updateDoc(doc(db, 'products', d.id), { name: sanitizedName }).catch((err) => {
-            console.warn(`Failed to auto-clean product name for ${d.id}:`, err);
-          });
-        }
-
         return {
           id: d.id,
           ...data,
@@ -271,7 +493,9 @@ export function Inventory() {
         } as Product;
       });
       setProducts(mapped);
+      setHasLoadedProducts(true);
     }, (error) => {
+      setHasLoadedProducts(true);
       handleSupabaseError(error, OperationType.GET, 'products');
     });
     const unsubInventory = onSnapshot(collection(db, 'inventory'), (snap) => {
@@ -303,7 +527,6 @@ export function Inventory() {
   const uploadProductImage = async (file: File): Promise<string> => {
     // 1. Try Supabase Storage upload if available
     try {
-      const { storage, ref, uploadBytes, getDownloadURL } = await import('../lib/supabaseAdapter');
       const safeName = file.name.replace(/[^a-zA-Z0-9.-]/g, '_');
       const filePath = `products/${Date.now()}_${safeName}`;
       const storageRef = ref(storage, filePath);
@@ -364,8 +587,18 @@ export function Inventory() {
     const formData = new FormData(e.currentTarget);
     const sku = String(formData.get('sku') || addSku || '').trim();
     const name = cleanItemName(String(formData.get('name') || addName || '').trim());
-    const category = String(addCategory || formData.get('category') || 'Uncategorized').trim() || 'Uncategorized';
-    const supplier = String(addSupplier || formData.get('supplier') || 'N/A').trim() || 'N/A';
+    if (!categoryOptions.includes(addCategory) && !addCategory.trim()) {
+      toast.error('Enter a category name or select an existing category.');
+      return;
+    }
+    if (!supplierOptions.includes(addSupplier) && !addSupplier.trim()) {
+      toast.error('Enter a supplier name or select an existing supplier.');
+      return;
+    }
+    const formCategory = String(formData.get('category') || '');
+    const formSupplier = String(formData.get('supplier') || '');
+    const category = (addCategory.trim() || (formCategory !== 'custom' ? formCategory.trim() : '') || 'Uncategorized');
+    const supplier = (addSupplier.trim() || (formSupplier !== 'custom' ? formSupplier.trim() : '') || 'N/A');
     const unit = String(formData.get('unit') ?? addUnits).trim() || 'pc';
 
 
@@ -444,20 +677,32 @@ export function Inventory() {
       };
 
       if (addVariations.enabled) {
-        await saveProductVariations({ ...newProduct, id: crypto.randomUUID() }, addVariations, uploadProductImage);
+        await saveProductVariations({ ...newProduct, id: crypto.randomUUID() }, addVariations, uploadProductImage, products);
       } else {
-        const docRef = await addDoc(collection(db, 'products'), newProduct);
-        // Initialize inventory for all warehouses
-        await Promise.all(
-          warehouses.map(wh =>
-            addDoc(collection(db, 'inventory'), {
+        const createdInvIds: string[] = [];
+        let createdProdId: string | null = null;
+        try {
+          const docRef = await addDoc(collection(db, 'products'), newProduct);
+          createdProdId = docRef.id;
+          // Initialize inventory for all warehouses
+          for (const wh of warehouses) {
+            const invRef = await addDoc(collection(db, 'inventory'), {
               productId: docRef.id,
               warehouseId: wh.id,
               quantity: 0,
               lastUpdated: serverTimestamp()
-            })
-          )
-        );
+            });
+            if (invRef?.id) createdInvIds.push(invRef.id);
+          }
+        } catch (createErr) {
+          for (const invId of [...createdInvIds].reverse()) {
+            await deleteDoc(doc(db, 'inventory', invId)).catch(() => {});
+          }
+          if (createdProdId) {
+            await deleteDoc(doc(db, 'products', createdProdId)).catch(() => {});
+          }
+          throw createErr;
+        }
       }
       setProductImage(null);
       setProductImagePreview('');
@@ -471,7 +716,8 @@ export function Inventory() {
     }
   };
 
-  const handleDownloadProductTemplate = () => {
+  const handleDownloadProductTemplate = async () => {
+    const XLSX = await import('xlsx');
     const sheet = XLSX.utils.aoa_to_sheet([PRODUCT_TEMPLATE_HEADERS]);
     sheet['!cols'] = PRODUCT_TEMPLATE_HEADERS.map((header) => ({ wch: Math.max(header.length + 2, 16) }));
     const workbook = XLSX.utils.book_new();
@@ -483,6 +729,7 @@ export function Inventory() {
     const file = event.target.files?.[0];
     if (!file) return;
     try {
+      const XLSX = await import('xlsx');
       const workbook = XLSX.read(await file.arrayBuffer(), { type: 'array' });
       const sheet = workbook.Sheets[workbook.SheetNames[0]];
       if (!sheet) throw new Error('The workbook does not contain a worksheet.');
@@ -505,11 +752,16 @@ export function Inventory() {
         if (name && existingNames.has(normalizedName)) errors.push('Item Name already exists in Inventory');
         if (name && fileNames.has(normalizedName)) errors.push('Duplicate Item Name in file');
         if (name) fileNames.add(normalizedName);
-        const numericHeaders = ['Base Price / Retail Price', 'Metro Manila Price', 'Provincial Price', 'Cost', 'Minimum Stock Level', 'Reorder Point'];
+        const baseVal = row['Base Price / Retail Price'];
+        if (baseVal === '' || !Number.isFinite(Number(baseVal)) || Number(baseVal) <= 0) {
+          errors.push('Base Price / Retail Price must be greater than 0');
+        }
+        const numericHeaders = ['Metro Manila Price', 'Provincial Price', 'Cost', 'Minimum Stock Level', 'Reorder Point'];
         numericHeaders.forEach((header) => {
           const value = row[header];
           if (value !== '' && (!Number.isFinite(Number(value)) || Number(value) < 0)) errors.push(`${header} must be a non-negative number`);
         });
+        const rawUnit = String(row['Unit'] ?? row['Units'] ?? '').trim();
         const now = new Date();
         return {
           row: index + 2,
@@ -526,8 +778,8 @@ export function Inventory() {
             costPrice: Number(row.Cost) || 0,
             minStockLevel: Number(row['Minimum Stock Level']) || 0,
             reorderPoint: Number(row['Reorder Point']) || 0,
-            units: Number(row['Units'] || row['Unit'] || 1) || 1,
-            unit: String(row['Units'] || row['Unit'] || '1').toLowerCase(),
+            units: Number(rawUnit) > 0 ? Number(rawUnit) : 1,
+            unit: rawUnit ? rawUnit.toLowerCase() : 'pc',
             createdAt: now, updatedAt: now,
           },
         };
@@ -546,14 +798,26 @@ export function Inventory() {
   const handleConfirmImport = async () => {
     if (!importPreview.length || importPreview.some((row) => row.errors.length)) return;
     setIsImporting(true);
+    const createdProductIds: string[] = [];
+    const createdInventoryIds: string[] = [];
     try {
       for (const row of importPreview) {
         const productRef = await addDoc(collection(db, 'products'), row.data);
-        for (const warehouse of warehouses) await addDoc(collection(db, 'inventory'), { productId: productRef.id, warehouseId: warehouse.id, quantity: 0, lastUpdated: serverTimestamp() });
+        createdProductIds.push(productRef.id);
+        for (const warehouse of warehouses) {
+          const invRef = await addDoc(collection(db, 'inventory'), { productId: productRef.id, warehouseId: warehouse.id, quantity: 0, lastUpdated: serverTimestamp() });
+          if (invRef?.id) createdInventoryIds.push(invRef.id);
+        }
       }
       toast.success(`${importPreview.length} products added to Inventory`);
       setIsImportOpen(false); setImportPreview([]); setImportFileName('');
     } catch (error) {
+      for (const invId of createdInventoryIds) {
+        await deleteDoc(doc(db, 'inventory', invId)).catch(() => {});
+      }
+      for (const prodId of createdProductIds) {
+        await deleteDoc(doc(db, 'products', prodId)).catch(() => {});
+      }
       handleSupabaseError(error, OperationType.CREATE, 'products');
     } finally { setIsImporting(false); }
   };
@@ -564,11 +828,21 @@ export function Inventory() {
     const variationError = validateVariations(editVariations, editSku, products, editingProduct.id);
     if (variationError) { toast.error(variationError); return; }
     if (!!editingProduct.hasVariations !== editVariations.enabled && variantModeLocked) { toast.error('Clear existing stock through Adjust Stock before changing variation mode.'); return; }
+    if (!categoryOptions.includes(editCategory) && !editCategory.trim()) {
+      toast.error('Enter a category name or select an existing category.');
+      return;
+    }
+    if (!supplierOptions.includes(editSupplier) && !editSupplier.trim()) {
+      toast.error('Enter a supplier name or select an existing supplier.');
+      return;
+    }
     const form = new FormData(event.currentTarget);
     const sku = String(editSku || form.get('sku') || '').trim();
     const name = cleanItemName(String(editName || form.get('name') || '').trim());
-    const category = String(editCategory || form.get('category') || 'Uncategorized').trim() || 'Uncategorized';
-    const supplier = String(editSupplier || form.get('supplier') || 'N/A').trim() || 'N/A';
+    const formCategory = String(form.get('category') || '');
+    const formSupplier = String(form.get('supplier') || '');
+    const category = (editCategory.trim() || (formCategory !== 'custom' ? formCategory.trim() : '') || 'Uncategorized');
+    const supplier = (editSupplier.trim() || (formSupplier !== 'custom' ? formSupplier.trim() : '') || 'N/A');
     const unit = String(form.get('unit') ?? editUnits).trim() || 'pc';
 
 
@@ -621,7 +895,7 @@ export function Inventory() {
       const mmPrice = Number(form.get('mmPrice')) || 0;
       const provincialPrice = Number(form.get('provincialPrice')) || 0;
       const promoVal = form.get('promoPrice');
-      const promoPrice = promoVal !== '' && promoVal != null ? Number(promoVal) : null;
+      const promoPrice = promoVal !== '' && promoVal != null && Number.isFinite(Number(promoVal)) ? Number(promoVal) : undefined;
       const updatedData = {
         sku,
         name,
@@ -644,8 +918,8 @@ export function Inventory() {
       };
 
       if (editVariations.enabled || editingProduct.hasVariations || childrenOf(editingProduct.id).length) {
-        await saveProductVariations({ ...updatedData, id: editingProduct.id }, editVariations, uploadProductImage);
-      } else await updateDoc(doc(db, 'products', editingProduct.id), updatedData);
+        await saveProductVariations({ ...updatedData, id: editingProduct.id }, editVariations, uploadProductImage, products);
+      } else await updateDoc(doc(db, 'products', editingProduct.id), { ...updatedData, promoPrice: promoPrice ?? null });
 
       if (selectedProduct && selectedProduct.id === editingProduct.id) {
         setSelectedProduct(prev => prev ? { ...prev, ...updatedData } : null);
@@ -664,17 +938,28 @@ export function Inventory() {
   };
 
   const handleDeleteProduct = async () => {
-    if (!productToDelete) return;
+    if (!productToDelete || deleteLockRef.current || isDeletingProduct) return;
+    deleteLockRef.current = true;
     setIsDeletingProduct(true);
     try {
       const childIds = childrenOf(productToDelete.id).map(p => p.id);
+      const allProductIds = [productToDelete.id, ...childIds];
       const inventoryItems = inventory.filter(i => i.productId === productToDelete.id || childIds.includes(i.productId));
-      for (const item of inventoryItems) {
-        await deleteDoc(doc(db, 'inventory', item.id));
-      }
 
+      // Delete product records first so a failed delete never leaves stock wiped on an active product
       for (const childId of childIds) await deleteDoc(doc(db, 'products', childId));
       await deleteDoc(doc(db, 'products', productToDelete.id));
+
+      for (const item of inventoryItems) {
+        await deleteDoc(doc(db, 'inventory', item.id)).catch(() => {});
+      }
+      const { error: zoneAllocErr } = await supabase
+        .from('warehouse_zone_allocations')
+        .delete()
+        .in('productId', allProductIds);
+      if (zoneAllocErr && !['PGRST205', '42P01'].includes(zoneAllocErr.code || '')) {
+        console.warn('Could not clean up warehouse zone allocations:', zoneAllocErr);
+      }
 
       toast.success('Product deleted successfully');
       setProductToDelete(null);
@@ -682,38 +967,60 @@ export function Inventory() {
       handleSupabaseError(error, OperationType.DELETE, `products/${productToDelete.id}`);
     } finally {
       setIsDeletingProduct(false);
+      deleteLockRef.current = false;
     }
   };
 
   const updateStock = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    if (isAdjusting) return;
-    if (!adjustmentProduct) { toast.error('Select the specific variant to adjust.'); return; }
+    if (adjustLockRef.current || isAdjusting) return;
+    if (!adjustmentProduct) { toast.error('Select the original item or specific variant to adjust.'); return; }
     const formData = new FormData(e.currentTarget);
-    const warehouseId = formData.get('warehouseId') as string;
+    const warehouseId = (formData.get('warehouseId') as string) || selectedWarehouseId;
     if (!canAdjustStock || (permissions.warehouseAccess === 'selected' && !permissions.warehouseIds.includes(warehouseId))) { toast.error('You do not have permission to adjust this warehouse.'); return; }
     const quantity = Number(formData.get('quantity'));
-    const reason = formData.get('reason') as string;
+    const reason = String(formData.get('reason') || '').trim();
 
-    if (selectedProduct?.hasVariations && (!warehouseId || !Number.isInteger(quantity) || !quantity || !reason.trim())) { toast.error('Choose a warehouse, enter a non-zero whole quantity and a reason.'); return; }
+    if (!warehouseId || !Number.isInteger(quantity) || !quantity || !reason) {
+      toast.error('Choose a warehouse, enter a non-zero whole quantity and a reason.');
+      return;
+    }
+
     const item = inventory.find(i => i.productId === adjustmentProduct.id && i.warehouseId === warehouseId);
     if (selectedProduct && profile) {
+      adjustLockRef.current = true;
       setIsAdjusting(true);
+      let updatedRowId: string | null = null;
+      let prevRowQty: number | null = null;
+      let createdInvId: string | null = null;
       try {
+        let currentQty = item ? Number(item.quantity || 0) : 0;
+        if (item?.id) {
+          const liveSnap = await getDoc(doc(db, 'inventory', item.id)).catch(() => null);
+          if (liveSnap?.exists()) {
+            currentQty = Number((liveSnap.data() as InventoryItem).quantity || 0);
+          }
+        }
+        if (quantity < 0 && currentQty + quantity < 0) {
+          toast.error(`Cannot deduct ${Math.abs(quantity)} units; only ${Math.max(0, currentQty)} available.`);
+          return;
+        }
+
         if (item) {
-          // 1a. Existing row — update the inventory level
+          prevRowQty = currentQty;
+          updatedRowId = item.id;
           await updateDoc(doc(db, 'inventory', item.id), {
-            quantity: item.quantity + quantity,
+            quantity: currentQty + quantity,
             lastUpdated: serverTimestamp()
           });
         } else {
-          // 1b. No row for this product+warehouse yet — insert one
-          await addDoc(collection(db, 'inventory'), {
+          const createdRef = await addDoc(collection(db, 'inventory'), {
             productId: adjustmentProduct.id,
             warehouseId,
             quantity,
             lastUpdated: serverTimestamp()
           });
+          createdInvId = createdRef?.id || null;
         }
 
         // 2. Log the adjustment for auditing
@@ -729,8 +1036,20 @@ export function Inventory() {
         setIsStockUpdateOpen(false);
         toast.success('Inventory balance synchronized and adjustment logged');
       } catch (err) {
+        if (updatedRowId !== null && prevRowQty !== null) {
+          await updateDoc(doc(db, 'inventory', updatedRowId), {
+            quantity: prevRowQty,
+            lastUpdated: serverTimestamp()
+          }).catch(() => {});
+        }
+        if (createdInvId) {
+          await deleteDoc(doc(db, 'inventory', createdInvId)).catch(() => {});
+        }
         handleSupabaseError(err, OperationType.UPDATE, `inventory/${item?.id || 'new'}`);
-      } finally { setIsAdjusting(false); }
+      } finally {
+        setIsAdjusting(false);
+        adjustLockRef.current = false;
+      }
     }
   };
 
@@ -738,6 +1057,7 @@ export function Inventory() {
   const stockMap = useMemo(() => {
     const map = new Map<string, number>();
     for (const item of inventory) {
+      if (allowedWarehouseIds && !allowedWarehouseIds.includes(item.warehouseId)) continue;
       const qty = Number(item.quantity) || 0;
       const whKey = `${item.productId}:${item.warehouseId}`;
       map.set(whKey, (map.get(whKey) || 0) + qty);
@@ -746,50 +1066,75 @@ export function Inventory() {
       map.set(allKey, (map.get(allKey) || 0) + Math.max(0, qty));
     }
     return map;
-  }, [inventory]);
+  }, [inventory, allowedWarehouseIds]);
 
-  const getStockCount = (productId: string, warehouseId?: string) => {
+  const getOwnStockCount = useCallback((productId: string, warehouseId?: string) => {
     const targetWh = !warehouseId || warehouseId === 'all' ? 'all' : warehouseId;
+    return stockMap.get(`${productId}:${targetWh}`) || 0;
+  }, [stockMap]);
+
+  const getStockCount = useCallback((productId: string, warehouseId?: string) => {
+    const ownStock = getOwnStockCount(productId, warehouseId);
     const children = childrenMap.get(productId);
     if (children && children.length > 0) {
-      let sum = 0;
+      let sum = ownStock;
       for (const child of children) {
         if (child.variantEnabled !== false) {
-          sum += stockMap.get(`${child.id}:${targetWh}`) || 0;
+          sum += getOwnStockCount(child.id, warehouseId);
         }
       }
       return sum;
     }
-    return stockMap.get(`${productId}:${targetWh}`) || 0;
-  };
+    return ownStock;
+  }, [getOwnStockCount, childrenMap]);
 
-  // Check if any individual warehouse has stock at or below zero for a product
-  const hasAnyWarehouseDeficit = (productId: string) => {
-    return warehouses.some(wh => {
-      const qty = stockMap.get(`${productId}:${wh.id}`);
-      return qty !== undefined && qty <= 0;
-    });
-  };
-
-  // Check if any individual warehouse has low stock for a product
-  const hasAnyWarehouseLowStock = (productId: string, product: Product) => {
-    const threshold = product.reorderPoint || product.minStockLevel || 0;
-    return warehouses.some(wh => {
-      const qty = stockMap.get(`${productId}:${wh.id}`) || 0;
-      return qty > 0 && qty <= threshold;
-    });
-  };
-
-  const activeWarehouseObj = warehouses.find(w => w.id === warehouseFilter);
+  const activeWarehouseObj = useMemo(
+    () => warehouses.find(w => w.id === warehouseFilter),
+    [warehouses, warehouseFilter],
+  );
   const activeWarehouseLabel = warehouseFilter === 'all'
     ? 'All Warehouses'
     : (activeWarehouseObj?.name || 'Warehouse Filter');
 
-  const categories = Array.from(new Set([...managedCategories.map(item => item.name), ...products.map(product => product.category).filter(Boolean)])).sort();
-  const suppliers = Array.from(new Set([...managedSuppliers.map(item => item.name), ...products.map(product => product.supplier).filter(Boolean) as string[]])).sort();
-  const inactiveCategoryNames = new Set(managedCategories.filter(item => item.active === false).map(item => item.name));
-  const categoryOptions = Array.from(new Set(['Uncategorized', ...categories])).filter(name => name && !inactiveCategoryNames.has(name)).sort();
-  const supplierOptions = Array.from(new Set(['N/A', ...suppliers])).filter(Boolean).sort();
+  const categories = useMemo(
+    () => Array.from(new Set([...managedCategories.map(item => item.name), ...products.map(product => product.category).filter(Boolean)])).sort(),
+    [managedCategories, products],
+  );
+  const suppliers = useMemo(
+    () => Array.from(new Set([...managedSuppliers.map(item => item.name), ...products.map(product => product.supplier).filter(Boolean) as string[]])).sort(),
+    [managedSuppliers, products],
+  );
+  const inactiveCategoryNames = useMemo(
+    () => new Set(managedCategories.filter(item => item.active === false).map(item => item.name)),
+    [managedCategories],
+  );
+  const categoryOptions = useMemo(
+    () => Array.from(new Set(['Uncategorized', ...categories])).filter(name => name && !inactiveCategoryNames.has(name)).sort(),
+    [categories, inactiveCategoryNames],
+  );
+  const supplierOptions = useMemo(
+    () => Array.from(new Set(['N/A', ...suppliers])).filter(Boolean).sort(),
+    [suppliers],
+  );
+  const layoutProducts = useMemo(
+    () => products.filter(p => p.variantEnabled !== false && (!p.hasVariations || getOwnStockCount(p.id) > 0)),
+    [products, getOwnStockCount],
+  );
+  const quarantinedTicketCount = useMemo(
+    () => defectiveTickets.filter(t => t.status === 'QUARANTINED').length,
+    [defectiveTickets],
+  );
+  const mountAddProductDialog = useMountedOnce(isAddProductOpen);
+  const mountImportDialog = useMountedOnce(isImportOpen);
+  const mountEditDialog = useMountedOnce(Boolean(editingProduct));
+  const mountDeleteDialog = useMountedOnce(Boolean(productToDelete));
+  const mountStockUpdateDialog = useMountedOnce(isStockUpdateOpen);
+  const mountDetailDialog = useMountedOnce(isDetailOpen);
+  const mountQrDialog = useMountedOnce(Boolean(qrProduct));
+  const mountDefectiveModal = useMountedOnce(isDefectiveModalOpen);
+  const handleOpenDefectiveModal = useCallback(() => setIsDefectiveModalOpen(true), []);
+  const handleCloseDefectiveModal = useCallback(() => setIsDefectiveModalOpen(false), []);
+  const handleDefectiveSuccess = useCallback(() => setDefectiveTickets(getLocalDefectiveTickets()), []);
 
   const isAddSkuDuplicate = Boolean(
     addSku.trim() && products.some(p => (p.sku || '').trim().toLowerCase() === addSku.trim().toLowerCase())
@@ -807,56 +1152,116 @@ export function Inventory() {
     products.some(p => p.id !== editingProduct.id && (p.name || '').trim().toLowerCase() === cleanItemName(editName).trim().toLowerCase())
   );
 
-  const getProductStatus = (product: Product, stock: number, _checkWarehouseId?: string): 'in' | 'low' | 'out' => {
-    if (product.hasVariations) {
-      const variants = childrenOf(product.id).filter(p => p.variantEnabled !== false);
-      const statuses = variants.map(p => getProductStatus(p, getStockCount(p.id, _checkWarehouseId), _checkWarehouseId));
-      if (!statuses.length || statuses.every(s => s === 'out')) return 'out';
-      return statuses.some(s => s !== 'in') ? 'low' : 'in';
+  const getProductStatus = useCallback((product: Product, stock: number, _checkWarehouseId?: string): 'in' | 'low' | 'out' => {
+    const resolveStatus = (item: Product, qty: number): 'in' | 'low' | 'out' => {
+      if (item.hasVariations) {
+        const variants = childrenOf(item.id).filter(p => p.variantEnabled !== false);
+        const statuses = variants.map(p => resolveStatus(p, getOwnStockCount(p.id, _checkWarehouseId)));
+        const ownQty = getOwnStockCount(item.id, _checkWarehouseId);
+        if (ownQty > 0) {
+          statuses.unshift(resolveStatus({ ...item, hasVariations: false }, ownQty));
+        }
+        if (!statuses.length || statuses.every(s => s === 'out')) return 'out';
+        return statuses.some(s => s !== 'in') ? 'low' : 'in';
+      }
+      if (qty <= 0) return 'out';
+      const threshold = item.reorderPoint || item.minStockLevel || 0;
+      if (qty <= threshold) return 'low';
+      return 'in';
+    };
+    return resolveStatus(product, stock);
+  }, [childrenOf, getOwnStockCount]);
+
+  const variantRange = useCallback((product: Product, key: typeof variantFields[number][0]) => {
+    const children = childrenOf(product.id).filter(p => p.variantEnabled !== false);
+    const pool = getOwnStockCount(product.id) > 0 ? [product, ...children] : children;
+    const values = pool
+      .map(p => variantFieldNumber(p, key))
+      .filter((value): value is number => value !== null);
+    if (!values.length) return '—';
+    const min = Math.min(...values), max = Math.max(...values);
+    return min === max ? `₱${min.toLocaleString()}` : `₱${min.toLocaleString()}–₱${max.toLocaleString()}`;
+  }, [childrenOf, getOwnStockCount]);
+
+  const productSearchTextMap = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const product of parentProducts) {
+      const childParts = (childrenMap.get(product.id) || []).flatMap(p => [p.sku, variantLabel(p)]);
+      map.set(
+        product.id,
+        [product.name, product.sku, product.category, product.supplier, ...childParts]
+          .filter(Boolean)
+          .join('\0')
+          .toLowerCase(),
+      );
     }
-    if (stock <= 0) return 'out';
-    const threshold = product.reorderPoint || product.minStockLevel || 0;
-    if (stock <= threshold) return 'low';
-    return 'in';
-  };
+    return map;
+  }, [parentProducts, childrenMap]);
+
+  const productRowMetaMap = useMemo(() => {
+    const map = new Map<string, InventoryRowSummary>();
+    const activeVariantCols = canViewWholesale ? variantFields.slice(0, 3) : variantFields.slice(0, 1);
+    for (const product of parentProducts) {
+      const stock = getStockCount(product.id, warehouseFilter);
+      const status = getProductStatus(product, stock, warehouseFilter);
+      const enabledVariantCount = product.hasVariations
+        ? childrenOf(product.id).filter(v => v.variantEnabled !== false).length
+        : 0;
+      const variantPriceRows = product.hasVariations
+        ? activeVariantCols.map(([key, label]) => ({
+            key,
+            label,
+            range: variantRange(product, key),
+          }))
+        : [];
+      const costText = canViewCost
+        ? (product.hasVariations ? variantRange(product, 'costPrice') : `₱${(product.costPrice || 0).toLocaleString()}`)
+        : '—';
+      map.set(product.id, {
+        displayName: cleanItemName(product.name),
+        stock,
+        status,
+        enabledVariantCount,
+        variantPriceRows,
+        costText,
+      });
+    }
+    return map;
+  }, [parentProducts, warehouseFilter, getStockCount, getProductStatus, childrenOf, variantRange, canViewWholesale, canViewCost]);
+
+  const deferredSearchTerm = useDeferredValue(searchTerm);
 
   const filteredProducts = useMemo(() => {
-    const term = searchTerm.trim().toLowerCase();
+    const term = deferredSearchTerm.trim().toLowerCase();
     return parentProducts.filter(product => {
-      const stock = getStockCount(product.id, warehouseFilter);
-      const matchesSearch = !term || [
-        product.name,
-        product.sku,
-        product.category,
-        product.supplier,
-        ...(childrenMap.get(product.id) || []).flatMap(p => [p.sku, variantLabel(p)])
-      ].some(value => (value || '').toLowerCase().includes(term));
+      const meta = productRowMetaMap.get(product.id);
+      const stock = meta ? meta.stock : 0;
+      const status = meta ? meta.status : 'out';
+      const matchesSearch = !term || (productSearchTextMap.get(product.id) || '').includes(term);
 
       return matchesSearch
         && (categoryFilter === 'all' || (product.category || 'Uncategorized') === categoryFilter)
-        && (supplierFilter === 'all' || product.supplier === supplierFilter)
-        && (stockFilter === 'all' || getProductStatus(product, stock, warehouseFilter) === stockFilter)
+        && (supplierFilter === 'all' || (product.supplier || 'N/A') === supplierFilter)
+        && (stockFilter === 'all' || status === stockFilter)
         && (!hideZeroStock || stock > 0);
     });
-  }, [parentProducts, searchTerm, warehouseFilter, categoryFilter, supplierFilter, stockFilter, hideZeroStock, stockMap, childrenMap]);
+  }, [parentProducts, deferredSearchTerm, categoryFilter, supplierFilter, stockFilter, hideZeroStock, productRowMetaMap, productSearchTextMap]);
 
   const totalProducts = parentProducts.length;
 
   const { lowStockProducts, outOfStockProducts, inventoryValue } = useMemo(() => {
     let low = 0;
     let out = 0;
-    for (const product of parentProducts) {
-      const stock = getStockCount(product.id, warehouseFilter);
-      const status = getProductStatus(product, stock, warehouseFilter);
-      if (status === 'low') low++;
-      else if (status === 'out') out++;
+    for (const summary of productRowMetaMap.values()) {
+      if (summary.status === 'low') low++;
+      else if (summary.status === 'out') out++;
     }
 
     let totalVal = 0;
     for (const product of products) {
-      if (product.hasVariations) continue;
+      if (product.variantEnabled === false) continue;
       const unitVal = (product.costPrice && product.costPrice > 0) ? product.costPrice : (product.basePrice || 0);
-      totalVal += unitVal * Math.max(0, getStockCount(product.id, warehouseFilter));
+      totalVal += unitVal * Math.max(0, getOwnStockCount(product.id, warehouseFilter));
     }
 
     return {
@@ -864,15 +1269,36 @@ export function Inventory() {
       outOfStockProducts: out,
       inventoryValue: totalVal
     };
-  }, [parentProducts, products, warehouseFilter, stockMap, childrenMap]);
+  }, [productRowMetaMap, products, warehouseFilter, getOwnStockCount]);
 
   // Pagination state for rapid DOM rendering (50 rows/page)
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState<number>(50);
 
-  useEffect(() => {
+  const handleSearchTermChange = useCallback((value: string) => {
+    setSearchTerm(value);
     setCurrentPage(1);
-  }, [searchTerm, warehouseFilter, categoryFilter, supplierFilter, stockFilter, hideZeroStock, pageSize]);
+  }, []);
+  const handleWarehouseFilterChange = useCallback((value: string | null) => {
+    setWarehouseFilter(value ?? 'all');
+    setCurrentPage(1);
+  }, []);
+  const handleCategoryFilterChange = useCallback((value: string | null) => {
+    setCategoryFilter(value ?? 'all');
+    setCurrentPage(1);
+  }, []);
+  const handleSupplierFilterChange = useCallback((value: string | null) => {
+    setSupplierFilter(value ?? 'all');
+    setCurrentPage(1);
+  }, []);
+  const handleStockFilterChange = useCallback((value: string | null) => {
+    setStockFilter(value ?? 'all');
+    setCurrentPage(1);
+  }, []);
+  const handleHideZeroStockChange = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
+    setHideZeroStock(event.target.checked);
+    setCurrentPage(1);
+  }, []);
 
   const totalPages = Math.max(1, Math.ceil(filteredProducts.length / pageSize));
   const safeCurrentPage = Math.min(currentPage, totalPages);
@@ -882,12 +1308,30 @@ export function Inventory() {
     return filteredProducts.slice(start, start + pageSize);
   }, [filteredProducts, safeCurrentPage, pageSize]);
 
-  const variantRange = (product: Product, key: typeof variantFields[number][0]) => {
-    const values = childrenOf(product.id).filter(p => p.variantEnabled !== false && (key !== 'promoPrice' || p.promoPrice != null)).map(p => Number(p[key] || 0));
-    if (!values.length) return '—';
-    const min = Math.min(...values), max = Math.max(...values);
-    return min === max ? `₱${min.toLocaleString()}` : `₱${min.toLocaleString()}–₱${max.toLocaleString()}`;
-  };
+  const handleViewRow = useCallback((product: Product) => {
+    setDetailTab('overview');
+    setSelectedProduct(product);
+    setIsDetailOpen(true);
+  }, []);
+  const handleEditRow = useCallback((product: Product) => {
+    setEditingProduct(product);
+  }, []);
+  const handleDeleteRow = useCallback((product: Product) => {
+    setProductToDelete(product);
+  }, []);
+  const handleQrRow = useCallback((product: Product) => {
+    if (product.hasVariations) {
+      setSelectedProduct(product);
+      setIsDetailOpen(true);
+      setDetailTab('variants');
+    } else {
+      setQrProduct(product);
+    }
+  }, []);
+  const handleAdjustRow = useCallback((product: Product) => {
+    setSelectedProduct(product);
+    setIsStockUpdateOpen(true);
+  }, []);
 
   const allowedVariantFields = useMemo(() => {
     return variantFields.filter(([key]) => {
@@ -897,19 +1341,44 @@ export function Inventory() {
     });
   }, [canViewCost, canViewWholesale]);
 
-  const renderVariantDetails = (parent: Product) => <section className="space-y-3 py-3">
-    <p className="text-xs text-muted-foreground">Stock is tracked separately for each variant and warehouse. Disabled variants retain their history and any remaining stock.</p>
-    <div className="overflow-x-auto rounded-lg border"><Table>
-      <TableHeader><TableRow><TableHead className="min-w-40">Variant</TableHead><TableHead>Variant SKU</TableHead>{allowedVariantFields.map(([key, label]) => <TableHead key={key}>{label}</TableHead>)}{warehouses.map(w => <TableHead key={w.id}>{w.name}</TableHead>)}<TableHead>Total Stock</TableHead><TableHead>Status</TableHead><TableHead>Actions</TableHead></TableRow></TableHeader>
-      <TableBody>{childrenOf(parent.id).map(v => <TableRow key={v.id} className={v.variantEnabled === false ? 'bg-muted/30' : ''}>
-        <TableCell className="font-medium"><div className="flex items-center gap-2">{v.photoUrl && <img src={v.photoUrl} alt={variantLabel(v)} className="h-12 w-12 shrink-0 rounded-lg border border-border object-cover" />}<span>{variantLabel(v)}{v.variantEnabled === false && <Badge variant="secondary" className="ml-2">Disabled</Badge>}</span></div></TableCell><TableCell className="font-mono text-xs">{v.sku}</TableCell>
-        {allowedVariantFields.map(([key]) => <TableCell key={key}>{v[key] == null ? '—' : Number(v[key]).toLocaleString()}</TableCell>)}
-        {warehouses.map(w => <TableCell key={w.id}>{getStockCount(v.id, w.id).toLocaleString()}</TableCell>)}
-        <TableCell className="font-bold">{getStockCount(v.id).toLocaleString()}</TableCell><TableCell>{getProductStatus(v, getStockCount(v.id)) === 'out' ? 'Out of Stock' : getProductStatus(v, getStockCount(v.id)) === 'low' ? 'Low Stock' : 'In Stock'}</TableCell>
-        <TableCell><div className="flex gap-1"><Button type="button" variant="outline" size="icon" aria-label={`QR label for ${v.sku}`} onClick={() => setQrProduct(v)}><QrCode className="h-4 w-4" /></Button>{canAdjustStock && <Button type="button" variant="outline" size="icon" aria-label={`Adjust ${v.sku}`} onClick={() => { setSelectedVariantId(v.id); setIsDetailOpen(false); setIsStockUpdateOpen(true); }}><SlidersHorizontal className="h-4 w-4" /></Button>}</div></TableCell>
-      </TableRow>)}</TableBody>
-    </Table></div>
-  </section>;
+  const renderVariantDetails = (parent: Product) => {
+    const variantEntries = [parent, ...childrenOf(parent.id)];
+    return (
+      <section className="space-y-3 py-3">
+        <p className="text-xs text-muted-foreground">Stock is tracked separately for the original item and each variant across warehouses. Disabled variants retain their history and any remaining stock.</p>
+        <div className="overflow-x-auto rounded-lg border"><Table>
+          <TableHeader><TableRow><TableHead className="min-w-40">Item / Variant</TableHead><TableHead>SKU</TableHead>{allowedVariantFields.map(([key, label]) => <TableHead key={key}>{label}</TableHead>)}{warehouses.map(w => <TableHead key={w.id}>{w.name}</TableHead>)}<TableHead>Total Stock</TableHead><TableHead>Status</TableHead><TableHead>Actions</TableHead></TableRow></TableHeader>
+          <TableBody>{variantEntries.map(v => {
+            const isOriginal = v.id === parent.id;
+            const rowTotal = getOwnStockCount(v.id);
+            const rowStatus = getProductStatus(isOriginal ? { ...v, hasVariations: false } : v, rowTotal);
+            return (
+              <TableRow key={v.id} className={!isOriginal && v.variantEnabled === false ? 'bg-muted/30' : isOriginal ? 'bg-muted/15' : ''}>
+                <TableCell className="font-medium">
+                  <div className="flex items-center gap-2">
+                    {v.photoUrl && <img src={v.photoUrl} alt={isOriginal ? 'Original' : variantLabel(v)} className="h-12 w-12 shrink-0 rounded-lg border border-border object-cover" />}
+                    <span className="flex items-center gap-1.5 flex-wrap">
+                      {isOriginal ? <><span>Original</span><Badge variant="outline" className="text-[10px]">Base SKU</Badge></> : variantLabel(v)}
+                      {!isOriginal && v.variantEnabled === false && <Badge variant="secondary" className="ml-1">Disabled</Badge>}
+                    </span>
+                  </div>
+                </TableCell>
+                <TableCell className="font-mono text-xs">{v.sku}</TableCell>
+                {allowedVariantFields.map(([key]) => {
+                  const fieldVal = variantFieldNumber(v, key);
+                  return <TableCell key={key}>{fieldVal == null ? '—' : fieldVal.toLocaleString()}</TableCell>;
+                })}
+                {warehouses.map(w => <TableCell key={w.id}>{getOwnStockCount(v.id, w.id).toLocaleString()}</TableCell>)}
+                <TableCell className="font-bold">{rowTotal.toLocaleString()}</TableCell>
+                <TableCell>{rowStatus === 'out' ? 'Out of Stock' : rowStatus === 'low' ? 'Low Stock' : 'In Stock'}</TableCell>
+                <TableCell><div className="flex gap-1"><Button type="button" variant="outline" size="icon" aria-label={`QR label for ${v.sku}`} onClick={() => setQrProduct(v)}><QrCode className="h-4 w-4" /></Button>{canAdjustStock && <Button type="button" variant="outline" size="icon" aria-label={`Adjust ${v.sku}`} onClick={() => { setSelectedVariantId(v.id); setIsDetailOpen(false); setIsStockUpdateOpen(true); }}><SlidersHorizontal className="h-4 w-4" /></Button>}</div></TableCell>
+              </TableRow>
+            );
+          })}</TableBody>
+        </Table></div>
+      </section>
+    );
+  };
 
   const printThermalLabel = (product: Product, svgContainerId?: string) => {
     let svgHtml = '';
@@ -933,11 +1402,13 @@ export function Inventory() {
     printFrame.style.border = '0';
     document.body.appendChild(printFrame);
 
+    const safeSku = escapeHtml(product.sku || '');
+    const safeName = escapeHtml(cleanItemName(product.name || ''));
     const htmlContent = `
       <!DOCTYPE html>
       <html>
         <head>
-          <title>Label - ${product.sku}</title>
+          <title>Label - ${safeSku}</title>
           <style>
             @page {
               size: 50mm 30mm;
@@ -1024,73 +1495,156 @@ export function Inventory() {
           <div class="qr-side">${svgHtml}</div>
           <div class="info-side">
             <div class="brand">ActivePro Asset</div>
-            <div class="prod-name">${product.name}</div>
-            <div class="prod-sku">${product.sku}</div>
-            <div class="prod-price">₱${priceFormatted}</div>
+            <div class="prod-name">${safeName}</div>
+            <div class="prod-sku">${safeSku}</div>
+            <div class="prod-price">₱${escapeHtml(priceFormatted)}</div>
           </div>
         </body>
       </html>
     `;
 
+    printCleanupRef.current?.();
+    let printDelayTimer = 0;
+    let fallbackTimer = 0;
+    let cleaned = false;
+    const cleanupFrame = () => {
+      if (cleaned) return;
+      cleaned = true;
+      window.clearTimeout(printDelayTimer);
+      window.clearTimeout(fallbackTimer);
+      if (document.body.contains(printFrame)) {
+        document.body.removeChild(printFrame);
+      }
+      if (printCleanupRef.current === cleanupFrame) {
+        printCleanupRef.current = null;
+      }
+    };
+    printCleanupRef.current = cleanupFrame;
     const frameDoc = printFrame.contentWindow?.document || printFrame.contentDocument;
-    if (frameDoc) {
-      frameDoc.open();
-      frameDoc.write(htmlContent);
-      frameDoc.close();
-      setTimeout(() => {
-        printFrame.contentWindow?.focus();
-        printFrame.contentWindow?.print();
-        setTimeout(() => {
-          if (document.body.contains(printFrame)) {
-            document.body.removeChild(printFrame);
-          }
-        }, 1500);
-      }, 250);
+    if (!frameDoc) {
+      cleanupFrame();
+      toast.error('Unable to initialize label print frame.');
+      return;
     }
+    frameDoc.open();
+    frameDoc.write(htmlContent);
+    frameDoc.close();
+    const frameWin = printFrame.contentWindow;
+    if (frameWin) {
+      frameWin.addEventListener('afterprint', cleanupFrame, { once: true });
+    }
+    printDelayTimer = window.setTimeout(() => {
+      frameWin?.focus();
+      frameWin?.print();
+      fallbackTimer = window.setTimeout(cleanupFrame, 3000);
+    }, 250);
   };
 
 
-  const exportMultiWarehouseLedger = () => {
-    const csvRows = [];
-    csvRows.push(['SKU', 'Product Name', 'Supplier', 'Category', 'Aisle/Bin', 'Warehouse A Stock', 'Warehouse B Stock', 'Quarantined Stock', 'Unit Cost', 'Total Asset Value'].join(','));
-    
-    const whA = warehouses.find(w => w.name.includes('Valenzuela A')) || warehouses[0];
-    const whB = warehouses.find(w => w.name.includes('Valenzuela B')) || warehouses[1];
+  const exportMultiWarehouseLedger = useCallback(() => {
+    const activeWhs = visibleWarehouses.filter(w => w.active !== false);
+    const exportWarehouses = activeWhs.length > 0 ? activeWhs : visibleWarehouses;
+    const header = [
+      'SKU',
+      'Product Name',
+      'Supplier',
+      'Category',
+      'Aisle/Bin',
+      ...exportWarehouses.map(w => `${w.name} Stock`),
+      'Quarantined Stock',
+      'Unit Cost',
+      'Total Asset Value',
+    ];
+    const csvRows = [header.map(escapeCsvCell).join(',')];
 
-    products.filter(p => !p.parentProductId).forEach(p => {
-      if (p.hasVariations) {
-         const variants = childrenOf(p.id);
-         variants.forEach(v => {
-            const stockA = inventory.find(i => i.productId === v.id && i.warehouseId === whA?.id)?.quantity || 0;
-            const stockB = inventory.find(i => i.productId === v.id && i.warehouseId === whB?.id)?.quantity || 0;
-            const quarantine = inventory.find(i => i.productId === v.id)?.quarantineQuantity || 0;
-            const cost = canViewCost ? (v.costPrice || p.costPrice || 0) : 'N/A';
-            const totalValue = canViewCost ? ((stockA + stockB + quarantine) * (Number(cost) || 0)) : 'N/A';
-            csvRows.push([
-              `"${v.sku || ''}"`,
-              `"${p.name} - ${variantLabel(v)}"`,
-              `"${p.supplier || 'N/A'}"`,
-              `"${p.category || 'N/A'}"`,
-              `"${p.locationAisle || ''}/${p.locationBin || ''}"`,
-              stockA, stockB, quarantine, cost, totalValue
-            ].join(','));
-         });
-      } else {
-        const stockA = inventory.find(i => i.productId === p.id && i.warehouseId === whA?.id)?.quantity || 0;
-        const stockB = inventory.find(i => i.productId === p.id && i.warehouseId === whB?.id)?.quantity || 0;
-        const quarantine = inventory.find(i => i.productId === p.id)?.quarantineQuantity || 0;
-        const cost = canViewCost ? (p.costPrice || 0) : 'N/A';
-        const totalValue = canViewCost ? ((stockA + stockB + quarantine) * (Number(cost) || 0)) : 'N/A';
-        csvRows.push([
-          `"${p.sku || ''}"`,
-          `"${p.name}"`,
-          `"${p.supplier || 'N/A'}"`,
-          `"${p.category || 'N/A'}"`,
-          `"${p.locationAisle || ''}/${p.locationBin || ''}"`,
-          stockA, stockB, quarantine, cost, totalValue
-        ].join(','));
+    const allowedWhSet = allowedWarehouseIds ? new Set(allowedWarehouseIds) : null;
+    const warehouseQtyMap = new Map<string, number>();
+    const quarantineQtyMap = new Map<string, number>();
+    for (const item of inventory) {
+      const qty = Math.max(0, Number(item.quantity || 0));
+      if (qty > 0) {
+        const key = `${item.productId}\0${item.warehouseId}`;
+        warehouseQtyMap.set(key, (warehouseQtyMap.get(key) ?? 0) + qty);
       }
-    });
+      const qQty = Math.max(0, Number(item.quarantineQuantity || 0));
+      if (qQty > 0 && (!allowedWhSet || allowedWhSet.has(item.warehouseId))) {
+        quarantineQtyMap.set(item.productId, (quarantineQtyMap.get(item.productId) ?? 0) + qQty);
+      }
+    }
+
+    const appendCsvRow = (
+      itemId: string,
+      sku: string,
+      itemName: string,
+      supplier: string,
+      category: string,
+      aisleBin: string,
+      costNum: number,
+    ) => {
+      let totalWhUnits = 0;
+      const whStocks = exportWarehouses.map(w => {
+        const qty = warehouseQtyMap.get(`${itemId}\0${w.id}`) ?? 0;
+        totalWhUnits += qty;
+        return qty;
+      });
+      const quarantine = quarantineQtyMap.get(itemId) ?? 0;
+      const totalUnits = totalWhUnits + quarantine;
+      const cost = canViewCost ? costNum : 'N/A';
+      const totalValue = canViewCost ? totalUnits * (Number(costNum) || 0) : 'N/A';
+      csvRows.push([
+        escapeCsvCell(sku),
+        escapeCsvCell(itemName),
+        escapeCsvCell(supplier),
+        escapeCsvCell(category),
+        escapeCsvCell(aisleBin),
+        ...whStocks.map(q => escapeCsvCell(q)),
+        escapeCsvCell(quarantine),
+        escapeCsvCell(cost),
+        escapeCsvCell(totalValue),
+      ].join(','));
+    };
+
+    for (const p of products) {
+      if (p.parentProductId) continue;
+      const supplier = p.supplier || 'N/A';
+      const category = p.category || 'N/A';
+      const aisleBin = `${p.locationAisle || ''}/${p.locationBin || ''}`;
+      if (p.hasVariations) {
+        if (getOwnStockCount(p.id) > 0) {
+          appendCsvRow(
+            p.id,
+            p.sku || '',
+            `${p.name} (Original)`,
+            supplier,
+            category,
+            aisleBin,
+            p.costPrice || 0,
+          );
+        }
+        for (const v of childrenOf(p.id)) {
+          if (v.variantEnabled === false) continue;
+          appendCsvRow(
+            v.id,
+            v.sku || '',
+            `${p.name} - ${variantLabel(v)}`,
+            supplier,
+            category,
+            aisleBin,
+            v.costPrice ?? p.costPrice ?? 0,
+          );
+        }
+      } else {
+        appendCsvRow(
+          p.id,
+          p.sku || '',
+          p.name,
+          supplier,
+          category,
+          aisleBin,
+          p.costPrice || 0,
+        );
+      }
+    }
 
     const blob = new Blob([csvRows.join('\n')], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
@@ -1098,70 +1652,57 @@ export function Inventory() {
     link.href = url;
     link.download = `multi_warehouse_ledger_${new Date().toISOString().split('T')[0]}.csv`;
     link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
     toast.success('Multi-Warehouse Ledger exported successfully');
-  };
+  }, [visibleWarehouses, inventory, allowedWarehouseIds, products, childrenOf, canViewCost, getOwnStockCount]);
 
-  const inventoryNavigation = <div className="flex gap-1 rounded-xl bg-muted/60 p-1 w-fit" aria-label="Inventory views">
+  const inventoryNavigation = useMemo(() => <div className="flex gap-1 rounded-xl bg-muted/60 p-1 w-fit" aria-label="Inventory views">
     <Button variant={inventoryView === 'stock' ? 'default' : 'ghost'} aria-pressed={inventoryView === 'stock'} onClick={() => setInventoryView('stock')}><Package className="size-4" />Products & Stock</Button>
     <Button variant={inventoryView === 'layout' ? 'default' : 'ghost'} aria-pressed={inventoryView === 'layout'} onClick={() => setInventoryView('layout')}><WarehouseIcon className="size-4" />Warehouse Layout</Button>
-    <Button variant={inventoryView === 'quarantine' ? 'default' : 'ghost'} aria-pressed={inventoryView === 'quarantine'} onClick={() => setInventoryView('quarantine')}>
+    <Button
+      variant={inventoryView === 'quarantine' ? 'default' : 'ghost'}
+      aria-pressed={inventoryView === 'quarantine'}
+      onMouseEnter={() => { void loadDefectiveStockModalModule(); }}
+      onFocus={() => { void loadDefectiveStockModalModule(); }}
+      onClick={() => setInventoryView('quarantine')}
+    >
       <AlertTriangle className="size-4 text-amber-500" />
       <span>Quarantine & Returns</span>
-      {defectiveTickets.filter(t => t.status === 'QUARANTINED').length > 0 && (
+      {quarantinedTicketCount > 0 && (
         <Badge variant="destructive" className="ml-1 h-4 px-1 text-[9px] font-bold">
-          {defectiveTickets.filter(t => t.status === 'QUARANTINED').length}
+          {quarantinedTicketCount}
         </Badge>
       )}
     </Button>
-  </div>;
+  </div>, [inventoryView, quarantinedTicketCount]);
 
-  if (inventoryView === 'layout') return <div className="space-y-5 pb-20">{inventoryNavigation}<WarehouseLayout warehouses={warehouses} products={products.filter(p => !p.hasVariations)} inventory={inventory} /></div>;
-  if (inventoryView === 'quarantine') return (
-    <div className="space-y-5 pb-20">
-      {inventoryNavigation}
-      <QuarantineLedger
-        tickets={defectiveTickets}
-        inventory={inventory}
-        profile={profile}
-        onOpenLogModal={() => setIsDefectiveModalOpen(true)}
-        onRefresh={() => setDefectiveTickets(getLocalDefectiveTickets())}
-      />
-      <DefectiveStockModal
-        open={isDefectiveModalOpen}
-        onClose={() => setIsDefectiveModalOpen(false)}
-        products={products}
-        inventory={inventory}
-        warehouses={warehouses}
-        profile={profile}
-        onSuccess={() => setDefectiveTickets(getLocalDefectiveTickets())}
-      />
-    </div>
-  );
-
-  return (
-    <div className="space-y-5 pb-20">
-      {inventoryNavigation}
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+  const stockTopAndKpis = useMemo(() => (
+    <>
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between min-h-11">
         <div className="min-w-0 flex-1">
-          <p className="mt-1 text-sm text-muted-foreground">Manage products, stock levels, suppliers, and warehouse inventory.</p>
+          <p className="mt-1 text-sm text-muted-foreground min-h-10 lg:min-h-11 flex items-center">Manage products, stock levels, suppliers, and warehouse inventory.</p>
         </div>
-        <div className="flex max-w-full flex-nowrap gap-2 overflow-x-auto lg:shrink-0 [&>button]:shrink-0">
-          <Button
-            type="button"
-            variant="outline"
-            onClick={() => setIsDefectiveModalOpen(true)}
-            className="h-11 gap-2 rounded-xl border-amber-300 bg-amber-50/70 text-amber-800 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-800 px-4 font-bold shadow-sm hover:bg-amber-100"
-          >
-            <AlertTriangle className="h-4 w-4 text-amber-600" /> Log Damaged Stock
-          </Button>
-          <Button type="button" variant="outline" onClick={() => navigate('/pricelist')} className="h-11 gap-3 rounded-xl border-zinc-200 bg-white px-5 text-base font-semibold text-zinc-500 shadow-sm hover:bg-zinc-50 hover:text-zinc-700">
-            <Tag className="h-5 w-5 text-zinc-500" weight="bold" /> Pricelist
+        <div className="flex max-w-full min-h-11 items-center flex-nowrap gap-2 overflow-x-auto lg:shrink-0 [&>button]:shrink-0">
+          {canAdjustStock && (
+            <Button
+              type="button"
+              variant="outline"
+              onMouseEnter={() => { void loadDefectiveStockModalModule(); }}
+              onFocus={() => { void loadDefectiveStockModalModule(); }}
+              onClick={handleOpenDefectiveModal}
+              className="h-11 gap-2 rounded-xl border-amber-300 bg-amber-50/70 text-amber-800 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-800 px-4 font-bold shadow-sm hover:bg-amber-100"
+            >
+              <AlertTriangle className="h-4 w-4 text-amber-600" /> Log Damaged Stock
+            </Button>
+          )}
+          <Button type="button" variant="outline" onClick={() => navigate('/pricelist')} className="h-11 gap-3 rounded-xl border-border bg-card px-5 text-base font-semibold text-foreground shadow-sm hover:bg-muted">
+            <Tag className="h-5 w-5 text-muted-foreground" weight="bold" /> Pricelist
           </Button>
           <Button type="button" variant="outline" onClick={exportMultiWarehouseLedger} className="h-11 gap-2 rounded-xl px-5 font-bold shadow-sm">
             <Download className="h-4 w-4" /> Export Ledger
           </Button>
           {isAdmin && <Button type="button" variant="outline" onClick={() => setIsImportOpen(true)} className="h-11 gap-2 rounded-xl px-5 font-bold shadow-sm"><Upload className="h-4 w-4" /> Import Products</Button>}
-          {isAdmin && <Button type="button" onClick={() => setIsAddProductOpen(true)} className="h-11 gap-2 rounded-xl bg-[#101d33] px-5 font-bold text-white shadow-lg hover:bg-[#172842]"><Plus className="h-4 w-4" /> Add Product</Button>}
+          {isAdmin && <Button type="button" onClick={() => setIsAddProductOpen(true)} className="h-11 gap-2 rounded-xl bg-primary px-5 font-bold text-primary-foreground shadow-lg hover:bg-primary/90"><Plus className="h-4 w-4" /> Add Product</Button>}
         </div>
       </div>
 
@@ -1180,27 +1721,171 @@ export function Inventory() {
           </Card>
         ))}
       </div>
+    </>
+  ), [
+    canAdjustStock,
+    navigate,
+    exportMultiWarehouseLedger,
+    handleOpenDefectiveModal,
+    isAdmin,
+    totalProducts,
+    lowStockProducts,
+    outOfStockProducts,
+    canViewCost,
+    inventoryValue,
+    activeWarehouseLabel,
+  ]);
 
+  const warehouseFilterSelect = useMemo(() => (
+    <div className="space-y-1.5"><Label className="text-xs font-semibold">Warehouse</Label><Select value={warehouseFilter} onValueChange={handleWarehouseFilterChange}><SelectTrigger className="h-10 rounded-xl"><SelectValue>{warehouseFilter === 'all' ? 'All Warehouses' : activeWarehouseObj?.name}</SelectValue></SelectTrigger><SelectContent><SelectItem value="all">All Warehouses</SelectItem>{visibleWarehouses.map(warehouse => <SelectItem key={warehouse.id} value={warehouse.id}>{warehouse.name}</SelectItem>)}</SelectContent></Select></div>
+  ), [warehouseFilter, handleWarehouseFilterChange, activeWarehouseObj, visibleWarehouses]);
+
+  const categoryFilterSelect = useMemo(() => (
+    <div className="space-y-1.5"><Label className="text-xs font-semibold">Category</Label><Select value={categoryFilter} onValueChange={handleCategoryFilterChange}><SelectTrigger className="h-10 rounded-xl"><SelectValue>{categoryFilter === 'all' ? 'All Categories' : categoryFilter}</SelectValue></SelectTrigger><SelectContent><SelectItem value="all">All Categories</SelectItem>{categories.filter(c => c !== 'Uncategorized').map(category => <SelectItem key={category} value={category}>{category}</SelectItem>)}<div className="my-1 h-px bg-muted" /><SelectItem value="Uncategorized" className="italic text-muted-foreground">Uncategorized</SelectItem></SelectContent></Select></div>
+  ), [categoryFilter, handleCategoryFilterChange, categories]);
+
+  const supplierFilterSelect = useMemo(() => (
+    <div className="space-y-1.5"><Label className="text-xs font-semibold">Supplier</Label><Select value={supplierFilter} onValueChange={handleSupplierFilterChange}><SelectTrigger className="h-10 rounded-xl"><SelectValue>{supplierFilter === 'all' ? 'All Suppliers' : supplierFilter}</SelectValue></SelectTrigger><SelectContent><SelectItem value="all">All Suppliers</SelectItem>{suppliers.filter(s => s !== 'N/A').map(supplier => <SelectItem key={supplier} value={supplier}>{supplier}</SelectItem>)}<div className="my-1 h-px bg-muted" /><SelectItem value="N/A" className="italic text-muted-foreground">N/A</SelectItem></SelectContent></Select></div>
+  ), [supplierFilter, handleSupplierFilterChange, suppliers]);
+
+  const stockFilterSelect = useMemo(() => (
+    <div className="space-y-1.5"><Label className="text-xs font-semibold">Stock Status</Label><Select value={stockFilter} onValueChange={handleStockFilterChange}><SelectTrigger className="h-10 rounded-xl"><SelectValue>{stockFilter === 'all' ? 'All Statuses' : stockFilter === 'in' ? 'In Stock' : stockFilter === 'low' ? 'Low Stock' : 'Out of Stock'}</SelectValue></SelectTrigger><SelectContent><SelectItem value="all">All Statuses</SelectItem><SelectItem value="in">In Stock</SelectItem><SelectItem value="low">Low Stock</SelectItem><SelectItem value="out">Out of Stock</SelectItem></SelectContent></Select></div>
+  ), [stockFilter, handleStockFilterChange]);
+
+  const stockControlsHeader = useMemo(() => (
+    <>
+      {stockTopAndKpis}
       <Card className="overflow-hidden rounded-2xl border-border/70 shadow-sm">
         <CardContent className="p-0">
           <div className="border-b border-border p-4">
             <div className="relative max-w-xl">
               <Search className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-              <Input value={searchTerm} onChange={(event) => setSearchTerm(event.target.value)} placeholder="Search products, SKU, category, or supplier..." className="h-11 rounded-xl bg-background pl-10" />
+              <Input value={searchTerm} onChange={(event) => handleSearchTermChange(event.target.value)} placeholder="Search products, SKU, category, or supplier..." className="h-11 rounded-xl bg-background pl-10" />
             </div>
           </div>
           <div className="grid grid-cols-1 gap-3 p-4 sm:grid-cols-2 xl:grid-cols-[1fr_1fr_1fr_1fr_auto] xl:items-end">
-            <div className="space-y-1.5"><Label className="text-xs font-semibold">Warehouse</Label><Select value={warehouseFilter} onValueChange={(value) => setWarehouseFilter(value ?? 'all')}><SelectTrigger className="h-10 rounded-xl"><SelectValue>{warehouseFilter === 'all' ? 'All Warehouses' : activeWarehouseObj?.name}</SelectValue></SelectTrigger><SelectContent><SelectItem value="all">All Warehouses</SelectItem>{warehouses.map(warehouse => <SelectItem key={warehouse.id} value={warehouse.id}>{warehouse.name}</SelectItem>)}</SelectContent></Select></div>
-            <div className="space-y-1.5"><Label className="text-xs font-semibold">Category</Label><Select value={categoryFilter} onValueChange={(value) => setCategoryFilter(value ?? 'all')}><SelectTrigger className="h-10 rounded-xl"><SelectValue>{categoryFilter === 'all' ? 'All Categories' : categoryFilter}</SelectValue></SelectTrigger><SelectContent><SelectItem value="all">All Categories</SelectItem>{categories.filter(c => c !== 'Uncategorized').map(category => <SelectItem key={category} value={category}>{category}</SelectItem>)}<div className="my-1 h-px bg-muted" /><SelectItem value="Uncategorized" className="italic text-muted-foreground">Uncategorized</SelectItem></SelectContent></Select></div>
-            <div className="space-y-1.5"><Label className="text-xs font-semibold">Supplier</Label><Select value={supplierFilter} onValueChange={(value) => setSupplierFilter(value ?? 'all')}><SelectTrigger className="h-10 rounded-xl"><SelectValue>{supplierFilter === 'all' ? 'All Suppliers' : supplierFilter}</SelectValue></SelectTrigger><SelectContent><SelectItem value="all">All Suppliers</SelectItem>{suppliers.filter(s => s !== 'N/A').map(supplier => <SelectItem key={supplier} value={supplier}>{supplier}</SelectItem>)}<div className="my-1 h-px bg-muted" /><SelectItem value="N/A" className="italic text-muted-foreground">N/A</SelectItem></SelectContent></Select></div>
-            <div className="space-y-1.5"><Label className="text-xs font-semibold">Stock Status</Label><Select value={stockFilter} onValueChange={(value) => setStockFilter(value ?? 'all')}><SelectTrigger className="h-10 rounded-xl"><SelectValue>{stockFilter === 'all' ? 'All Statuses' : stockFilter === 'in' ? 'In Stock' : stockFilter === 'low' ? 'Low Stock' : 'Out of Stock'}</SelectValue></SelectTrigger><SelectContent><SelectItem value="all">All Statuses</SelectItem><SelectItem value="in">In Stock</SelectItem><SelectItem value="low">Low Stock</SelectItem><SelectItem value="out">Out of Stock</SelectItem></SelectContent></Select></div>
-            <label className="flex h-10 cursor-pointer items-center justify-between gap-3 whitespace-nowrap rounded-xl border border-border px-3 text-xs font-medium">Hide zero-stock<input type="checkbox" checked={hideZeroStock} onChange={(event) => setHideZeroStock(event.target.checked)} className="h-4 w-4 accent-[#101d33]" /></label>
+            {warehouseFilterSelect}
+            {categoryFilterSelect}
+            {supplierFilterSelect}
+            {stockFilterSelect}
+            <label className="flex h-10 cursor-pointer items-center justify-between gap-3 whitespace-nowrap rounded-xl border border-border px-3 text-xs font-medium">Hide zero-stock<input type="checkbox" checked={hideZeroStock} onChange={handleHideZeroStockChange} className="h-4 w-4 accent-[#101d33]" /></label>
           </div>
         </CardContent>
       </Card>
+    </>
+  ), [
+    stockTopAndKpis,
+    searchTerm,
+    handleSearchTermChange,
+    warehouseFilterSelect,
+    categoryFilterSelect,
+    supplierFilterSelect,
+    stockFilterSelect,
+    hideZeroStock,
+    handleHideZeroStockChange,
+  ]);
 
+  const stockTopScrollRef = useRef<HTMLDivElement>(null);
+  const stockTableWrapperRef = useRef<HTMLDivElement>(null);
+  const stockScrollSyncSourceRef = useRef<'top' | 'table' | null>(null);
+  const stockScrollSyncRafRef = useRef<number | null>(null);
+  const [stockTableScrollMetrics, setStockTableScrollMetrics] = useState({ width: 0, overflow: false });
+
+  useEffect(() => () => {
+    if (stockScrollSyncRafRef.current !== null) {
+      cancelAnimationFrame(stockScrollSyncRafRef.current);
+    }
+  }, []);
+
+  const syncStockHorizontalScroll = useCallback((source: 'top' | 'table', fromEl: HTMLElement, toEl: HTMLElement) => {
+    if (stockScrollSyncSourceRef.current && stockScrollSyncSourceRef.current !== source) return;
+    stockScrollSyncSourceRef.current = source;
+    if (toEl.scrollLeft !== fromEl.scrollLeft) {
+      toEl.scrollLeft = fromEl.scrollLeft;
+    }
+    if (stockScrollSyncRafRef.current !== null) cancelAnimationFrame(stockScrollSyncRafRef.current);
+    stockScrollSyncRafRef.current = requestAnimationFrame(() => {
+      stockScrollSyncSourceRef.current = null;
+      stockScrollSyncRafRef.current = null;
+    });
+  }, []);
+
+  const handleStockTopScroll = useCallback(() => {
+    const topEl = stockTopScrollRef.current;
+    const tableContainer = stockTableWrapperRef.current?.querySelector<HTMLDivElement>('[data-slot="table-container"]');
+    if (topEl && tableContainer) syncStockHorizontalScroll('top', topEl, tableContainer);
+  }, [syncStockHorizontalScroll]);
+
+  useEffect(() => {
+    if (inventoryView !== 'stock') return;
+    const tableContainer = stockTableWrapperRef.current?.querySelector<HTMLDivElement>('[data-slot="table-container"]');
+    if (!tableContainer) return;
+
+    const updateMetrics = () => {
+      const clientWidth = tableContainer.clientWidth;
+      if (clientWidth === 0) return;
+      const scrollWidth = tableContainer.scrollWidth;
+      const overflow = scrollWidth > clientWidth + 1;
+      setStockTableScrollMetrics(prev => (
+        prev.width === scrollWidth && prev.overflow === overflow
+          ? prev
+          : { width: scrollWidth, overflow }
+      ));
+      const topEl = stockTopScrollRef.current;
+      if (topEl && Math.abs(topEl.scrollLeft - tableContainer.scrollLeft) > 1) {
+        syncStockHorizontalScroll('table', tableContainer, topEl);
+      }
+    };
+
+    const handleTableScroll = () => {
+      const topEl = stockTopScrollRef.current;
+      if (topEl) syncStockHorizontalScroll('table', tableContainer, topEl);
+    };
+
+    updateMetrics();
+    tableContainer.addEventListener('scroll', handleTableScroll, { passive: true });
+    window.addEventListener('resize', updateMetrics);
+
+    let observer: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== 'undefined') {
+      observer = new ResizeObserver(updateMetrics);
+      observer.observe(tableContainer);
+      const tableEl = tableContainer.querySelector('table');
+      if (tableEl) observer.observe(tableEl);
+    }
+
+    return () => {
+      tableContainer.removeEventListener('scroll', handleTableScroll);
+      window.removeEventListener('resize', updateMetrics);
+      observer?.disconnect();
+    };
+  }, [inventoryView, paginatedProducts, canViewWholesale, hasLoadedProducts, filteredProducts.length, syncStockHorizontalScroll]);
+
+  useEffect(() => {
+    if (!stockTableScrollMetrics.overflow) return;
+    const topEl = stockTopScrollRef.current;
+    const tableContainer = stockTableWrapperRef.current?.querySelector<HTMLDivElement>('[data-slot="table-container"]');
+    if (topEl && tableContainer && Math.abs(topEl.scrollLeft - tableContainer.scrollLeft) > 1) {
+      syncStockHorizontalScroll('table', tableContainer, topEl);
+    }
+  }, [stockTableScrollMetrics.overflow, stockTableScrollMetrics.width, syncStockHorizontalScroll]);
+
+  const stockTableCard = useMemo(() => (
       <div className="overflow-hidden rounded-2xl border border-border/70 bg-card shadow-sm">
-        <div className="overflow-x-auto">
+        <div
+          ref={stockTopScrollRef}
+          onScroll={handleStockTopScroll}
+          aria-hidden="true"
+          tabIndex={-1}
+          className={
+            stockTableScrollMetrics.overflow
+              ? 'w-full overflow-x-auto overflow-y-hidden border-b border-border bg-muted/20'
+              : 'hidden'
+          }
+        >
+          <div style={{ width: `${stockTableScrollMetrics.width}px`, height: '1px' }} />
+        </div>
+        <div ref={stockTableWrapperRef} className="overflow-x-auto">
           <Table>
             <TableHeader className="bg-muted/40">
               <TableRow>
@@ -1218,132 +1903,35 @@ export function Inventory() {
             </TableHeader>
             <TableBody>
               {paginatedProducts.map((product, index) => {
-                const stock = getStockCount(product.id, warehouseFilter);
-                const status = getProductStatus(product, stock, warehouseFilter);
-                const statusClass = status === 'out' ? 'border-red-200 bg-red-50 text-red-600' : status === 'low' ? 'border-amber-200 bg-amber-50 text-amber-600' : 'border-emerald-200 bg-emerald-50 text-emerald-600';
+                const summary = productRowMetaMap.get(product.id);
+                if (!summary) return null;
                 return (
-                  <TableRow key={product.id} className="group cursor-pointer hover:bg-muted/40 transition-colors" onClick={() => { setSelectedProduct(product); setIsDetailOpen(true); }}>
-                    <TableCell className="w-10 text-center font-mono text-xs text-muted-foreground px-2 py-2">
-                      {(safeCurrentPage - 1) * pageSize + index + 1}
-                    </TableCell>
-                    <TableCell className="w-28 font-mono text-xs text-muted-foreground px-2 py-2 truncate" title={product.sku}>
-                      {product.sku}
-                    </TableCell>
-                    <TableCell className="min-w-47.5 max-w-65 px-2 py-2">
-                      <div className="flex items-center gap-2.5">
-                        <div className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-border bg-muted">
-                          {product.photoUrl ? (
-                            <img src={product.photoUrl} alt={cleanItemName(product.name)} className="h-full w-full object-cover" />
-                          ) : (
-                            <Package className="h-4 w-4 text-muted-foreground" />
-                          )}
-                        </div>
-                        <div className="min-w-0">
-                          <p className="truncate text-xs font-bold" title={cleanItemName(product.name)}>{cleanItemName(product.name)}</p>
-                          {product.hasVariations && (
-                            <Badge variant="secondary" className="my-0.5 text-[9px] px-1.5 py-0 h-4">
-                              {childrenOf(product.id).filter(v => v.variantEnabled !== false).length} Variants
-                            </Badge>
-                          )}
-                          <p className="truncate text-[11px] text-muted-foreground">{product.category || 'Uncategorized'}</p>
-                        </div>
-                      </div>
-                    </TableCell>
-                    <TableCell className="w-32 px-2 py-2">
-                      {product.hasVariations ? (
-                        <div className="space-y-0.5 text-[11px]">
-                          {(canViewWholesale ? variantFields.slice(0, 3) : variantFields.slice(0, 1)).map(([key, label]) => (
-                            <p key={key} className="truncate">
-                              <span className="text-muted-foreground">{label}: </span>
-                              <strong>{variantRange(product, key)}</strong>
-                            </p>
-                          ))}
-                        </div>
-                      ) : (
-                        <div className="grid grid-cols-[2.4rem_auto] text-[11px] leading-tight">
-                          <span className="text-muted-foreground">Retail:</span><strong>₱{(product.basePrice || 0).toLocaleString()}</strong>
-                          {canViewWholesale && (
-                            <>
-                              <span className="text-muted-foreground">MM:</span><strong>₱{(product.mmPrice ?? product.wholesalePrice ?? 0).toLocaleString()}</strong>
-                              <span className="text-muted-foreground">Prov.:</span><strong>₱{(product.provincialPrice ?? product.dealerPrice ?? 0).toLocaleString()}</strong>
-                            </>
-                          )}
-                        </div>
-                      )}
-                    </TableCell>
-                    <TableCell className="w-20 px-2 py-2 text-xs font-semibold">
-                      {canViewCost ? (product.hasVariations ? variantRange(product, 'costPrice') : `₱${(product.costPrice || 0).toLocaleString()}`) : '—'}
-                    </TableCell>
-                    <TableCell className="w-24 px-2 py-2 text-center">
-                      <Badge variant="outline" className={'rounded-full px-2.5 py-0.5 text-[11px] ' + statusClass}>
-                        {stock.toLocaleString()} units
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="w-24 px-2 py-2">
-                      {product.hasVariations ? (
-                        <span className="text-[11px] text-muted-foreground">Per variant</span>
-                      ) : (
-                        <div className="text-[11px] space-y-0.5">
-                          <p><span className="text-muted-foreground">Min:</span> <strong>{product.minStockLevel || 0}</strong></p>
-                          <p><span className="text-muted-foreground">Reorder:</span> <strong>{product.reorderPoint || 0}</strong></p>
-                        </div>
-                      )}
-                    </TableCell>
-                    <TableCell className="w-28 px-2 py-2">
-                      <p className="truncate text-xs font-bold" title={product.supplier || 'Supplier'}>{product.supplier || 'Supplier'}</p>
-                      <p className="truncate text-[10px] text-muted-foreground">Main Supplier</p>
-                    </TableCell>
-                    <TableCell className="w-24 px-2 py-2 text-center">
-                      <Badge variant="outline" className={'rounded-full text-[10px] py-0.5 px-2 ' + statusClass}>
-                        {status === 'out' ? '● Out of Stock' : status === 'low' ? '● Low Stock' : '● In Stock'}
-                      </Badge>
-                    </TableCell>
-                    <TableCell
-                      className="w-45 text-center px-3 py-2"
-                      onClick={(event) => event.stopPropagation()}
-                    >
-                      <div className="flex justify-center gap-1">
-                        <Button variant="outline" size="icon" className="h-8 w-8" title="View product" onClick={() => { setSelectedProduct(product); setIsDetailOpen(true); }}>
-                          <Eye className="h-3.5 w-3.5" />
-                        </Button>
-                        {isAdmin && (
-                          <Button variant="outline" size="icon" className="h-8 w-8" title="Edit product" onClick={() => setEditingProduct(product)}>
-                            <Pencil className="h-3.5 w-3.5" />
-                          </Button>
-                        )}
-                        {isAdmin && (
-                          <Button variant="outline" size="icon" className="h-8 w-8 text-red-500 hover:text-red-600 hover:bg-red-50 hover:border-red-200" title="Delete product" onClick={() => setProductToDelete(product)}>
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </Button>
-                        )}
-                        <Button
-                          variant="outline"
-                          size="icon"
-                          className="h-8 w-8"
-                          title={product.hasVariations ? "Variant QR labels" : "QR Label"}
-                          onClick={() => {
-                            if (product.hasVariations) {
-                              setSelectedProduct(product);
-                              setIsDetailOpen(true);
-                              setDetailTab('variants');
-                            } else {
-                              setQrProduct(product);
-                            }
-                          }}
-                        >
-                          <QrCode className="h-3.5 w-3.5" />
-                        </Button>
-                        {canAdjustStock && (
-                          <Button variant="outline" size="icon" className="h-8 w-8" title="Adjust stock" onClick={() => { setSelectedProduct(product); setIsStockUpdateOpen(true); }}>
-                            <SlidersHorizontal className="h-3.5 w-3.5" />
-                          </Button>
-                        )}
-                      </div>
-                    </TableCell>
-                  </TableRow>
+                  <InventoryProductRow
+                    key={product.id}
+                    rowNumber={(safeCurrentPage - 1) * pageSize + index + 1}
+                    product={product}
+                    summary={summary}
+                    isAdmin={isAdmin}
+                    canAdjustStock={canAdjustStock}
+                    canViewWholesale={canViewWholesale}
+                    onView={handleViewRow}
+                    onEdit={handleEditRow}
+                    onDelete={handleDeleteRow}
+                    onQr={handleQrRow}
+                    onAdjust={handleAdjustRow}
+                  />
                 );
               })}
-              {filteredProducts.length === 0 && (
+              {!hasLoadedProducts && filteredProducts.length === 0 && (
+                Array.from({ length: 12 }).map((_, skeletonIdx) => (
+                  <TableRow key={`skeleton-${skeletonIdx}`} className="h-14">
+                    <TableCell colSpan={10} className="px-4 py-2">
+                      <div className="h-6 w-full animate-pulse rounded-md bg-muted/60" />
+                    </TableCell>
+                  </TableRow>
+                ))
+              )}
+              {hasLoadedProducts && filteredProducts.length === 0 && (
                 <TableRow>
                   <TableCell colSpan={10} className="h-36 text-center text-sm text-muted-foreground">
                     No products match the current filters.
@@ -1363,7 +1951,10 @@ export function Inventory() {
               <span className="text-[11px]">Rows:</span>
               <select
                 value={pageSize}
-                onChange={(e) => setPageSize(Number(e.target.value))}
+                onChange={(e) => {
+                  setPageSize(Number(e.target.value));
+                  setCurrentPage(1);
+                }}
                 className="h-7 rounded border border-border bg-background px-1.5 text-xs font-semibold text-foreground focus:outline-none focus:ring-1 focus:ring-primary cursor-pointer"
               >
                 <option value={25}>25</option>
@@ -1403,8 +1994,51 @@ export function Inventory() {
           </div>
         </div>
       </div>
+  ), [
+    canAdjustStock,
+    canViewWholesale,
+    filteredProducts.length,
+    handleAdjustRow,
+    handleDeleteRow,
+    handleEditRow,
+    handleQrRow,
+    handleStockTopScroll,
+    handleViewRow,
+    hasLoadedProducts,
+    isAdmin,
+    pageSize,
+    paginatedProducts,
+    parentProducts.length,
+    productRowMetaMap,
+    safeCurrentPage,
+    stockTableScrollMetrics,
+    totalPages,
+  ]);
 
-      <Dialog open={isAddProductOpen} onOpenChange={(open) => { setIsAddProductOpen(open); if (!open) setProductImage(null); }}>
+  return (
+    <div className="space-y-5 pb-20">
+      {inventoryNavigation}
+      {inventoryView === 'layout' && (
+        <WarehouseLayout warehouses={warehouses} products={layoutProducts} inventory={inventory} />
+      )}
+      {inventoryView === 'quarantine' && (
+        <QuarantineLedger
+          tickets={defectiveTickets}
+          inventory={inventory}
+          profile={profile}
+          canAdjustStock={canAdjustStock}
+          allowedWarehouseIds={allowedWarehouseIds}
+          onOpenLogModal={handleOpenDefectiveModal}
+          onRefresh={handleDefectiveSuccess}
+        />
+      )}
+      <div className={inventoryView === 'stock' ? 'space-y-5' : 'hidden'}>
+        {stockControlsHeader}
+        {stockTableCard}
+      </div>
+
+      {mountAddProductDialog && (
+      <Dialog open={isAddProductOpen} onOpenChange={(open) => { if (!open && isSubmittingProduct) return; setIsAddProductOpen(open); if (!open) setProductImage(null); }}>
         <DialogContent className={`max-h-[90vh] w-[95vw] min-w-0 overflow-x-hidden overflow-y-auto ${addVariations.enabled ? 'sm:max-w-7xl' : 'sm:max-w-4xl'}`}><DialogHeader><DialogTitle>New Configuration Item (Product)</DialogTitle><DialogDescription>Register a new bicycle component into the service catalog.</DialogDescription></DialogHeader>
           <form onSubmit={handleAddProduct} className="min-w-0 space-y-5 pt-2">
             <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
@@ -1462,9 +2096,11 @@ export function Inventory() {
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="category">Category</Label>
-                    <Select name="category" value={categoryOptions.includes(addCategory) ? addCategory : 'custom'} onValueChange={(val) => setAddCategory(val === 'custom' ? '' : val)}>
+                    <Select name="category" value={categoryOptions.includes(addCategory) ? addCategory : 'custom'} onValueChange={(val) => { if (val !== null) setAddCategory(val === 'custom' ? '' : val); }}>
                       <SelectTrigger id="category">
-                        <SelectValue placeholder="Select category" />
+                        <SelectValue placeholder="Select category">
+                          {categoryOptions.includes(addCategory) ? addCategory : '+ Add new category'}
+                        </SelectValue>
                       </SelectTrigger>
                       <SelectContent className="max-h-60 overflow-y-auto">
                         {categoryOptions.filter(c => c !== 'Uncategorized').map(category => (
@@ -1477,6 +2113,7 @@ export function Inventory() {
                     </Select>
                     {!categoryOptions.includes(addCategory) && (
                       <Input
+                        required
                         placeholder="Enter new category name..."
                         value={addCategory}
                         onChange={(e) => setAddCategory(e.target.value)}
@@ -1487,9 +2124,11 @@ export function Inventory() {
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="supplier">Preferred Supplier</Label>
-                    <Select name="supplier" value={supplierOptions.includes(addSupplier) ? addSupplier : 'custom'} onValueChange={(val) => setAddSupplier(val === 'custom' ? '' : val)}>
+                    <Select name="supplier" value={supplierOptions.includes(addSupplier) ? addSupplier : 'custom'} onValueChange={(val) => { if (val !== null) setAddSupplier(val === 'custom' ? '' : val); }}>
                       <SelectTrigger id="supplier">
-                        <SelectValue placeholder="Select supplier" />
+                        <SelectValue placeholder="Select supplier">
+                          {supplierOptions.includes(addSupplier) ? addSupplier : '+ Add new supplier'}
+                        </SelectValue>
                       </SelectTrigger>
                       <SelectContent className="max-h-60 overflow-y-auto">
                         {supplierOptions.filter(s => s !== 'N/A').map(supplier => (
@@ -1502,6 +2141,7 @@ export function Inventory() {
                     </Select>
                     {!supplierOptions.includes(addSupplier) && (
                       <Input
+                        required
                         placeholder="Enter new supplier name..."
                         value={addSupplier}
                         onChange={(e) => setAddSupplier(e.target.value)}
@@ -1567,8 +2207,10 @@ export function Inventory() {
           </form>
         </DialogContent>
       </Dialog>
+      )}
 
-      <Dialog open={isImportOpen} onOpenChange={(open) => { setIsImportOpen(open); if (!open) { setImportPreview([]); setImportFileName(''); } }}>
+      {mountImportDialog && (
+      <Dialog open={isImportOpen} onOpenChange={(open) => { if (!open && isImporting) return; setIsImportOpen(open); if (!open) { setImportPreview([]); setImportFileName(''); } }}>
         <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-5xl">
           <DialogHeader><DialogTitle>Import Products</DialogTitle><DialogDescription>Download the template, upload the completed Excel file, review validation results, then confirm to add products to Inventory.</DialogDescription></DialogHeader>
           <div className="flex flex-wrap gap-2"><Button type="button" variant="outline" onClick={handleDownloadProductTemplate}><Download className="mr-2 h-4 w-4" />Download Excel Template</Button><label htmlFor="inventoryImportFile" className="inline-flex h-10 cursor-pointer items-center rounded-md bg-[#101d33] px-4 text-sm font-medium text-white"><Upload className="mr-2 h-4 w-4" />Upload Excel File</label><Input id="inventoryImportFile" type="file" accept=".xlsx,.xls" onChange={handleProductImportFile} className="sr-only" /></div>
@@ -1577,8 +2219,10 @@ export function Inventory() {
           <DialogFooter><Button type="button" variant="outline" onClick={() => setIsImportOpen(false)}>Cancel</Button><Button type="button" onClick={handleConfirmImport} disabled={isImporting || !importPreview.length || importPreview.some(row => row.errors.length > 0)}>{isImporting ? 'Importing...' : `Confirm Import${importPreview.length ? ` (${importPreview.length})` : ''}`}</Button></DialogFooter>
         </DialogContent>
       </Dialog>
+      )}
 
-      <Dialog open={Boolean(editingProduct)} onOpenChange={(open) => { if (!open) { setEditingProduct(null); setEditProductImage(null); setEditProductImagePreview(''); } }}>
+      {mountEditDialog && (
+      <Dialog open={Boolean(editingProduct)} onOpenChange={(open) => { if (!open && !isSubmittingProduct) { setEditingProduct(null); setEditProductImage(null); setEditProductImagePreview(''); } }}>
         <DialogContent className={`max-h-[90vh] w-[95vw] min-w-0 overflow-x-hidden overflow-y-auto ${editVariations.enabled ? 'sm:max-w-7xl' : 'sm:max-w-4xl'}`}>
           <DialogHeader>
             <DialogTitle>Edit Product</DialogTitle>
@@ -1664,54 +2308,60 @@ export function Inventory() {
 
                     <div className="space-y-2">
                       <Label htmlFor="edit-category">Category</Label>
-                      <Select name="category" value={categoryOptions.includes(editCategory) ? editCategory : 'custom'} onValueChange={(val) => setEditCategory(val === 'custom' ? '' : val)}>
-                        <SelectTrigger id="edit-category">
-                          <SelectValue placeholder="Select category" />
-                        </SelectTrigger>
-                        <SelectContent className="max-h-60 overflow-y-auto">
-                          {categoryOptions.filter(c => c !== 'Uncategorized').map(category => (
-                            <SelectItem key={category} value={category}>{category}</SelectItem>
-                          ))}
-                          <div className="my-1 h-px bg-muted" />
-                          <SelectItem value="Uncategorized" className="italic text-muted-foreground">Uncategorized</SelectItem>
-                          <SelectItem value="custom" className="font-bold text-[#101d33]">+ Add new category</SelectItem>
-                        </SelectContent>
-                      </Select>
-                      {!categoryOptions.includes(editCategory) && (
-                        <Input
-                          placeholder="Enter new category name..."
-                          value={editCategory}
-                          onChange={(e) => setEditCategory(e.target.value)}
-                          className="mt-2"
-                          autoFocus
-                        />
-                      )}
-                    </div>
+                      <Select name="category" value={categoryOptions.includes(editCategory) ? editCategory : 'custom'} onValueChange={(val) => { if (val !== null) setEditCategory(val === 'custom' ? '' : val); }}>
+                      <SelectTrigger id="edit-category">
+                        <SelectValue placeholder="Select category">
+                          {categoryOptions.includes(editCategory) ? editCategory : '+ Add new category'}
+                        </SelectValue>
+                      </SelectTrigger>
+                      <SelectContent className="max-h-60 overflow-y-auto">
+                        {categoryOptions.filter(c => c !== 'Uncategorized').map(category => (
+                          <SelectItem key={category} value={category}>{category}</SelectItem>
+                        ))}
+                        <div className="my-1 h-px bg-muted" />
+                        <SelectItem value="Uncategorized" className="italic text-muted-foreground">Uncategorized</SelectItem>
+                        <SelectItem value="custom" className="font-bold text-[#101d33]">+ Add new category</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    {!categoryOptions.includes(editCategory) && (
+                      <Input
+                        required
+                        placeholder="Enter new category name..."
+                        value={editCategory}
+                        onChange={(e) => setEditCategory(e.target.value)}
+                        className="mt-2"
+                        autoFocus
+                      />
+                    )}
+                  </div>
 
-                    <div className="space-y-2">
-                      <Label htmlFor="edit-supplier">Supplier Name</Label>
-                      <Select name="supplier" value={supplierOptions.includes(editSupplier) ? editSupplier : 'custom'} onValueChange={(val) => setEditSupplier(val === 'custom' ? '' : val)}>
-                        <SelectTrigger id="edit-supplier">
-                          <SelectValue placeholder="Select supplier" />
-                        </SelectTrigger>
-                        <SelectContent className="max-h-60 overflow-y-auto">
-                          {supplierOptions.filter(s => s !== 'N/A').map(supplier => (
-                            <SelectItem key={supplier} value={supplier}>{supplier}</SelectItem>
-                          ))}
-                          <div className="my-1 h-px bg-muted" />
-                          <SelectItem value="N/A" className="italic text-muted-foreground">N/A</SelectItem>
-                          <SelectItem value="custom" className="font-bold text-[#101d33]">+ Add new supplier</SelectItem>
-                        </SelectContent>
-                      </Select>
-                      {!supplierOptions.includes(editSupplier) && (
-                        <Input
-                          placeholder="Enter new supplier name..."
-                          value={editSupplier}
-                          onChange={(e) => setEditSupplier(e.target.value)}
-                          className="mt-2"
-                          autoFocus
-                        />
-                      )}
+                  <div className="space-y-2">
+                    <Label htmlFor="edit-supplier">Supplier Name</Label>
+                    <Select name="supplier" value={supplierOptions.includes(editSupplier) ? editSupplier : 'custom'} onValueChange={(val) => { if (val !== null) setEditSupplier(val === 'custom' ? '' : val); }}>
+                      <SelectTrigger id="edit-supplier">
+                        <SelectValue placeholder="Select supplier">
+                          {supplierOptions.includes(editSupplier) ? editSupplier : '+ Add new supplier'}
+                        </SelectValue>
+                      </SelectTrigger>
+                      <SelectContent className="max-h-60 overflow-y-auto">
+                        {supplierOptions.filter(s => s !== 'N/A').map(supplier => (
+                          <SelectItem key={supplier} value={supplier}>{supplier}</SelectItem>
+                        ))}
+                        <div className="my-1 h-px bg-muted" />
+                        <SelectItem value="N/A" className="italic text-muted-foreground">N/A</SelectItem>
+                        <SelectItem value="custom" className="font-bold text-[#101d33]">+ Add new supplier</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    {!supplierOptions.includes(editSupplier) && (
+                      <Input
+                        required
+                        placeholder="Enter new supplier name..."
+                        value={editSupplier}
+                        onChange={(e) => setEditSupplier(e.target.value)}
+                        className="mt-2"
+                        autoFocus
+                      />
+                    )}
                     </div>
                     <div className="space-y-2">
                       <Label htmlFor="edit-locationAisle">Aisle Location</Label>
@@ -1786,8 +2436,10 @@ export function Inventory() {
           )}
         </DialogContent>
       </Dialog>
+      )}
 
-      <Dialog open={Boolean(productToDelete)} onOpenChange={(open) => !open && setProductToDelete(null)}>
+      {mountDeleteDialog && (
+      <Dialog open={Boolean(productToDelete)} onOpenChange={(open) => { if (!open && !isDeletingProduct) setProductToDelete(null); }}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle className="text-red-600 flex items-center gap-2">
@@ -1799,16 +2451,18 @@ export function Inventory() {
             </DialogDescription>
           </DialogHeader>
           <DialogFooter className="mt-4">
-            <Button variant="outline" onClick={() => setProductToDelete(null)}>Cancel</Button>
+            <Button variant="outline" disabled={isDeletingProduct} onClick={() => setProductToDelete(null)}>Cancel</Button>
             <Button variant="destructive" onClick={handleDeleteProduct} disabled={isDeletingProduct}>
               {isDeletingProduct ? 'Deleting...' : 'Yes, Delete Product'}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      )}
 
       {/* Stock Update Dialog */}
-      <Dialog open={isStockUpdateOpen} onOpenChange={setIsStockUpdateOpen}>
+      {mountStockUpdateDialog && (
+      <Dialog open={isStockUpdateOpen} onOpenChange={(open) => { if (!open && isAdjusting) return; setIsStockUpdateOpen(open); }}>
         <DialogContent className="sm:max-w-xl max-h-[92vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Manual Stock Adjustment</DialogTitle>
@@ -1819,7 +2473,7 @@ export function Inventory() {
           <form onSubmit={updateStock} className="space-y-4 pt-2">
             {selectedProduct?.hasVariations && (
               <div className="space-y-2">
-                <Label htmlFor="adjust-variant">Variant</Label>
+                <Label htmlFor="adjust-variant">Item / Variant</Label>
                 <select
                   id="adjust-variant"
                   required
@@ -1827,14 +2481,17 @@ export function Inventory() {
                   value={selectedVariantId}
                   onChange={e => setSelectedVariantId(e.target.value)}
                 >
-                  <option value="">Select a variant...</option>
+                  <option value="">Select original or variant...</option>
+                  <option value={selectedProduct.id}>
+                    Original (Base SKU) — {selectedProduct.sku} ({getOwnStockCount(selectedProduct.id).toLocaleString()} units)
+                  </option>
                   {childrenOf(selectedProduct.id).map(v => (
                     <option key={v.id} value={v.id}>
-                      {variantLabel(v)} — {v.sku}{v.variantEnabled === false ? ' (disabled)' : ''}
+                      {variantLabel(v)} — {v.sku} ({getOwnStockCount(v.id).toLocaleString()} units){v.variantEnabled === false ? ' (disabled)' : ''}
                     </option>
                   ))}
                 </select>
-                <p className="text-xs text-muted-foreground">Adjustments apply only to the selected variant and warehouse.</p>
+                <p className="text-xs text-muted-foreground">Choose the original base SKU or a specific variant. Adjustments apply only to your selection and warehouse.</p>
               </div>
             )}
 
@@ -1846,13 +2503,13 @@ export function Inventory() {
                   <span>Current Warehouse Stock</span>
                 </div>
                 <div className="text-xs font-bold text-muted-foreground">
-                  Total Across All: <span className="font-black text-[#d97706]">{adjustmentProduct ? getStockCount(adjustmentProduct.id).toLocaleString() : 0} units</span>
+                  Total Across All: <span className="font-black text-[#d97706]">{adjustmentProduct ? getOwnStockCount(adjustmentProduct.id).toLocaleString() : 0} units</span>
                 </div>
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-0.5">
-                {warehouses.map((wh) => {
-                  const whCount = adjustmentProduct ? getStockCount(adjustmentProduct.id, wh.id) : 0;
+                {visibleWarehouses.map((wh) => {
+                  const whCount = adjustmentProduct ? getOwnStockCount(adjustmentProduct.id, wh.id) : 0;
                   const isSelected = selectedWarehouseId === wh.id;
                   return (
                     <button
@@ -1891,12 +2548,12 @@ export function Inventory() {
               <Select name="warehouseId" required value={selectedWarehouseId} onValueChange={(value) => value !== null && setSelectedWarehouseId(value)}>
                 <SelectTrigger id="warehouseId">
                   <SelectValue placeholder="Select warehouse...">
-                    {selectedWarehouseId ? warehouses.find(w => w.id === selectedWarehouseId)?.name : 'Select warehouse...'}
+                    {selectedWarehouseId ? visibleWarehouses.find(w => w.id === selectedWarehouseId)?.name : 'Select warehouse...'}
                   </SelectValue>
                 </SelectTrigger>
                 <SelectContent>
-                  {warehouses.map(wh => {
-                    const whCount = adjustmentProduct ? getStockCount(adjustmentProduct.id, wh.id) : 0;
+                  {visibleWarehouses.map(wh => {
+                    const whCount = adjustmentProduct ? getOwnStockCount(adjustmentProduct.id, wh.id) : 0;
                     return (
                       <SelectItem key={wh.id} value={wh.id}>
                         <div className="flex items-center justify-between w-full gap-4">
@@ -1933,18 +2590,18 @@ export function Inventory() {
                   </span>
                   {selectedWarehouseId ? (
                     <span className="font-bold">
-                      {adjustmentProduct ? getStockCount(adjustmentProduct.id, selectedWarehouseId) : 0}
+                      {adjustmentProduct ? getOwnStockCount(adjustmentProduct.id, selectedWarehouseId) : 0}
                       {adjustQty && Number(adjustQty) !== 0 && (
                         <>
                           <span className="text-muted-foreground mx-1">
                             {Number(adjustQty) > 0 ? `+ ${Number(adjustQty)}` : `- ${Math.abs(Number(adjustQty))}`} =
                           </span>
                           <span className={`font-black ${
-                            (adjustmentProduct ? getStockCount(adjustmentProduct.id, selectedWarehouseId) : 0) + Number(adjustQty) < 0
+                            (adjustmentProduct ? getOwnStockCount(adjustmentProduct.id, selectedWarehouseId) : 0) + Number(adjustQty) < 0
                               ? 'text-red-500'
                               : 'text-emerald-600 dark:text-emerald-400'
                           }`}>
-                            {(adjustmentProduct ? getStockCount(adjustmentProduct.id, selectedWarehouseId) : 0) + Number(adjustQty)} units
+                            {(adjustmentProduct ? getOwnStockCount(adjustmentProduct.id, selectedWarehouseId) : 0) + Number(adjustQty)} units
                           </span>
                         </>
                       )}
@@ -1982,9 +2639,11 @@ export function Inventory() {
           </form>
         </DialogContent>
       </Dialog>
+      )}
 
       {/* Redesigned product detail dialog */}
-      <Dialog open={isDetailOpen} onOpenChange={setIsDetailOpen}>
+      {mountDetailDialog && (
+      <Dialog open={isDetailOpen} onOpenChange={(open) => { setIsDetailOpen(open); if (!open) { setDetailTab('overview'); } }}>
         <DialogContent className="max-h-[95vh] w-[96vw] min-w-0 max-w-[96vw] overflow-y-auto rounded-2xl p-0 sm:max-w-7xl">
           <DialogHeader className="border-b border-border px-6 pb-4 pt-5 text-left">
             <DialogTitle className="text-2xl font-black tracking-tight">Configuration Item</DialogTitle>
@@ -2006,14 +2665,14 @@ export function Inventory() {
                     )}
                   </div>
                   <div className="min-w-0">
-                    <div className="mb-2 flex flex-wrap items-center gap-2"><Badge className="rounded-md border border-emerald-200 bg-emerald-50 px-3 uppercase text-emerald-700 hover:bg-emerald-50"><span className="mr-2 h-2 w-2 rounded-full bg-emerald-500" />Active</Badge><Badge variant="outline" className="rounded-md px-3">{selectedProduct.category || 'Uncategorized'}</Badge></div>
+                    <div className="mb-2 flex flex-wrap items-center gap-2"><Badge className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 uppercase text-emerald-700 dark:text-emerald-300 hover:bg-emerald-500/15"><span className="mr-2 h-2 w-2 rounded-full bg-emerald-500" />Active</Badge><Badge variant="outline" className="rounded-md px-3">{selectedProduct.category || 'Uncategorized'}</Badge></div>
                     <h2 className="truncate text-4xl font-black tracking-tight">{cleanItemName(selectedProduct.name)}</h2>
                     <div className="mt-1 text-sm font-semibold tracking-wide text-muted-foreground">{selectedProduct.sku}</div>
                   </div>
                 </div>
                 <div className="flex shrink-0 flex-col items-start gap-3 sm:items-end">
-                  <div className="text-left sm:text-right"><p className="text-xs font-bold uppercase tracking-[0.18em] text-muted-foreground">Total Stock</p><p className="text-4xl font-black">{totalStock.toLocaleString()}</p><p className="text-xs text-muted-foreground">units across {warehouses.length} warehouses</p></div>
-                  <div className="flex flex-wrap gap-2">{isAdmin && <Button variant="outline" className="h-10 rounded-lg px-4 font-bold" onClick={() => { setIsDetailOpen(false); setEditingProduct(selectedProduct); }}><Pencil className="mr-2 h-4 w-4" />Edit Product</Button>}{canAdjustStock && <Button className="h-10 rounded-lg bg-[#101d33] px-4 font-bold text-white hover:bg-[#172842]" onClick={() => { setIsDetailOpen(false); setIsStockUpdateOpen(true); }}><Package className="mr-2 h-4 w-4" />Adjust Stock</Button>}</div>
+                  <div className="text-left sm:text-right"><p className="text-xs font-bold uppercase tracking-[0.18em] text-muted-foreground">Total Stock</p><p className="text-4xl font-black">{totalStock.toLocaleString()}</p><p className="text-xs text-muted-foreground">units across {visibleWarehouses.length} {visibleWarehouses.length === 1 ? 'warehouse' : 'warehouses'}</p></div>
+                  <div className="flex flex-wrap gap-2">{isAdmin && <Button variant="outline" className="h-10 rounded-lg px-4 font-bold" onClick={() => { setIsDetailOpen(false); setEditingProduct(selectedProduct); }}><Pencil className="mr-2 h-4 w-4" />Edit Product</Button>}{canAdjustStock && <Button className="h-10 rounded-lg bg-primary px-4 font-bold text-primary-foreground hover:bg-primary/90" onClick={() => { setIsDetailOpen(false); setIsStockUpdateOpen(true); }}><Package className="mr-2 h-4 w-4" />Adjust Stock</Button>}</div>
                 </div>
               </section>
 
@@ -2045,10 +2704,10 @@ export function Inventory() {
 
                   <section className="rounded-xl border border-border/80 p-4 shadow-sm">
                     <div className="flex items-center gap-3 border-b border-border pb-3"><span className="font-mono text-sm font-black text-muted-foreground">03</span><Package className="h-5 w-5" /><h3 className="text-base font-bold uppercase tracking-wider">Inventory</h3></div>
-                    <div className="flex items-center justify-between py-3"><h4 className="font-bold">Warehouse Stock</h4><span className="text-xs font-semibold text-muted-foreground">All Warehouses</span></div>
+                    <div className="flex items-center justify-between py-3"><h4 className="font-bold">Warehouse Stock</h4><span className="text-xs font-semibold text-muted-foreground">{allowedWarehouseIds ? 'Permitted Warehouses' : 'All Warehouses'}</span></div>
                     <div className="overflow-hidden rounded-lg border border-border">
-                      {warehouses.map((warehouse, index) => { const count = getStockCount(selectedProduct.id, warehouse.id); return <div key={warehouse.id} className={`flex items-center justify-between px-4 py-3 text-sm ${index ? 'border-t border-border' : ''}`}><div className="flex items-center gap-3"><WarehouseIcon className="h-4 w-4 text-muted-foreground" /><span className="font-medium">{warehouse.name}</span></div><span className={`font-bold ${count < 0 ? 'text-red-600' : ''}`}>{count.toLocaleString()} units</span></div>; })}
-                      <div className="flex items-center justify-between border-t border-border bg-emerald-50 px-4 py-3 text-sm"><span className="font-bold">Total Stock (All Warehouses)</span><span className="font-black">{totalStock.toLocaleString()} units</span></div>
+                      {visibleWarehouses.map((warehouse, index) => { const count = getStockCount(selectedProduct.id, warehouse.id); return <div key={warehouse.id} className={`flex items-center justify-between px-4 py-3 text-sm ${index ? 'border-t border-border' : ''}`}><div className="flex items-center gap-3"><WarehouseIcon className="h-4 w-4 text-muted-foreground" /><span className="font-medium">{warehouse.name}</span></div><span className={`font-bold ${count < 0 ? 'text-red-600' : ''}`}>{count.toLocaleString()} units</span></div>; })}
+                      <div className="flex items-center justify-between border-t border-border bg-emerald-500/10 px-4 py-3 text-sm text-emerald-700 dark:text-emerald-300"><span className="font-bold">{allowedWarehouseIds ? 'Total Stock (Permitted Warehouses)' : 'Total Stock (All Warehouses)'}</span><span className="font-black">{totalStock.toLocaleString()} units</span></div>
                     </div>
                     <div className="mt-4 flex items-center gap-3 border-y border-border py-3"><span className="font-mono text-sm font-black text-muted-foreground">04</span><BarChart3 className="h-5 w-5" /><h3 className="text-base font-bold uppercase tracking-wider">Stock Controls</h3></div>
                     <dl className="grid grid-cols-[1fr_auto] gap-x-5 gap-y-3 pt-3 text-sm">
@@ -2065,10 +2724,10 @@ export function Inventory() {
                     </div>
                     <p className="mt-4 text-xs text-muted-foreground">Scan or print the product identity record associated with this item.</p>
                     <div className="mt-4 flex flex-1 flex-col items-center justify-center gap-4 rounded-lg border border-border p-5">
-                      <div id={`qr-svg-detail-${selectedProduct.id}`} className="rounded-lg bg-white p-2">{selectedProduct.hasVariations ? <p className="max-w-40 text-center text-sm text-muted-foreground">Choose a variant to view and print its QR label.</p> : <QRCodeSVG value={selectedProduct.id} size={150} />}</div>
-                      <div className="text-center"><p className="text-xs uppercase tracking-wider text-muted-foreground">SKU</p><p className="font-bold">{selectedProduct.sku}</p><p className="mt-4 text-xs uppercase tracking-wider text-muted-foreground">Unique node ID</p><p className="mt-1 break-all font-mono text-xs">{selectedProduct.id}</p></div>
+                      <div id={`qr-svg-detail-${selectedProduct.id}`} className="rounded-lg bg-white p-2"><QRCodeSVG value={selectedProduct.id} size={150} /></div>
+                      <div className="text-center"><p className="text-xs uppercase tracking-wider text-muted-foreground">SKU</p><p className="font-bold">{selectedProduct.sku}</p>{selectedProduct.hasVariations && <p className="mt-1 text-[11px] text-muted-foreground">Base SKU · open Variants tab for variant QR labels</p>}<p className="mt-4 text-xs uppercase tracking-wider text-muted-foreground">Unique node ID</p><p className="mt-1 break-all font-mono text-xs">{selectedProduct.id}</p></div>
                     </div>
-                    <Button variant="outline" className="mt-4 h-11" onClick={() => selectedProduct.hasVariations ? setDetailTab('variants') : printThermalLabel(selectedProduct, `qr-svg-detail-${selectedProduct.id}`)}><Printer className="mr-2 h-4 w-4" />Print Label</Button>
+                    <Button variant="outline" className="mt-4 h-11" onClick={() => printThermalLabel(selectedProduct, `qr-svg-detail-${selectedProduct.id}`)}><Printer className="mr-2 h-4 w-4" />Print Label</Button>
                   </section>
                 </div>}</>
             </div>;
@@ -2076,7 +2735,9 @@ export function Inventory() {
           <DialogFooter className="border-t border-border bg-muted/20 px-6 py-4"><Button variant="outline" onClick={() => setIsDetailOpen(false)} className="h-11 min-w-28 rounded-lg px-8 font-bold">Close</Button></DialogFooter>
         </DialogContent>
       </Dialog>
+      )}
 
+      {mountQrDialog && (
       <Dialog open={!!qrProduct} onOpenChange={open => !open && setQrProduct(null)}>
         <DialogContent className="sm:max-w-sm">
           <DialogHeader>
@@ -2101,151 +2762,23 @@ export function Inventory() {
           )}
         </DialogContent>
       </Dialog>
-      {/* Previous product detail layout retained temporarily for reference */}
-      {false && (
-        <Dialog open={isDetailOpen} onOpenChange={setIsDetailOpen}>
-          <DialogContent className="max-w-[95vw] sm:max-w-5xl w-full rounded-[2rem]">
-            <DialogHeader className="pb-4 border-b border-border">
-              <div className="flex items-center gap-3 mb-2">
-                <div className="flex h-9 w-9 items-center justify-center overflow-hidden rounded-xl bg-primary">
-                  {selectedProduct?.photoUrl ? (
-                    <img src={selectedProduct.photoUrl} alt={selectedProduct?.name} className="h-full w-full object-cover" />
-                  ) : (
-                    <Package className="w-5 h-5 text-primary-foreground" />
-                  )}
-                </div>
-                <div>
-                  <DialogTitle className="text-2xl font-black uppercase tracking-tighter">Configuration Item: {selectedProduct?.name}</DialogTitle>
-                  <DialogDescription className="text-muted-foreground font-medium">Service catalog specification and inventory node status.</DialogDescription>
-                </div>
-              </div>
-            </DialogHeader>
+      )}
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-8 py-6">
-              <div className="space-y-6">
-                <div>
-                  <Label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground mb-2 block">Technical Specifications</Label>
-                  <div className="bg-muted rounded-2xl p-4 border border-border space-y-3">
-                    <div className="flex justify-between items-center text-sm">
-                      <span className="text-muted-foreground font-medium">SKU Node</span>
-                      <span className="font-mono font-bold text-foreground">{selectedProduct?.sku}</span>
-                    </div>
-                    <div className="flex justify-between items-center text-sm">
-                      <span className="text-muted-foreground font-medium">Classification</span>
-                      <Badge variant="outline" className="font-black uppercase text-[9px] tracking-widest py-0 h-5">{selectedProduct?.category || 'Accessories'}</Badge>
-                    </div>
-                    <div className="flex justify-between items-center text-sm">
-                      <span className="text-muted-foreground font-medium">Supplier</span>
-                      <span className="font-bold bg-[#FF2D20]/10 text-[#FF2D20] px-2.5 py-0.5 rounded-full text-xs">
-                        {selectedProduct?.supplier || 'Supplier'}
-                      </span>
-                    </div>
-                    <div className="flex justify-between items-center text-sm">
-                      <span className="text-muted-foreground font-medium">Min Threshold</span>
-                      <span className="font-bold text-foreground">{selectedProduct?.minStockLevel || 0} units</span>
-                    </div>
-                    <div className="flex justify-between items-center text-sm">
-                      <span className="text-muted-foreground font-medium">Reorder Point</span>
-                      <span className="font-bold text-foreground">{selectedProduct?.reorderPoint || 0} units</span>
-                    </div>
-                  </div>
-                </div>
-
-                <div>
-                  <Label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground mb-2 block">Pricing Tiers (₱)</Label>
-                  <div className="bg-muted rounded-2xl p-4 border border-border text-foreground space-y-3">
-                    <div className="flex justify-between items-center text-sm">
-                      <span className="text-muted-foreground font-medium">Base Price / Retail</span>
-                      <span className="font-black">₱{(selectedProduct?.basePrice || 0).toLocaleString()}</span>
-                    </div>
-                    <div className="flex justify-between items-center text-sm">
-                      <span className="text-muted-foreground font-medium">MM Rate</span>
-                      <span className="font-black text-emerald-400">₱{((selectedProduct?.mmPrice ?? selectedProduct?.wholesalePrice) || 0).toLocaleString()}</span>
-                    </div>
-                    <div className="flex justify-between items-center text-sm">
-                      <span className="text-muted-foreground font-medium">Provincial Rate</span>
-                      <span className="font-black text-blue-400">₱{((selectedProduct?.provincialPrice ?? selectedProduct?.dealerPrice) || 0).toLocaleString()}</span>
-                    </div>
-                    <div className="flex justify-between items-center text-sm">
-                      <span className="text-muted-foreground font-medium">Cost</span>
-                      <span className="font-black text-zinc-400">₱{(selectedProduct?.costPrice || 0).toLocaleString()}</span>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div className="space-y-6">
-                <div>
-                  <Label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground mb-2 block">Warehouse Deployment</Label>
-                  <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
-                    {warehouses.map(wh => {
-                      const count = getStockCount(selectedProduct?.id || '', wh.id);
-                      return (
-                        <div key={wh.id} className="flex items-center justify-between p-3 bg-muted rounded-xl border border-border hover:border-foreground/20 transition-colors">
-                          <div className="flex items-center gap-2">
-                            <WarehouseIcon className="w-4 h-4 text-muted-foreground" />
-                            <span className="text-xs font-bold text-foreground">{wh.name}</span>
-                          </div>
-                          <Badge variant="secondary" className="font-black rounded-lg">{count} units</Badge>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                <div className="pt-4 border-t border-dashed border-border">
-                  <div className="flex items-center justify-between mb-4">
-                    <span className="text-xs font-black uppercase tracking-widest text-foreground">Aggregate Global Inventory</span>
-                    <Badge className="bg-emerald-500 font-black h-8 px-4 rounded-xl">
-                      {getStockCount(selectedProduct?.id || '')} UNITS TOTAL
-                    </Badge>
-                  </div>
-
-                  <div className="flex items-center gap-3">
-                    <div className="p-3 bg-muted rounded-xl">
-                      <QrCode className="w-8 h-8 text-zinc-400" />
-                    </div>
-                    <div className="flex-1">
-                      <p className="text-[10px] font-black uppercase text-zinc-500 mb-1">Asset Traceability</p>
-                      <p className="text-[10px] text-zinc-400 font-medium italic">Unique node ID: {selectedProduct?.id}</p>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <DialogFooter className="pt-4 border-t border-border">
-              <Button
-                variant="outline"
-                onClick={() => setIsDetailOpen(false)}
-                className="h-12 px-8 rounded-xl font-black uppercase tracking-widest text-[10px]"
-              >
-                Close
-              </Button>
-              {canAdjustStock && (
-                <Button
-                  onClick={() => {
-                    setIsDetailOpen(false);
-                    setIsStockUpdateOpen(true);
-                  }}
-                  className="h-12 px-8 bg-[#1A2332] text-white rounded-xl font-black uppercase tracking-widest text-[10px]"
-                >
-                  Adjust Stock <Plus className="ml-2 w-3 h-3" />
-                </Button>
-              )}
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>)}
-
-      <DefectiveStockModal
-        open={isDefectiveModalOpen}
-        onClose={() => setIsDefectiveModalOpen(false)}
-        products={products}
-        inventory={inventory}
-        warehouses={warehouses}
-        profile={profile}
-        onSuccess={() => setDefectiveTickets(getLocalDefectiveTickets())}
-      />
+      {mountDefectiveModal && (
+        <Suspense fallback={null}>
+          <DefectiveStockModalLazy
+            open={isDefectiveModalOpen}
+            onClose={handleCloseDefectiveModal}
+            products={products}
+            inventory={inventory}
+            warehouses={warehouses}
+            profile={profile}
+            canAdjustStock={canAdjustStock}
+            allowedWarehouseIds={allowedWarehouseIds}
+            onSuccess={handleDefectiveSuccess}
+          />
+        </Suspense>
+      )}
     </div>
   );
 }

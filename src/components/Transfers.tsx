@@ -1,33 +1,41 @@
 import { SearchBar } from '@/components/ui/search-bar';
 import { hasAdminRole } from '../lib/staffPermissions';
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useDeferredValue } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useStaffAccess } from '../hooks/useStaffAccess';
 import { permitsMovement } from '../lib/staffPermissions';
 import { db } from '../lib/supabaseAdapter';
-import { collection, onSnapshot, addDoc, updateDoc, doc, getDoc, query, orderBy, serverTimestamp } from '../lib/supabaseAdapter';
-import { Transfer, Product, Warehouse, InventoryItem, TransferStatus } from '../types';
+import { collection, onSnapshot, addDoc, updateDoc, deleteDoc, doc, getDoc, getDocs, query, orderBy, serverTimestamp } from '../lib/supabaseAdapter';
+import { Transfer, Product, Warehouse, InventoryItem } from '../types';
 import { handleSupabaseError, OperationType } from '../lib/supabaseErrorHandler';
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
+import { Card, CardContent } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter, DialogDescription } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { TruckIcon as Truck, ArrowsLeftRightIcon as ArrowRightLeft, ClockIcon as Clock, CheckCircleIcon as CheckCircle2, ClockCounterClockwiseIcon as History, PlusIcon as Plus, XIcon as X, WarningIcon as AlertTriangle, XCircleIcon as XCircle, ProhibitIcon as Ban, SlidersHorizontalIcon as SlidersHorizontal, UserIcon as User, ShieldWarningIcon as ShieldAlert, FileTextIcon as FileText } from '@phosphor-icons/react';
+import { TruckIcon as Truck, ArrowsLeftRightIcon as ArrowRightLeft, ClockIcon as Clock, CheckCircleIcon as CheckCircle2, ClockCounterClockwiseIcon as History, PlusIcon as Plus, XIcon as X, WarningIcon as AlertTriangle, XCircleIcon as XCircle, ProhibitIcon as Ban, ShieldWarningIcon as ShieldAlert } from '@phosphor-icons/react';
 import { Badge } from '@/components/ui/badge';
 import { useAuth } from '../hooks/useAuth';
+import { ConfirmDialog } from './ConfirmDialog';
 import { toast } from 'sonner';
 
 export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const transferIdParam = searchParams.get('transferId');
+  const lastAppliedTransferParamRef = useRef<string | null>(null);
   const { profile } = useAuth();
   const { permissions } = useStaffAccess();
   const [transfers, setTransfers] = useState<Transfer[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
-  const [inventory, setInventory] = useState<InventoryItem[]>([]);
   const [isAddTransferOpen, setIsAddTransferOpen] = useState(false);
-  const [transferItems, setTransferItems] = useState([{ id: Date.now(), productName: '', quantity: 1 }]);
+  const [sourceWhId, setSourceWhId] = useState('');
+  const [destWhId, setDestWhId] = useState('');
+  const [transferItems, setTransferItems] = useState<Array<{ id: string; productId: string; quantity: number }>>([
+    { id: crypto.randomUUID(), productId: '', quantity: 1 },
+  ]);
   const [selectedTransfer, setSelectedTransfer] = useState<Transfer | null>(null);
 
   // Search & Filter State
@@ -43,58 +51,74 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
   // Cancellation Dialog State
   const [cancellingTransfer, setCancellingTransfer] = useState<Transfer | null>(null);
   const [cancellationReason, setCancellationReason] = useState('');
+  const [arrivalConfirmTarget, setArrivalConfirmTarget] = useState<Transfer | null>(null);
 
   // Action Loading State
   const [isProcessing, setIsProcessing] = useState(false);
+  const actionLockRef = useRef(false);
 
+  const hasAllWarehouseAccess = hasAdminRole(profile) || permissions.warehouseAccess === 'all';
+  const scopedWarehouses = warehouses.filter(w => hasAllWarehouseAccess || permissions.warehouseIds.includes(w.id));
+  const canAccessWarehouse = (warehouseId?: string) => !warehouseId ? false : (hasAllWarehouseAccess || permissions.warehouseIds.includes(warehouseId));
   const canManageTransfer = permitsMovement(permissions.movementCreate, 'internal') && permissions.inventory === 'adjust' && (hasAdminRole(profile) || profile?.role === 'secretary' || profile?.role === 'staff');
 
   useEffect(() => {
     const unsubTransfers = onSnapshot(query(collection(db, 'transfers'), orderBy('createdAt', 'desc')), (snap) => {
-      setTransfers(snap.docs.map(d => ({ id: d.id, ...d.data() } as Transfer)));
+      setTransfers(snap.docs.map((d: any) => ({ id: d.id, ...d.data() } as Transfer)));
     }, (error) => {
       handleSupabaseError(error, OperationType.GET, 'transfers');
     });
     const unsubProducts = onSnapshot(collection(db, 'products'), (snap) => {
-      setProducts(snap.docs.map(d => ({ id: d.id, ...d.data() } as Product)));
+      setProducts(snap.docs.map((d: any) => ({ id: d.id, ...d.data() } as Product)));
     }, (error) => {
       handleSupabaseError(error, OperationType.GET, 'products');
     });
     const unsubWarehouses = onSnapshot(collection(db, 'warehouses'), (snap) => {
-      setWarehouses(snap.docs.map(d => ({ id: d.id, ...d.data() } as Warehouse)));
+      setWarehouses(snap.docs.map((d: any) => ({ id: d.id, ...d.data() } as Warehouse)));
     }, (error) => {
       handleSupabaseError(error, OperationType.GET, 'warehouses');
-    });
-    const unsubInventory = onSnapshot(collection(db, 'inventory'), (snap) => {
-      setInventory(snap.docs.map(d => ({ id: d.id, ...d.data() } as InventoryItem)));
-    }, (error) => {
-      handleSupabaseError(error, OperationType.GET, 'inventory');
     });
     return () => {
       unsubTransfers();
       unsubProducts();
       unsubWarehouses();
-      unsubInventory();
     };
   }, []);
 
+  useEffect(() => {
+    if (!transferIdParam) {
+      lastAppliedTransferParamRef.current = null;
+      return;
+    }
+    if (lastAppliedTransferParamRef.current === transferIdParam || !transfers.length) return;
+    const match = transfers.find(t => t.id === transferIdParam);
+    if (match) {
+      lastAppliedTransferParamRef.current = transferIdParam;
+      setSelectedTransfer(match);
+    }
+  }, [transferIdParam, transfers]);
+
+  const orderableProducts = products.filter(p => p.variantEnabled !== false);
+
   const handleInitiateTransfer = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    const formData = new FormData(e.currentTarget);
-    const sourceWhName = formData.get('sourceWh') as string;
-    const destWhName = formData.get('destWh') as string;
-
-    const sourceWh = warehouses.find(w => w.name === sourceWhName)?.id || sourceWhName;
-    const destWh = warehouses.find(w => w.name === destWhName)?.id || destWhName;
-
-    if (sourceWh === destWh) {
-      toast.error('Source and destination warehouses must be different');
+    if (!canManageTransfer || actionLockRef.current) return;
+    if (!sourceWhId || !destWhId) {
+      toast.error('Select both source and destination warehouses.');
+      return;
+    }
+    if (!canAccessWarehouse(sourceWhId) || !canAccessWarehouse(destWhId)) {
+      toast.error('You do not have permission for the selected warehouse.');
+      return;
+    }
+    if (sourceWhId === destWhId) {
+      toast.error('Source and destination warehouses must be different.');
       return;
     }
 
-    const validItems = transferItems.filter(item => item.productName);
+    const validItems = transferItems.filter(item => item.productId);
     if (validItems.length === 0) {
-      toast.error('Please select at least one product to transfer');
+      toast.error('Please select at least one product to transfer.');
       return;
     }
 
@@ -102,124 +126,153 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
     const aggregatedReq = new Map<string, { productName: string; totalQty: number }>();
     for (const item of validItems) {
       const qty = Number(item.quantity);
+      const product = products.find(p => p.id === item.productId);
+      const prodLabel = product?.name || item.productId;
+      if (!product) {
+        toast.error('Select a valid product for every line.');
+        return;
+      }
       if (!Number.isInteger(qty) || qty <= 0) {
-        toast.error(`Invalid quantity for ${item.productName}. Quantity must be a positive whole number.`);
+        toast.error(`Invalid quantity for ${prodLabel}. Quantity must be a positive whole number.`);
         return;
       }
-      const prodId = products.find(p => p.name === item.productName)?.id || item.productName;
-      const current = aggregatedReq.get(prodId) || { productName: item.productName, totalQty: 0 };
+      const current = aggregatedReq.get(item.productId) || { productName: prodLabel, totalQty: 0 };
       current.totalQty += qty;
-      aggregatedReq.set(prodId, current);
+      aggregatedReq.set(item.productId, current);
     }
 
-    for (const [prodId, data] of aggregatedReq.entries()) {
-      const sourceInv = inventory.find(i => i.productId === prodId && i.warehouseId === sourceWh);
-      if (!sourceInv || sourceInv.quantity < data.totalQty) {
-        toast.error(`Insufficient stock for ${data.productName} in source warehouse (Available: ${sourceInv?.quantity ?? 0}, Requested: ${data.totalQty})`);
-        return;
-      }
-    }
-
+    actionLockRef.current = true;
+    setIsProcessing(true);
     try {
-      // Parallel execution: initiate all transfer line items concurrently
-      await Promise.all(
-        validItems.map(item => {
-          const prodId = products.find(p => p.name === item.productName)?.id || item.productName;
-          const qty = Number(item.quantity);
+      const liveInventorySnap = await getDocs(collection(db, 'inventory'));
+      const liveInventory = liveInventorySnap.docs.map((d: any) => ({ id: d.id, ...d.data() } as InventoryItem));
+
+      for (const [prodId, data] of aggregatedReq.entries()) {
+        const available = liveInventory
+          .filter(i => i.productId === prodId && i.warehouseId === sourceWhId)
+          .reduce((sum, i) => sum + Math.max(0, Number(i.quantity || 0)), 0);
+        if (available < data.totalQty) {
+          toast.error(`Insufficient stock for ${data.productName} in source warehouse (Available: ${available}, Requested: ${data.totalQty})`);
+          return;
+        }
+      }
+
+      const createdIds: string[] = [];
+      try {
+        for (const item of validItems) {
           const newTransfer: Omit<Transfer, 'id'> = {
-            sourceWarehouseId: sourceWh,
-            destinationWarehouseId: destWh,
-            productId: prodId,
-            quantity: qty,
+            sourceWarehouseId: sourceWhId,
+            destinationWarehouseId: destWhId,
+            productId: item.productId,
+            quantity: Number(item.quantity),
             status: 'pending',
             initiatedBy: profile?.uid || 'Unknown',
             createdAt: serverTimestamp(),
           };
-          return addDoc(collection(db, 'transfers'), newTransfer);
-        })
-      );
+          const refDoc = await addDoc(collection(db, 'transfers'), newTransfer);
+          if (refDoc?.id) createdIds.push(refDoc.id);
+        }
+      } catch (createErr) {
+        for (const id of createdIds) {
+          await deleteDoc(doc(db, 'transfers', id)).catch(() => {});
+        }
+        throw createErr;
+      }
 
       setIsAddTransferOpen(false);
-      setTransferItems([{ id: Date.now(), productName: '', quantity: 1 }]);
+      setSourceWhId('');
+      setDestWhId('');
+      setTransferItems([{ id: crypto.randomUUID(), productId: '', quantity: 1 }]);
       toast.success('Warehouse transport requests initiated');
     } catch (err) {
       handleSupabaseError(err, OperationType.CREATE, 'transfers');
+    } finally {
+      actionLockRef.current = false;
+      setIsProcessing(false);
     }
   };
 
   // 1. Dispatch Transfer (Eliminate Ghost Inventory by immediately deducting from origin warehouse)
   const handleDispatch = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!dispatchingTransfer) return;
+    if (!canManageTransfer || !dispatchingTransfer || actionLockRef.current) return;
+    if (!canAccessWarehouse(dispatchingTransfer.sourceWarehouseId) || !canAccessWarehouse(dispatchingTransfer.destinationWarehouseId)) {
+      toast.error('You do not have permission to dispatch this warehouse transfer.');
+      return;
+    }
+    actionLockRef.current = true;
     setIsProcessing(true);
 
+    const modifiedInventory: Array<{ id: string; prevQty: number }> = [];
+    let createdAdjId: string | null = null;
     try {
-      let sourceInv = inventory.find(
-        i => i.productId === dispatchingTransfer.productId && i.warehouseId === dispatchingTransfer.sourceWarehouseId
-      );
-
-      // Fetch fresh live inventory item from database to prevent race conditions & lost updates
-      if (sourceInv?.id) {
-        try {
-          const freshSnap = await getDoc(doc(db, 'inventory', sourceInv.id));
-          if (freshSnap && freshSnap.exists()) {
-            sourceInv = { ...sourceInv, ...(freshSnap.data() as InventoryItem) };
-          }
-        } catch (fetchErr) {
-          console.warn('Could not refetch latest source inventory; using snapshot state:', fetchErr);
-        }
+      const liveTransferSnap = await getDoc(doc(db, 'transfers', dispatchingTransfer.id));
+      if (!liveTransferSnap?.exists()) {
+        toast.error('Transfer record could not be found.');
+        setDispatchingTransfer(null);
+        return;
+      }
+      const liveStatus = liveTransferSnap.data()?.status;
+      if (liveStatus !== 'pending') {
+        toast.error(`Transfer cannot be dispatched because live status is "${String(liveStatus || 'unknown').replace('_', ' ')}".`);
+        setDispatchingTransfer(null);
+        return;
       }
 
-      if (!sourceInv || sourceInv.quantity < dispatchingTransfer.quantity) {
-        toast.error(`Insufficient stock at source warehouse to dispatch transport. Available: ${sourceInv?.quantity ?? 0}`);
-        setIsProcessing(false);
+      const liveInvSnap = await getDocs(collection(db, 'inventory'));
+      const matchingRows = liveInvSnap.docs
+        .map((d: any) => ({ id: d.id, ...d.data() } as InventoryItem))
+        .filter(i => i.productId === dispatchingTransfer.productId && i.warehouseId === dispatchingTransfer.sourceWarehouseId);
+
+      const available = matchingRows.reduce((s, r) => s + Math.max(0, Number(r.quantity || 0)), 0);
+      if (matchingRows.length === 0 || available < dispatchingTransfer.quantity) {
+        toast.error(`Insufficient stock at source warehouse to dispatch transport. Available: ${available}`);
         return;
       }
 
       // 1. Immediately deduct from source warehouse (Eliminates Ghost Inventory!)
-      await updateDoc(doc(db, 'inventory', sourceInv.id), {
-        quantity: Math.max(0, sourceInv.quantity - dispatchingTransfer.quantity),
-        lastUpdated: serverTimestamp()
-      });
-
-      // 2. Audit log
-      try {
-        await addDoc(collection(db, 'stockAdjustments'), {
-          productId: dispatchingTransfer.productId,
-          warehouseId: dispatchingTransfer.sourceWarehouseId,
-          adjustmentAmount: -dispatchingTransfer.quantity,
-          reason: `Transport TFR-${dispatchingTransfer.id.slice(-6)} dispatched (in_transit)`,
-          recordedBy: profile?.uid || 'system',
-          timestamp: serverTimestamp()
+      let remaining = dispatchingTransfer.quantity;
+      for (const row of matchingRows) {
+        if (remaining <= 0) break;
+        const curQty = Number(row.quantity || 0);
+        if (curQty <= 0) continue;
+        const take = Math.min(curQty, remaining);
+        modifiedInventory.push({ id: row.id, prevQty: curQty });
+        await updateDoc(doc(db, 'inventory', row.id), {
+          quantity: curQty - take,
+          lastUpdated: serverTimestamp(),
         });
-      } catch (logErr) {
-        console.warn('Stock adjustment audit log write failed:', logErr);
+        remaining -= take;
       }
 
-      // 3. Update transfer status (with graceful schema fallback if columns are unmigrated in Supabase)
+      // 2. Audit log
+      const adjRef = await addDoc(collection(db, 'stockAdjustments'), {
+        productId: dispatchingTransfer.productId,
+        warehouseId: dispatchingTransfer.sourceWarehouseId,
+        adjustmentAmount: -dispatchingTransfer.quantity,
+        reason: `Transport TFR-${dispatchingTransfer.id.slice(-6)} dispatched (in_transit)`,
+        recordedBy: profile?.uid || 'system',
+        timestamp: serverTimestamp()
+      });
+      createdAdjId = adjRef?.id || null;
+
+      // 3. Update transfer status
       try {
-        try {
-          await updateDoc(doc(db, 'transfers', dispatchingTransfer.id), {
-            status: 'in_transit',
-            driverName: driverName.trim() || undefined,
-            vehiclePlate: vehiclePlate.trim().toUpperCase() || undefined,
-            dispatchedAt: serverTimestamp(),
-            dispatchedBy: profile?.uid,
-            updatedAt: serverTimestamp()
-          });
-        } catch (colErr: any) {
-          console.warn('Supabase transfers schema missing columns (PGRST204). Falling back to core status update:', colErr);
-          await updateDoc(doc(db, 'transfers', dispatchingTransfer.id), {
-            status: 'in_transit'
-          });
-        }
-      } catch (transferErr) {
-        // Rollback stock deduction on catastrophic transfer update failure
-        await updateDoc(doc(db, 'inventory', sourceInv.id), {
-          quantity: sourceInv.quantity,
-          lastUpdated: serverTimestamp()
-        }).catch(rbErr => console.error('Failed to rollback inventory quantity:', rbErr));
-        throw transferErr;
+        await updateDoc(doc(db, 'transfers', dispatchingTransfer.id), {
+          status: 'in_transit',
+          driverName: driverName.trim() || undefined,
+          vehiclePlate: vehiclePlate.trim().toUpperCase() || undefined,
+          dispatchedAt: serverTimestamp(),
+          dispatchedBy: profile?.uid,
+          updatedAt: serverTimestamp()
+        });
+      } catch (colErr: any) {
+        const isMissingCol = colErr?.code === 'PGRST204' || colErr?.code === '42703' || String(colErr?.message || '').toLowerCase().includes('column');
+        if (!isMissingCol) throw colErr;
+        console.warn('Supabase transfers schema missing columns; falling back to core status update:', colErr);
+        await updateDoc(doc(db, 'transfers', dispatchingTransfer.id), {
+          status: 'in_transit'
+        });
       }
 
       toast.success(`Transport dispatched! ${dispatchingTransfer.quantity} unit(s) deducted from origin facility.`);
@@ -228,61 +281,81 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
       setVehiclePlate('');
       if (selectedTransfer?.id === dispatchingTransfer.id) setSelectedTransfer(null);
     } catch (err) {
+      for (const roll of [...modifiedInventory].reverse()) {
+        await updateDoc(doc(db, 'inventory', roll.id), {
+          quantity: roll.prevQty,
+          lastUpdated: serverTimestamp(),
+        }).catch(rbErr => console.error('Failed to rollback inventory quantity:', rbErr));
+      }
+      if (createdAdjId) {
+        await deleteDoc(doc(db, 'stockAdjustments', createdAdjId)).catch(() => {});
+      }
       handleSupabaseError(err, OperationType.UPDATE, `transfers/${dispatchingTransfer.id}`);
     } finally {
+      actionLockRef.current = false;
       setIsProcessing(false);
     }
   };
 
   // 2. Confirm Arrival (Increment destination warehouse)
   const handleConfirmArrival = async (transfer: Transfer) => {
+    if (!canManageTransfer || actionLockRef.current) return;
+    if (!canAccessWarehouse(transfer.destinationWarehouseId)) {
+      toast.error('You do not have permission to receive inventory at this warehouse.');
+      return;
+    }
+    actionLockRef.current = true;
     setIsProcessing(true);
-    try {
-      let destInv = inventory.find(
-        i => i.productId === transfer.productId && i.warehouseId === transfer.destinationWarehouseId
-      );
 
-      // Fetch fresh live inventory item from database to prevent race conditions & lost updates
-      if (destInv?.id) {
-        try {
-          const freshSnap = await getDoc(doc(db, 'inventory', destInv.id));
-          if (freshSnap && freshSnap.exists()) {
-            destInv = { ...destInv, ...(freshSnap.data() as InventoryItem) };
-          }
-        } catch (fetchErr) {
-          console.warn('Could not refetch latest destination inventory; using snapshot state:', fetchErr);
-        }
+    let updatedDestRow: { id: string; prevQty: number } | null = null;
+    let createdDestRowId: string | null = null;
+    let createdAdjId: string | null = null;
+    try {
+      const liveTransferSnap = await getDoc(doc(db, 'transfers', transfer.id));
+      if (!liveTransferSnap?.exists()) {
+        toast.error('Transfer record could not be found.');
+        return;
+      }
+      const liveStatus = liveTransferSnap.data()?.status;
+      if (liveStatus !== 'in_transit') {
+        toast.error(`Transfer cannot be confirmed because live status is "${String(liveStatus || 'unknown').replace('_', ' ')}".`);
+        return;
       }
 
+      const liveInvSnap = await getDocs(collection(db, 'inventory'));
+      const destInv = liveInvSnap.docs
+        .map((d: any) => ({ id: d.id, ...d.data() } as InventoryItem))
+        .find(i => i.productId === transfer.productId && i.warehouseId === transfer.destinationWarehouseId);
+
       if (destInv) {
+        const curQty = Number(destInv.quantity || 0);
+        updatedDestRow = { id: destInv.id, prevQty: curQty };
         await updateDoc(doc(db, 'inventory', destInv.id), {
-          quantity: destInv.quantity + transfer.quantity,
+          quantity: curQty + transfer.quantity,
           lastUpdated: serverTimestamp()
         });
       } else {
-        await addDoc(collection(db, 'inventory'), {
+        const createdRef = await addDoc(collection(db, 'inventory'), {
           productId: transfer.productId,
           warehouseId: transfer.destinationWarehouseId,
           quantity: transfer.quantity,
           lastUpdated: serverTimestamp()
         });
+        createdDestRowId = createdRef?.id || null;
       }
 
       // Audit log
-      try {
-        await addDoc(collection(db, 'stockAdjustments'), {
-          productId: transfer.productId,
-          warehouseId: transfer.destinationWarehouseId,
-          adjustmentAmount: transfer.quantity,
-          reason: `Transport TFR-${transfer.id.slice(-6)} received at destination facility`,
-          recordedBy: profile?.uid || 'system',
-          timestamp: serverTimestamp()
-        });
-      } catch (logErr) {
-        console.warn('Stock adjustment audit log write failed:', logErr);
-      }
+      const adjRef = await addDoc(collection(db, 'stockAdjustments'), {
+        productId: transfer.productId,
+        warehouseId: transfer.destinationWarehouseId,
+        adjustmentAmount: transfer.quantity,
+        reason: `Transport TFR-${transfer.id.slice(-6)} received at destination facility`,
+        recordedBy: profile?.uid || 'system',
+        timestamp: serverTimestamp()
+      });
+      createdAdjId = adjRef?.id || null;
 
-      // Update transfer status (with graceful schema fallback if columns are unmigrated in Supabase)
+      // Update transfer status
       try {
         await updateDoc(doc(db, 'transfers', transfer.id), {
           status: 'received',
@@ -291,7 +364,9 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
           updatedAt: serverTimestamp()
         });
       } catch (colErr: any) {
-        console.warn('Supabase transfers schema missing columns (PGRST204). Falling back to core status update:', colErr);
+        const isMissingCol = colErr?.code === 'PGRST204' || colErr?.code === '42703' || String(colErr?.message || '').toLowerCase().includes('column');
+        if (!isMissingCol) throw colErr;
+        console.warn('Supabase transfers schema missing columns; falling back to core status update:', colErr);
         await updateDoc(doc(db, 'transfers', transfer.id), {
           status: 'received'
         });
@@ -300,8 +375,21 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
       toast.success(`Transport arrival confirmed! ${transfer.quantity} unit(s) added to destination facility.`);
       if (selectedTransfer?.id === transfer.id) setSelectedTransfer(null);
     } catch (err) {
+      if (updatedDestRow) {
+        await updateDoc(doc(db, 'inventory', updatedDestRow.id), {
+          quantity: updatedDestRow.prevQty,
+          lastUpdated: serverTimestamp(),
+        }).catch(() => {});
+      }
+      if (createdDestRowId) {
+        await deleteDoc(doc(db, 'inventory', createdDestRowId)).catch(() => {});
+      }
+      if (createdAdjId) {
+        await deleteDoc(doc(db, 'stockAdjustments', createdAdjId)).catch(() => {});
+      }
       handleSupabaseError(err, OperationType.UPDATE, `transfers/${transfer.id}`);
     } finally {
+      actionLockRef.current = false;
       setIsProcessing(false);
     }
   };
@@ -309,56 +397,67 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
   // 3. Cancel Transfer (Restore stock if in_transit)
   const handleCancelTransfer = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!cancellingTransfer) return;
+    if (!canManageTransfer || !cancellingTransfer || actionLockRef.current) return;
+    if (!canAccessWarehouse(cancellingTransfer.sourceWarehouseId) || !canAccessWarehouse(cancellingTransfer.destinationWarehouseId)) {
+      toast.error('You do not have permission to cancel this warehouse transfer.');
+      return;
+    }
+    actionLockRef.current = true;
     setIsProcessing(true);
 
+    let updatedSourceRow: { id: string; prevQty: number } | null = null;
+    let createdSourceRowId: string | null = null;
+    let createdAdjId: string | null = null;
     try {
-      // If transfer was in_transit, stock was already deducted upon dispatch! We MUST restore it to source warehouse.
-      if (cancellingTransfer.status === 'in_transit') {
-        let sourceInv = inventory.find(
-          i => i.productId === cancellingTransfer.productId && i.warehouseId === cancellingTransfer.sourceWarehouseId
-        );
+      const liveTransferSnap = await getDoc(doc(db, 'transfers', cancellingTransfer.id));
+      if (!liveTransferSnap?.exists()) {
+        toast.error('Transfer record could not be found.');
+        setCancellingTransfer(null);
+        return;
+      }
+      const liveStatus = liveTransferSnap.data()?.status;
+      if (liveStatus !== 'pending' && liveStatus !== 'in_transit') {
+        toast.error(`Transfer cannot be cancelled because live status is "${String(liveStatus).replace('_', ' ')}".`);
+        setCancellingTransfer(null);
+        return;
+      }
 
-        if (sourceInv?.id) {
-          try {
-            const freshSnap = await getDoc(doc(db, 'inventory', sourceInv.id));
-            if (freshSnap && freshSnap.exists()) {
-              sourceInv = { ...sourceInv, ...(freshSnap.data() as InventoryItem) };
-            }
-          } catch (fetchErr) {
-            console.warn('Could not refetch latest source inventory for cancellation rollback:', fetchErr);
-          }
-        }
+      // If transfer was in_transit, stock was already deducted upon dispatch! We MUST restore it to source warehouse.
+      if (liveStatus === 'in_transit') {
+        const liveInvSnap = await getDocs(collection(db, 'inventory'));
+        const sourceInv = liveInvSnap.docs
+          .map((d: any) => ({ id: d.id, ...d.data() } as InventoryItem))
+          .find(i => i.productId === cancellingTransfer.productId && i.warehouseId === cancellingTransfer.sourceWarehouseId);
 
         if (sourceInv) {
+          const curQty = Number(sourceInv.quantity || 0);
+          updatedSourceRow = { id: sourceInv.id, prevQty: curQty };
           await updateDoc(doc(db, 'inventory', sourceInv.id), {
-            quantity: sourceInv.quantity + cancellingTransfer.quantity,
+            quantity: curQty + cancellingTransfer.quantity,
             lastUpdated: serverTimestamp()
           });
         } else {
-          await addDoc(collection(db, 'inventory'), {
+          const createdRef = await addDoc(collection(db, 'inventory'), {
             productId: cancellingTransfer.productId,
             warehouseId: cancellingTransfer.sourceWarehouseId,
             quantity: cancellingTransfer.quantity,
             lastUpdated: serverTimestamp()
           });
+          createdSourceRowId = createdRef?.id || null;
         }
 
-        try {
-          await addDoc(collection(db, 'stockAdjustments'), {
-            productId: cancellingTransfer.productId,
-            warehouseId: cancellingTransfer.sourceWarehouseId,
-            adjustmentAmount: cancellingTransfer.quantity,
-            reason: `Transport TFR-${cancellingTransfer.id.slice(-6)} cancelled: stock restored to origin facility`,
-            recordedBy: profile?.uid || 'system',
-            timestamp: serverTimestamp()
-          });
-        } catch (logErr) {
-          console.warn('Stock adjustment audit log write failed:', logErr);
-        }
+        const adjRef = await addDoc(collection(db, 'stockAdjustments'), {
+          productId: cancellingTransfer.productId,
+          warehouseId: cancellingTransfer.sourceWarehouseId,
+          adjustmentAmount: cancellingTransfer.quantity,
+          reason: `Transport TFR-${cancellingTransfer.id.slice(-6)} cancelled: stock restored to origin facility`,
+          recordedBy: profile?.uid || 'system',
+          timestamp: serverTimestamp()
+        });
+        createdAdjId = adjRef?.id || null;
       }
 
-      // Update transfer record (with graceful schema fallback if columns are unmigrated in Supabase)
+      // Update transfer record (persist core status cleanly only if extended columns fail)
       try {
         await updateDoc(doc(db, 'transfers', cancellingTransfer.id), {
           status: 'cancelled',
@@ -368,13 +467,17 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
           updatedAt: serverTimestamp()
         });
       } catch (colErr: any) {
-        console.warn('Supabase transfers schema constraint or missing columns. Updating local state:', colErr);
-        setTransfers(prev => prev.map(t => t.id === cancellingTransfer.id ? { ...t, status: 'cancelled' as any, cancellationReason } : t));
+        const isMissingCol = colErr?.code === 'PGRST204' || colErr?.code === '42703' || String(colErr?.message || '').toLowerCase().includes('column');
+        if (!isMissingCol) throw colErr;
+        console.warn('Supabase transfers schema missing columns; falling back to core status update:', colErr);
+        await updateDoc(doc(db, 'transfers', cancellingTransfer.id), {
+          status: 'cancelled',
+        });
       }
 
       const sourceWhName = warehouses.find(w => w.id === cancellingTransfer.sourceWarehouseId)?.name || 'origin warehouse';
       toast.success(
-        cancellingTransfer.status === 'in_transit'
+        liveStatus === 'in_transit'
           ? `Transport cancelled. ${cancellingTransfer.quantity} unit(s) restored to ${sourceWhName}.`
           : 'Transport request cancelled.'
       );
@@ -383,19 +486,36 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
       setCancellationReason('');
       if (selectedTransfer?.id === cancellingTransfer.id) setSelectedTransfer(null);
     } catch (err) {
+      if (updatedSourceRow) {
+        await updateDoc(doc(db, 'inventory', updatedSourceRow.id), {
+          quantity: updatedSourceRow.prevQty,
+          lastUpdated: serverTimestamp(),
+        }).catch(() => {});
+      }
+      if (createdSourceRowId) {
+        await deleteDoc(doc(db, 'inventory', createdSourceRowId)).catch(() => {});
+      }
+      if (createdAdjId) {
+        await deleteDoc(doc(db, 'stockAdjustments', createdAdjId)).catch(() => {});
+      }
       handleSupabaseError(err, OperationType.UPDATE, `transfers/${cancellingTransfer.id}`);
     } finally {
+      actionLockRef.current = false;
       setIsProcessing(false);
     }
   };
 
   // Filter transfers
-  const filteredTransfers = transfers.filter(t => {
+  const deferredSearchTerm = useDeferredValue(searchTerm);
+  const scopedTransfers = transfers.filter(
+    t => hasAllWarehouseAccess || canAccessWarehouse(t.sourceWarehouseId) || canAccessWarehouse(t.destinationWarehouseId)
+  );
+  const filteredTransfers = scopedTransfers.filter(t => {
     const product = products.find(p => p.id === t.productId);
 
     // Search filter
-    if (searchTerm) {
-      const term = searchTerm.toLowerCase();
+    if (deferredSearchTerm) {
+      const term = deferredSearchTerm.toLowerCase();
       const idMatch = `tfr-${t.id.slice(-6)}`.toLowerCase().includes(term) || t.id.toLowerCase().includes(term);
       const prodMatch = (product?.name || '').toLowerCase().includes(term) || (product?.sku || '').toLowerCase().includes(term);
       const driverMatch = (t.driverName || '').toLowerCase().includes(term);
@@ -435,11 +555,17 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
         </div>
         <Dialog open={isAddTransferOpen} onOpenChange={(open) => {
           setIsAddTransferOpen(open);
-          if (!open) setTransferItems([{ id: Date.now(), productName: '', quantity: 1 }]);
+          if (!open) {
+            setSourceWhId('');
+            setDestWhId('');
+            setTransferItems([{ id: crypto.randomUUID(), productId: '', quantity: 1 }]);
+          }
         }}>
-          <DialogTrigger hidden={historyOnly} className={historyOnly ? 'hidden' : "h-9 gap-2 px-4 bg-[#1A2332] text-white rounded-lg inline-flex items-center justify-center font-medium transition-all hover:bg-[#1A2332]/90"}>
-            <ArrowRightLeft className="w-4 h-4" /> New Transport Request
-          </DialogTrigger>
+          {!historyOnly && canManageTransfer && (
+            <DialogTrigger className="h-9 gap-2 px-4 bg-primary text-primary-foreground rounded-lg inline-flex items-center justify-center font-medium transition-all hover:bg-primary/90">
+              <ArrowRightLeft className="w-4 h-4" /> New Transport Request
+            </DialogTrigger>
+          )}
           <DialogContent>
             <DialogHeader>
               <DialogTitle>Initiate Stock Movement</DialogTitle>
@@ -448,27 +574,31 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
             <form onSubmit={handleInitiateTransfer} className="space-y-4 pt-4">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div className="space-y-2">
-                  <Label>Source Facility</Label>
-                  <Select name="sourceWh" required>
-                    <SelectTrigger>
-                      <SelectValue placeholder="Origin..." />
+                  <Label htmlFor="transfer-source-wh">Source Facility</Label>
+                  <Select value={sourceWhId} onValueChange={(v) => setSourceWhId(v || '')} required>
+                    <SelectTrigger id="transfer-source-wh">
+                      <SelectValue placeholder="Origin...">
+                        {scopedWarehouses.find(w => w.id === sourceWhId)?.name}
+                      </SelectValue>
                     </SelectTrigger>
                     <SelectContent>
-                      {warehouses.map(wh => (
-                        <SelectItem key={wh.id} value={wh.name}>{wh.name}</SelectItem>
+                      {scopedWarehouses.map(wh => (
+                        <SelectItem key={wh.id} value={wh.id}>{wh.name}</SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
                 </div>
                 <div className="space-y-2">
-                  <Label>Destination</Label>
-                  <Select name="destWh" required>
-                    <SelectTrigger>
-                      <SelectValue placeholder="Destination..." />
+                  <Label htmlFor="transfer-dest-wh">Destination</Label>
+                  <Select value={destWhId} onValueChange={(v) => setDestWhId(v || '')} required>
+                    <SelectTrigger id="transfer-dest-wh">
+                      <SelectValue placeholder="Destination...">
+                        {scopedWarehouses.find(w => w.id === destWhId)?.name}
+                      </SelectValue>
                     </SelectTrigger>
                     <SelectContent>
-                      {warehouses.map(wh => (
-                        <SelectItem key={wh.id} value={wh.name}>{wh.name}</SelectItem>
+                      {scopedWarehouses.map(wh => (
+                        <SelectItem key={wh.id} value={wh.id}>{wh.name}</SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
@@ -480,42 +610,44 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
                   <div key={item.id} className="flex gap-2 items-end">
                     <div className="flex-1 space-y-2">
                       <Select
-                        value={item.productName}
+                        value={item.productId}
                         onValueChange={(val) => {
-                          const newItems = [...transferItems];
-                          newItems[index].productName = val;
-                          setTransferItems(newItems);
+                          if (val === null) return;
+                          setTransferItems(prev => prev.map((entry, idx) => idx === index ? { ...entry, productId: val } : entry));
                         }}
                         required
                       >
-                        <SelectTrigger className="w-full">
-                          <SelectValue placeholder="Select product..." />
+                        <SelectTrigger aria-label={`Product ${index + 1}`} className="w-full">
+                          <SelectValue placeholder="Select product...">
+                            {(() => {
+                              const p = orderableProducts.find(pr => pr.id === item.productId);
+                              return p ? `${p.name} (${p.sku})` : undefined;
+                            })()}
+                          </SelectValue>
                         </SelectTrigger>
                         <SelectContent>
-                          {products.map(p => (
-                            <SelectItem key={p.id} value={p.name}>{p.name} ({p.sku})</SelectItem>
+                          {orderableProducts.map(p => (
+                            <SelectItem key={p.id} value={p.id}>{p.name} ({p.sku})</SelectItem>
                           ))}
                         </SelectContent>
                       </Select>
                     </div>
                     <div className="w-24 space-y-2">
-                      <Label className={index > 0 ? "sr-only" : ""}>Qty</Label>
+                      <Label htmlFor={`transfer-qty-${item.id}`} className={index > 0 ? "sr-only" : ""}>Qty</Label>
                       <Input
+                        id={`transfer-qty-${item.id}`}
                         type="number"
                         required
                         min="1"
                         value={item.quantity === 0 ? '' : item.quantity}
                         onChange={(e) => {
                           const val = e.target.value.replace(/^0+(?=\d)/, '');
-                          const newItems = [...transferItems];
-                          newItems[index].quantity = val === '' ? 0 : Number(val);
-                          setTransferItems(newItems);
+                          const nextQty = val === '' ? 0 : Number(val);
+                          setTransferItems(prev => prev.map((entry, idx) => idx === index ? { ...entry, quantity: nextQty } : entry));
                         }}
                         onBlur={(e) => {
                           const cleaned = Math.max(1, parseInt(e.target.value, 10) || 1);
-                          const newItems = [...transferItems];
-                          newItems[index].quantity = cleaned;
-                          setTransferItems(newItems);
+                          setTransferItems(prev => prev.map((entry, idx) => idx === index ? { ...entry, quantity: cleaned } : entry));
                         }}
                       />
                     </div>
@@ -524,6 +656,7 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
                         type="button"
                         variant="ghost"
                         size="icon"
+                        aria-label={`Remove item ${index + 1}`}
                         className={`text-red-500 hover:bg-red-500/10 hover:text-red-600 shrink-0 ${index === 0 ? 'mb-0.5' : ''}`}
                         onClick={() => setTransferItems(transferItems.filter((_, i) => i !== index))}
                       >
@@ -537,13 +670,15 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
                   variant="outline"
                   size="sm"
                   className="w-full text-xs border-dashed"
-                  onClick={() => setTransferItems([...transferItems, { id: Date.now(), productName: '', quantity: 1 }])}
+                  onClick={() => setTransferItems([...transferItems, { id: crypto.randomUUID(), productId: '', quantity: 1 }])}
                 >
                   <Plus className="w-4 h-4 mr-2" /> Add Another Item
                 </Button>
               </div>
               <DialogFooter>
-                <Button type="submit" className="w-full">Confirm & Queue Movement</Button>
+                <Button type="submit" disabled={isProcessing} className="w-full">
+                  {isProcessing ? 'Submitting...' : 'Confirm & Queue Movement'}
+                </Button>
               </DialogFooter>
             </form>
           </DialogContent>
@@ -565,7 +700,7 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
 
             <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
               {/* Facility Filter */}
-              <Select value={warehouseFilter} onValueChange={setWarehouseFilter}>
+              <Select value={warehouseFilter} onValueChange={(val) => { if (val !== null) setWarehouseFilter(val); }}>
                 <SelectTrigger className="h-9 w-full sm:w-45 text-xs">
                   <SelectValue placeholder="All Facilities">
                     {warehouseFilter === 'all'
@@ -575,14 +710,14 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">All Facilities</SelectItem>
-                  {warehouses.map(wh => (
+                  {scopedWarehouses.map(wh => (
                     <SelectItem key={wh.id} value={wh.id}>{wh.name}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
 
               {/* Status Filter */}
-              <Select value={statusFilter} onValueChange={setStatusFilter}>
+              <Select value={statusFilter} onValueChange={(val) => { if (val !== null) setStatusFilter(val); }}>
                 <SelectTrigger className="h-9 w-full sm:w-37.5 text-xs">
                   <SelectValue placeholder="All Statuses">
                     {statusFilter === 'all'
@@ -625,7 +760,7 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
           </div>
 
           <div className="mt-2 text-[11px] text-muted-foreground font-medium flex items-center justify-between">
-            <span>Showing {filteredTransfers.length} of {transfers.length} movements</span>
+            <span>Showing {filteredTransfers.length} of {scopedTransfers.length} movements</span>
           </div>
         </CardContent>
       </Card>
@@ -639,9 +774,14 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
           return (
             <div
               key={t.id}
-              className="bg-card border border-border rounded-xl p-4 space-y-3 cursor-pointer hover:border-blue-500/50 transition-colors"
-              onClick={() => setSelectedTransfer(t)}
+              className="bg-card border border-border rounded-xl p-4 space-y-3 hover:border-blue-500/50 transition-colors"
             >
+              <button
+                type="button"
+                onClick={() => setSelectedTransfer(t)}
+                className="w-full text-left space-y-3 rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                aria-label={`View transport details for ${product?.name || 'Unknown'} TFR-${t.id.slice(-6)}`}
+              >
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
                   <p className="text-xs font-black text-foreground">{product?.name || 'Unknown'}</p>
@@ -675,6 +815,7 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
                   <span className="truncate">{t.driverName || 'Assigned Driver'} {t.vehiclePlate && `(${t.vehiclePlate})`}</span>
                 </div>
               )}
+              </button>
 
               {canManageTransfer && (
                 <div className="flex justify-end gap-2 pt-1">
@@ -683,6 +824,7 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
                       <Button
                         size="sm"
                         variant="ghost"
+                        disabled={isProcessing}
                         className="text-xs font-bold h-8 text-red-500 hover:bg-red-500/10 hover:text-red-600 z-10 relative"
                         onClick={(e) => {
                           e.stopPropagation();
@@ -694,6 +836,7 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
                       <Button
                         size="sm"
                         variant="ghost"
+                        disabled={isProcessing}
                         className="text-xs font-bold h-8 text-blue-600 hover:bg-blue-500/10 z-10 relative"
                         onClick={(e) => {
                           e.stopPropagation();
@@ -709,6 +852,7 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
                       <Button
                         size="sm"
                         variant="ghost"
+                        disabled={isProcessing}
                         className="text-xs font-bold h-8 text-red-500 hover:bg-red-500/10 hover:text-red-600 z-10 relative"
                         onClick={(e) => {
                           e.stopPropagation();
@@ -720,10 +864,11 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
                       <Button
                         size="sm"
                         variant="ghost"
+                        disabled={isProcessing}
                         className="text-xs font-bold h-8 text-emerald-500 hover:bg-emerald-500/10 z-10 relative"
                         onClick={(e) => {
                           e.stopPropagation();
-                          handleConfirmArrival(t);
+                          setArrivalConfirmTarget(t);
                         }}
                       >
                         Confirm Arrival
@@ -765,8 +910,16 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
                 return (
                   <TableRow
                     key={t.id}
-                    className="group cursor-pointer hover:bg-muted/50 transition-colors"
+                    tabIndex={0}
+                    className="group cursor-pointer hover:bg-muted/50 transition-colors focus-visible:outline-2 focus-visible:outline-primary"
                     onClick={() => setSelectedTransfer(t)}
+                    onKeyDown={(e) => {
+                      if (e.target !== e.currentTarget) return;
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        setSelectedTransfer(t);
+                      }
+                    }}
                   >
                     <TableCell className="font-mono text-[10px] text-zinc-400 font-bold uppercase tracking-tighter">
                       TFR-{t.id.slice(-6)}
@@ -815,6 +968,7 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
                               <Button
                                 size="sm"
                                 variant="ghost"
+                                disabled={isProcessing}
                                 className="text-xs font-bold h-8 text-red-500 hover:bg-red-500/10 hover:text-red-600 relative z-10"
                                 onClick={(e) => {
                                   e.stopPropagation();
@@ -826,6 +980,7 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
                               <Button
                                 size="sm"
                                 variant="ghost"
+                                disabled={isProcessing}
                                 className="text-xs font-bold h-8 text-blue-600 hover:bg-blue-500/10 relative z-10"
                                 onClick={(e) => {
                                   e.stopPropagation();
@@ -841,6 +996,7 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
                               <Button
                                 size="sm"
                                 variant="ghost"
+                                disabled={isProcessing}
                                 className="text-xs font-bold h-8 text-red-500 hover:bg-red-500/10 hover:text-red-600 relative z-10"
                                 onClick={(e) => {
                                   e.stopPropagation();
@@ -852,10 +1008,11 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
                               <Button
                                 size="sm"
                                 variant="ghost"
+                                disabled={isProcessing}
                                 className="text-xs font-bold h-8 text-emerald-500 hover:bg-emerald-500/10 relative z-10"
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  handleConfirmArrival(t);
+                                  setArrivalConfirmTarget(t);
                                 }}
                               >
                                 Confirm Arrival
@@ -890,7 +1047,13 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
       </div>
 
       {/* Dispatch Modal: Driver Assignment & Vehicle Plate Proof (Canva Page 34 Item 3) */}
-      <Dialog open={dispatchingTransfer !== null} onOpenChange={(open) => { if (!open && !isProcessing) setDispatchingTransfer(null); }}>
+      <Dialog open={dispatchingTransfer !== null} onOpenChange={(open) => {
+        if (!open && !isProcessing) {
+          setDispatchingTransfer(null);
+          setDriverName('');
+          setVehiclePlate('');
+        }
+      }}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2 text-blue-600">
@@ -920,8 +1083,9 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
 
               <div className="space-y-3">
                 <div className="space-y-1.5">
-                  <Label className="text-xs">Driver Name (Optional)</Label>
+                  <Label htmlFor="transfer-driver-name" className="text-xs">Driver Name (Optional)</Label>
                   <Input
+                    id="transfer-driver-name"
                     placeholder="e.g. Juan Dela Cruz"
                     value={driverName}
                     onChange={(e) => setDriverName(e.target.value)}
@@ -929,8 +1093,9 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
                   />
                 </div>
                 <div className="space-y-1.5">
-                  <Label className="text-xs">Vehicle Plate Number (Optional)</Label>
+                  <Label htmlFor="transfer-vehicle-plate" className="text-xs">Vehicle Plate Number (Optional)</Label>
                   <Input
+                    id="transfer-vehicle-plate"
                     placeholder="e.g. ABC-1234"
                     value={vehiclePlate}
                     onChange={(e) => setVehiclePlate(e.target.value)}
@@ -943,7 +1108,7 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
                 <Button
                   type="button"
                   variant="outline"
-                  onClick={() => setDispatchingTransfer(null)}
+                  onClick={() => { setDispatchingTransfer(null); setDriverName(''); setVehiclePlate(''); }}
                   disabled={isProcessing}
                 >
                   Cancel
@@ -963,7 +1128,12 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
       </Dialog>
 
       {/* Cancellation Confirmation Dialog (Canva Page 34 Item 1) */}
-      <Dialog open={cancellingTransfer !== null} onOpenChange={(open) => { if (!open && !isProcessing) setCancellingTransfer(null); }}>
+      <Dialog open={cancellingTransfer !== null} onOpenChange={(open) => {
+        if (!open && !isProcessing) {
+          setCancellingTransfer(null);
+          setCancellationReason('');
+        }
+      }}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2 text-red-600">
@@ -994,8 +1164,9 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
               )}
 
               <div className="space-y-1.5">
-                <Label className="text-xs">Cancellation Reason (Optional)</Label>
+                <Label htmlFor="transfer-cancel-reason" className="text-xs">Cancellation Reason (Optional)</Label>
                 <Input
+                  id="transfer-cancel-reason"
                   placeholder="e.g. Truck breakdown, cancelled by manager, wrong destination"
                   value={cancellationReason}
                   onChange={(e) => setCancellationReason(e.target.value)}
@@ -1007,7 +1178,7 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
                 <Button
                   type="button"
                   variant="outline"
-                  onClick={() => setCancellingTransfer(null)}
+                  onClick={() => { setCancellingTransfer(null); setCancellationReason(''); }}
                   disabled={isProcessing}
                 >
                   Keep Transport
@@ -1028,7 +1199,20 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
       </Dialog>
 
       {/* Transport Details Modal */}
-      <Dialog open={!!selectedTransfer} onOpenChange={(open) => !open && setSelectedTransfer(null)}>
+      <Dialog
+        open={!!selectedTransfer}
+        onOpenChange={(open) => {
+          if (!open) {
+            setSelectedTransfer(null);
+            lastAppliedTransferParamRef.current = null;
+            if (searchParams.has('transferId')) {
+              const next = new URLSearchParams(searchParams);
+              next.delete('transferId');
+              setSearchParams(next, { replace: true });
+            }
+          }
+        }}
+      >
         <DialogContent className="sm:max-w-lg">
           <DialogHeader>
             <DialogTitle>Transport Details</DialogTitle>
@@ -1098,6 +1282,7 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
                 <div className="flex justify-between items-center gap-2 pt-4 border-t border-border mt-4">
                   <Button
                     variant="outline"
+                    disabled={isProcessing}
                     className="text-red-500 hover:bg-red-500/10 hover:text-red-600 gap-1.5 text-xs"
                     onClick={() => {
                       const t = selectedTransfer;
@@ -1111,6 +1296,7 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
                   <div className="flex gap-2">
                     {selectedTransfer.status === 'pending' && (
                       <Button
+                        disabled={isProcessing}
                         className="bg-blue-600 hover:bg-blue-700 text-xs gap-1.5"
                         onClick={() => {
                           const t = selectedTransfer;
@@ -1123,10 +1309,11 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
                     )}
                     {selectedTransfer.status === 'in_transit' && (
                       <Button
-                        onClick={() => handleConfirmArrival(selectedTransfer)}
+                        disabled={isProcessing}
+                        onClick={() => setArrivalConfirmTarget(selectedTransfer)}
                         className="bg-emerald-600 hover:bg-emerald-700 text-xs gap-1.5"
                       >
-                        <CheckCircle2 className="w-4 h-4" /> Confirm Arrival
+                        <CheckCircle2 className="w-4 h-4" /> {isProcessing ? 'Confirming...' : 'Confirm Arrival'}
                       </Button>
                     )}
                   </div>
@@ -1136,6 +1323,21 @@ export function Transfers({ historyOnly = false }: { historyOnly?: boolean }) {
           )}
         </DialogContent>
       </Dialog>
+
+      <ConfirmDialog
+        open={arrivalConfirmTarget !== null}
+        title="Confirm transport arrival"
+        description={
+          arrivalConfirmTarget
+            ? `Confirm that ${arrivalConfirmTarget.quantity} unit(s) arrived at ${warehouses.find(w => w.id === arrivalConfirmTarget.destinationWarehouseId)?.name || 'destination warehouse'}?`
+            : ''
+        }
+        confirmLabel="Confirm Arrival"
+        onOpenChange={(open) => { if (!open && !isProcessing) setArrivalConfirmTarget(null); }}
+        onConfirm={async () => {
+          if (arrivalConfirmTarget) await handleConfirmArrival(arrivalConfirmTarget);
+        }}
+      />
     </div>
   );
 }

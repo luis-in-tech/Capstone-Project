@@ -12,15 +12,21 @@ import path from 'path';
 import { BACKEND_ROOT } from '../config/paths';
 import { getAllOrders } from './orders.service';
 import { listExpenses } from './pnl.service';
-import { listTransfers, getTransferAuditLogs } from './transfers.service';
-import { getAllReturns, getReturnAuditTrail } from './returns.service';
+import { getTransferAuditLogs } from './transfers.service';
+import { getReturnAuditTrail } from './returns.service';
+import { listQuarantineTickets } from './itil.service';
 
-const BACKUPS_DIR = path.join(BACKEND_ROOT, 'backups');
+export function getBackupsDir(): string {
+  const configured = process.env['BACKUPS_DIR']?.trim();
+  return configured ? path.resolve(configured) : path.join(BACKEND_ROOT, 'backups');
+}
 
-function ensureBackupsDir(): void {
-  if (!fs.existsSync(BACKUPS_DIR)) {
-    fs.mkdirSync(BACKUPS_DIR, { recursive: true });
+function ensureBackupsDir(): string {
+  const dir = getBackupsDir();
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
   }
+  return dir;
 }
 
 /**
@@ -65,14 +71,46 @@ export async function generateInventoryCsv(): Promise<string> {
     'Last Synchronized',
   ];
 
-  // CMDB baseline inventory
-  const baselineCIs = [
-    ['AC-BRK-001', 'Heavy Duty Brake Pad Set', 'Brakes', 140, 95, 0, 'Aisle 3', 'Bin B-12', 1250.00, 'active', new Date().toISOString()],
-    ['AC-ENG-002', 'Synthetic Engine Oil 5W-40', 'Engine', 320, 210, 0, 'Aisle 1', 'Bin A-04', 450.00, 'active', new Date().toISOString()],
-    ['AC-FLT-003', 'High-Flow Air Filter Element', 'Filters', 85, 60, 2, 'Aisle 2', 'Bin C-01', 320.00, 'active', new Date().toISOString()],
-    ['AC-TRN-004', 'Automatic Transmission Fluid', 'Transmission', 110, 80, 0, 'Aisle 1', 'Bin A-08', 580.00, 'active', new Date().toISOString()],
-    ['AC-SUS-005', 'Front Suspension Strut Assembly', 'Suspension', 45, 30, 1, 'Aisle 4', 'Bin D-05', 3400.00, 'active', new Date().toISOString()],
+  const nowIso = new Date().toISOString();
+  const quarantineTickets = (await listQuarantineTickets({ pageSize: 100 })).items;
+  const quarantinedBySku = new Map<string, number>();
+  for (const ticket of quarantineTickets) {
+    if (ticket.status === 'quarantined') {
+      quarantinedBySku.set(
+        ticket.sku,
+        (quarantinedBySku.get(ticket.sku) ?? 0) + ticket.quantity
+      );
+    }
+  }
+
+  // CMDB baseline inventory overlaid with live quarantined units
+  const baselineCIs: Array<[string, string, string, number, number, number, string, string, number, string, string]> = [
+    ['AC-BRK-001', 'Heavy Duty Brake Pad Set', 'Brakes', 140, 95, quarantinedBySku.get('AC-BRK-001') ?? 0, 'Aisle 3', 'Bin B-12', 1250.00, 'active', nowIso],
+    ['AC-ENG-002', 'Synthetic Engine Oil 5W-40', 'Engine', 320, 210, quarantinedBySku.get('AC-ENG-002') ?? 0, 'Aisle 1', 'Bin A-04', 450.00, 'active', nowIso],
+    ['AC-FLT-003', 'High-Flow Air Filter Element', 'Filters', 85, 60, (quarantinedBySku.get('AC-FLT-003') ?? 0) || 2, 'Aisle 2', 'Bin C-01', 320.00, 'active', nowIso],
+    ['AC-TRN-004', 'Automatic Transmission Fluid', 'Transmission', 110, 80, quarantinedBySku.get('AC-TRN-004') ?? 0, 'Aisle 1', 'Bin A-08', 580.00, 'active', nowIso],
+    ['AC-SUS-005', 'Front Suspension Strut Assembly', 'Suspension', 45, 30, (quarantinedBySku.get('AC-SUS-005') ?? 0) || 1, 'Aisle 4', 'Bin D-05', 3400.00, 'active', nowIso],
   ];
+
+  const knownSkus = new Set(baselineCIs.map((r) => r[0]));
+  for (const ticket of quarantineTickets) {
+    if (!knownSkus.has(ticket.sku)) {
+      knownSkus.add(ticket.sku);
+      baselineCIs.push([
+        ticket.sku,
+        ticket.productName,
+        'Uncategorized',
+        0,
+        0,
+        quarantinedBySku.get(ticket.sku) ?? ticket.quantity,
+        'Quarantine',
+        'Hold',
+        0,
+        'quarantined',
+        nowIso,
+      ]);
+    }
+  }
 
   return buildCsv(headers, baselineCIs);
 }
@@ -265,11 +303,11 @@ export async function createScheduledSnapshot(): Promise<{
   totalBytes: number;
   createdAt: string;
 }> {
-  ensureBackupsDir();
+  const backupsDir = ensureBackupsDir();
 
   const timestampStr = new Date().toISOString().replace(/[:.]/g, '-');
   const snapshotId = `snap_${Date.now()}`;
-  const targetDir = path.join(BACKUPS_DIR, `backup_${timestampStr}`);
+  const targetDir = path.join(backupsDir, `backup_${timestampStr}`);
 
   fs.mkdirSync(targetDir, { recursive: true });
 
@@ -296,11 +334,12 @@ export async function createScheduledSnapshot(): Promise<{
   }
 
   // Update manifest
-  const manifestPath = path.join(BACKUPS_DIR, 'manifest.json');
+  const manifestPath = path.join(backupsDir, 'manifest.json');
   let manifest: any[] = [];
   if (fs.existsSync(manifestPath)) {
     try {
-      manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+      const parsed = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+      manifest = Array.isArray(parsed) ? parsed : [];
     } catch {
       manifest = [];
     }
@@ -319,7 +358,7 @@ export async function createScheduledSnapshot(): Promise<{
 
   return {
     snapshotId,
-    folderPath: targetDir,
+    folderPath: record.folder,
     files: writtenFiles,
     totalBytes,
     createdAt: record.timestamp,
@@ -330,12 +369,13 @@ export async function createScheduledSnapshot(): Promise<{
  * Lists available database backup snapshots.
  */
 export async function listDatabaseSnapshots(): Promise<any[]> {
-  ensureBackupsDir();
-  const manifestPath = path.join(BACKUPS_DIR, 'manifest.json');
+  const backupsDir = ensureBackupsDir();
+  const manifestPath = path.join(backupsDir, 'manifest.json');
   if (!fs.existsSync(manifestPath)) return [];
 
   try {
-    return JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    const parsed = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    return Array.isArray(parsed) ? parsed : [];
   } catch {
     return [];
   }

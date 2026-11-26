@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   CameraIcon as Camera,
   CheckIcon as Check,
@@ -39,8 +39,10 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import type { InventoryItem, Product, UserProfile, Warehouse } from "../types";
-import { supabase } from "../lib/supabase";
-import { addDoc, collection, db, deleteDoc, doc, getDoc, getDocs, onSnapshot, setDoc, updateDoc } from "../lib/supabaseAdapter";
+import { useStaffAccess } from "../hooks/useStaffAccess";
+import { hasAdminRole } from "../lib/staffPermissions";
+import { variantLabel } from "../lib/productVariations";
+import { addDoc, collection, db, deleteDoc, doc, getDocs, onSnapshot, setDoc, updateDoc } from "../lib/supabaseAdapter";
 import {
   existingCustomers,
   money,
@@ -55,8 +57,12 @@ import {
   type SellingPrice,
 } from "../lib/orderEntry";
 
+const productVariation = (p: Product & { variation?: string }) =>
+  variantLabel(p) || p.variation || (p.hasVariations ? "Original" : "");
+
 const selectClass =
   "h-10 w-full rounded-lg border border-input bg-background px-3 text-sm";
+const PRODUCT_PICKER_PAGE_SIZE = 50;
 type ItemDraft = {
   id?: string;
   product: Product;
@@ -66,15 +72,7 @@ type ItemDraft = {
   customPrice: string;
 };
 
-export function OrderEntry({
-  open,
-  onClose,
-  orders,
-  products,
-  inventory,
-  profile,
-  onSaved,
-}: {
+type OrderEntryProps = {
   open: boolean;
   onClose: () => void;
   orders: ReceiptOrder[];
@@ -82,9 +80,19 @@ export function OrderEntry({
   inventory: InventoryItem[];
   profile: UserProfile;
   onSaved: (order: ReceiptOrder, items: ReceiptItem[]) => void;
-}) {
+};
+
+export const OrderEntry = React.memo(function OrderEntry({
+  open,
+  onClose,
+  orders,
+  products,
+  inventory,
+  profile,
+  onSaved,
+}: OrderEntryProps) {
   const [requestId, setRequestId] = useState(() => crypto.randomUUID());
-  const orderNumber = React.useMemo(() => {
+  const orderNumber = useMemo(() => {
     const parts = new Intl.DateTimeFormat("en-US", {
       timeZone: "Asia/Manila",
       year: "2-digit",
@@ -117,6 +125,7 @@ export function OrderEntry({
   const [customTerms, setCustomTerms] = useState("");
   const [mode, setMode] = useState<"select" | "sku" | "scan">("select");
   const [search, setSearch] = useState("");
+  const [productPage, setProductPage] = useState(1);
   const [code, setCode] = useState("");
   const [lines, setLines] = useState<CartLine[]>([]);
   const [draft, setDraft] = useState<ItemDraft | null>(null);
@@ -128,21 +137,28 @@ export function OrderEntry({
   const [itemError, setItemError] = useState("");
   const [scanning, setScanning] = useState(false);
   const video = useRef<HTMLVideoElement>(null);
+  const productListRef = useRef<HTMLDivElement>(null);
   const stream = useRef<MediaStream | null>(null);
   const frame = useRef<number | null>(null);
   const cameraSession = useRef(0);
   const saveLock = useRef(false);
+  const wasOpenRef = useRef(open);
 
   useEffect(() => {
-    if (open) {
+    if (open && !wasOpenRef.current) {
       setRequestId(crypto.randomUUID());
       setCustomerName("");
       setIsNewCustomer(false);
       setCustomerSearch("");
       setAddress("");
       setRegion("Metro Manila");
+      setQueueStrategy("FIFO");
       setTerms("COD");
       setCustomTerms("");
+      setMode("select");
+      setSearch("");
+      setProductPage(1);
+      setCode("");
       setLines([]);
       setDraft(null);
       setDiscount("");
@@ -152,6 +168,7 @@ export function OrderEntry({
       setCustomerOpen(false);
       setReviewOpen(false);
     }
+    wasOpenRef.current = open;
   }, [open]);
   const [supplyChainCustomers, setSupplyChainCustomers] = useState<Array<{
     id: string;
@@ -194,17 +211,109 @@ export function OrderEntry({
     };
   }, []);
 
-  const customers = existingCustomers(orders, supplyChainCustomers);
-  const customer = customers.find((item) => item.name === customerName) || (customerName.trim() ? { id: undefined, name: customerName.trim(), address, region } : null);
-  const totals = groupedOrderTotals(lines, groupDiscounts, Number(discount || 0));
+  const customers = useMemo(
+    () => existingCustomers(orders, supplyChainCustomers),
+    [orders, supplyChainCustomers],
+  );
+  const filteredCustomers = useMemo(() => {
+    if (!customerOpen) return [];
+    const q = customerSearch.toLowerCase();
+    if (!q) return customers;
+    return customers.filter((c) => c.name.toLowerCase().includes(q));
+  }, [customerOpen, customers, customerSearch]);
+  const customer = useMemo(
+    () =>
+      customers.find((item) => item.name === customerName) ||
+      (customerName.trim()
+        ? { id: undefined, name: customerName.trim(), address, region }
+        : null),
+    [customers, customerName, address, region],
+  );
+  const orderDiscountPhp = discount.trim() === "" ? 0 : Number(discount);
+  const totals = useMemo(
+    () => groupedOrderTotals(lines, groupDiscounts, orderDiscountPhp),
+    [lines, groupDiscounts, orderDiscountPhp],
+  );
   const removeLine = (id: string) => {
     setLines(items => items.filter(item => item.id !== id));
     setGroupDiscounts(items => items.filter(item => item.afterLineId !== id));
   };
-  const filteredProducts = products.filter((p) =>
-    `${p.name} ${p.sku}`.toLowerCase().includes(search.trim().toLowerCase()),
+  const { permissions } = useStaffAccess();
+  const isAdmin = hasAdminRole(profile);
+  const priceAccess = isAdmin ? "all" : (permissions.priceAccess || "all");
+  const canViewCost = priceAccess === "all";
+  const canUseAllTiers = priceAccess === "all" || priceAccess === "selling_no_cost";
+  const allowedPriceTypes: SellingPrice[] = canUseAllTiers
+    ? ["regular", "mm", "provincial", "promo", "custom"]
+    : ["regular"];
+  const visiblePriceColumns = (
+    priceAccess === "main_only"
+      ? ["regular"]
+      : canViewCost
+        ? ["regular", "mm", "provincial", "promo", "cost"]
+        : ["regular", "mm", "provincial", "promo"]
+  ) as ReadonlyArray<"regular" | "mm" | "provincial" | "promo" | "cost">;
+  const stockedProductIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const item of inventory) {
+      if (Number(item.quantity) > 0 && item.productId) ids.add(item.productId);
+    }
+    return ids;
+  }, [inventory]);
+  const orderableProducts = useMemo(
+    () =>
+      products.filter(
+        (p) =>
+          p.variantEnabled !== false &&
+          (!p.hasVariations || stockedProductIds.has(p.id)),
+      ),
+    [products, stockedProductIds],
   );
-  const activeWarehouses = warehouses.filter((w) => w.active !== false);
+  const normalizedSearch = search.trim().toLowerCase();
+  const filteredProducts = useMemo(() => {
+    if (!normalizedSearch) return orderableProducts;
+    return orderableProducts.filter((p) =>
+      `${p.name} ${p.sku} ${productVariation(p as Product & { variation?: string })}`
+        .toLowerCase()
+        .includes(normalizedSearch),
+    );
+  }, [orderableProducts, normalizedSearch]);
+  const totalProductPages = Math.max(
+    1,
+    Math.ceil(filteredProducts.length / PRODUCT_PICKER_PAGE_SIZE),
+  );
+  const safeProductPage = Math.min(productPage, totalProductPages);
+  const productPageStart = (safeProductPage - 1) * PRODUCT_PICKER_PAGE_SIZE;
+  const visibleProducts = useMemo(
+    () =>
+      filteredProducts.slice(
+        productPageStart,
+        productPageStart + PRODUCT_PICKER_PAGE_SIZE,
+      ),
+    [filteredProducts, productPageStart],
+  );
+  const activeWarehouses = useMemo(
+    () =>
+      warehouses.filter(
+        (w) =>
+          w.active !== false &&
+          (isAdmin ||
+            permissions.warehouseAccess === "all" ||
+            permissions.warehouseIds.includes(w.id)),
+      ),
+    [warehouses, isAdmin, permissions.warehouseAccess, permissions.warehouseIds],
+  );
+  const warehouseNameById = useMemo(
+    () => new Map(warehouses.map((w) => [w.id, w.name])),
+    [warehouses],
+  );
+  const slaTargetLabel = useMemo(
+    () =>
+      new Date(
+        Date.now() + (region === "Metro Manila" ? 7 : 14) * 24 * 60 * 60 * 1000,
+      ).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }),
+    [region],
+  );
 
   useEffect(
     () =>
@@ -212,7 +321,7 @@ export function OrderEntry({
         collection(db, "warehouses"),
         (snap) => {
           setWarehouses(
-            snap.docs.map((d) => ({ id: d.id, ...d.data() }) as Warehouse),
+            snap.docs.map((d: any) => ({ id: d.id, ...d.data() }) as Warehouse),
           );
           setWarehouseError(false);
         },
@@ -234,45 +343,79 @@ export function OrderEntry({
     return stopCamera;
   }, [mode, open]);
 
-  const availableStock = (
-    productId: string,
-    warehouseId: string,
-    excludingId?: string,
-  ) =>
-    inventory
-      .filter((i) => i.productId === productId && i.warehouseId === warehouseId)
-      .reduce((sum, i) => sum + Math.max(0, i.quantity), 0) -
-    lines
-      .filter(
-        (i) =>
-          i.productId === productId &&
-          i.warehouseId === warehouseId &&
-          i.id !== excludingId,
-      )
-      .reduce((sum, i) => sum + i.quantity, 0);
+  const inventoryByProductWarehouse = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const item of inventory) {
+      const qty = Math.max(0, Number(item.quantity) || 0);
+      if (qty <= 0) continue;
+      const key = `${item.productId}\0${item.warehouseId}`;
+      map.set(key, (map.get(key) ?? 0) + qty);
+    }
+    return map;
+  }, [inventory]);
+
+  const lineStockIndex = useMemo(() => {
+    const byProductWarehouse = new Map<string, number>();
+    const byId = new Map<string, CartLine>();
+    for (const line of lines) {
+      const key = `${line.productId}\0${line.warehouseId}`;
+      byProductWarehouse.set(key, (byProductWarehouse.get(key) ?? 0) + line.quantity);
+      byId.set(line.id, line);
+    }
+    return { byProductWarehouse, byId };
+  }, [lines]);
+
+  const availableStock = useCallback(
+    (productId: string, warehouseId: string, excludingId?: string) => {
+      const key = `${productId}\0${warehouseId}`;
+      const onHand = inventoryByProductWarehouse.get(key) ?? 0;
+      const inCart = lineStockIndex.byProductWarehouse.get(key) ?? 0;
+      const excludedLine = excludingId ? lineStockIndex.byId.get(excludingId) : undefined;
+      const excludedQty =
+        excludedLine &&
+        excludedLine.productId === productId &&
+        excludedLine.warehouseId === warehouseId
+          ? excludedLine.quantity
+          : 0;
+      return onHand - (inCart - excludedQty);
+    },
+    [inventoryByProductWarehouse, lineStockIndex],
+  );
 
   const openItem = (product: Product, line?: CartLine) => {
     stopCamera();
     setItemError("");
+    const requestedPriceType = line?.priceType || "regular";
+    const safePriceType = allowedPriceTypes.includes(requestedPriceType) ? requestedPriceType : "regular";
     setDraft({
       id: line?.id,
       product,
       quantity: String(line?.quantity ?? 1),
       warehouseId:
-        line?.warehouseId ||
+        (line?.warehouseId && activeWarehouses.some((w) => w.id === line.warehouseId) ? line.warehouseId : "") ||
         activeWarehouses.find((w) => availableStock(product.id, w.id) > 0)
           ?.id ||
         "",
-      priceType: line?.priceType || "regular",
-      customPrice: line?.priceType === "custom" ? String(line.unitPrice) : "",
+      priceType: safePriceType,
+      customPrice: safePriceType === "custom" ? String(line?.unitPrice ?? "") : "",
     });
   };
   const addCode = (value: string) => {
-    const product = products.find(
-      (p) => p.sku.trim().toLowerCase() === value.trim().toLowerCase(),
+    const skuQuery = value.trim().toLowerCase();
+    const product = orderableProducts.find(
+      (p) => p.sku.trim().toLowerCase() === skuQuery,
     );
     if (!product) {
-      toast.error("No product matches this SKU.");
+      const rawMatch = products.find(
+        (p) => p.sku.trim().toLowerCase() === skuQuery,
+      );
+      toast.error(
+        rawMatch
+          ? rawMatch.hasVariations
+            ? "Original SKU has no available stock. Select a stocked variant or adjust stock first."
+            : "Disabled variations cannot be ordered directly."
+          : "No product matches this SKU.",
+      );
       return false;
     }
     openItem(product);
@@ -368,7 +511,17 @@ export function OrderEntry({
       );
       return;
     }
-    if (draftPrice == null || !Number.isFinite(draftPrice) || draftPrice < 0) {
+    if (!allowedPriceTypes.includes(draft.priceType)) {
+      setItemError("You do not have permission to use that price tier.");
+      return;
+    }
+    if (
+      draftPrice == null ||
+      !Number.isFinite(draftPrice) ||
+      draftPrice < 0 ||
+      (draft.priceType !== "custom" && draftPrice <= 0) ||
+      (draft.priceType === "custom" && draftPrice <= 0 && !canUseAllTiers)
+    ) {
       setItemError(
         "Select an available selling price or enter a valid custom price.",
       );
@@ -383,7 +536,7 @@ export function OrderEntry({
       productId: product.id,
       sku: product.sku,
       name: product.name,
-      variation: product.variation || "",
+      variation: productVariation(product),
       unit: product.unit || (typeof (product as any).units === 'string' && isNaN(Number((product as any).units)) ? String((product as any).units) : "pc"),
       quantity,
       warehouseId: draft.warehouseId,
@@ -410,11 +563,16 @@ export function OrderEntry({
       );
   };
   const submit = async () => {
+    if (!isAdmin && permissions.orders !== "create") {
+      toast.error("You do not have permission to create orders.");
+      return;
+    }
     if (
       saveLock.current ||
       !customerName.trim() ||
       !lines.length ||
       !totals.valid ||
+      lines.some((line) => !Number.isInteger(Number(line.quantity)) || Number(line.quantity) <= 0) ||
       (terms === "Custom" && !customTerms.trim())
     )
       return;
@@ -453,9 +611,6 @@ export function OrderEntry({
             )
           : undefined);
 
-      const customerSourceId =
-        sourceOrder?.id && isUuid(sourceOrder.id) ? sourceOrder.id : undefined;
-
       let savedOrder: ReceiptOrder | null = null;
       let savedItems: ReceiptItem[] = [];
 
@@ -491,7 +646,7 @@ export function OrderEntry({
           paymentTerms: terms === "Custom" ? customTerms.trim() : terms,
           subtotal: totals.subtotal,
           discount: totals.discount,
-          orderDiscount: Number(discount || 0),
+          orderDiscount: Number.isFinite(orderDiscountPhp) ? orderDiscountPhp : 0,
           groupDiscounts: totals.groups,
           preparedBy: profile?.displayName || profile?.email || "User",
         },
@@ -524,9 +679,47 @@ export function OrderEntry({
 
       // Track state for compensation rollback in case of partial network or database failure
       const modifiedInventory: { id: string; prevQty: number }[] = [];
+      const createdAdjustmentIds: string[] = [];
       let orderCreated = false;
 
       try {
+        const liveInventorySnap = await getDocs(collection(db, "inventory"));
+        const liveInventoryRows = liveInventorySnap.docs.map(
+          (d: any) => ({ id: d.id, ...d.data() }) as InventoryItem,
+        );
+
+        // Aggregate and validate live stock per (productId, warehouseId) BEFORE creating order rows
+        const aggregatedDeductions = new Map<
+          string,
+          { productId: string; warehouseId: string; totalQty: number; name: string }
+        >();
+        for (const line of lines) {
+          const key = `${line.productId}_${line.warehouseId}`;
+          const current = aggregatedDeductions.get(key) || {
+            productId: line.productId,
+            warehouseId: line.warehouseId,
+            totalQty: 0,
+            name: line.name,
+          };
+          current.totalQty += line.quantity;
+          aggregatedDeductions.set(key, current);
+        }
+
+        for (const ded of aggregatedDeductions.values()) {
+          const matchingRows = liveInventoryRows.filter(
+            (i) => i.productId === ded.productId && i.warehouseId === ded.warehouseId,
+          );
+          const availableQty = matchingRows.reduce(
+            (sum, row) => sum + Math.max(0, Number(row.quantity || 0)),
+            0,
+          );
+          if (matchingRows.length === 0 || availableQty < ded.totalQty) {
+            throw new Error(
+              `Insufficient live stock for ${ded.name} at selected warehouse (requested ${ded.totalQty}, available ${availableQty}).`,
+            );
+          }
+        }
+
         await setDoc(doc(db, "orders", requestId), newOrder);
         orderCreated = true;
 
@@ -534,40 +727,33 @@ export function OrderEntry({
           await addDoc(collection(db, "orders", requestId, "items"), item);
         }
 
-        // Aggregate line item quantities per product and warehouse before stock deduction
-        const aggregatedDeductions = new Map<string, { productId: string; warehouseId: string; totalQty: number }>();
-        for (const line of lines) {
-          const key = `${line.productId}_${line.warehouseId}`;
-          const current = aggregatedDeductions.get(key) || { productId: line.productId, warehouseId: line.warehouseId, totalQty: 0 };
-          current.totalQty += line.quantity;
-          aggregatedDeductions.set(key, current);
-        }
-
         for (const ded of aggregatedDeductions.values()) {
-          let inv = inventory.find(
-            (i) => i.productId === ded.productId && i.warehouseId === ded.warehouseId
+          const matchingRows = liveInventoryRows.filter(
+            (i) => i.productId === ded.productId && i.warehouseId === ded.warehouseId,
           );
-
-          // Concurrency Protection: Re-fetch fresh live inventory directly from database
-          if (inv?.id) {
-            try {
-              const freshSnap = await getDoc(doc(db, "inventory", inv.id));
-              if (freshSnap?.exists()) {
-                inv = { ...inv, ...(freshSnap.data() as InventoryItem) };
-              }
-            } catch (fetchErr) {
-              console.warn("Could not refetch latest live inventory document:", fetchErr);
-            }
-          }
-
-          if (inv) {
-            modifiedInventory.push({ id: inv.id, prevQty: inv.quantity });
-            await updateDoc(doc(db, "inventory", inv.id), {
-              quantity: Math.max(0, Number(inv.quantity) - ded.totalQty),
+          let remainingToDeduct = ded.totalQty;
+          for (const row of matchingRows) {
+            if (remainingToDeduct <= 0) break;
+            const rowQty = Number(row.quantity || 0);
+            if (rowQty <= 0) continue;
+            const deductHere = Math.min(rowQty, remainingToDeduct);
+            const nextQty = rowQty - deductHere;
+            modifiedInventory.push({ id: row.id, prevQty: rowQty });
+            row.quantity = nextQty;
+            await updateDoc(doc(db, "inventory", row.id), {
+              quantity: nextQty,
               lastUpdated: now,
             });
+            remainingToDeduct -= deductHere;
           }
-          await addDoc(collection(db, "stockAdjustments"), {
+
+          if (remainingToDeduct > 0) {
+            throw new Error(
+              `Concurrent stock change reduced available units for ${ded.name}.`,
+            );
+          }
+
+          const adjRef = await addDoc(collection(db, "stockAdjustments"), {
             productId: ded.productId,
             warehouseId: ded.warehouseId,
             adjustmentAmount: -ded.totalQty,
@@ -575,6 +761,9 @@ export function OrderEntry({
             recordedBy: profile?.uid || "user",
             timestamp: now,
           });
+          if (adjRef?.id) {
+            createdAdjustmentIds.push(adjRef.id);
+          }
         }
 
         savedOrder = newOrder;
@@ -582,7 +771,7 @@ export function OrderEntry({
       } catch (dbErr: any) {
         console.error("Order creation failed mid-flight; executing compensation rollback:", dbErr);
         // Rollback any warehouse deductions that succeeded before the crash
-        for (const roll of modifiedInventory) {
+        for (const roll of [...modifiedInventory].reverse()) {
           try {
             await updateDoc(doc(db, "inventory", roll.id), {
               quantity: roll.prevQty,
@@ -590,6 +779,13 @@ export function OrderEntry({
             });
           } catch (rollErr) {
             console.warn("Rollback inventory error:", rollErr);
+          }
+        }
+        for (const adjId of [...createdAdjustmentIds].reverse()) {
+          try {
+            await deleteDoc(doc(db, "stockAdjustments", adjId));
+          } catch (adjDelErr) {
+            console.warn("Rollback delete stockAdjustment error:", adjDelErr);
           }
         }
         // Delete dangling order and any created line items if order was created
@@ -646,6 +842,7 @@ export function OrderEntry({
   );
 
   return (
+    <>
     <Dialog
       open={open}
       onOpenChange={(value) => {
@@ -757,6 +954,7 @@ export function OrderEntry({
                                   setRegion("Metro Manila");
                                   setTerms("COD");
                                   setCustomTerms("");
+                                  setDiscount("");
                                   setCustomerOpen(false);
                                 }}
                               >
@@ -764,13 +962,7 @@ export function OrderEntry({
                                 <span className="truncate">Create "{customerSearch.trim()}" (New Client)</span>
                               </button>
                             )}
-                            {customers
-                              .filter((c) =>
-                                c.name
-                                  .toLowerCase()
-                                  .includes(customerSearch.toLowerCase()),
-                              )
-                              .map((c) => (
+                            {filteredCustomers.map((c) => (
                                 <button
                                   key={c.name}
                                   type="button"
@@ -800,6 +992,7 @@ export function OrderEntry({
                                       setTerms("COD");
                                       setCustomTerms("");
                                     }
+                                    setDiscount("");
                                     setCustomerOpen(false);
                                   }}
                                 >
@@ -814,11 +1007,7 @@ export function OrderEntry({
                                   )}
                                 </button>
                               ))}
-                            {!customers.filter((c) =>
-                              c.name
-                                .toLowerCase()
-                                .includes(customerSearch.toLowerCase()),
-                            ).length && !customerSearch.trim() && (
+                            {!filteredCustomers.length && !customerSearch.trim() && (
                                 <p className="p-3 text-sm text-muted-foreground">
                                   No existing customers found in Supply Chain or orders.
                                 </p>
@@ -847,7 +1036,7 @@ export function OrderEntry({
                       </Popover>
                     )}
                   </div>
-                  {customer?.paymentNotes && (
+                  {customer && 'paymentNotes' in customer && customer.paymentNotes && (
                     <div className="sm:col-span-2 rounded-xl border border-amber-300 bg-amber-50/80 p-3.5 text-xs text-amber-900 shadow-sm dark:border-amber-900/60 dark:bg-amber-950/40 dark:text-amber-100 flex items-start gap-2.5">
                       <AlertCircle className="size-4 shrink-0 text-amber-600 dark:text-amber-400 mt-0.5" />
                       <div className="space-y-0.5 min-w-0 flex-1">
@@ -934,7 +1123,7 @@ export function OrderEntry({
                     <div className="font-semibold flex flex-wrap items-center justify-between gap-1">
                       <span>ITIL 4 SLA Fulfillment Guarantee: {region === "Metro Manila" ? "7 Days (Metro Manila)" : "14 Days (Mindanao / Provincial)"}</span>
                       <Badge variant="outline" className="text-[10px] font-bold bg-white/80 dark:bg-black/30 border-blue-300">
-                        Target: {new Date(Date.now() + (region === "Metro Manila" ? 7 : 14) * 24 * 60 * 60 * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
+                        Target: {slaTargetLabel}
                       </Badge>
                     </div>
                     <p className="text-[11px] text-blue-700 dark:text-blue-300">
@@ -986,16 +1175,23 @@ export function OrderEntry({
                         aria-label="Search products by name or SKU"
                         placeholder="Search product name or SKU…"
                         value={search}
-                        onChange={(e) => setSearch(e.target.value)}
+                        onChange={(e) => {
+                          setSearch(e.target.value);
+                          setProductPage(1);
+                        }}
                       />
                     </div>
-                    <div className="max-h-95 overflow-y-auto rounded-xl border divide-y">
-                      {filteredProducts.map((p) => {
+                    <div
+                      ref={productListRef}
+                      className="max-h-95 overflow-y-auto rounded-xl border divide-y"
+                    >
+                      {visibleProducts.map((p) => {
                         const stock = activeWarehouses.reduce(
                           (sum, w) =>
                             sum + Math.max(0, availableStock(p.id, w.id)),
                           0,
                         );
+                        const variationText = productVariation(p as Product & { variation?: string });
                         return (
                           <div
                             key={p.id}
@@ -1004,7 +1200,9 @@ export function OrderEntry({
                             <div className="min-w-0 flex-1">
                               <p className="text-sm font-medium">{p.name}</p>
                               <p className="mt-1 text-xs text-muted-foreground">
-                                <span className="font-mono">{p.sku}</span> ·{" "}
+                                <span className="font-mono">{p.sku}</span>
+                                {variationText ? ` · ${variationText}` : ""}{" "}
+                                ·{" "}
                                 <span
                                   className={
                                     stock <= 0 ? "text-destructive" : ""
@@ -1041,6 +1239,46 @@ export function OrderEntry({
                         </div>
                       )}
                     </div>
+                    {filteredProducts.length > 0 && (
+                      <div className="flex flex-wrap items-center justify-between gap-2 pt-1 text-xs text-muted-foreground">
+                        <span>
+                          Showing {productPageStart + 1}–{Math.min(productPageStart + visibleProducts.length, filteredProducts.length)} of {filteredProducts.length.toLocaleString()} products
+                        </span>
+                        {totalProductPages > 1 && (
+                          <div className="flex items-center gap-1.5">
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              className="h-7 px-2 text-xs"
+                              disabled={safeProductPage <= 1}
+                              onClick={() => {
+                                setProductPage((p) => Math.max(1, p - 1));
+                                if (productListRef.current) productListRef.current.scrollTop = 0;
+                              }}
+                            >
+                              Previous
+                            </Button>
+                            <span className="px-1.5 font-medium text-foreground">
+                              Page {safeProductPage} of {totalProductPages}
+                            </span>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              className="h-7 px-2 text-xs"
+                              disabled={safeProductPage >= totalProductPages}
+                              onClick={() => {
+                                setProductPage((p) => Math.min(totalProductPages, p + 1));
+                                if (productListRef.current) productListRef.current.scrollTop = 0;
+                              }}
+                            >
+                              Next
+                            </Button>
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </>
                 ) : (
                   <div className="rounded-xl border p-4 space-y-4">
@@ -1133,10 +1371,7 @@ export function OrderEntry({
                           </p>
                         )}
                         <p className="mt-1 text-xs text-muted-foreground">
-                          {
-                            warehouses.find((w) => w.id === line.warehouseId)
-                              ?.name
-                          }{" "}
+                          {warehouseNameById.get(line.warehouseId)}{" "}
                           · {priceLabels[line.priceType]}
                         </p>
                       </div>
@@ -1185,13 +1420,8 @@ export function OrderEntry({
                   </div>
                 )}
               </div>
-              <div className="space-y-1.5 border-t pt-4">
-                <Label htmlFor="entry-discount">
-                  Order discount (₱){" "}
-                  <span className="font-normal text-muted-foreground">
-                    · Optional
-                  </span>
-                </Label>
+              <div className="space-y-2 border-t pt-4">
+                <Label htmlFor="entry-discount">Order discount (₱)</Label>
                 <Input
                   id="entry-discount"
                   type="number"
@@ -1202,12 +1432,9 @@ export function OrderEntry({
                   onChange={(e) => setDiscount(e.target.value)}
                   placeholder="0.00"
                 />
-                <p className="text-xs text-muted-foreground">
-                  Optional extra discount. Add group discounts in View Order List.
-                </p>
                 {!totals.valid && (
                   <p role="alert" className="text-xs text-destructive">
-                    Check group discounts and the extra discount: discounts cannot exceed their applicable subtotal.
+                    Check group discounts and the extra discount: percentages must be 0–100% and discounts cannot exceed their applicable subtotal.
                   </p>
                 )}
               </div>
@@ -1239,6 +1466,8 @@ export function OrderEntry({
             </aside>
           </div>
         </fieldset>
+      </DialogContent>
+    </Dialog>
         <Dialog open={reviewOpen} onOpenChange={setReviewOpen}>
           <DialogContent className="w-[97vw] sm:max-w-7xl max-h-[92vh] overflow-y-auto">
             <DialogHeader>
@@ -1260,11 +1489,17 @@ export function OrderEntry({
                       "#",
                       "Item",
                       "Qty",
-                      "Regular",
-                      "MM",
-                      "Provincial",
-                      "Promo",
-                      "Cost",
+                      ...visiblePriceColumns.map((col) =>
+                        col === "regular"
+                          ? "Regular"
+                          : col === "mm"
+                            ? "MM"
+                            : col === "provincial"
+                              ? "Provincial"
+                              : col === "promo"
+                                ? "Promo"
+                                : "Cost"
+                      ),
                       "Amount",
                       "",
                     ].map((label, i) => (
@@ -1284,10 +1519,7 @@ export function OrderEntry({
                           <p className="text-xs text-muted-foreground">
                             {line.sku}
                             {line.variation ? ` · ${line.variation}` : ""} ·{" "}
-                            {
-                              warehouses.find((w) => w.id === line.warehouseId)
-                                ?.name
-                            }
+                            {warehouseNameById.get(line.warehouseId)}
                           </p>
                           {line.priceType === "custom" && (
                             <p className="mt-1 text-xs font-semibold">
@@ -1298,15 +1530,7 @@ export function OrderEntry({
                         <TableCell className="text-right">
                           {line.quantity}
                         </TableCell>
-                        {(
-                          [
-                            "regular",
-                            "mm",
-                            "provincial",
-                            "promo",
-                            "cost",
-                          ] as const
-                        ).map((key) => (
+                        {visiblePriceColumns.map((key) => (
                           <TableCell
                             key={key}
                             className={`text-right whitespace-nowrap tabular-nums ${line.priceType === key ? "bg-emerald-500/10 font-bold text-emerald-700 dark:text-emerald-300" : key === "cost" ? "text-muted-foreground bg-muted/30" : ""}`}
@@ -1359,8 +1583,8 @@ export function OrderEntry({
                             <p className="font-semibold text-sm">Group discount</p>
                             <p className="text-xs text-muted-foreground">Items {d.startPosition + 1}–{d.afterPosition + 1} · {money(d.base)}</p>
                           </TableCell>
-                          <TableCell colSpan={5}>
-                            <div className="flex items-center gap-2">
+                          <TableCell colSpan={visiblePriceColumns.length}>
+                            <div className="flex flex-wrap items-center gap-2">
                               <select aria-label={`Discount type after item ${index + 1}`} className={`${selectClass} max-w-36`} value={d.type}
                                 onChange={e => setGroupDiscounts(current => current.map(item => item.afterLineId === line.id ? { ...item, type: e.target.value as GroupDiscount["type"] } : item))}>
                                 <option value="percent">Percentage (%)</option><option value="amount">Amount (PHP)</option>
@@ -1407,9 +1631,8 @@ export function OrderEntry({
                   <p className="font-semibold">{draft.product.name}</p>
                   <p className="mt-1 text-xs text-muted-foreground">
                     {draft.product.sku}
-                    {(draft.product as Product & { variation?: string })
-                      .variation
-                      ? ` · ${(draft.product as Product & { variation?: string }).variation}`
+                    {productVariation(draft.product as Product & { variation?: string })
+                      ? ` · ${productVariation(draft.product as Product & { variation?: string })}`
                       : ""}
                   </p>
                 </div>
@@ -1465,7 +1688,9 @@ export function OrderEntry({
                     Selling price
                   </legend>
                   <div className="grid grid-cols-2 gap-2">
-                    {(Object.keys(priceLabels) as SellingPrice[]).map((key) => (
+                    {(Object.keys(priceLabels) as SellingPrice[])
+                      .filter((key) => allowedPriceTypes.includes(key))
+                      .map((key) => (
                       <label
                         key={key}
                         className={`flex cursor-pointer items-start gap-2 rounded-lg border p-3 text-sm ${draft.priceType === key ? "border-primary bg-primary/5 ring-1 ring-primary" : ""} ${key !== "custom" && draftPrices![key] == null ? "opacity-50" : ""}`}
@@ -1497,7 +1722,7 @@ export function OrderEntry({
                     ))}
                   </div>
                 </fieldset>
-                {draft.priceType === "custom" && (
+                {draft.priceType === "custom" && allowedPriceTypes.includes("custom") && (
                   <div className="space-y-1.5">
                     <Label htmlFor="item-custom-price">
                       Custom unit price (₱)
@@ -1515,13 +1740,15 @@ export function OrderEntry({
                     />
                   </div>
                 )}
-                <p className="text-xs text-muted-foreground">
-                  Cost:{" "}
-                  {draftPrices?.cost == null
-                    ? "Unavailable"
-                    : money(draftPrices.cost)}{" "}
-                  · Reference only
-                </p>
+                {canViewCost && (
+                  <p className="text-xs text-muted-foreground">
+                    Cost:{" "}
+                    {draftPrices?.cost == null
+                      ? "Unavailable"
+                      : money(draftPrices.cost)}{" "}
+                    · Reference only
+                  </p>
+                )}
                 <div className="flex justify-between rounded-xl bg-muted p-4">
                   <span>Line amount</span>
                   <strong className="text-lg">
@@ -1553,7 +1780,6 @@ export function OrderEntry({
             )}
           </DialogContent>
         </Dialog>
-      </DialogContent>
-    </Dialog>
+    </>
   );
-}
+});

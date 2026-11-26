@@ -1,4 +1,3 @@
-import React from 'react';
 import { motion } from 'motion/react';
 import { Link } from 'react-router-dom';
 import { ArrowLeftIcon as ArrowLeft, GavelIcon as Gavel } from '@phosphor-icons/react';
@@ -32,7 +31,7 @@ export const Terms = () => {
             <h1 className="text-4xl font-black tracking-tighter text-zinc-900 uppercase">Terms of Service</h1>
           </div>
 
-          <p className="text-sm text-zinc-400 font-bold uppercase tracking-widest mb-12">Service Level Agreement (SLA) Matrix v2.4</p>
+          <p className="text-sm text-zinc-600 font-bold uppercase tracking-widest mb-12">Service Level Agreement (SLA) Matrix v2.4</p>
 
           <div className="prose prose-zinc prose-sm md:prose-base max-w-none space-y-12">
             <section>
@@ -58,7 +57,7 @@ export const Terms = () => {
 
             <section className="bg-zinc-950 p-8 rounded-3xl text-white">
               <h2 className="text-xl font-black tracking-tight text-white mb-4">4. TERMINATION OF SERVICE</h2>
-              <p className="text-zinc-400 leading-relaxed font-medium">
+              <p className="text-zinc-300 leading-relaxed font-medium">
                 We reserve the right to suspend any hub or account found to be violating supply chain ethical standards or attempting to reverse-engineer our reactive core engine.
               </p>
             </section>

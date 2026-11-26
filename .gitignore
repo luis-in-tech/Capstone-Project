@@ -93,7 +93,6 @@ IS Capstone Project (BA_SM) Guidelines  as of  January 25, 2021.md
 QA_Lead_Defense_Cheat_Sheet.html
 UAT_Evaluation_Form_and_Guide.html
 test-assets/bmx_bdf_540.jpg
-.gitignore
 test-assets/bmx_superstar_1017.jpg
 test-assets/bmx_the_cars_spoke_type.jpg
 test-assets/frozen_yx102.jpg
@@ -111,3 +110,36 @@ test-assets/ELECTRONIC BIKE MARS KINGDOM.jpg
 test-assets/LADIES VENICE AD702 (2in1).jpg
 test-assets/layout-6001-D.pdf
 test-assets/layout-6001-E.pdf
+md/User Acceptance Testing (UAT) Evaluation & Handover Form.md
+test-assets/Active Pro IIFRS — Stakeholder User Acceptance Testing (UAT) Survey (Responses).xlsx
+test-assets/UAT Questions (Cristine).md
+test-assets/Active Pro - Delivery Receipt ORD-76EB35B7.pdf
+test-assets/BEIDOUFU 004 SINGLE SPEED DISC BRAKE.jpg
+test-assets/BMX BEIDOUFU 586 SINGLE SPEED DISC BRAKE.jpg
+test-assets/BMX GI WITH SIDE CAR.jpg
+test-assets/BMX GTI.jpg
+test-assets/BMX SUPREME V-BRAKE.webp
+test-assets/FROZEN YX102.jpg
+test-assets/BMX TACTICAL V-BRAKE (CKD).jpg
+test-assets/LADIES BIKE XD05 - XDD05 - XD06.webp
+test-assets/LADIES VENICE AD701 (2in1).jpg
+test-assets/MINI MTB CROSTA 7SPD 315.jpg
+Active Pro QA Reports Tracker screenshot.jpg
+Capstone 2 3ISC-Group 1 Documents.pdf
+GitHub Desktop test branch where.jpg
+.vite-layout-check/
+backend/backups/
+tests-video/7. Test Settings Backup CSVs on Empty Tables.mp4
+tests-video/5. Test Removal of Hardcoded Oct 26 Entry in All Periods Trajectory.mp4
+tests-video/4. Test Overview Overdue deliveries Excludes Cancelled & Escalated Orders.mp4
+tests-video/2. Test That 'type 'income' Rows Never Pollute Charts, Pie Slices, or PL..mp4
+tests-video/1.Test Bill Payment vs Customer Payment.mp4
+test-assets/HANDLE POST MTB STD ALLOY.webp
+test-assets/HANDLE GRIP SOLDIER Without Lock.jpg
+test-assets/HANDLE GRIP SEER SILICONE PRO LOCK.jpg
+test-assets/HANDLE GRIP SEER SILICONE PRO 7MM.jpg
+test-assets/HANDLE GRIP SEER SILICONE PRO 5MM.jpg
+test-assets/HANDLE GRIP SAGMIT SM-G216.jpg
+test-assets/HANDLE GRIP SAGMIT SM G232 W BAR END.jpg
+.vscode/
+.vscode/settings.json

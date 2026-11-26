@@ -8,8 +8,8 @@
  *   TRASH_DIR      = backend/.trash/ — where all backups live before restore.
  */
 
-import path from 'path';
 import fs from 'fs';
+import path from 'path';
 import { env } from './env';
 
 // ─── Resolved Paths ───────────────────────────────────────────────────────────
@@ -54,11 +54,11 @@ export function ensureTrashDir(): void {
  * Prevents exposure of credentials, secrets, and VCS metadata.
  */
 const SENSITIVE_FILE_PATTERNS: RegExp[] = [
-  /^\.env(\..+)?$/i,          // .env, .env.local, .env.production, etc.
-  /^\.git(\/|\\|$)/i,         // .git directory and contents
-  /\.pem$/i,                  // TLS/SSH private keys
-  /\.key$/i,                  // Private key files
-  /^config\.toml$/i,          // Supabase config
+  /^\.env(\..+)?$/i,     // .env, .env.local, .env.production, etc.
+  /^\.git$/i,            // .git directory and contents anywhere in tree
+  /\.pem$/i,             // TLS/SSH private keys
+  /\.key$/i,             // Private key files
+  /^config\.toml$/i,     // Supabase config anywhere in tree
 ];
 
 /**
@@ -69,27 +69,108 @@ const SENSITIVE_FILE_PATTERNS: RegExp[] = [
  *
  * @param absolutePath - The resolved absolute path to validate.
  */
+/**
+ * Resolves the canonical real path even when leaf segments do not yet exist on disk,
+ * so symlinks anywhere in an existing parent directory cannot escape allowed roots.
+ */
+export function resolveCanonicalPath(targetPath: string): string {
+  const resolved = path.resolve(targetPath);
+  const missingSegments: string[] = [];
+  let cursor = resolved;
+
+  while (true) {
+    try {
+      const stat = fs.lstatSync(cursor);
+      if (stat.isSymbolicLink() || missingSegments.length === 0) {
+        const real = fs.realpathSync(cursor);
+        return missingSegments.length > 0 ? path.join(real, ...missingSegments) : real;
+      }
+      const real = fs.realpathSync(cursor);
+      return missingSegments.length > 0 ? path.join(real, ...missingSegments) : real;
+    } catch (err: any) {
+      if (err && err.code === 'ENOENT') {
+        // Fail closed if cursor itself exists as a dangling symlink whose target does not exist
+        let cursorExistsAsSymlink = false;
+        try {
+          cursorExistsAsSymlink = fs.lstatSync(cursor).isSymbolicLink();
+        } catch {
+          cursorExistsAsSymlink = false;
+        }
+        if (cursorExistsAsSymlink) {
+          throw new Error(`Dangling symbolic link cannot be resolved safely: "${cursor}"`);
+        }
+
+        const parent = path.dirname(cursor);
+        if (parent === cursor) return resolved;
+        missingSegments.unshift(path.basename(cursor));
+        cursor = parent;
+        continue;
+      }
+      // Broken symlink loop (ELOOP), unreadable target (EACCES), etc.: fail closed
+      throw err instanceof Error ? err : new Error(String(err));
+    }
+  }
+}
+
+export function isSubPath(parentDir: string, candidatePath: string): boolean {
+  const normParent = process.platform === 'win32' ? parentDir.toLowerCase() : parentDir;
+  const normCandidate = process.platform === 'win32' ? candidatePath.toLowerCase() : candidatePath;
+  const rel = path.relative(normParent, normCandidate);
+  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+}
+
 export function isPathSafe(absolutePath: string): boolean {
-  const normalised = path.normalize(absolutePath);
-  const normTarget = process.platform === 'win32' ? normalised.toLowerCase() : normalised;
-  const normFrontend = process.platform === 'win32' ? FRONTEND_ROOT.toLowerCase() : FRONTEND_ROOT;
-  const normBackend = process.platform === 'win32' ? BACKEND_ROOT.toLowerCase() : BACKEND_ROOT;
-
-  const isInsideFrontend = normTarget.startsWith(normFrontend + path.sep) || normTarget === normFrontend;
-  const isInsideBackend = normTarget.startsWith(normBackend + path.sep) || normTarget === normBackend;
-
-  if (!isInsideFrontend || isInsideBackend) {
+  if (!absolutePath || /[\x00-\x1f]/.test(absolutePath)) {
     return false;
   }
 
-  // Block sensitive files by checking basename and relative path segments
-  const basename = path.basename(absolutePath);
-  const relativeFromRoot = path.relative(FRONTEND_ROOT, absolutePath);
-  const isSensitive = SENSITIVE_FILE_PATTERNS.some(
-    pattern => pattern.test(basename) || pattern.test(relativeFromRoot)
-  );
+  let normalised: string;
+  let canonicalTarget: string;
+  let canonicalFrontend: string;
+  let canonicalBackend: string;
+  try {
+    normalised = path.normalize(absolutePath);
+    canonicalTarget = resolveCanonicalPath(normalised);
+    canonicalFrontend = resolveCanonicalPath(FRONTEND_ROOT);
+    canonicalBackend = resolveCanonicalPath(BACKEND_ROOT);
+  } catch {
+    return false;
+  }
 
-  return !isSensitive;
+  // Check both lexical and canonical (symlink-resolved) boundaries
+  const isInsideFrontendLex = isSubPath(FRONTEND_ROOT, normalised);
+  const isInsideFrontendReal = isSubPath(canonicalFrontend, canonicalTarget);
+  const isInsideBackendLex = isSubPath(BACKEND_ROOT, normalised);
+  const isInsideBackendReal = isSubPath(canonicalBackend, canonicalTarget);
+
+  if (!isInsideFrontendLex || !isInsideFrontendReal || isInsideBackendLex || isInsideBackendReal) {
+    return false;
+  }
+
+  // Block sensitive files, Windows ADS colons, trailing dots/spaces, and nested .git / config.toml
+  for (const [rootBase, targetToCheck] of [
+    [FRONTEND_ROOT, normalised],
+    [canonicalFrontend, canonicalTarget],
+  ] as const) {
+    const relative = path.relative(rootBase, targetToCheck);
+    if (/[\x00-\x1f:]/.test(relative)) {
+      return false;
+    }
+    const segments = relative.split(/[\\/]+/).filter(Boolean);
+    for (const seg of segments) {
+      const noAds = seg.split(':')[0];
+      const noTrailing = noAds.replace(/[. ]+$/, '');
+      if (
+        SENSITIVE_FILE_PATTERNS.some(
+          (pattern) => pattern.test(seg) || pattern.test(noAds) || pattern.test(noTrailing)
+        )
+      ) {
+        return false;
+      }
+    }
+  }
+
+  return true;
 }
 
 /**

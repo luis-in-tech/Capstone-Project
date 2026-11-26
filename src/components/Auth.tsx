@@ -1,12 +1,16 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useAuth } from '../hooks/useAuth';
+import { preloadRoute } from '../lib/routePrefetch';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from '@/components/ui/card';
-import { WarehouseIcon as Warehouse, SignInIcon as LogIn, ArrowLeftIcon as ArrowLeft, EnvelopeIcon as Mail, LockIcon as Lock, EyeIcon as Eye, EyeSlashIcon as EyeOff, UserPlusIcon as UserPlus, QuestionIcon as HelpCircle } from '@phosphor-icons/react';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { SignInIcon as LogIn, ArrowLeftIcon as ArrowLeft, EnvelopeIcon as Mail, LockIcon as Lock, EyeIcon as Eye, EyeSlashIcon as EyeOff } from '@phosphor-icons/react';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Separator } from '@/components/ui/separator';
-import { toast } from 'sonner';
+
+const warmPostLoginRoutes = () => {
+  preloadRoute('/admin');
+  preloadRoute('/inventory');
+};
 
 export function Auth() {
   const { signInWithEmail, resetPassword } = useAuth();
@@ -17,11 +21,32 @@ export function Auth() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
 
+  useEffect(() => {
+    let timerId: number | null = null;
+    let idleId: number | null = null;
+    const win = window as Window & {
+      requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number;
+      cancelIdleCallback?: (id: number) => void;
+    };
+    if (typeof win.requestIdleCallback === 'function') {
+      idleId = win.requestIdleCallback(warmPostLoginRoutes, { timeout: 600 });
+    } else {
+      timerId = window.setTimeout(warmPostLoginRoutes, 250);
+    }
+    return () => {
+      if (timerId !== null) window.clearTimeout(timerId);
+      if (idleId !== null && typeof win.cancelIdleCallback === 'function') {
+        win.cancelIdleCallback(idleId);
+      }
+    };
+  }, []);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+    const trimmedEmail = email.trim();
 
-    if (!email) {
+    if (!trimmedEmail) {
       setError('Please provide an email address.');
       return;
     }
@@ -34,13 +59,14 @@ export function Auth() {
     setIsLoading(true);
     try {
       if (isResetMode) {
-        await resetPassword(email);
+        await resetPassword(trimmedEmail);
         setIsResetMode(false);
       } else {
-        await signInWithEmail(email, password);
+        warmPostLoginRoutes();
+        await signInWithEmail(trimmedEmail, password);
       }
     } catch (err: any) {
-      setError(err.message || 'Authentication failed');
+      setError(err?.message || 'Authentication failed');
     } finally {
       setIsLoading(false);
     }
@@ -51,13 +77,18 @@ export function Auth() {
     setError('');
   };
 
+  const prefersReducedMotion =
+    typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+
   return (
     <div className="min-h-screen bg-background flex items-center justify-center p-4 relative overflow-hidden">
       <video
-        autoPlay
-        loop
+        autoPlay={!prefersReducedMotion}
+        loop={!prefersReducedMotion}
         muted
         playsInline
+        preload={prefersReducedMotion ? 'none' : 'metadata'}
+        aria-hidden="true"
         className="absolute inset-0 w-full h-full object-cover z-0"
       >
         <source src="/0722.mp4" type="video/mp4" />
@@ -92,6 +123,7 @@ export function Auth() {
                   placeholder="name@corp.activepro" 
                   required 
                   value={email}
+                  onFocus={warmPostLoginRoutes}
                   onChange={(e) => setEmail(e.target.value)}
                   className="bg-background border-input pl-10 h-11 text-sm rounded-xl focus-visible:ring-ring focus-visible:border-ring transition-all font-medium"
                 />
@@ -123,6 +155,7 @@ export function Auth() {
                   />
                   <button 
                     type="button"
+                    aria-label={showPassword ? "Hide password" : "Show password"}
                     onClick={() => setShowPassword(!showPassword)}
                     className="absolute right-3 top-3 text-muted-foreground hover:text-foreground transition-colors"
                   >
@@ -133,7 +166,11 @@ export function Auth() {
             )}
 
             {error && (
-              <div className="text-red-500 text-xs font-black uppercase tracking-widest text-center animate-in fade-in slide-in-from-top-1">
+              <div
+                id="auth-error"
+                role="alert"
+                className="text-red-600 dark:text-red-400 bg-red-500/10 rounded-lg py-2 px-3 text-xs font-black uppercase tracking-widest text-center animate-in fade-in slide-in-from-top-1"
+              >
                 {error}
               </div>
             )}
@@ -167,13 +204,6 @@ export function Auth() {
 
 
       </Card>
-
-      <style dangerouslySetInnerHTML={{ __html: `
-        @keyframes loading {
-          0% { transform: translateX(-100%); }
-          100% { transform: translateX(300%); }
-        }
-      `}} />
     </div>
   );
 }

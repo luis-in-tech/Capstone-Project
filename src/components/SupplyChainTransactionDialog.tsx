@@ -1,6 +1,6 @@
 import { ProductSelectionModes } from './ProductSelectionModes';
 import { ProductPicker, ProductPickerRow } from './ProductPicker';
-import { useState } from 'react';
+import { memo, useCallback, useMemo, useState } from 'react';
 import { ArrowDownLeftIcon as ArrowDownLeft, ArrowUpRightIcon as ArrowUpRight, CheckIcon as Check, CaretLeftIcon as ChevronLeft, CreditCardIcon as CreditCard, PackageIcon as Package, MoneyIcon as Banknote, FileTextIcon as FileCheck, InfoIcon as Info, DeviceMobileIcon as DeviceMobile } from '@phosphor-icons/react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -11,6 +11,57 @@ import { itemDirection, projectBalance, type ChainLine, type ChainTransaction, t
 
 export const chainMoney = (amount: number | null) => amount === null ? 'Not available' : new Intl.NumberFormat('en-PH', { style: 'currency', currency: 'PHP' }).format(amount);
 const selectClass = 'h-10 w-full rounded-lg border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring';
+const PICKER_PAGE_SIZE = 25;
+
+interface IndexedChainOption {
+  item: ChainLine;
+  searchText: string;
+}
+
+const PickerItemRow = memo(function PickerItemRow({
+  item,
+  payment,
+  increasing,
+  hasWarehouse,
+  stock,
+  quantity,
+  onAdd,
+  onQuantityChange,
+}: {
+  item: ChainLine;
+  payment: boolean;
+  increasing: boolean;
+  hasWarehouse: boolean;
+  stock: number;
+  quantity: number;
+  onAdd: (item: ChainLine) => void;
+  onQuantityChange: (itemId: string, qty: number) => void;
+}) {
+  return (
+    <ProductPickerRow
+      name={item.name}
+      sku={item.sku}
+      selected={quantity > 0}
+      detail={<>{!payment && `Original qty: ${item.quantity}`}{!increasing && hasWarehouse && `${!payment ? ' / ' : ''}${stock} available in issuing warehouse`}</>}
+      action={
+        <>
+          <Button type="button" size="sm" variant="outline" aria-label={`Add ${item.name}`} onClick={() => onAdd(item)}>+ Add</Button>
+          <Input
+            type="number"
+            aria-label={`Quantity for ${item.name}`}
+            min="0"
+            step="1"
+            max={payment ? undefined : item.quantity}
+            value={quantity || ''}
+            placeholder="Qty"
+            onChange={e => onQuantityChange(item.id, Number(e.target.value))}
+            className="w-20"
+          />
+        </>
+      }
+    />
+  );
+});
 
 interface Props {
   view: SupplyView;
@@ -19,11 +70,12 @@ interface Props {
   products: Product[];
   warehouses: Warehouse[];
   inventory: InventoryItem[];
+  maxRefundAmount?: number;
   onClose: () => void;
   onPreview: (entry: ChainTransaction) => void;
 }
 
-export function SupplyChainTransactionDialog({ view, action, transaction, products, warehouses, inventory, onClose, onPreview }: Props) {
+export function SupplyChainTransactionDialog({ view, action, transaction, products, warehouses, inventory, maxRefundAmount, onClose, onPreview }: Props) {
   const [method, setMethod] = useState('Cash');
   const [withItems, setWithItems] = useState(true);
   const [amount, setAmount] = useState('');
@@ -33,6 +85,7 @@ export function SupplyChainTransactionDialog({ view, action, transaction, produc
   const [warehouseId, setWarehouseId] = useState('');
   const [quantities, setQuantities] = useState<Record<string, number>>({});
   const [itemSearch, setItemSearch] = useState('');
+  const [pickerPage, setPickerPage] = useState(1);
   const [review, setReview] = useState(false);
   const [error, setError] = useState('');
   const payment = action === 'payment';
@@ -41,43 +94,134 @@ export function SupplyChainTransactionDialog({ view, action, transaction, produc
   const direction = itemDirection(view);
   const increasing = direction === 'in';
   const account = customer ? 'receivables' : 'payables';
-  const options: ChainLine[] = payment ? products.map(p => ({ id: p.id, productId: p.id, name: p.name, sku: p.sku, quantity: 0, unitPrice: Number(p.costPrice ?? 0) })) : transaction.items;
-  const filteredOptions = options.filter(item => `${item.name} ${item.sku}`.toLowerCase().includes(itemSearch.toLowerCase()));
-  const addItem = (item: ChainLine) => {
+
+  const activeWarehouses = useMemo(
+    () => warehouses.filter(w => w.active !== false),
+    [warehouses],
+  );
+  const warehouseById = useMemo(
+    () => new Map(warehouses.map(w => [w.id, w])),
+    [warehouses],
+  );
+
+  const indexedOptions = useMemo<IndexedChainOption[]>(() => {
+    if (!physical) return [];
+    const list: ChainLine[] = payment
+      ? products.map(p => ({ id: p.id, productId: p.id, name: p.name, sku: p.sku, quantity: 0, unitPrice: Number(p.costPrice ?? 0) }))
+      : transaction.items;
+    return list.map(item => ({
+      item,
+      searchText: `${item.name} ${item.sku}`.toLowerCase(),
+    }));
+  }, [physical, payment, products, transaction.items]);
+
+  const options = useMemo(
+    () => indexedOptions.map(entry => entry.item),
+    [indexedOptions],
+  );
+
+  const optionById = useMemo(
+    () => new Map(options.map(item => [item.id, item])),
+    [options],
+  );
+
+  const optionsByProductId = useMemo(() => {
+    const map = new Map<string, ChainLine[]>();
+    for (const item of options) {
+      const list = map.get(item.productId);
+      if (list) list.push(item);
+      else map.set(item.productId, [item]);
+    }
+    return map;
+  }, [options]);
+
+  const stockByProductId = useMemo(() => {
+    const map = new Map<string, number>();
+    if (!physical || !warehouseId) return map;
+    for (const row of inventory) {
+      if (row.warehouseId === warehouseId) {
+        map.set(row.productId, (map.get(row.productId) || 0) + row.quantity);
+      }
+    }
+    return map;
+  }, [physical, warehouseId, inventory]);
+
+  const filteredOptions = useMemo(() => {
+    if (!physical || review) return [];
+    const q = itemSearch.trim().toLowerCase();
+    if (!q) return options;
+    return indexedOptions.filter(entry => entry.searchText.includes(q)).map(entry => entry.item);
+  }, [physical, review, itemSearch, options, indexedOptions]);
+
+  const totalPickerPages = Math.max(1, Math.ceil(filteredOptions.length / PICKER_PAGE_SIZE));
+  const safePickerPage = Math.min(pickerPage, totalPickerPages);
+  const pickerPageStart = (safePickerPage - 1) * PICKER_PAGE_SIZE;
+  const visibleOptions = useMemo(
+    () => filteredOptions.slice(pickerPageStart, pickerPageStart + PICKER_PAGE_SIZE),
+    [filteredOptions, pickerPageStart],
+  );
+
+  const addItem = useCallback((item: ChainLine): string | void => {
     if (!warehouseId) return 'Choose a warehouse first.';
     const next = (quantities[item.id] || 0) + 1;
     if (!payment && next > item.quantity) return 'Return quantity cannot exceed the original quantity.';
-    const required = options.filter(line => line.productId === item.productId).reduce((sum, line) => sum + (quantities[line.id] || 0), 0) + 1;
-    const available = inventory.filter(row => row.productId === item.productId && row.warehouseId === warehouseId).reduce((sum, row) => sum + row.quantity, 0);
-    if (!increasing && required > available) return 'Not enough stock in the issuing warehouse.';
+    if (!increasing) {
+      const sameProductLines = optionsByProductId.get(item.productId) || [];
+      let required = 1;
+      for (const line of sameProductLines) {
+        required += quantities[line.id] || 0;
+      }
+      const available = stockByProductId.get(item.productId) || 0;
+      if (required > available) return 'Not enough stock in the issuing warehouse.';
+    }
     setQuantities(q => ({ ...q, [item.id]: next }));
     setError('');
-  };
-  const lines = physical ? options.filter(item => (quantities[item.id] ?? 0) > 0).map(item => ({ ...item, quantity: quantities[item.id], warehouseId })) : [];
+  }, [warehouseId, quantities, payment, increasing, optionsByProductId, stockByProductId]);
+
+  const handleRowAdd = useCallback((item: ChainLine) => {
+    const issue = addItem(item);
+    if (issue) setError(issue);
+  }, [addItem]);
+
+  const handleQuantityChange = useCallback((itemId: string, qty: number) => {
+    setQuantities(q => ({ ...q, [itemId]: qty }));
+  }, []);
+
+  const lines = useMemo(
+    () => (physical ? options.filter(item => (quantities[item.id] ?? 0) > 0).map(item => ({ ...item, quantity: quantities[item.id], warehouseId })) : []),
+    [physical, options, quantities, warehouseId],
+  );
   const value = Number(amount);
   const resulting = projectBalance(transaction.remaining, value);
-  const cashRefund = !payment && transaction.remaining !== null ? Math.max(0, value - transaction.remaining) : 0;
+  const cashRefund = !payment && transaction.remaining !== null ? Math.round(Math.max(0, value - transaction.remaining) * 100) / 100 : 0;
   const methodLabel = method === 'Item' && !customer ? 'Item / XDeal' : method === 'Online Banking' ? 'Online Banking (Bank Transfer / GCash)' : method;
   const title = payment ? customer ? 'Receive payment' : 'Pay supplier' : customer ? 'Customer refund' : 'Purchase refund';
 
   const validate = () => {
     if (!Number.isFinite(value) || value <= 0 || Math.abs(value * 100 - Math.round(value * 100)) > 0.0001) return 'Enter an amount greater than zero with at most two decimal places.';
     if (payment && transaction.remaining !== null && value > transaction.remaining) return 'Payment cannot exceed the remaining balance.';
-    if (!payment && value > (transaction.amount ?? 0)) return 'Refund cannot exceed the original transaction amount.';
+    const maxRefund = maxRefundAmount !== undefined ? Math.min(transaction.amount ?? 0, Math.max(0, maxRefundAmount)) : (transaction.amount ?? 0);
+    if (!payment && value > maxRefund + 0.0001) return `Refund cannot exceed the remaining refundable amount (${chainMoney(maxRefund)}).`;
     if (payment && method === 'Cheque' && (!bank.trim() || !chequeDate || !reference.trim())) return 'Complete the bank, cheque date, and reference number.';
     if (payment && method === 'Online Banking' && !reference.trim()) return 'Enter the reference or transaction number for Online Banking.';
-    if (physical && !warehouses.some(w => w.id === warehouseId && w.active !== false)) return 'Choose an active warehouse.';
+    if (physical && !activeWarehouses.some(w => w.id === warehouseId)) return 'Choose an active warehouse.';
     if (physical && !lines.length) return 'Select at least one item and enter a quantity.';
     for (const line of lines) {
       if (!Number.isSafeInteger(line.quantity) || line.quantity < 1) return 'Use positive whole-number quantities.';
-      const original = options.find(item => item.id === line.id)!;
-      if (!payment && line.quantity > original.quantity) return `Return quantity for ${line.name} exceeds the original quantity.`;
+      const original = optionById.get(line.id);
+      if (!payment && original && line.quantity > original.quantity) return `Return quantity for ${line.name} exceeds the original quantity.`;
     }
     if (physical && !increasing) {
-      for (const productId of new Set(lines.map(line => line.productId))) {
-        const required = lines.filter(line => line.productId === productId).reduce((sum, line) => sum + line.quantity, 0);
-        const available = inventory.filter(item => item.productId === productId && item.warehouseId === warehouseId).reduce((sum, item) => sum + item.quantity, 0);
-        if (required > available) return `Insufficient stock for ${products.find(p => p.id === productId)?.name || 'selected item'} in this warehouse.`;
+      const demandByProduct = new Map<string, number>();
+      for (const line of lines) {
+        demandByProduct.set(line.productId, (demandByProduct.get(line.productId) || 0) + line.quantity);
+      }
+      for (const [productId, required] of demandByProduct) {
+        const available = stockByProductId.get(productId) || 0;
+        if (required > available) {
+          const matchedLine = lines.find(l => l.productId === productId);
+          return `Insufficient stock for ${matchedLine?.name || 'selected item'} in this warehouse.`;
+        }
       }
     }
     return '';
@@ -87,12 +231,13 @@ export function SupplyChainTransactionDialog({ view, action, transaction, produc
     const issue = validate();
     if (issue) { setError(issue); setReview(false); return; }
     if (!review) { setError(''); setReview(true); return; }
+    const warehouseName = warehouseById.get(warehouseId)?.name;
     onPreview({
       id: crypto.randomUUID(), entityId: transaction.entityId, parentId: transaction.id,
       type: payment ? customer ? 'Payment' : 'Bill Payment' : customer ? 'Refund' : 'Purchase Refund',
       date: new Date().toISOString(), reference: transaction.reference, amount: value, remaining: resulting,
       status: 'Preview', items: lines, direction: physical ? direction : undefined, draft: true,
-      notes: `${payment ? methodLabel : withItems ? 'With Item' : 'Without Item'}${method === 'Cheque' && payment ? ` · ${bank} · ${chequeDate} · ${reference}` : ''}${method === 'Online Banking' && payment ? ` · ${bank || 'Online Banking / GCash'} · Ref: ${reference}` : ''}. ${physical ? `Inventory would ${increasing ? 'increase' : 'decrease'} at ${warehouses.find(w => w.id === warehouseId)?.name}.` : 'No inventory movement.'}${cashRefund > 0 ? ` ${chainMoney(cashRefund)} cash refund ${customer ? 'to customer' : 'from supplier'}.` : ''}`,
+      notes: `${title} (${transaction.reference}) · ${payment ? methodLabel : withItems ? 'With Item' : 'Without Item'}${method === 'Cheque' && payment ? ` · ${bank} · ${chequeDate} · ${reference}` : ''}${method === 'Online Banking' && payment ? ` · ${bank || 'Online Banking / GCash'} · Ref: ${reference}` : ''}. ${physical ? `Inventory would ${increasing ? 'increase' : 'decrease'} at ${warehouseName}.` : 'No inventory movement.'}${cashRefund > 0 ? ` ${chainMoney(cashRefund)} cash refund ${customer ? 'to customer' : 'from supplier'}.` : ''}`,
     });
   }
 
@@ -102,36 +247,63 @@ export function SupplyChainTransactionDialog({ view, action, transaction, produc
         <DialogTitle className="flex items-center gap-2"><CreditCard className="size-5 text-primary" />{review ? 'Review transaction' : title}</DialogTitle>
         <DialogDescription>{transaction.reference} · {payment ? 'Settle' : 'Credit'} {customer ? 'customer receivables' : 'supplier payables'}</DialogDescription>
       </DialogHeader>
-      <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-100"><Info className="mr-1 inline size-4" />Preview only. This workflow is not connected to a payment/refund ledger. No money or inventory will be posted. Previews clear when you leave Supply Chain.</div>
+      <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-100"><Info className="mr-1 inline size-4" />Staged preview. Nothing is posted to Finance, balances, or Inventory until you click &quot;Commit Previews to Ledger&quot; in Supply Chain.</div>
       {!review ? <div className="space-y-5">
         <div className="grid grid-cols-2 gap-3 rounded-xl bg-muted/40 p-4"><div><p className="text-xs text-muted-foreground">Original amount</p><p className="font-semibold">{chainMoney(transaction.amount)}</p></div><div><p className="text-xs text-muted-foreground">Remaining balance</p><p className="font-semibold">{chainMoney(transaction.remaining)}</p></div></div>
         <fieldset className="space-y-2"><legend className="mb-2 text-sm font-semibold">{payment ? 'Payment method' : 'Return type'}</legend><div className={`grid gap-2 ${payment ? 'grid-cols-2 sm:grid-cols-4' : 'grid-cols-2'}`}>
           {(payment ? ['Cash', 'Online Banking', 'Cheque', 'Item'] : ['With Item', 'Without Item']).map((option, i) => {
             const active = payment ? method === option : withItems === (i === 0);
             const Icon = payment ? [Banknote, DeviceMobile, FileCheck, Package][i] : Package;
-            return <button key={option} type="button" aria-pressed={active} onClick={() => { if (payment) setMethod(option); else setWithItems(i === 0); setError(''); }} className={`flex items-center justify-center gap-2 rounded-xl border px-2 py-3 text-sm font-medium transition-colors ${active ? 'border-primary bg-primary/10 text-foreground ring-1 ring-primary' : 'hover:bg-muted'}`}><Icon className="size-4" />{option === 'Item' && !customer ? 'Item / XDeal' : option}</button>;
+            return <button key={option} type="button" aria-pressed={active} onClick={() => { if (payment) setMethod(option); else setWithItems(i === 0); setPickerPage(1); setError(''); }} className={`flex items-center justify-center gap-2 rounded-xl border px-2 py-3 text-sm font-medium transition-colors ${active ? 'border-primary bg-primary/10 text-foreground ring-1 ring-primary' : 'hover:bg-muted'}`}><Icon className="size-4" />{option === 'Item' && !customer ? 'Item / XDeal' : option}</button>;
           })}
         </div></fieldset>
         {payment && method === 'Cheque' && <div className="grid gap-3 rounded-xl border p-4 sm:grid-cols-2"><Field label="Bank" id="chain-bank"><Input id="chain-bank" value={bank} onChange={e => setBank(e.target.value)} placeholder="Bank name" /></Field><Field label="Cheque date" id="chain-cheque-date"><Input id="chain-cheque-date" type="date" value={chequeDate} onChange={e => setChequeDate(e.target.value)} /></Field><div className="sm:col-span-2"><Field label="Cheque / reference number" id="chain-cheque-ref"><Input id="chain-cheque-ref" value={reference} onChange={e => setReference(e.target.value)} placeholder="Enter reference number" /></Field></div></div>}
         {payment && method === 'Online Banking' && <div className="grid gap-3 rounded-xl border p-4 sm:grid-cols-2"><Field label="Channel / Bank / Wallet" id="chain-online-bank"><Input id="chain-online-bank" value={bank} onChange={e => setBank(e.target.value)} placeholder="e.g. BDO, BPI, GCash, Maya" /></Field><Field label="Reference / Transaction #" id="chain-online-ref"><Input id="chain-online-ref" value={reference} onChange={e => setReference(e.target.value)} placeholder="e.g. Reference # / Trace ID" /></Field></div>}
         {physical && <div className="space-y-3">
           <div className={`rounded-xl border p-3 text-sm ${increasing ? 'border-emerald-300 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' : 'border-orange-300 bg-orange-500/10 text-orange-700 dark:text-orange-300'}`}>{increasing ? <ArrowDownLeft className="mr-1 inline size-4" /> : <ArrowUpRight className="mr-1 inline size-4" />}Inventory will {increasing ? 'increase' : 'decrease'} · {payment ? customer ? 'Items received from customer' : 'Items issued to supplier' : customer ? 'Customer returns to warehouse' : 'Warehouse returns to supplier'}</div>
-          <Field label={increasing ? 'Receiving warehouse' : 'Issuing warehouse'} id="chain-action-warehouse"><select id="chain-action-warehouse" value={warehouseId} onChange={e => setWarehouseId(e.target.value)} className={selectClass}><option value="">Select warehouse</option>{warehouses.filter(w => w.active !== false).map(w => <option key={w.id} value={w.id}>{w.name}</option>)}</select></Field>
+          <Field label={increasing ? 'Receiving warehouse' : 'Issuing warehouse'} id="chain-action-warehouse"><select id="chain-action-warehouse" value={warehouseId} onChange={e => setWarehouseId(e.target.value)} className={selectClass}><option value="">Select warehouse</option>{activeWarehouses.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}</select></Field>
           <ProductSelectionModes products={options} active={physical && !review} onAdd={addItem} hint={payment ? 'Add items and set their quantities. Enter the agreed valuation below.' : 'Only original transaction items can be added. Return quantities cannot exceed original quantities.'}>
-          <ProductPicker search={itemSearch} onSearch={setItemSearch} label="Search transaction items" placeholder={payment ? 'Search inventory items…' : 'Search items from the original transaction…'} empty={!filteredOptions.length}>
-            {filteredOptions.map(item => {
-              const stock = inventory.filter(row => row.productId === item.productId && row.warehouseId === warehouseId).reduce((sum, row) => sum + row.quantity, 0);
-              return <ProductPickerRow key={item.id} name={item.name} sku={item.sku} selected={(quantities[item.id] ?? 0) > 0}
-                detail={<>{!payment && `Original qty: ${item.quantity}`}{!increasing && warehouseId && `${!payment ? ' / ' : ''}${stock} available in issuing warehouse`}</>}
-                action={<><Button type="button" size="sm" variant="outline" aria-label={`Add ${item.name}`} onClick={() => { const issue = addItem(item); if (issue) setError(issue); }}>+ Add</Button><Input type="number" aria-label={`Quantity for ${item.name}`} min="0" step="1" max={payment ? undefined : item.quantity} value={quantities[item.id] || ''} placeholder="Qty" onChange={e => setQuantities(q => ({ ...q, [item.id]: Number(e.target.value) }))} className="w-20" /></>} />;
-            })}
+          <ProductPicker
+            search={itemSearch}
+            onSearch={value => { setItemSearch(value); setPickerPage(1); }}
+            label="Search transaction items"
+            placeholder={payment ? 'Search inventory items…' : 'Search items from the original transaction…'}
+            empty={!filteredOptions.length}
+            footer={filteredOptions.length > 0 ? (
+              <div className="flex flex-wrap items-center justify-between gap-2 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+                <span>
+                  Showing {pickerPageStart + 1}–{Math.min(pickerPageStart + visibleOptions.length, filteredOptions.length)} of {filteredOptions.length.toLocaleString()} items
+                </span>
+                {totalPickerPages > 1 && (
+                  <div className="flex items-center gap-1.5">
+                    <Button type="button" variant="outline" size="sm" className="h-7 px-2 text-xs" disabled={safePickerPage <= 1} onClick={() => setPickerPage(p => Math.max(1, p - 1))}>Previous</Button>
+                    <span className="px-1 font-medium text-foreground">Page {safePickerPage} of {totalPickerPages}</span>
+                    <Button type="button" variant="outline" size="sm" className="h-7 px-2 text-xs" disabled={safePickerPage >= totalPickerPages} onClick={() => setPickerPage(p => Math.min(totalPickerPages, p + 1))}>Next</Button>
+                  </div>
+                )}
+              </div>
+            ) : undefined}
+          >
+            {visibleOptions.map(item => (
+              <PickerItemRow
+                key={item.id}
+                item={item}
+                payment={payment}
+                increasing={increasing}
+                hasWarehouse={!!warehouseId}
+                stock={stockByProductId.get(item.productId) || 0}
+                quantity={quantities[item.id] ?? 0}
+                onAdd={handleRowAdd}
+                onQuantityChange={handleQuantityChange}
+              />
+            ))}
           </ProductPicker>
           </ProductSelectionModes>
           {!payment && !options.length && <p className="text-sm text-muted-foreground">No original items are available. Use Without Item for a financial-only refund.</p>}
         </div>}
         <Field label={physical && payment ? 'Manual item valuation (PHP)' : `${payment ? 'Payment' : 'Refund'} amount (PHP)`} id="chain-action-amount"><Input id="chain-action-amount" type="number" min="0.01" step="0.01" value={amount} onChange={e => setAmount(e.target.value)} placeholder="0.00" className="h-12 text-lg font-semibold" /></Field>
         <p className="text-xs text-muted-foreground">{physical && payment ? 'Use the agreed item value to reduce the open balance.' : !physical ? 'This transaction does not move warehouse inventory.' : 'The refund credits the original transaction; selected items move separately.'}</p>
-      </div> : <div className="space-y-4"><div className="rounded-xl bg-muted/40 p-5"><p className="text-xs uppercase tracking-wide text-muted-foreground">{title} · {payment ? methodLabel : withItems ? 'With Item' : 'Without Item'}</p><p className="mt-2 text-3xl font-bold">{chainMoney(value)}</p><div className="mt-4 flex justify-between gap-3 border-t pt-4 text-sm"><span>Projected remaining {account}</span><strong>{chainMoney(resulting)}</strong></div>{transaction.remaining === null && <p className="mt-2 text-xs text-muted-foreground">The source record does not provide an exact open balance.</p>}{cashRefund > 0 && <p className="mt-2 text-sm">Cash refund {customer ? 'to customer' : 'from supplier'}: <strong>{chainMoney(cashRefund)}</strong></p>}</div><div className="rounded-xl border p-4"><p className="text-sm font-semibold">{physical ? `Inventory ${increasing ? 'increases' : 'decreases'} at ${warehouses.find(w => w.id === warehouseId)?.name}` : 'No inventory movement'}</p>{lines.map(line => <p key={line.id} className="mt-2 flex justify-between gap-3 text-sm text-muted-foreground"><span>{line.name}</span><strong>{increasing ? '+' : '−'}{line.quantity}</strong></p>)}</div></div>}
+      </div> : <div className="space-y-4"><div className="rounded-xl bg-muted/40 p-5"><p className="text-xs uppercase tracking-wide text-muted-foreground">{title} · {payment ? methodLabel : withItems ? 'With Item' : 'Without Item'}</p><p className="mt-2 text-3xl font-bold">{chainMoney(value)}</p><div className="mt-4 flex justify-between gap-3 border-t pt-4 text-sm"><span>Projected remaining {account}</span><strong>{chainMoney(resulting)}</strong></div>{transaction.remaining === null && <p className="mt-2 text-xs text-muted-foreground">The source record does not provide an exact open balance.</p>}{cashRefund > 0 && <p className="mt-2 text-sm">Cash refund {customer ? 'to customer' : 'from supplier'}: <strong>{chainMoney(cashRefund)}</strong></p>}</div><div className="rounded-xl border p-4"><p className="text-sm font-semibold">{physical ? `Inventory ${increasing ? 'increases' : 'decreases'} at ${warehouseById.get(warehouseId)?.name}` : 'No inventory movement'}</p>{lines.map(line => <p key={line.id} className="mt-2 flex justify-between gap-3 text-sm text-muted-foreground"><span>{line.name}</span><strong>{increasing ? '+' : '−'}{line.quantity}</strong></p>)}</div></div>}
       {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
       <div className="flex justify-end gap-2 border-t pt-4"><Button variant="outline" onClick={() => review ? setReview(false) : onClose()}>{review ? <><ChevronLeft className="size-4" />Back</> : 'Cancel'}</Button><Button onClick={submit}>{review ? <><Check className="size-4" />Add to preview</> : 'Review effects'}</Button></div>
     </DialogContent>

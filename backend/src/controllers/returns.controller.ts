@@ -4,9 +4,11 @@
  */
 
 import { Request, Response, NextFunction } from 'express';
+import { z } from 'zod';
+import { AppError } from '../middleware/errorHandler';
 import * as returnsService from '../services/returns.service';
 import { ApiSuccess } from '../types/api.types';
-import { ProcessReturnPayload, ReturnFilterQuery } from '../types/returns.types';
+import { ProcessReturnPayload } from '../types/returns.types';
 
 function ok<T>(res: Response, data: T, message?: string, status = 200): void {
   const body: ApiSuccess<T> = {
@@ -18,13 +20,41 @@ function ok<T>(res: Response, data: T, message?: string, status = 200): void {
   res.status(status).json(body);
 }
 
+const processReturnSchema = z.object({
+  orderId: z.string().trim().min(1),
+  clientId: z.string().trim().min(1).optional(),
+  actionType: z.enum(['refund', 'exchange', 'credit']),
+  items: z
+    .array(
+      z.object({
+        productId: z.string().trim().min(1),
+        sku: z.string().trim().min(1),
+        name: z.string().default('Returned Product'),
+        quantity: z.number().finite().positive(),
+        condition: z.enum(['viable', 'damaged']),
+        warehouseId: z.string().trim().min(1).default('wh-default'),
+        unitPrice: z.number().finite().nonnegative(),
+        refundAmount: z.number().finite().nonnegative().optional(),
+      })
+    )
+    .min(1),
+  refundMethod: z.enum(['Cash', 'Cheque', 'Debt_Adjustment']),
+  reason: z.string().trim().default('Customer return'),
+  processedBy: z.string().trim().min(1).default('Staff'),
+  notes: z.string().optional(),
+});
+
 export async function processReturn(
   req: Request,
   res: Response,
   next: NextFunction
 ): Promise<void> {
   try {
-    const payload = req.body as ProcessReturnPayload;
+    const parsed = processReturnSchema.safeParse(req.body);
+    if (!parsed.success) {
+      throw new AppError(400, 'VALIDATION_ERROR', 'Invalid return processing payload.');
+    }
+    const payload = parsed.data as ProcessReturnPayload;
     const result = await returnsService.processReturn(payload);
     ok(
       res,
@@ -43,14 +73,19 @@ export async function listReturns(
   next: NextFunction
 ): Promise<void> {
   try {
-    const query: ReturnFilterQuery = {
-      orderId: req.query['orderId'] as string,
-      clientId: req.query['clientId'] as string,
-      actionType: req.query['actionType'] as string,
-      page: req.query['page'] ? parseInt(req.query['page'] as string, 10) : undefined,
-      pageSize: req.query['pageSize'] ? parseInt(req.query['pageSize'] as string, 10) : undefined,
-    };
-    const result = await returnsService.listReturns(query);
+    const parsedQuery = z
+      .object({
+        orderId: z.string().trim().min(1).optional(),
+        clientId: z.string().trim().min(1).optional(),
+        actionType: z.enum(['refund', 'exchange', 'credit', 'all']).optional(),
+        page: z.coerce.number().int().min(1).optional(),
+        pageSize: z.coerce.number().int().min(1).max(100).optional(),
+      })
+      .safeParse(req.query);
+    if (!parsedQuery.success) {
+      throw new AppError(400, 'VALIDATION_ERROR', 'Invalid returns query parameters.');
+    }
+    const result = await returnsService.listReturns(parsedQuery.data);
     ok(res, result, `${result.total} return record(s) found.`);
   } catch (err) {
     next(err);

@@ -119,5 +119,71 @@ describe('Orders Service', () => {
       ordersService.cancelOrder(created.order.id, { cancellationReason: 'Double cancel' })
     ).rejects.toThrow('is already cancelled');
   });
+
+  it('handles idempotent requestId retries, rejects negative discount, and excludes cancelled orders from customer balance', async () => {
+    const first = await ordersService.createOrder({
+      requestId: 'req-idempotent-1',
+      clientName: 'Idempotent Shop',
+      address: '10 EDSA, Makati',
+      deliveryRegion: 'Metro Manila',
+      paymentTerms: 'COD',
+      items: [
+        { productId: 'p-idem', warehouseId: 'wh-1', sku: 'SKU-IDEM', name: 'Item A', quantity: 2, unitPrice: 500 },
+      ],
+    });
+    const retry = await ordersService.createOrder({
+      requestId: 'req-idempotent-1',
+      clientName: 'Idempotent Shop',
+      address: '10 EDSA, Makati',
+      deliveryRegion: 'Metro Manila',
+      paymentTerms: 'COD',
+      items: [
+        { productId: 'p-idem', warehouseId: 'wh-1', sku: 'SKU-IDEM', name: 'Item A', quantity: 2, unitPrice: 500 },
+      ],
+    });
+    expect(retry.order.id).toBe(first.order.id);
+
+    await expect(
+      ordersService.createOrder({
+        clientName: 'Bad Discount Co',
+        address: '10 EDSA, Makati',
+        deliveryRegion: 'Metro Manila',
+        paymentTerms: 'COD',
+        discount: -10,
+        items: [{ productId: 'p-bad', warehouseId: 'wh-1', sku: 'SKU-B', name: 'B', quantity: 1, unitPrice: 100 }],
+      })
+    ).rejects.toThrow('Discount cannot be negative');
+
+    await ordersService.cancelOrder(first.order.id, { cancellationReason: 'Test void' });
+    const tx = await ordersService.getCustomerTransactions('Idempotent Shop');
+    expect(tx.totalBalance).toBe(0);
+  });
+
+  it('rejects fractional quantities, empty customer queries, and cancelling delivered orders', async () => {
+    await expect(
+      ordersService.createOrder({
+        clientName: 'Fraction Co',
+        address: '10 EDSA, Makati',
+        deliveryRegion: 'Metro Manila',
+        paymentTerms: 'COD',
+        items: [{ productId: 'p-frac', warehouseId: 'wh-1', sku: 'SKU-F', name: 'Item F', quantity: 1.5, unitPrice: 100 }],
+      })
+    ).rejects.toThrow('must be a positive whole number');
+
+    await expect(ordersService.getCustomerTransactions('   ')).rejects.toThrow('Customer name is required');
+
+    const delivered = await ordersService.createOrder({
+      clientName: 'Delivered Co',
+      address: '10 EDSA, Makati',
+      deliveryRegion: 'Metro Manila',
+      paymentTerms: 'COD',
+      items: [{ productId: 'p-del', warehouseId: 'wh-1', sku: 'SKU-D', name: 'Item D', quantity: 1, unitPrice: 100 }],
+    });
+    delivered.order.status = 'delivered';
+
+    await expect(
+      ordersService.cancelOrder(delivered.order.id, { cancellationReason: 'Too late' })
+    ).rejects.toThrow('has already been delivered');
+  });
 });
 

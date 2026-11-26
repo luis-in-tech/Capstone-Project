@@ -90,6 +90,10 @@ test('admins cannot delegate permissions or warehouses outside their own scope',
   assert.equal(permissionsWithin({ ...limits, warehouseIds: ['other'] }, limits), false);
   assert.equal(permissionsWithin({ ...limits, movementView: 'both' }, limits), false);
   assert.equal(permissionsWithin({ ...limits, pricelist: 'edit' }, limits), false);
+  assert.equal(permissionsWithin({ ...limits, priceAccess: 'all' }, { ...limits, priceAccess: 'selling_no_cost' }), false);
+  assert.equal(permissionsWithin({ ...limits, priceAccess: 'selling_no_cost' }, { ...limits, priceAccess: 'main_only' }), false);
+  assert.equal(permissionsWithin({ ...limits, financials: 'full' }, { ...limits, financials: 'expense_only' }), false);
+  assert.equal(permissionsWithin({ ...limits, financials: 'expense_only' }, { ...limits, financials: 'none' }), false);
 });
 
 test('old delegations still grant inventory and pricelist access', () => {

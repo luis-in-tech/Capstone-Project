@@ -21,7 +21,7 @@ test('classifies generated absolute and relative URLs, preserving encoded IDs', 
   for (const id of ['batch-123', 'x&quantity=999#fragment'])
     assert.deepEqual(classifyBatchQr(receiptBatchUrl(id, origin), origin), { kind: 'batch', batchId: id });
   assert.deepEqual(classifyBatchQr(` ${qr} `, origin), { kind: 'batch', batchId: 'batch-123' });
-  for (const sku of ['SKU-123', ' transfers-sku ', '123', 'https://example.com/product/123'])
+  for (const sku of ['SKU-123', ' transfers-sku ', '123', 'ITEM/transfers', '/product/transfers', 'https://example.com/product/123'])
     assert.deepEqual(classifyBatchQr(sku, origin), { kind: 'sku' });
 });
 

@@ -43,9 +43,8 @@ export async function evaluateSlaIncidents(): Promise<{
   const now = Date.now();
   const allOrders = getAllOrders();
 
-  const activeOrders = allOrders.filter(
-    (o) => o.status === 'pending' || o.status === 'in_transit'
-  );
+  const activeSlaStatuses = new Set(['pending', 'preparing', 'in_transit', 'out_for_delivery', 'escalated']);
+  const activeOrders = allOrders.filter((o) => activeSlaStatuses.has(o.status));
 
   const activeIncidents: ITILSlaIncidentDto[] = [];
 
@@ -54,6 +53,9 @@ export async function evaluateSlaIncidents(): Promise<{
     const isMetroManila = (order.deliveryRegion || '').toLowerCase().includes('metro');
     const thresholdMs = isMetroManila ? SLA_THRESHOLDS_MS.metroManila : SLA_THRESHOLDS_MS.regional;
     const deadlineMs = order.deliveryDeadline ? new Date(order.deliveryDeadline).getTime() : createdAtMs + thresholdMs;
+    if (!Number.isFinite(deadlineMs)) {
+      continue;
+    }
 
     if (now > deadlineMs) {
       const overdueMs = now - deadlineMs;
@@ -109,8 +111,8 @@ export async function createQuarantineTicket(
     throw new AppError(400, 'VALIDATION_ERROR', 'Origin warehouse ID is required.');
   }
 
-  if (!Number.isFinite(payload.quantity) || payload.quantity <= 0) {
-    throw new AppError(400, 'VALIDATION_ERROR', 'Quarantine quantity must be at least 1.');
+  if (!Number.isFinite(payload.quantity) || !Number.isInteger(payload.quantity) || payload.quantity <= 0) {
+    throw new AppError(400, 'VALIDATION_ERROR', 'Quarantine quantity must be a positive integer.');
   }
 
   const id = `qrn_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;

@@ -20,14 +20,24 @@ const initialState: ThemeProviderState = {
 
 const ThemeProviderContext = createContext<ThemeProviderState>(initialState)
 
+function readStoredTheme(storageKey: string, fallback: Theme): Theme {
+  if (typeof window === "undefined") return fallback
+  try {
+    const stored = window.localStorage.getItem(storageKey)
+    return stored === "dark" || stored === "light" ? stored : fallback
+  } catch {
+    return fallback
+  }
+}
+
 export function ThemeProvider({
   children,
   defaultTheme = "light",
   storageKey = "activepro-theme",
   ...props
 }: ThemeProviderProps) {
-  const [theme, setTheme] = useState<Theme>(
-    () => (localStorage.getItem(storageKey) as Theme) || defaultTheme
+  const [theme, setTheme] = useState<Theme>(() =>
+    readStoredTheme(storageKey, defaultTheme)
   )
 
   useEffect(() => {
@@ -41,9 +51,13 @@ export function ThemeProvider({
 
   const value = {
     theme,
-    setTheme: (theme: Theme) => {
-      localStorage.setItem(storageKey, theme)
-      setTheme(theme)
+    setTheme: (nextTheme: Theme) => {
+      try {
+        window.localStorage.setItem(storageKey, nextTheme)
+      } catch {
+        // Ignore storage write errors in restricted browsing contexts.
+      }
+      setTheme(nextTheme)
     },
   }
 

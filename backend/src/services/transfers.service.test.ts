@@ -78,4 +78,30 @@ describe('Transfers Service', () => {
     const auditLogs = await transfersService.getTransferAuditLogs(tfr.id);
     expect(auditLogs.length).toBeGreaterThanOrEqual(2);
   });
+
+  it('rejects padded duplicate warehouses and avoids partial persistence on item validation error', async () => {
+    await expect(
+      transfersService.initiateTransfers({
+        sourceWarehouseId: 'wh-x ',
+        destinationWarehouseId: 'wh-x',
+        items: [{ productId: 'p1', quantity: 5 }],
+        initiatedBy: 'tester',
+      })
+    ).rejects.toThrow('Source and destination warehouses must be different');
+
+    const beforeTotal = (await transfersService.listTransfers({ warehouseId: 'wh-atomic-src' })).total;
+    await expect(
+      transfersService.initiateTransfers({
+        sourceWarehouseId: 'wh-atomic-src',
+        destinationWarehouseId: 'wh-atomic-dst',
+        items: [
+          { productId: 'p-good', quantity: 2 },
+          { productId: 'p-bad', quantity: 0 },
+        ],
+        initiatedBy: 'tester',
+      })
+    ).rejects.toThrow('must be greater than zero');
+    const afterTotal = (await transfersService.listTransfers({ warehouseId: 'wh-atomic-src' })).total;
+    expect(afterTotal).toBe(beforeTotal);
+  });
 });

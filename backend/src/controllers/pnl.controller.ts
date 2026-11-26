@@ -9,6 +9,8 @@
  */
 
 import { Request, Response, NextFunction } from 'express';
+import { z } from 'zod';
+import { AppError } from '../middleware/errorHandler';
 import * as pnlService from '../services/pnl.service';
 import { ApiSuccess } from '../types/api.types';
 import { PnLTimeframe, RecordExpensePayload } from '../types/pnl.types';
@@ -50,7 +52,13 @@ export async function getPnLSummary(
   next: NextFunction
 ): Promise<void> {
   try {
-    const timeframe = (req.query['timeframe'] as PnLTimeframe) || '30d';
+    const parsed = z.enum(['today', '7d', '30d', '90d', 'all']).default('30d').safeParse(
+      typeof req.query['timeframe'] === 'string' ? req.query['timeframe'].trim() : undefined
+    );
+    if (!parsed.success) {
+      throw new AppError(400, 'VALIDATION_ERROR', 'Invalid timeframe parameter. Expected today, 7d, 30d, 90d, or all.');
+    }
+    const timeframe: PnLTimeframe = parsed.data;
     const data = await pnlService.getPnLSummary(timeframe);
     ok(res, data, `P&L summary for period "${timeframe}" calculated.`);
   } catch (err) {
@@ -68,8 +76,17 @@ export async function getPnLTrend(
   next: NextFunction
 ): Promise<void> {
   try {
-    const rawDays = req.query['days'] ? parseInt(req.query['days'] as string, 10) : 30;
-    const days = rawDays === 7 ? 7 : rawDays === 90 ? 90 : 30;
+    const rawDaysParam = req.query['days'];
+    let days: 7 | 30 | 90 = 30;
+    if (rawDaysParam !== undefined) {
+      const parsedDays = z.enum(['7', '30', '90']).safeParse(
+        typeof rawDaysParam === 'string' ? rawDaysParam.trim() : ''
+      );
+      if (!parsedDays.success) {
+        throw new AppError(400, 'VALIDATION_ERROR', 'Invalid days parameter. Expected 7, 30, or 90.');
+      }
+      days = Number(parsedDays.data) as 7 | 30 | 90;
+    }
     const data = await pnlService.getPnLTrend(days);
     ok(res, data, `P&L trend for ${days} days fetched.`);
   } catch (err) {
@@ -98,13 +115,31 @@ export async function getPerformanceBreakdown(
  * POST /api/v1/pnl/expenses
  * Records an expense or COGS adjustment and broadcasts telemetry.
  */
+const recordExpenseSchema = z.object({
+  category: z.string().trim().min(1),
+  amount: z.number().finite(),
+  description: z.string().default(''),
+  date: z.string().trim().min(1).optional(),
+  orderId: z.string().trim().min(1).nullable().optional(),
+  recordedBy: z.string().trim().min(1).optional(),
+});
+
+const listExpensesQuerySchema = z.object({
+  startDate: z.string().trim().min(1).optional(),
+  endDate: z.string().trim().min(1).optional(),
+});
+
 export async function recordExpense(
   req: Request,
   res: Response,
   next: NextFunction
 ): Promise<void> {
   try {
-    const payload = req.body as RecordExpensePayload;
+    const parsed = recordExpenseSchema.safeParse(req.body);
+    if (!parsed.success) {
+      throw new AppError(400, 'VALIDATION_ERROR', 'Invalid expense payload.');
+    }
+    const payload: RecordExpensePayload = parsed.data;
     const data = await pnlService.recordExpense(payload);
     ok(res, data, 'Expense recorded successfully.', 201);
   } catch (err) {
@@ -122,10 +157,11 @@ export async function listExpenses(
   next: NextFunction
 ): Promise<void> {
   try {
-    const data = await pnlService.listExpenses({
-      startDate: req.query['startDate'] as string,
-      endDate: req.query['endDate'] as string,
-    });
+    const parsed = listExpensesQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      throw new AppError(400, 'VALIDATION_ERROR', 'Invalid expense query parameters.');
+    }
+    const data = await pnlService.listExpenses(parsed.data);
     ok(res, data, `${data.length} expense record(s) found.`);
   } catch (err) {
     next(err);

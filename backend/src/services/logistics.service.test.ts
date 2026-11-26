@@ -89,4 +89,22 @@ describe('Logistics Optimizer Service', () => {
     const trips = await logisticsService.listDispatchTrips();
     expect(trips.some(t => t.id === trip.id)).toBe(true);
   });
+
+  it('excludes delivered and cancelled orders and rejects negative delayMinutes', async () => {
+    const emptyPlan = logisticsService.optimizeRoutes([
+      { id: 'd1', deliveryCity: 'Manila', deliveryRegion: 'Metro Manila', status: 'delivered', skus: ['A'] },
+      { id: 'c1', deliveryCity: 'Makati', deliveryRegion: 'Metro Manila', status: 'cancelled', skus: ['B'] },
+    ]);
+    expect(emptyPlan.routes).toHaveLength(0);
+    expect(emptyPlan.summary.totalOrders).toBe(0);
+
+    await expect(
+      logisticsService.createTrafficIncident({
+        type: 'congestion',
+        corridor: 'C-5',
+        delayMinutes: -15,
+        reporter: 'Driver',
+      })
+    ).rejects.toThrow('Corridor, positive delayMinutes, and reporter name are required');
+  });
 });

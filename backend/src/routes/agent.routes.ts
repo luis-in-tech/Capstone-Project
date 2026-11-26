@@ -13,9 +13,11 @@
  */
 
 import { Router } from 'express';
+import { requireRole } from '../middleware/rbac.middleware';
 import * as agentCtrl from '../controllers/agent.controller';
 
 const router = Router();
+router.use(requireRole(['admin', 'cmo']));
 
 // ─── Session Routes ────────────────────────────────────────────────────────────
 
@@ -31,5 +33,6 @@ router.get('/sessions/:id/actions',       agentCtrl.listActions);
 // ─── Snapshots ─────────────────────────────────────────────────────────────────
 
 router.post('/sessions/:id/snapshot',     agentCtrl.createSnapshot);
+router.get('/sessions/:id/snapshots',     agentCtrl.listSnapshots);
 
 export default router;

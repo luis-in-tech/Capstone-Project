@@ -1,7 +1,6 @@
-import React, { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
-  XIcon as X,
   CaretRightIcon as ChevronRight,
   CaretLeftIcon as ChevronLeft,
   PackageIcon as Package,
@@ -17,21 +16,32 @@ import {
   GearIcon as Settings,
   CurrencyDollarIcon as DollarSign,
   PlayIcon as Play,
-  MonitorIcon as Monitor
+  MonitorIcon as Monitor,
+  UsersIcon as Users
 } from '@phosphor-icons/react';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
   DialogContent,
-  DialogHeader,
+  DialogDescription,
   DialogTitle,
 } from "@/components/ui/dialog";
 
-const TUTORIAL_PAGES = [
+interface TutorialPage {
+  id: string;
+  title: string;
+  icon: ReactNode;
+  content: string;
+  highlights: string[];
+  videoLabel: string;
+  videoSrc?: string;
+}
+
+const TUTORIAL_PAGES: TutorialPage[] = [
   {
     id: 'intro',
     title: 'Welcome to Active Pro',
-    icon: <Zap className="w-8 h-8 text-zinc-900" />,
+    icon: <Zap className="w-8 h-8 text-white" />,
     content: 'Active Pro is a centralized logistics management system built for multi-hub warehouse environments. It synchronizes stock levels, order fulfillment, financial tracking, and staff delegation — all in real-time.',
     highlights: [
       'Real-time Supabase Sync',
@@ -39,12 +49,13 @@ const TUTORIAL_PAGES = [
       'Role-Based Access Control',
       'Automated Financial Processing'
     ],
-    videoLabel: 'System Overview'
+    videoLabel: 'System Overview',
+    videoSrc: '/guides/intro.mp4'
   },
   {
     id: 'admin',
     title: 'Admin Panel',
-    icon: <Shield className="w-8 h-8 text-zinc-900" />,
+    icon: <Shield className="w-8 h-8 text-white" />,
     content: 'The Admin Panel provides a high-level overview of your entire operation. View total revenue, order counts, registered users, and product catalog size at a glance. It also features a Top Performers section showing the best-selling products with detailed unit sales and revenue breakdowns.',
     highlights: [
       'Revenue & Order Summary Cards',
@@ -52,12 +63,13 @@ const TUTORIAL_PAGES = [
       'User & Product Counts',
       'Monthly Revenue Chart'
     ],
-    videoLabel: 'Admin Panel Walkthrough'
+    videoLabel: 'Admin Panel Walkthrough',
+    videoSrc: '/guides/admin.mp4'
   },
   {
     id: 'dashboard',
     title: 'Analytics',
-    icon: <BarChart3 className="w-8 h-8 text-zinc-900" />,
+    icon: <BarChart3 className="w-8 h-8 text-white" />,
     content: 'Analytics provides historical Active Pro order and revenue trends. Compare periods, filter by delivery region and fulfillment status, review operational breakdowns, and download the filtered report as a CSV file.',
     highlights: [
       'Revenue Trajectory Chart',
@@ -65,40 +77,57 @@ const TUTORIAL_PAGES = [
       'Low-Stock Alerts',
       'Recent Order Activity Feed'
     ],
-    videoLabel: 'Analytics Walkthrough'
+    videoLabel: 'Analytics Walkthrough',
+    videoSrc: '/guides/dashboard.mp4'
   },
   {
     id: 'inventory',
     title: 'Inventory',
-    icon: <Package className="w-8 h-8 text-zinc-900" />,
-    content: 'The Inventory module tracks every SKU across your warehouse network. View products in table or card layout, monitor stock levels per warehouse hub, generate QR labels, and perform manual stock adjustments with full audit logging. Each product supports multiple variations (Color, Size, Model, Series) for detailed tracking.',
+    icon: <Package className="w-8 h-8 text-white" />,
+    content: 'The Inventory module tracks every SKU across your warehouse network. View products in table or card layout, monitor stock levels per warehouse hub, generate QR labels, map zone floorplans, log defective quarantine items, and perform manual stock adjustments with full audit logging.',
     highlights: [
       'SKU Tracking & Categorization',
-      'Hub-Specific Stock Levels',
+      'Hub-Specific Stock Levels & Adjustments',
       'QR Code Label Generation',
-      'Manual Stock Adjustment with Variations',
-      'Product Detail View with Variations'
+      'Warehouse Zone Floorplan Mapping',
+      'Quarantine & Damaged Asset Logging'
     ],
-    videoLabel: 'Inventory Walkthrough'
+    videoLabel: 'Inventory Walkthrough',
+    videoSrc: '/guides/inventory.mp4'
+  },
+  {
+    id: 'supply-chain',
+    title: 'Supply Chain',
+    icon: <Users className="w-8 h-8 text-white" />,
+    content: 'Manage customers, suppliers, warehouses, and product categories in one workspace. Review open balances and full transaction histories, preview customer or supplier payment entries before committing, and maintain up-to-date directory profiles.',
+    highlights: [
+      'Customer & Supplier Directories',
+      'Open Balances & Transaction Histories',
+      'Interactive Payment Preview Ledger',
+      'Warehouses & Categories Management'
+    ],
+    videoLabel: 'Supply Chain Walkthrough',
+    videoSrc: '/guides/supply-chain.mp4'
   },
   {
     id: 'orders',
     title: 'Order Entry',
-    icon: <ShoppingCart className="w-8 h-8 text-zinc-900" />,
-    content: 'Orders follow a strict lifecycle: Pending → Preparing → Out for Delivery → Delivered → Completed. The system uses photo validation during dispatch for accountability. Create new orders with multiple line items, assign warehouses, and track the full order history with status updates.',
+    icon: <ShoppingCart className="w-8 h-8 text-white" />,
+    content: 'Create customer orders with multi-warehouse stock selection, FIFO/LIFO batch queuing, pricing tiers, and discounts, then generate printable Delivery Receipts. Track every order through Pending → Preparing → Out for Delivery → Delivered → Completed with dispatch photo proof, pending-order editing, and full status history.',
     highlights: [
-      'Full Order Lifecycle Management',
-      'Photo Evidence for Dispatch',
-      'Automatic Stock Decrementing',
-      'Multi-Item Order Creation',
-      'Order History & Status Tracking'
+      'Multi-Item Order Creation & Pricing Tiers',
+      'FIFO/LIFO Queue & Stock Reservation',
+      'Printable Delivery Receipt Generation',
+      'Dispatch Photo Proof & Status Lifecycle',
+      'Pending Order Editing & Status History'
     ],
-    videoLabel: 'Order Entry Walkthrough'
+    videoLabel: 'Order Entry Walkthrough',
+    videoSrc: '/guides/orders.mp4'
   },
   {
     id: 'transport',
     title: 'Inventory Movement',
-    icon: <Truck className="w-8 h-8 text-zinc-900" />,
+    icon: <Truck className="w-8 h-8 text-white" />,
     content: 'Record external supplier receipts or internal warehouse transfers. Select products and quantities, review the summary, and confirm to update inventory. External receipts also record a purchase expense. Movement IDs, date/time, and the recorder are assigned automatically. Earlier transport requests remain available in history.',
     highlights: [
       'External Receipts & Internal Transfers',
@@ -112,20 +141,22 @@ const TUTORIAL_PAGES = [
   {
     id: 'finance',
     title: 'Financials',
-    icon: <DollarSign className="w-8 h-8 text-zinc-900" />,
-    content: 'The Financials module tracks revenue from orders against operational expenses. Record expenses by category, view profit & loss summaries, and monitor financial health with trajectory charts. Understand your margins with categorized expenditure breakdowns.',
+    icon: <DollarSign className="w-8 h-8 text-white" />,
+    content: 'The Financials module tracks revenue, COGS, and operational expenses across audited and live periods. Switch between P&L statements and itemized expense ledgers, import or export CSV financial reports, record operational expenses, manage expense categories, and monitor financial trajectory charts.',
     highlights: [
-      'Profit & Loss Ledgers',
-      'Categorized Expense Recording',
-      'Revenue vs. Cost Analytics',
-      'Financial Trajectory Charts'
+      'Audited & Live Profit & Loss Statements',
+      'CSV Financial Import & P&L Export',
+      'Operational Expense Recording & Ledger',
+      'Expense Category Management',
+      'Performance & Trajectory Charts'
     ],
-    videoLabel: 'Financials Walkthrough'
+    videoLabel: 'Financials Walkthrough',
+    videoSrc: '/guides/finance.mp4'
   },
   {
     id: 'logistics',
     title: 'Logistics Optimizer',
-    icon: <Activity className="w-8 h-8 text-zinc-900" />,
+    icon: <Activity className="w-8 h-8 text-white" />,
     content: 'The Logistics Optimizer provides AI-driven recommendations for your operations. Get suggestions for route consolidation, traffic rerouting, and load balancing between warehouses. Apply recommendations directly to optimize delivery efficiency and reduce fuel costs.',
     highlights: [
       'Route Consolidation Suggestions',
@@ -138,20 +169,22 @@ const TUTORIAL_PAGES = [
   {
     id: 'pricelist',
     title: 'Pricelist',
-    icon: <Tag className="w-8 h-8 text-zinc-900" />,
-    content: 'The Pricelist module provides a centralized catalog of all product pricing. Browse products by category tabs, search by name or SKU, and view base prices. Admins and delegated staff can add new products or edit existing pricing directly from this view.',
+    icon: <Tag className="w-8 h-8 text-white" />,
+    content: 'Build, save, and export custom product pricelists from your inventory catalog. Organize items into category or custom sections, apply master or per-item price schemes (Regular, Metro Manila, Provincial, Promo), preview and download printable PDFs, and filter saved pricelists by date, type, or export status.',
     highlights: [
-      'Category-Based Product Tabs',
-      'Search by Name or SKU',
-      'Add & Edit Product Pricing',
+      'Custom & Category Pricelist Builder',
+      'Master, Section & Mixed Price Schemes',
+      'Printable PDF Preview & Export',
+      'Draft Saving & Pricelist Filters',
       'Delegated Access for Staff'
     ],
-    videoLabel: 'Pricelist Walkthrough'
+    videoLabel: 'Pricelist Walkthrough',
+    videoSrc: '/guides/pricelist.mp4'
   },
   {
     id: 'delegation',
     title: 'Staff Delegation',
-    icon: <UserCog className="w-8 h-8 text-zinc-900" />,
+    icon: <UserCog className="w-8 h-8 text-white" />,
     content: 'The Staff Delegation panel allows admins to grant specific permissions to staff members. Delegate inventory adjustment access or pricelist editing privileges to individual team members by email. Edit or revoke delegations at any time to maintain security.',
     highlights: [
       'Grant Inventory Adjustment Access',
@@ -164,29 +197,35 @@ const TUTORIAL_PAGES = [
   {
     id: 'settings',
     title: 'Settings',
-    icon: <Settings className="w-8 h-8 text-zinc-900" />,
-    content: 'Configure your Active Pro experience. Manage your profile information, toggle between light and dark themes, view notification preferences, and check system health status including database connectivity and regional cluster info.',
+    icon: <Settings className="w-8 h-8 text-white" />,
+    content: 'Configure your Active Pro workspace and system operations. Update your account profile, monitor the Live System Activity feed across modules, switch between FIFO and LIFO queuing strategies, export automated SQL database CSV backups, and toggle between light and dark themes.',
     highlights: [
-      'Profile Management',
-      'Light / Dark Theme Toggle',
-      'Notification Preferences',
-      'System Health & Status'
+      'Account Profile & Identity Editing',
+      'Live System Activity & Alert Filters',
+      'FIFO / LIFO Queuing Strategy Toggle',
+      'Automated SQL Database CSV Backups',
+      'Light / Dark Theme Switcher'
     ],
-    videoLabel: 'Settings Walkthrough'
+    videoLabel: 'Settings Walkthrough',
+    videoSrc: '/guides/settings.mp4'
   }
 ];
 
 export const TutorialOverlay = ({ open, onOpenChange }: { open: boolean, onOpenChange: (open: boolean) => void }) => {
   const [currentPage, setCurrentPage] = useState(0);
+  const [failedVideos, setFailedVideos] = useState<Record<string, boolean>>({});
 
   const nextPage = () => currentPage < TUTORIAL_PAGES.length - 1 && setCurrentPage(prev => prev + 1);
   const prevPage = () => currentPage > 0 && setCurrentPage(prev => prev - 1);
 
   const current = TUTORIAL_PAGES[currentPage];
+  const hasPlayableVideo = Boolean(current.videoSrc && !failedVideos[current.id]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="w-[75vw] max-w-[95vw] sm:max-w-[95vw] p-0 bg-white border-zinc-200 overflow-hidden rounded-[2rem]">
+        <DialogTitle className="sr-only">{current.title}</DialogTitle>
+        <DialogDescription className="sr-only">{current.content}</DialogDescription>
         <div className="flex flex-col md:flex-row h-[90vh] min-h-[90vh]">
           {/* Left: Module Info */}
           <div className="md:w-2/5 bg-zinc-950 p-10 flex flex-col justify-between text-white relative overflow-y-auto">
@@ -235,42 +274,58 @@ export const TutorialOverlay = ({ open, onOpenChange }: { open: boolean, onOpenC
                       {current.content}
                     </p>
 
-                    {/* Video Placeholder */}
-                    <div className="bg-zinc-950 rounded-2xl overflow-hidden border border-zinc-200 aspect-video flex flex-col items-center justify-center relative group cursor-pointer hover:border-zinc-400 transition-all">
-                       <div className="absolute inset-0 bg-linear-to-b from-zinc-900/80 to-zinc-950/95" />
-                       <div className="relative z-10 flex flex-col items-center gap-4">
-                          <div className="w-16 h-16 rounded-full bg-white/10 border-2 border-white/20 flex items-center justify-center group-hover:bg-white/20 group-hover:scale-110 transition-all">
-                             <Play className="w-6 h-6 text-white ml-0.5" />
-                          </div>
-                          <div className="text-center">
-                             <p className="text-[10px] font-black uppercase tracking-widest text-zinc-400 mb-1">Video Guide</p>
-                             <p className="text-sm font-bold text-white">{current.videoLabel}</p>
-                          </div>
-                       </div>
-                       <div className="absolute bottom-3 right-3 z-10">
-                          <div className="flex items-center gap-1.5 text-[9px] font-bold uppercase tracking-widest text-zinc-500">
-                             <Monitor className="w-3 h-3" />
-                             Coming Soon
-                          </div>
-                       </div>
+                    {/* Video Player / Placeholder */}
+                    <div className="bg-zinc-950 rounded-2xl overflow-hidden border border-zinc-200 aspect-video flex flex-col items-center justify-center relative">
+                       {hasPlayableVideo ? (
+                         <video
+                           key={current.videoSrc}
+                           src={current.videoSrc}
+                           controls
+                           playsInline
+                           preload="metadata"
+                           aria-label={current.videoLabel}
+                           onError={() => setFailedVideos((prev) => ({ ...prev, [current.id]: true }))}
+                           className="w-full h-full object-contain bg-zinc-950"
+                         />
+                       ) : (
+                         <>
+                           <div className="absolute inset-0 bg-linear-to-b from-zinc-900/80 to-zinc-950/95" />
+                           <div className="relative z-10 flex flex-col items-center gap-4">
+                              <div className="w-16 h-16 rounded-full bg-white/10 border-2 border-white/20 flex items-center justify-center">
+                                 <Play className="w-6 h-6 text-white ml-0.5" />
+                              </div>
+                              <div className="text-center">
+                                 <p className="text-[10px] font-black uppercase tracking-widest text-zinc-400 mb-1">Video Guide</p>
+                                 <p className="text-sm font-bold text-white">{current.videoLabel}</p>
+                              </div>
+                           </div>
+                           <div className="absolute bottom-3 right-3 z-10">
+                              <div className="flex items-center gap-1.5 text-[9px] font-bold uppercase tracking-widest text-zinc-300">
+                                 <Monitor className="w-3 h-3" />
+                                 Coming Soon
+                              </div>
+                           </div>
+                         </>
+                       )}
                     </div>
 
-                    <div className="bg-zinc-50 rounded-2xl p-6 border border-zinc-100">
-                       <h4 className="text-[10px] font-black uppercase tracking-wider text-zinc-400 mb-4 flex items-center gap-2">
+                    <div className="bg-zinc-50 rounded-2xl p-6 border border-zinc-200">
+                       <h4 className="text-[10px] font-black uppercase tracking-wider text-zinc-600 mb-4 flex items-center gap-2">
                           <ShieldCheck className="w-3 h-3" /> Access Control
                        </h4>
-                       <p className="text-xs text-zinc-500 font-medium">
+                       <p className="text-xs text-zinc-700 font-medium">
                           {current.id === 'intro' && 'Active Pro uses role-based access control. Admins have full access, while Secretaries, Agents, and Staff see only the modules relevant to their responsibilities.'}
                           {current.id === 'admin' && 'Only users with the Admin role can access the Admin Panel. This provides system-wide visibility and management controls.'}
                           {current.id === 'dashboard' && 'Analytics is accessible to Admin users and reports on Active Pro order and fulfillment performance.'}
                           {current.id === 'inventory' && 'Inventory is visible to all roles. Stock adjustments require Admin access or a specific delegation from the Staff Delegation panel.'}
-                          {current.id === 'orders' && 'Order Entry is available to all roles. Agents can create and manage their own orders, while Admins and Secretaries can view all orders system-wide.'}
+                          {current.id === 'supply-chain' && 'Supply Chain access is scoped by staff permissions across Customers, Suppliers, Warehouses, and Categories. Admins manage all directories while delegated staff view or edit assigned tabs.'}
+                          {current.id === 'orders' && 'Order Entry access is managed by role and Staff Delegation permissions. Admins and Secretaries view and manage orders system-wide, Agents manage their own orders, and Staff receive View or Create access when delegated.'}
                           {current.id === 'transport' && 'Inventory Movement is available to Admin and Secretary roles for recording supplier receipts and warehouse transfers.'}
-                          {current.id === 'finance' && 'The Financials module is Admin-only. It contains sensitive revenue and expense data used for business decision-making.'}
+                          {current.id === 'finance' && 'Financials access is controlled by role and Staff Delegation permissions. Admins have full access to P&L statements and exports, while Secretaries and delegated staff with Expense Entry access can log operational expenses.'}
                           {current.id === 'logistics' && 'The Logistics Optimizer is available to Admin and Secretary roles for reviewing and applying AI-driven operational recommendations.'}
-                          {current.id === 'pricelist' && 'The Pricelist is visible to all roles. Editing privileges require Admin access or a pricelist delegation from Staff Delegation.'}
+                          {current.id === 'pricelist' && 'The Pricelist is visible to all roles with price-tier visibility controlled by permissions. Creating or editing pricelists requires Admin access or pricelist edit delegation from Staff Delegation.'}
                           {current.id === 'delegation' && 'Staff Delegation is Admin-only. It controls which staff members receive elevated permissions for Inventory and Pricelist modules.'}
-                          {current.id === 'settings' && 'Settings is available to all roles. Users can manage their own profile, theme preferences, and view system status.'}
+                          {current.id === 'settings' && 'Settings is available to all roles for managing account profile details and Light/Dark theme preferences. Live System Activity feeds and Automated SQL Database Backups are restricted to Admins.'}
                        </p>
                     </div>
                  </motion.div>
@@ -278,22 +333,25 @@ export const TutorialOverlay = ({ open, onOpenChange }: { open: boolean, onOpenC
             </div>
 
             <div className="mt-8 flex items-center justify-between pt-6 border-t border-zinc-100">
-               <div className="flex gap-1">
-                  {TUTORIAL_PAGES.map((_, i) => (
-                    <div 
-                      key={i} 
-                      className={`h-1 rounded-full transition-all cursor-pointer ${i === currentPage ? 'w-6 bg-zinc-900' : 'w-2 bg-zinc-200 hover:bg-zinc-400'}`} 
+               <div className="flex gap-1.5 items-center">
+                  {TUTORIAL_PAGES.map((page, i) => (
+                    <button
+                      key={page.id}
+                      type="button"
+                      aria-label={`Go to ${page.title} (${i + 1} of ${TUTORIAL_PAGES.length})`}
+                      aria-current={i === currentPage ? 'step' : undefined}
+                      className={`h-1.5 rounded-full transition-all cursor-pointer ${i === currentPage ? 'w-6 bg-zinc-900' : 'w-2 bg-zinc-300 hover:bg-zinc-400'}`}
                       onClick={() => setCurrentPage(i)}
                     />
                   ))}
                </div>
                
                <div className="flex gap-2">
-                  <Button variant="ghost" onClick={prevPage} disabled={currentPage === 0} className="text-[10px] font-black uppercase"><ChevronLeft className="w-4 h-4 mr-1" /> Prev</Button>
+                  <Button type="button" variant="ghost" onClick={prevPage} disabled={currentPage === 0} className="text-[10px] font-black uppercase text-zinc-700 hover:text-zinc-900 hover:bg-zinc-100"><ChevronLeft className="w-4 h-4 mr-1" /> Prev</Button>
                   {currentPage === TUTORIAL_PAGES.length - 1 ? (
-                    <Button onClick={() => onOpenChange(false)} className="bg-zinc-900 text-white text-[10px] font-black uppercase px-6">Finish Guide</Button>
+                    <Button type="button" onClick={() => onOpenChange(false)} className="bg-zinc-900 text-white text-[10px] font-black uppercase px-6">Finish Guide</Button>
                   ) : (
-                    <Button onClick={nextPage} className="bg-zinc-900 text-white text-[10px] font-black uppercase px-6">Next Module <ChevronRight className="w-4 h-4 ml-1" /></Button>
+                    <Button type="button" onClick={nextPage} className="bg-zinc-900 text-white text-[10px] font-black uppercase px-6">Next Module <ChevronRight className="w-4 h-4 ml-1" /></Button>
                   )}
                </div>
             </div>

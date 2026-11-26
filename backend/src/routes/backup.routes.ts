@@ -9,9 +9,11 @@
  */
 
 import { Router } from 'express';
+import { requireRole } from '../middleware/rbac.middleware';
 import * as backupCtrl from '../controllers/backup.controller';
 
 const router = Router();
+router.use(requireRole(['admin', 'cmo']));
 
 router.get('/export-csv', backupCtrl.exportCsv);
 router.post('/schedule-snapshot', backupCtrl.createSnapshot);

@@ -1,7 +1,6 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
-@import "@fontsource-variable/geist";
 
 @custom-variant dark (&:is(.dark *));
 
@@ -77,7 +76,7 @@
     --secondary:            #f0ede6;
     --secondary-foreground: #302f2f;
     --muted:                #f0ede6;
-    --muted-foreground:     #7a7672;
+    --muted-foreground:     #5f5b57;
     --accent:               #fdd001;
     --accent-foreground:    #302f2f;
     --destructive:          oklch(0.577 0.245 27.325);
@@ -117,7 +116,7 @@
     --secondary:            #1f2c3d;          /* slightly lighter navy   */
     --secondary-foreground: #ffffff;
     --muted:                #1f2c3d;
-    --muted-foreground:     rgba(255,255,255,0.45);
+    --muted-foreground:     rgba(255,255,255,0.72);
 
     /* ── Accents ── */
     --accent:               #fdd001;
@@ -127,7 +126,7 @@
     --destructive:          oklch(0.704 0.191 22.216);
 
     /* ── Borders & inputs ── */
-    --border:               #302f2f;          /* charcoal — 1px dividers */
+    --border:               #334155;          /* slate — 1px dividers   */
     --input:                #1f2c3d;
     --ring:                 #fdd001;
 
@@ -151,13 +150,19 @@
 
 @layer base {
   * {
-    @apply border-border outline-ring/50;
+    border-color: var(--border);
+    outline-color: var(--ring);
+    @supports (color: color-mix(in oklab, red, red)) {
+      outline-color: color-mix(in oklab, var(--ring) 50%, transparent);
+    }
   }
   body {
-    @apply bg-background text-foreground;
+    background-color: var(--background);
+    color: var(--foreground);
   }
   html {
-    @apply font-sans;
+    font-family: var(--font-sans);
+    scrollbar-gutter: stable;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     text-rendering: optimizeLegibility;
@@ -178,11 +183,11 @@
     box-shadow: none !important;
   }
 
-  /* Dark mode card: ensure navy bg + charcoal border */
+  /* Dark mode card: ensure navy bg + crisp slate border */
   .dark .card,
   .dark [data-slot="card"] {
     background-color: #1A2332;
-    border-color: #302f2f;
+    border-color: var(--border);
   }
 }
 
@@ -190,8 +195,10 @@
 input[type="number"]::-webkit-inner-spin-button,
 input[type="number"]::-webkit-outer-spin-button {
   -webkit-appearance: none;
+  appearance: none;
   margin: 0;
 }
 input[type="number"] {
   -moz-appearance: textfield;
+  appearance: textfield;
 }

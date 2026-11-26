@@ -21,6 +21,10 @@ test('overdue requires an actual due date and a positive known balance', () => {
   assert.equal(isOverdue({ ...transaction, dueDate: '2026-10-01' }, now), false);
   assert.equal(isOverdue({ ...transaction, dueDate: '2026-09-01', remaining: 0 }, now), false);
   assert.equal(isOverdue({ ...transaction, dueDate: '2026-09-01', remaining: null }, now), false);
+  assert.equal(isOverdue({ ...transaction, dueDate: '2026-09-01', status: 'cancelled' }, now), false);
+  assert.equal(isOverdue({ ...transaction, dueDate: '2026-09-01', status: 'escalated' }, now), false);
+  // Date-only dueDate is evaluated at Manila EOD (23:59:59+08:00), so 2026-09-19T12:00:00Z (20:00 PHT) is not overdue yet
+  assert.equal(isOverdue({ ...transaction, dueDate: '2026-09-19' }, now), false);
 });
 
 test('only supported original transactions expose settlement actions', () => {

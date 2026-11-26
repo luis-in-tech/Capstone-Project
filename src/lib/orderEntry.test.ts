@@ -8,6 +8,7 @@ import {
   priceLabels,
   productPrices,
   receiptPages,
+  roundMoney,
   type ReceiptOrder,
 } from "./orderEntry";
 import type { Product } from "../types";
@@ -163,5 +164,30 @@ test("existing customers includes supply chain customers and preserves their det
     contact: "Jane",
     phone: "09170000000",
   });
+});
+
+test("existing customers trim clientName, address, and paymentTerms consistently", () => {
+  const list = existingCustomers([
+    {
+      clientId: "cli-trim",
+      clientName: "  Trimmed Cycle Shop  ",
+      deliveryRegion: "Luzon",
+      receiptDetails: { address: "  45 Rizal St  ", paymentTerms: "  15 Days  " },
+    } as ReceiptOrder,
+  ]);
+  assert.deepEqual(list[0], {
+    id: "cli-trim",
+    name: "Trimmed Cycle Shop",
+    address: "45 Rizal St",
+    region: "Luzon",
+    terms: "15 Days",
+  });
+});
+
+test("roundMoney rounds half-cents symmetrically without binary float drift", () => {
+  assert.equal(roundMoney(35.855), 35.86);
+  assert.equal(roundMoney(-35.855), -35.86);
+  assert.equal(roundMoney(1.005), 1.01);
+  assert.equal(roundMoney(-0.001), 0);
 });
 

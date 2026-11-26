@@ -36,7 +36,7 @@ export function dateValue(value: unknown): string {
 
 // Payment status alone cannot establish a partially paid balance.
 export function orderBalance(order: Order & { remainingBalance?: number }): number | null {
-  if (order.status === 'cancelled' || order.paymentStatus === 'paid') return 0;
+  if (order.status === 'cancelled' || order.status === 'escalated' || order.paymentStatus === 'paid') return 0;
   if (order.remainingBalance != null && Number.isFinite(Number(order.remainingBalance))) return Math.max(0, Number(order.remainingBalance));
   if (order.amountPaid != null && Number.isFinite(Number(order.amountPaid)) && Number(order.amountPaid) > 0) {
     return Math.max(0, (Number(order.totalAmount) || 0) - Number(order.amountPaid));
@@ -46,11 +46,17 @@ export function orderBalance(order: Order & { remainingBalance?: number }): numb
 }
 
 export function isOverdue(row: ChainTransaction, now = Date.now()) {
-  return row.remaining != null && row.remaining > 0 && !!row.dueDate && new Date(row.dueDate).getTime() < now;
+  if (row.status === 'cancelled' || row.status === 'escalated') return false;
+  if (row.remaining == null || row.remaining <= 0 || !row.dueDate) return false;
+  const rawDue = row.dueDate.trim();
+  const dueMs = /^\d{4}-\d{2}-\d{2}$/.test(rawDue)
+    ? new Date(`${rawDue}T23:59:59+08:00`).getTime()
+    : new Date(rawDue).getTime();
+  return dueMs < now;
 }
 
 export function supportsAction(row: ChainTransaction | undefined, action: 'payment' | 'refund') {
-  if (!row || !['Order', 'Purchase'].includes(row.type) || row.status === 'cancelled' || row.draft) return false;
+  if (!row || !['Order', 'Purchase'].includes(row.type) || row.status === 'cancelled' || row.status === 'escalated' || row.draft) return false;
   return action === 'payment' ? row.remaining === null || row.remaining > 0 : (row.amount ?? 0) > 0;
 }
 

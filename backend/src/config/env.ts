@@ -64,3 +64,8 @@ if (!_parsed.success) {
 
 /** Fully validated, typed environment config. Import this instead of process.env. */
 export const env = _parsed.data;
+
+if (env.NODE_ENV === 'production' && (!env.API_SECRET || env.API_SECRET.trim().length < 16)) {
+  console.error('❌  FATAL: API_SECRET must be at least 16 characters when NODE_ENV=production.');
+  process.exit(1);
+}

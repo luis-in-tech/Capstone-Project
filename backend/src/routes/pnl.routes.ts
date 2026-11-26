@@ -12,9 +12,11 @@
  */
 
 import { Router } from 'express';
+import { financeGuard } from '../middleware/rbac.middleware';
 import * as pnlCtrl from '../controllers/pnl.controller';
 
 const router = Router();
+router.use(financeGuard);
 
 router.get('/today', pnlCtrl.getTodayPulse);
 router.get('/summary', pnlCtrl.getPnLSummary);

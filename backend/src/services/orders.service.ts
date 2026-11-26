@@ -7,6 +7,7 @@
  */
 
 import { AppError } from '../middleware/errorHandler';
+import { notifyOrderMutation } from './pnl.service';
 import {
   OrderDto,
   OrderItemDto,
@@ -34,7 +35,16 @@ export async function createOrder(payload: CreateOrderPayload): Promise<{ order:
     throw new AppError(400, 'VALIDATION_ERROR', 'At least one line item is required.');
   }
 
-  const orderId = payload.requestId || `ord_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+  const normalizedRequestId = payload.requestId?.trim();
+  if (normalizedRequestId) {
+    const existing = ordersStore.get(normalizedRequestId);
+    if (existing) {
+      const items = Array.from(orderItemsStore.values()).filter((i) => i.orderId === normalizedRequestId);
+      return { order: { ...existing, items }, items };
+    }
+  }
+
+  const orderId = normalizedRequestId || `ord_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
   const orderNumber = `ORD-${orderId.slice(-8).toUpperCase()}`;
   const now = new Date().toISOString();
   const region = payload.deliveryRegion || 'Metro Manila';
@@ -42,38 +52,38 @@ export async function createOrder(payload: CreateOrderPayload): Promise<{ order:
     Date.now() + (region === 'Metro Manila' ? 7 : 14) * 24 * 60 * 60 * 1000
   ).toISOString();
 
-  // Validate items and calculate subtotal
-  let subtotal = 0;
+  // Validate items and calculate subtotal in integer cents before mutating stores
+  let subtotalCents = 0;
   const createdItems: OrderItemDto[] = [];
   const skus: string[] = [];
 
   for (let idx = 0; idx < payload.items.length; idx++) {
     const raw = payload.items[idx];
-    if (!raw.productId) {
+    if (!raw.productId || typeof raw.productId !== 'string' || raw.productId.trim().length === 0) {
       throw new AppError(400, 'VALIDATION_ERROR', `Item at position ${idx + 1} is missing productId.`);
     }
-    if (!Number.isFinite(raw.quantity) || raw.quantity <= 0) {
-      throw new AppError(400, 'VALIDATION_ERROR', `Quantity for item ${raw.name || raw.sku} must be at least 1.`);
+    if (!Number.isInteger(raw.quantity) || raw.quantity <= 0) {
+      throw new AppError(400, 'VALIDATION_ERROR', `Quantity for item ${raw.name || raw.sku} must be a positive whole number.`);
     }
     if (!Number.isFinite(raw.unitPrice) || raw.unitPrice < 0) {
       throw new AppError(400, 'VALIDATION_ERROR', `Unit price for item ${raw.name || raw.sku} cannot be negative.`);
     }
 
-    const itemSubtotal = Math.round(raw.quantity * raw.unitPrice * 100) / 100;
-    subtotal += itemSubtotal;
+    const itemSubtotalCents = Math.round(raw.quantity * raw.unitPrice * 100);
+    subtotalCents += itemSubtotalCents;
     if (raw.sku) skus.push(raw.sku);
 
     const itemId = `item_${orderId}_${idx}`;
     const orderItem: OrderItemDto = {
       id: itemId,
       orderId,
-      productId: raw.productId,
+      productId: raw.productId.trim(),
       warehouseId: raw.warehouseId || 'wh-default',
       sku: raw.sku || '',
       name: raw.name || 'Unnamed Product',
       quantity: raw.quantity,
       unitPrice: raw.unitPrice,
-      subtotal: itemSubtotal,
+      subtotal: itemSubtotalCents / 100,
       entryDetails: {
         priceType: raw.priceType,
         prices: raw.prices,
@@ -83,15 +93,24 @@ export async function createOrder(payload: CreateOrderPayload): Promise<{ order:
       },
     };
 
-    orderItemsStore.set(itemId, orderItem);
     createdItems.push(orderItem);
   }
 
-  const discount = Number(payload.discount || 0);
-  if (!Number.isFinite(discount) || discount < 0 || discount > subtotal) {
+  const subtotal = subtotalCents / 100;
+  const rawDiscount = payload.discount ?? 0;
+  if (typeof rawDiscount !== 'number' || !Number.isFinite(rawDiscount) || rawDiscount < 0) {
+    throw new AppError(400, 'VALIDATION_ERROR', 'Discount cannot be negative or non-finite.');
+  }
+  const discountCents = Math.round(rawDiscount * 100);
+  if (discountCents > subtotalCents) {
     throw new AppError(400, 'VALIDATION_ERROR', 'Discount cannot be negative or exceed order subtotal.');
   }
-  const totalAmount = Math.max(0, Math.round((subtotal - discount) * 100) / 100);
+  const discount = discountCents / 100;
+  const rawOrderDiscount = payload.orderDiscount ?? 0;
+  if (typeof rawOrderDiscount !== 'number' || !Number.isFinite(rawOrderDiscount) || rawOrderDiscount < 0) {
+    throw new AppError(400, 'VALIDATION_ERROR', 'Order discount cannot be negative or non-finite.');
+  }
+  const totalAmount = Math.max(0, subtotalCents - discountCents) / 100;
 
   const trimmedAddress = payload.address.trim();
   const addressParts = trimmedAddress.split(',');
@@ -133,6 +152,9 @@ export async function createOrder(payload: CreateOrderPayload): Promise<{ order:
     items: createdItems,
   };
 
+  for (const orderItem of createdItems) {
+    orderItemsStore.set(orderItem.id, orderItem);
+  }
   ordersStore.set(orderId, order);
   return { order, items: createdItems };
 }
@@ -191,7 +213,10 @@ export async function getCustomerTransactions(customerName: string): Promise<{
   orders: OrderDto[];
   totalBalance: number;
 }> {
-  const searchName = customerName.toLowerCase().trim();
+  const searchName = (customerName || '').toLowerCase().trim();
+  if (!searchName) {
+    throw new AppError(400, 'VALIDATION_ERROR', 'Customer name is required.');
+  }
   const matchingOrders = Array.from(ordersStore.values()).filter(
     (o) => o.clientName.toLowerCase().trim() === searchName
   );
@@ -203,7 +228,10 @@ export async function getCustomerTransactions(customerName: string): Promise<{
     return { ...o, items };
   });
 
-  const totalBalance = populated.reduce((sum, o) => sum + (o.paymentStatus === 'unpaid' ? o.totalAmount : 0), 0);
+  const totalBalance = populated.reduce(
+    (sum, o) => sum + (o.status !== 'cancelled' && o.paymentStatus === 'unpaid' ? o.totalAmount : 0),
+    0
+  );
 
   return {
     customer: {
@@ -232,7 +260,7 @@ export async function cancelOrder(
     throw new AppError(400, 'INVALID_STATE', `Order "${order.orderNumber}" is already cancelled.`);
   }
 
-  if (order.status === 'delivered') {
+  if (order.status === 'delivered' || (order.status as string) === 'completed') {
     throw new AppError(
       400,
       'INVALID_STATE',
@@ -263,13 +291,56 @@ export async function cancelOrder(
 }
 
 /**
+ * Transitions order fulfillment or payment status and broadcasts P&L telemetry.
+ */
+export async function updateOrderStatus(
+  orderId: string,
+  payload: { status?: 'pending' | 'in_transit' | 'delivered'; paymentStatus?: 'paid' | 'unpaid' | 'partial'; updatedBy?: string; note?: string }
+): Promise<OrderDto> {
+  const order = ordersStore.get(orderId);
+  if (!order) {
+    throw new AppError(404, 'NOT_FOUND', `Order "${orderId}" not found.`);
+  }
+  if (order.status === 'cancelled') {
+    throw new AppError(400, 'INVALID_STATE', `Order "${order.orderNumber}" is cancelled and cannot be updated.`);
+  }
+  const now = new Date().toISOString();
+  if (payload.status && payload.status !== order.status) {
+    order.status = payload.status;
+    order.statusHistory.push({
+      status: payload.status,
+      changedBy: payload.updatedBy?.trim() || 'System',
+      timestamp: now,
+      note: payload.note?.trim() || `Order status updated to "${payload.status}".`,
+    });
+  }
+  if (payload.paymentStatus) {
+    order.paymentStatus = payload.paymentStatus;
+  }
+  order.updatedAt = now;
+  ordersStore.set(orderId, order);
+  await notifyOrderMutation();
+  const items = Array.from(orderItemsStore.values()).filter((i) => i.orderId === orderId);
+  return { ...order, items };
+}
+
+/**
  * Returns all orders in the system for reporting and automated backups.
  */
 export function getAllOrders(): OrderDto[] {
-  return Array.from(ordersStore.values()).map((o) => {
-    const items = Array.from(orderItemsStore.values()).filter((i) => i.orderId === o.id);
-    return { ...o, items };
-  });
+  const itemsByOrder = new Map<string, OrderItemDto[]>();
+  for (const item of orderItemsStore.values()) {
+    const list = itemsByOrder.get(item.orderId);
+    if (list) {
+      list.push(item);
+    } else {
+      itemsByOrder.set(item.orderId, [item]);
+    }
+  }
+  return Array.from(ordersStore.values()).map((o) => ({
+    ...o,
+    items: itemsByOrder.get(o.id) ?? [],
+  }));
 }
 
 /**

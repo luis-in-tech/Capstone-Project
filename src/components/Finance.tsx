@@ -1,41 +1,38 @@
 import { PageHeading } from './PageHeading';
-import React, { useState, useEffect } from 'react';
+import React, { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import { db } from '../lib/supabaseAdapter';
 import { collection, onSnapshot, addDoc, query, orderBy, serverTimestamp, updateDoc, doc } from '../lib/supabaseAdapter';
 import { Expense, Order, ExpenseCategory } from '../types';
 import { handleSupabaseError, OperationType } from '../lib/supabaseErrorHandler';
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter, DialogDescription } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from '@/components/ui/dialog';
 import {
   TrendUpIcon as TrendingUp,
   TrendDownIcon as TrendingDown,
   WalletIcon as Wallet,
   PlusIcon as Plus,
   ArrowUpRightIcon as ArrowUpRight,
-  ArrowDownRightIcon as ArrowDownRight,
   FileTextIcon as FileText,
   ChartPieIcon as PieChartIcon,
   ChartBarIcon as BarChartIcon,
   GearIcon as Settings,
   PencilSimpleIcon as Edit2,
-  ArchiveIcon as Archive,
   ArrowsCounterClockwiseIcon as RefreshCcw,
   TrashIcon as Trash2,
   CaretUpIcon as ChevronUp,
   CaretDownIcon as ChevronDown,
+  CaretLeftIcon as ChevronLeft,
+  CaretRightIcon as ChevronRight,
   ArrowsDownUpIcon as ArrowUpDown,
   DownloadIcon as Download,
   CalendarIcon as Calendar,
   FileXlsIcon as FileSpreadsheet,
   PrinterIcon as Printer,
-  PulseIcon as Activity,
-  StackIcon as Layers,
   UploadSimpleIcon as Upload,
   FileArrowUpIcon as FileUp,
   CheckCircleIcon as CheckCircle2,
@@ -44,7 +41,7 @@ import {
   CheckIcon as Check,
   MagnifyingGlassIcon as SearchIcon
 } from '@phosphor-icons/react';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, PieChart, Pie, Cell, LineChart, Line } from 'recharts';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, LineChart, Line } from 'recharts';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import { useAuth } from '../hooks/useAuth';
@@ -160,8 +157,27 @@ function generatePacedDays(year: number, monthIdx: number, totalRev: number, tot
   return points;
 }
 
+function isOperationalExpenseRecord(expense: Expense): boolean {
+  if ((expense as any).type === 'income') return false;
+  const cat = (expense.category || '').trim().toLowerCase();
+  if (cat === 'supply chain ledger') return false;
+  if ((expense.description || '').trim().toLowerCase().startsWith('purchase refund')) return false;
+  return true;
+}
+
+const parseDate = (d: any): Date | null => {
+  if (!d) return null;
+  if (typeof d?.toDate === 'function') return d.toDate();
+  if (d instanceof Date) return isNaN(d.getTime()) ? null : d;
+  if (typeof d === 'string' || typeof d === 'number') {
+    const parsed = new Date(d);
+    return isNaN(parsed.getTime()) ? null : parsed;
+  }
+  return null;
+};
+
 // Custom Tooltip for Financial Trajectory
-const CustomTrajectoryTooltip = ({ active, payload, label }: any) => {
+const CustomTrajectoryTooltip = memo(function CustomTrajectoryTooltip({ active, payload, label }: any) {
   if (!active || !payload || !payload.length) return null;
   const rev = payload.find((p: any) => p.dataKey === 'Revenue')?.value || 0;
   const exp = payload.find((p: any) => p.dataKey === 'Expenses')?.value || 0;
@@ -203,7 +219,7 @@ const CustomTrajectoryTooltip = ({ active, payload, label }: any) => {
       </div>
     </div>
   );
-};
+});
 
 // ── Financial CSV Import Parser & Modal ───────────────────────────────────────
 function parseCSV(text: string): { headers: string[]; rows: Record<string, string>[] } {
@@ -334,7 +350,7 @@ interface FinancialImportModalProps {
   categories: ExpenseCategory[];
 }
 
-function FinancialImportModal({ isOpen, onClose, categories }: FinancialImportModalProps) {
+const FinancialImportModal = memo(function FinancialImportModal({ isOpen, onClose, categories }: FinancialImportModalProps) {
   const [file, setFile] = useState<File | null>(null);
   const [importType, setImportType] = useState<'auto' | 'expenses' | 'orders'>('auto');
   const [parsedRows, setParsedRows] = useState<any[]>([]);
@@ -511,7 +527,8 @@ function FinancialImportModal({ isOpen, onClose, categories }: FinancialImportMo
       if (!open) resetState();
       onClose();
     }}>
-      <DialogContent className="sm:max-w-180 max-h-[90vh] flex flex-col p-5 rounded-sm border border-border shadow-md">
+      {isOpen ? (
+        <DialogContent className="sm:max-w-180 max-h-[90vh] flex flex-col p-5 rounded-sm border border-border shadow-md">
         <DialogHeader className="pb-3 border-b border-border">
           <div className="flex items-center gap-2">
             <div className="p-1.5 rounded-sm bg-emerald-500/10 text-emerald-600">
@@ -721,10 +738,1483 @@ function FinancialImportModal({ isOpen, onClose, categories }: FinancialImportMo
             )}
           </Button>
         </DialogFooter>
-      </DialogContent>
+        </DialogContent>
+      ) : null}
     </Dialog>
   );
+});
+
+const ORDER_PICKER_LIMIT = 60;
+const LEDGER_PAGE_SIZE = 25;
+
+const PIE_COLORS = [
+  '#f59e0b', // Amber
+  '#10b981', // Emerald
+  '#3b82f6', // Sapphire Blue
+  '#8b5cf6', // Violet
+  '#ec4899', // Pink
+  '#06b6d4', // Cyan
+  '#f97316', // Orange
+  '#6366f1', // Indigo
+  '#14b8a6', // Teal
+  '#84cc16', // Lime
+];
+
+type SortKey = 'date' | 'category' | 'amount' | 'orderId';
+type SortDirection = 'asc' | 'desc';
+
+interface IndexedOrder {
+  order: Order;
+  searchText: string;
 }
+
+interface IndexedExpense {
+  expense: Expense;
+  dateMs: number;
+  dateLabel: string;
+  linkedOrderNumber: string | null;
+}
+
+interface ActivePLData {
+  title: string;
+  subtitle: string;
+  badgeText: string;
+  badgeVariant: 'audited' | 'live' | 'consolidated';
+  colHeaders: string[];
+  rows: TablePLRow[];
+}
+
+interface ChartPoint {
+  name: string;
+  Revenue: number;
+  Expenses: number;
+  Net: number;
+}
+
+interface TrajectoryPoint extends ChartPoint {
+  fullDate: string;
+}
+
+interface PieSlice {
+  name: string;
+  value: number;
+  isActive: boolean;
+}
+
+const OrderPickerField = memo(function OrderPickerField({
+  id,
+  value,
+  onChange,
+  sortedOrders,
+  ordersById,
+  noneLabel,
+}: {
+  id: string;
+  value: string;
+  onChange: (orderId: string) => void;
+  sortedOrders: IndexedOrder[];
+  ordersById: Map<string, Order>;
+  noneLabel: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState('');
+
+  const selectedOrder = value !== 'none' ? ordersById.get(value) : undefined;
+
+  const filteredOrders = useMemo(() => {
+    if (!open) return [];
+    const q = search.trim().toLowerCase();
+    return q ? sortedOrders.filter(item => item.searchText.includes(q)) : sortedOrders;
+  }, [open, sortedOrders, search]);
+
+  const visibleOrders = useMemo(
+    () => filteredOrders.slice(0, ORDER_PICKER_LIMIT),
+    [filteredOrders],
+  );
+
+  return (
+    <>
+      <input type="hidden" name="orderId" value={value} />
+      <Popover
+        open={open}
+        onOpenChange={nextOpen => {
+          setOpen(nextOpen);
+          if (!nextOpen) setSearch('');
+        }}
+      >
+        <PopoverTrigger
+          render={
+            <Button
+              id={id}
+              type="button"
+              variant="outline"
+              className="w-full justify-between rounded-sm border-border h-8 text-xs font-normal bg-background px-3 hover:bg-muted/50"
+            />
+          }
+          role="combobox"
+          aria-expanded={open}
+        >
+          <span className={`truncate ${value === 'none' || !selectedOrder ? 'text-muted-foreground' : 'text-foreground font-semibold'}`}>
+            {value !== 'none' && selectedOrder
+              ? `${selectedOrder.orderNumber} - ${selectedOrder.clientName}`
+              : 'No order linked'}
+          </span>
+          <ChevronDown className="w-3.5 h-3.5 shrink-0 opacity-50 ml-1" />
+        </PopoverTrigger>
+        <PopoverContent className="w-(--anchor-width,340px) min-w-70 p-2 bg-popover rounded-sm border border-border shadow-md" align="start">
+          {open && (
+            <>
+              <div className="relative mb-2">
+                <SearchIcon className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground pointer-events-none" />
+                <Input
+                  autoFocus
+                  placeholder="Search by order # or client name..."
+                  value={search}
+                  onChange={e => setSearch(e.target.value)}
+                  className="h-8 pl-8 text-xs rounded-sm border-border"
+                />
+              </div>
+              <div className="max-h-56 overflow-y-auto space-y-0.5">
+                <button
+                  type="button"
+                  className={`flex w-full items-center justify-between rounded-sm px-2.5 py-1.5 text-xs text-left cursor-pointer transition-colors ${
+                    value === 'none' ? 'bg-primary/10 text-primary font-bold' : 'hover:bg-muted text-foreground font-medium'
+                  }`}
+                  onClick={() => {
+                    onChange('none');
+                    setOpen(false);
+                    setSearch('');
+                  }}
+                >
+                  <span>{noneLabel}</span>
+                  {value === 'none' && <Check className="w-3.5 h-3.5 text-primary shrink-0" />}
+                </button>
+                {visibleOrders.map(({ order }) => (
+                  <button
+                    key={order.id}
+                    type="button"
+                    className={`flex w-full items-center justify-between rounded-sm px-2.5 py-1.5 text-xs text-left cursor-pointer transition-colors ${
+                      value === order.id ? 'bg-primary/10 text-primary font-bold' : 'hover:bg-muted text-foreground font-medium'
+                    }`}
+                    onClick={() => {
+                      onChange(order.id);
+                      setOpen(false);
+                      setSearch('');
+                    }}
+                  >
+                    <span className="truncate">{order.orderNumber} - {order.clientName}</span>
+                    {value === order.id && <Check className="w-3.5 h-3.5 text-primary shrink-0" />}
+                  </button>
+                ))}
+                {filteredOrders.length > ORDER_PICKER_LIMIT && (
+                  <p className="px-2.5 py-1.5 text-[10px] text-center text-muted-foreground">
+                    Showing first {ORDER_PICKER_LIMIT} of {filteredOrders.length} orders — type to narrow
+                  </p>
+                )}
+                {filteredOrders.length === 0 && search.trim() !== '' && (
+                  <p className="p-3 text-center text-xs text-muted-foreground">
+                    No matching orders found.
+                  </p>
+                )}
+              </div>
+            </>
+          )}
+        </PopoverContent>
+      </Popover>
+    </>
+  );
+});
+
+const RecordExpenseDialogBody = memo(function RecordExpenseDialogBody({
+  activeCategories,
+  sortedOrders,
+  ordersById,
+  onSubmit,
+}: {
+  activeCategories: ExpenseCategory[];
+  sortedOrders: IndexedOrder[];
+  ordersById: Map<string, Order>;
+  onSubmit: (e: React.FormEvent<HTMLFormElement>) => Promise<boolean>;
+}) {
+  const [selectedOrderId, setSelectedOrderId] = useState<string>('none');
+  const [todayDate] = useState(() => new Date().toISOString().split('T')[0]);
+
+  return (
+    <form onSubmit={onSubmit} className="space-y-3.5 pt-3 font-sans">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div className="space-y-1">
+          <Label htmlFor="expense-category" className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Category</Label>
+          <Select name="category" required>
+            <SelectTrigger id="expense-category" className="rounded-sm border-border h-8 text-xs">
+              <SelectValue placeholder="Classification" />
+            </SelectTrigger>
+            <SelectContent className="rounded-sm">
+              {activeCategories.map(cat => (
+                <SelectItem key={cat.id} value={cat.name} className="text-xs font-semibold uppercase tracking-wider">{cat.name}</SelectItem>
+              ))}
+              {activeCategories.length === 0 && (
+                <div className="p-2 text-[10px] text-muted-foreground italic font-medium uppercase tracking-tight">No active categories.</div>
+              )}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="space-y-1">
+          <Label htmlFor="expense-date" className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Expense Date</Label>
+          <Input id="expense-date" name="date" type="date" defaultValue={todayDate} required className="rounded-sm border-border h-8 text-xs font-mono" />
+        </div>
+      </div>
+
+      <div className="space-y-1">
+        <Label htmlFor="expense-amount" className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Amount (₱)</Label>
+        <div className="relative">
+          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground font-mono font-bold text-xs">₱</span>
+          <Input id="expense-amount" name="amount" type="number" step="0.01" required placeholder="0.00" className="rounded-sm border-border h-8 pl-6 font-mono font-bold tabular-nums text-xs" />
+        </div>
+      </div>
+
+      <div className="space-y-1">
+        <Label htmlFor="expense-description" className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Description</Label>
+        <Input id="expense-description" name="description" placeholder="Operational details..." className="rounded-sm border-border h-8 text-xs" />
+      </div>
+
+      <div className="space-y-1">
+        <Label htmlFor="expense-order" className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Linked Order (Optional)</Label>
+        <OrderPickerField
+          id="expense-order"
+          value={selectedOrderId}
+          onChange={setSelectedOrderId}
+          sortedOrders={sortedOrders}
+          ordersById={ordersById}
+          noneLabel="None / General"
+        />
+        <p className="text-[9px] text-muted-foreground font-medium italic">Link this expense to a specific B2B order for job-costing.</p>
+      </div>
+
+      <DialogFooter className="pt-2">
+        <Button type="submit" className="w-full h-8 bg-[#1A2332] text-white font-bold uppercase tracking-wider text-xs rounded-sm hover:bg-[#1A2332]/90 shadow-none" disabled={activeCategories.length === 0}>
+          Post to Ledger <ArrowUpRight className="w-3.5 h-3.5 ml-1.5" />
+        </Button>
+      </DialogFooter>
+    </form>
+  );
+});
+
+const RecordExpenseDialog = memo(function RecordExpenseDialog({
+  open,
+  onOpenChange,
+  activeCategories,
+  sortedOrders,
+  ordersById,
+  onSubmit,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  activeCategories: ExpenseCategory[];
+  sortedOrders: IndexedOrder[];
+  ordersById: Map<string, Order>;
+  onSubmit: (e: React.FormEvent<HTMLFormElement>) => Promise<boolean>;
+}) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      {open ? (
+        <DialogContent className="rounded-sm sm:max-w-xl max-w-xl border border-border shadow-lg p-6">
+          <DialogHeader className="pb-3 border-b border-border">
+            <DialogTitle className="text-base font-black uppercase tracking-wider">Record Operational Expense</DialogTitle>
+            <DialogDescription className="text-xs text-muted-foreground">Map local expenses to the centralized financial ledger.</DialogDescription>
+          </DialogHeader>
+          <RecordExpenseDialogBody
+            activeCategories={activeCategories}
+            sortedOrders={sortedOrders}
+            ordersById={ordersById}
+            onSubmit={onSubmit}
+          />
+        </DialogContent>
+      ) : null}
+    </Dialog>
+  );
+});
+
+const EditExpenseDialogBody = memo(function EditExpenseDialogBody({
+  editingExpense,
+  categories,
+  sortedOrders,
+  ordersById,
+  onSubmit,
+}: {
+  editingExpense: Expense;
+  categories: ExpenseCategory[];
+  sortedOrders: IndexedOrder[];
+  ordersById: Map<string, Order>;
+  onSubmit: (e: React.FormEvent<HTMLFormElement>) => Promise<boolean>;
+}) {
+  const [selectedOrderId, setSelectedOrderId] = useState<string>(() => editingExpense.orderId || 'none');
+
+  const defaultDateStr = useMemo(() => {
+    const dt = parseDate(editingExpense.date);
+    return (dt ?? new Date()).toISOString().split('T')[0];
+  }, [editingExpense.date]);
+
+  return (
+    <form onSubmit={onSubmit} className="space-y-3.5 pt-3 font-sans">
+      <div className="space-y-1">
+        <Label htmlFor="edit-expense-category" className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Category</Label>
+        <Select name="category" defaultValue={editingExpense.category}>
+          <SelectTrigger id="edit-expense-category" className="rounded-sm border-border h-8 text-xs">
+            <SelectValue placeholder="Select classification" />
+          </SelectTrigger>
+          <SelectContent className="rounded-sm">
+            {categories.map(cat => (
+              <SelectItem
+                key={cat.id}
+                value={cat.name}
+                disabled={!cat.isActive && editingExpense.category !== cat.name}
+                className="text-xs font-semibold"
+              >
+                {cat.name} {!cat.isActive && '(Archived)'}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+      <div className="space-y-1">
+        <Label htmlFor="edit-expense-date" className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Expense Date</Label>
+        <Input
+          id="edit-expense-date"
+          name="date"
+          type="date"
+          defaultValue={defaultDateStr}
+          required
+          className="rounded-sm border-border h-8 text-xs font-mono"
+        />
+      </div>
+      <div className="space-y-1">
+        <Label htmlFor="edit-expense-amount" className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Amount (₱)</Label>
+        <Input id="edit-expense-amount" name="amount" type="number" step="0.01" defaultValue={editingExpense.amount} required className="rounded-sm border-border h-8 text-xs font-mono font-bold tabular-nums" />
+      </div>
+      <div className="space-y-1">
+        <Label htmlFor="edit-expense-description" className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Description</Label>
+        <Input id="edit-expense-description" name="description" defaultValue={editingExpense.description} placeholder="Details about the expense..." className="rounded-sm border-border h-8 text-xs" />
+      </div>
+      <div className="space-y-1">
+        <Label htmlFor="edit-expense-orderId" className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Linked Order (Optional)</Label>
+        <OrderPickerField
+          id="edit-expense-orderId"
+          value={selectedOrderId}
+          onChange={setSelectedOrderId}
+          sortedOrders={sortedOrders}
+          ordersById={ordersById}
+          noneLabel="None / General Expense"
+        />
+      </div>
+      <DialogFooter className="pt-2">
+        <Button type="submit" className="w-full h-8 bg-[#1A2332] text-white font-bold uppercase tracking-wider text-xs rounded-sm hover:bg-[#1A2332]/90 shadow-none">Save Changes</Button>
+      </DialogFooter>
+    </form>
+  );
+});
+
+const EditExpenseDialog = memo(function EditExpenseDialog({
+  open,
+  onOpenChange,
+  editingExpense,
+  categories,
+  sortedOrders,
+  ordersById,
+  onSubmit,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  editingExpense: Expense | null;
+  categories: ExpenseCategory[];
+  sortedOrders: IndexedOrder[];
+  ordersById: Map<string, Order>;
+  onSubmit: (e: React.FormEvent<HTMLFormElement>) => Promise<boolean>;
+}) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      {open && editingExpense ? (
+        <DialogContent className="rounded-sm max-w-md border border-border shadow-lg p-5">
+          <DialogHeader className="pb-2 border-b border-border">
+            <DialogTitle className="text-sm font-black uppercase tracking-wider">Edit Expense Record</DialogTitle>
+            <DialogDescription className="text-xs text-muted-foreground">Modify existing financial expenditure data.</DialogDescription>
+          </DialogHeader>
+          <EditExpenseDialogBody
+            key={editingExpense.id}
+            editingExpense={editingExpense}
+            categories={categories}
+            sortedOrders={sortedOrders}
+            ordersById={ordersById}
+            onSubmit={onSubmit}
+          />
+        </DialogContent>
+      ) : null}
+    </Dialog>
+  );
+});
+
+const ManageCategoriesDialog = memo(function ManageCategoriesDialog({
+  open,
+  onOpenChange,
+  categories,
+  onAddCategory,
+  onEditCategory,
+  onToggleCategoryStatus,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  categories: ExpenseCategory[];
+  onAddCategory: (e: React.FormEvent<HTMLFormElement>) => Promise<boolean>;
+  onEditCategory: (category: ExpenseCategory, e: React.FormEvent<HTMLFormElement>) => Promise<boolean>;
+  onToggleCategoryStatus: (category: ExpenseCategory) => Promise<void>;
+}) {
+  const [isAddCategoryOpen, setIsAddCategoryOpen] = useState(false);
+  const [isEditCategoryOpen, setIsEditCategoryOpen] = useState(false);
+  const [editingCategory, setEditingCategory] = useState<ExpenseCategory | null>(null);
+
+  const handleCreateSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
+    const ok = await onAddCategory(e);
+    if (ok) setIsAddCategoryOpen(false);
+  };
+
+  const handleUpdateSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
+    if (!editingCategory) return;
+    const ok = await onEditCategory(editingCategory, e);
+    if (ok) {
+      setIsEditCategoryOpen(false);
+      setEditingCategory(null);
+    }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      {open ? (
+        <DialogContent className="sm:max-w-175 max-h-[85vh] flex flex-col rounded-sm border border-border shadow-lg p-5">
+          <DialogHeader className="pb-2 border-b border-border">
+            <DialogTitle className="text-sm font-black uppercase tracking-wider">Expense Category Management</DialogTitle>
+            <DialogDescription className="text-xs text-muted-foreground">Add, edit, or archive operational expenditure classifications.</DialogDescription>
+          </DialogHeader>
+
+          <div className="flex-1 overflow-y-auto py-3 space-y-4">
+            <div className="flex items-center justify-between">
+              <h4 className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Inventory of Categories</h4>
+              <Button
+                size="sm"
+                className="h-6.5 gap-1.5 px-2.5 text-[9px] font-bold uppercase rounded-sm bg-[#1A2332] text-white hover:bg-[#1A2332]/90 shadow-none"
+                onClick={() => setIsAddCategoryOpen(true)}
+              >
+                <Plus className="w-3 h-3" /> Create New
+              </Button>
+              <Dialog open={isAddCategoryOpen} onOpenChange={setIsAddCategoryOpen}>
+                {isAddCategoryOpen ? (
+                  <DialogContent className="rounded-sm border border-border shadow-lg p-5 max-w-sm">
+                    <DialogHeader className="pb-2 border-b border-border">
+                      <DialogTitle className="text-sm font-black uppercase tracking-wider">Add Expense Category</DialogTitle>
+                    </DialogHeader>
+                    <form onSubmit={handleCreateSubmit} className="space-y-3 pt-2 font-sans">
+                      <div className="space-y-1">
+                        <Label htmlFor="name" className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Category Name</Label>
+                        <Input id="name" name="name" required placeholder="e.g., Marketing, Logistics..." className="h-8 rounded-sm text-xs border-border" />
+                      </div>
+                      <div className="space-y-1">
+                        <Label htmlFor="desc" className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Description (Optional)</Label>
+                        <Input id="desc" name="description" placeholder="Brief purpose..." className="h-8 rounded-sm text-xs border-border" />
+                      </div>
+                      <div className="space-y-1">
+                        <Label htmlFor="status" className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Initial Status</Label>
+                        <Select name="status" defaultValue="active">
+                          <SelectTrigger id="status" className="h-8 rounded-sm text-xs border-border">
+                            <SelectValue placeholder="Select status" />
+                          </SelectTrigger>
+                          <SelectContent className="rounded-sm">
+                            <SelectItem value="active" className="text-xs font-semibold">Active</SelectItem>
+                            <SelectItem value="archived" className="text-xs font-semibold">Archived</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <DialogFooter className="pt-2">
+                        <Button type="submit" className="w-full h-8 rounded-sm bg-[#1A2332] text-white hover:bg-[#1A2332]/90 font-bold uppercase tracking-wider text-xs">Save Category</Button>
+                      </DialogFooter>
+                    </form>
+                  </DialogContent>
+                ) : null}
+              </Dialog>
+            </div>
+
+            <div className="border rounded-sm overflow-hidden bg-card border-border shadow-none">
+              <Table>
+                <TableHeader className="bg-neutral-100 dark:bg-neutral-900 border-b border-neutral-300 dark:border-neutral-700">
+                  <TableRow className="hover:bg-transparent">
+                    <TableHead className="text-[10px] font-black uppercase tracking-widest py-2 px-3 text-neutral-600 dark:text-neutral-400">Classification Details</TableHead>
+                    <TableHead className="text-[10px] font-black uppercase tracking-widest py-2 text-center text-neutral-600 dark:text-neutral-400">Current Status</TableHead>
+                    <TableHead className="text-[10px] font-black uppercase tracking-widest py-2 pr-3 text-right text-neutral-600 dark:text-neutral-400">Management</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {categories.map((cat) => (
+                    <TableRow key={cat.id} className="group hover:bg-muted/30 border-b border-border/50 last:border-0 transition-colors">
+                      <TableCell className="px-3 py-2">
+                        <div className="flex flex-col">
+                          <span className="text-xs font-bold text-foreground uppercase tracking-tight">{cat.name}</span>
+                          {cat.description && (
+                            <span className="text-[10px] text-muted-foreground font-medium leading-tight mt-0.5 line-clamp-1 max-w-70">
+                              {cat.description}
+                            </span>
+                          )}
+                        </div>
+                      </TableCell>
+                      <TableCell className="text-center py-2">
+                        <span
+                          className={`text-[9px] font-black uppercase tracking-wider rounded-sm px-2 py-0.5 border ${cat.isActive
+                            ? "bg-emerald-50 text-emerald-700 border-emerald-300 dark:bg-emerald-950/40 dark:text-emerald-300"
+                            : "bg-neutral-100 text-neutral-500 border-neutral-300 dark:bg-neutral-800 dark:text-neutral-400"
+                            }`}
+                        >
+                          {cat.isActive ? 'Active' : 'Archived'}
+                        </span>
+                      </TableCell>
+                      <TableCell className="pr-3 py-2">
+                        <div className="flex justify-end items-center gap-1.5 font-sans">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-6.5 px-2 text-[9px] font-black uppercase tracking-wider text-muted-foreground hover:text-foreground rounded-sm"
+                            onClick={() => {
+                              setEditingCategory(cat);
+                              setIsEditCategoryOpen(true);
+                            }}
+                          >
+                            Edit
+                          </Button>
+                          <Separator orientation="vertical" className="h-3 bg-border" />
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className={`h-6.5 px-2 text-[9px] font-black uppercase tracking-wider rounded-sm ${cat.isActive
+                              ? "text-red-500 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/40"
+                              : "text-emerald-600 hover:text-emerald-800 hover:bg-emerald-50 dark:hover:bg-emerald-950/40"
+                              }`}
+                            onClick={() => void onToggleCategoryStatus(cat)}
+                          >
+                            {cat.isActive ? 'Archive' : 'Activate'}
+                          </Button>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                  {categories.length === 0 && (
+                    <TableRow>
+                      <TableCell colSpan={3} className="text-center py-6 text-xs italic text-muted-foreground">
+                        No categories defined.
+                      </TableCell>
+                    </TableRow>
+                  )}
+                </TableBody>
+              </Table>
+            </div>
+
+            <Dialog open={isEditCategoryOpen} onOpenChange={(nextOpen) => {
+              setIsEditCategoryOpen(nextOpen);
+              if (!nextOpen) setEditingCategory(null);
+            }}>
+              {isEditCategoryOpen && editingCategory ? (
+                <DialogContent className="rounded-sm border border-border shadow-lg p-5 max-w-sm">
+                  <DialogHeader className="pb-2 border-b border-border">
+                    <DialogTitle className="text-sm font-black uppercase tracking-wider">Edit Category</DialogTitle>
+                  </DialogHeader>
+                  <form key={editingCategory.id} onSubmit={handleUpdateSubmit} className="space-y-3 pt-2 font-sans">
+                    <div className="space-y-1">
+                      <Label htmlFor="edit-name" className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Category Name</Label>
+                      <Input id="edit-name" name="name" defaultValue={editingCategory.name} required className="h-8 rounded-sm text-xs border-border" />
+                    </div>
+                    <div className="space-y-1">
+                      <Label htmlFor="edit-desc" className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Description (Optional)</Label>
+                      <Input id="edit-desc" name="description" defaultValue={editingCategory.description} className="h-8 rounded-sm text-xs border-border" />
+                    </div>
+                    <DialogFooter className="pt-2">
+                      <Button type="submit" className="w-full h-8 rounded-sm bg-[#1A2332] text-white hover:bg-[#1A2332]/90 font-bold uppercase tracking-wider text-xs">Update Classification</Button>
+                    </DialogFooter>
+                  </form>
+                </DialogContent>
+              ) : null}
+            </Dialog>
+          </div>
+        </DialogContent>
+      ) : null}
+    </Dialog>
+  );
+});
+
+const FinanceKpiGrid = memo(function FinanceKpiGrid({
+  selectedPeriod,
+  displayRevenue,
+  displayExpenses,
+  displayGrossProfit,
+  displayNetProfit,
+  grossMargin,
+  netMargin,
+}: {
+  selectedPeriod: '2025' | '2026' | 'all';
+  displayRevenue: number;
+  displayExpenses: number;
+  displayGrossProfit: number;
+  displayNetProfit: number;
+  grossMargin: string;
+  netMargin: string;
+}) {
+  return (
+    <div className="grid gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="border border-emerald-300 dark:border-emerald-800/60 bg-emerald-50/40 dark:bg-emerald-950/20 rounded-sm p-3 shadow-none">
+        <div className="flex items-center justify-between pb-1.5 border-b border-emerald-200/60 dark:border-emerald-900/40">
+          <span className="text-[10px] font-black uppercase tracking-widest text-emerald-700 dark:text-emerald-400">Total Revenue</span>
+          <TrendingUp className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
+        </div>
+        <div className="pt-2">
+          <div className="text-xl font-mono font-black text-emerald-700 dark:text-emerald-300 tabular-nums">
+            ₱{displayRevenue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          </div>
+          <p className="text-[10px] text-emerald-600/90 dark:text-emerald-400/80 font-bold mt-0.5 uppercase tracking-tight">
+            {selectedPeriod === '2025' ? 'Q1 Net Total Income' : 'Confirmed B2B Sales'}
+          </p>
+        </div>
+      </div>
+
+      <div className="border border-red-300 dark:border-red-800/60 bg-red-50/40 dark:bg-red-950/20 rounded-sm p-3 shadow-none">
+        <div className="flex items-center justify-between pb-1.5 border-b border-red-200/60 dark:border-red-900/40">
+          <span className="text-[10px] font-black uppercase tracking-widest text-red-700 dark:text-red-400">Total COGS & Expenses</span>
+          <TrendingDown className="h-3.5 w-3.5 text-red-600 dark:text-red-400" />
+        </div>
+        <div className="pt-2">
+          <div className="text-xl font-mono font-black text-red-700 dark:text-red-300 tabular-nums">
+            ₱{displayExpenses.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          </div>
+          <p className="text-[10px] text-red-600/90 dark:text-red-400/80 font-bold mt-0.5 uppercase tracking-tight">
+            {selectedPeriod === '2025' ? 'COGS + SGA + Audit Expenses' : 'SGA & Operational Costs'}
+          </p>
+        </div>
+      </div>
+
+      <div className="border border-neutral-200 dark:border-neutral-800 bg-card rounded-sm p-3 shadow-none">
+        <div className="flex items-center justify-between pb-1.5 border-b border-border">
+          <span className="text-[10px] font-black uppercase tracking-widest text-neutral-600 dark:text-neutral-400">Gross Profit</span>
+          <Wallet className="h-3.5 w-3.5 text-neutral-500" />
+        </div>
+        <div className="pt-2">
+          <div className="text-xl font-mono font-black text-foreground tabular-nums">
+            ₱{displayGrossProfit.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          </div>
+          <p className="text-[10px] text-neutral-500 font-bold mt-0.5 uppercase tracking-tight">
+            {grossMargin}% Gross Margin
+          </p>
+        </div>
+      </div>
+
+      <div className="border border-amber-300/80 dark:border-amber-700/60 bg-amber-50/30 dark:bg-amber-950/20 rounded-sm p-3 shadow-none">
+        <div className="flex items-center justify-between pb-1.5 border-b border-amber-200/60 dark:border-amber-900/40">
+          <span className="text-[10px] font-black uppercase tracking-widest text-amber-800 dark:text-amber-400">Net Profit</span>
+          <span className="text-[8px] font-black px-1.5 py-0.5 bg-[#fdd001] text-[#1A2332] rounded-xs uppercase tracking-wider">Audited</span>
+        </div>
+        <div className="pt-2">
+          <div className={`text-xl font-mono font-black tabular-nums ${displayNetProfit >= 0 ? 'text-amber-700 dark:text-amber-300' : 'text-red-600'}`}>
+            ₱{displayNetProfit.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          </div>
+          <p className="text-[10px] text-amber-700/80 dark:text-amber-400/80 font-bold mt-0.5 uppercase tracking-tight">
+            {netMargin}% Net Margin
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+});
+
+const FinanceChartsSection = memo(function FinanceChartsSection({
+  selectedPeriod,
+  chartData,
+  chartGranularity,
+  onChartGranularityChange,
+  chartData12Months,
+  trajectoryGranularity,
+  onTrajectoryGranularityChange,
+}: {
+  selectedPeriod: '2025' | '2026' | 'all';
+  chartData: ChartPoint[];
+  chartGranularity: 'monthly' | 'quarterly' | 'annual';
+  onChartGranularityChange: (g: 'monthly' | 'quarterly' | 'annual') => void;
+  chartData12Months: TrajectoryPoint[];
+  trajectoryGranularity: 'daily' | 'weekly' | 'monthly';
+  onTrajectoryGranularityChange: (g: 'daily' | 'weekly' | 'monthly') => void;
+}) {
+  return (
+    <>
+      <div className="border border-border bg-card rounded-sm overflow-hidden shadow-none">
+        <div className="px-3.5 py-2.5 border-b border-border bg-muted/20 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div>
+            <div className="text-xs font-black uppercase tracking-widest text-foreground flex items-center gap-2">
+              <BarChartIcon className="w-4 h-4" /> Financial Performance
+            </div>
+            <div className="text-[10px] font-medium text-muted-foreground mt-0.5">
+              Historical Revenue vs Operational Expenditure ({chartGranularity})
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="flex items-center gap-0.5 bg-muted/80 p-0.5 rounded-sm border border-border">
+              {(['monthly', 'quarterly', 'annual'] as const).map(gran => (
+                <Button
+                  key={gran}
+                  variant={chartGranularity === gran ? 'default' : 'ghost'}
+                  size="sm"
+                  className={`h-6 px-2 text-[9px] font-black uppercase tracking-wider rounded-sm transition-all ${chartGranularity === gran
+                      ? 'bg-[#1A2332] text-white shadow-none'
+                      : 'text-muted-foreground hover:text-foreground hover:bg-muted'
+                    }`}
+                  onClick={() => onChartGranularityChange(gran)}
+                >
+                  {gran}
+                </Button>
+              ))}
+            </div>
+            <div className="flex items-center gap-3 pl-1 border-l border-border/60">
+              <div className="flex items-center gap-1.5">
+                <div className="w-2 h-2 rounded-xs bg-emerald-500" />
+                <span className="text-[10px] font-bold text-muted-foreground uppercase">Revenue</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <div className="w-2 h-2 rounded-xs bg-red-500" />
+                <span className="text-[10px] font-bold text-muted-foreground uppercase">Expenses</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div className="p-4 h-75 min-w-0 overflow-hidden">
+          <ResponsiveContainer width="100%" height={260} minWidth={0}>
+            <BarChart
+              data={chartData}
+              margin={{ top: 0, right: 0, left: -20, bottom: 0 }}
+              barGap={2}
+              barCategoryGap="25%"
+            >
+              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--border)" />
+              <XAxis
+                dataKey="name"
+                axisLine={false}
+                tickLine={false}
+                tick={{ fontSize: 10, fontWeight: 700, fill: '#71717a' }}
+                dy={10}
+              />
+              <YAxis
+                axisLine={false}
+                tickLine={false}
+                tick={{ fontSize: 10, fontWeight: 700, fill: '#71717a' }}
+                tickFormatter={(value) => `₱${value >= 1000 ? (value / 1000) + 'k' : value}`}
+              />
+              <Tooltip
+                cursor={{ fill: 'rgba(253,208,1,0.06)' }}
+                contentStyle={{
+                  borderRadius: '2px',
+                  border: '1px solid #302f2f',
+                  backgroundColor: '#1A2332',
+                  color: '#ffffff',
+                  fontSize: '11px',
+                  fontWeight: 'bold'
+                }}
+                formatter={(value: any) => [`₱${Number(value ?? 0).toLocaleString()}`, '']}
+              />
+              <Bar
+                dataKey="Revenue"
+                fill="#10b981"
+                radius={[2, 2, 0, 0]}
+              />
+              <Bar
+                dataKey="Expenses"
+                fill="#ef4444"
+                radius={[2, 2, 0, 0]}
+              />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+
+      <div className="border border-border bg-card rounded-sm overflow-hidden shadow-none">
+        <div className="px-3.5 py-2.5 border-b border-border bg-muted/20 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div>
+            <div className="text-xs font-black uppercase tracking-widest text-foreground flex items-center gap-2">
+              <TrendingUp className="w-4 h-4" />
+              {selectedPeriod === '2025'
+                ? 'Financial Trajectory (Q1 2025 Audited Baseline)'
+                : selectedPeriod === '2026'
+                  ? 'Financial Trajectory (FY 2026 Live Operations)'
+                  : 'Financial Trajectory (Historical & Live Trend)'}
+            </div>
+            <div className="text-[10px] font-medium text-muted-foreground mt-0.5">
+              {selectedPeriod === '2025'
+                ? `Audited Baseline — Jan to Mar 2025 (${trajectoryGranularity.toUpperCase()} Timeline & Paced Scale)`
+                : selectedPeriod === '2026'
+                  ? `Continuous Operational Revenue vs Expense Trend (${trajectoryGranularity.toUpperCase()} Granularity)`
+                  : `Cross-Period Multi-Year Revenue vs Expense Trend (${trajectoryGranularity.toUpperCase()} Granularity)`}
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="flex items-center gap-0.5 bg-muted/80 p-0.5 rounded-sm border border-border">
+              {(['daily', 'weekly', 'monthly'] as const).map(gran => (
+                <Button
+                  key={gran}
+                  variant={trajectoryGranularity === gran ? 'default' : 'ghost'}
+                  size="sm"
+                  className={`h-6 px-2 text-[9px] font-black uppercase tracking-wider rounded-sm transition-all ${trajectoryGranularity === gran
+                      ? 'bg-[#1A2332] text-white shadow-none'
+                      : 'text-muted-foreground hover:text-foreground hover:bg-muted'
+                    }`}
+                  onClick={() => onTrajectoryGranularityChange(gran)}
+                >
+                  {gran}
+                </Button>
+              ))}
+            </div>
+            <div className="flex items-center gap-3 pl-1 border-l border-border/60">
+              <div className="flex items-center gap-1.5">
+                <div className="w-2 h-2 rounded-xs bg-emerald-500" />
+                <span className="text-[10px] font-bold text-muted-foreground uppercase">Revenue</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <div className="w-2 h-2 rounded-xs bg-red-500" />
+                <span className="text-[10px] font-bold text-muted-foreground uppercase">Expenses</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div className="p-4 h-75 min-w-0 overflow-hidden">
+          <ResponsiveContainer width="100%" height={260} minWidth={0}>
+            <LineChart data={chartData12Months} margin={{ top: 5, right: 20, left: -20, bottom: 5 }}>
+              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--border)" />
+              <XAxis
+                dataKey="name"
+                axisLine={false}
+                tickLine={false}
+                tick={{ fontSize: 10, fontWeight: 700, fill: '#71717a' }}
+                dy={10}
+                interval={trajectoryGranularity === 'daily' ? 9 : trajectoryGranularity === 'weekly' ? 1 : 0}
+              />
+              <YAxis
+                axisLine={false}
+                tickLine={false}
+                tick={{ fontSize: 10, fontWeight: 700, fill: '#71717a' }}
+                tickFormatter={(value) => `₱${value >= 1000 ? (value / 1000) + 'k' : value}`}
+              />
+              <Tooltip content={<CustomTrajectoryTooltip />} />
+              <Line
+                type="monotone"
+                dataKey="Revenue"
+                stroke="#10b981"
+                strokeWidth={2.5}
+                isAnimationActive={true}
+                animationDuration={800}
+                animationEasing="ease-in-out"
+                dot={trajectoryGranularity === 'daily' ? false : { r: 3, fill: '#10b981', strokeWidth: 1.5, stroke: '#fff' }}
+                activeDot={{ r: 5, strokeWidth: 0 }}
+              />
+              <Line
+                type="monotone"
+                dataKey="Expenses"
+                stroke="#ef4444"
+                strokeWidth={2.5}
+                isAnimationActive={true}
+                animationDuration={800}
+                animationEasing="ease-in-out"
+                dot={trajectoryGranularity === 'daily' ? false : { r: 3, fill: '#ef4444', strokeWidth: 1.5, stroke: '#fff' }}
+                activeDot={{ r: 5, strokeWidth: 0 }}
+              />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+    </>
+  );
+});
+
+const PLStatementSection = memo(function PLStatementSection({
+  activePLData,
+  selectedPeriod,
+  onPeriodChange,
+  uncollectedReceivables,
+  onExportCSV,
+}: {
+  activePLData: ActivePLData;
+  selectedPeriod: '2025' | '2026' | 'all';
+  onPeriodChange: (period: '2025' | '2026' | 'all') => void;
+  uncollectedReceivables: number;
+  onExportCSV: () => void;
+}) {
+  return (
+    <div className="bg-card border border-border rounded-sm overflow-hidden shadow-none">
+      <div className="px-3.5 py-2.5 bg-neutral-100 dark:bg-neutral-900 border-b border-border flex flex-col 2xl:flex-row 2xl:items-center justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <h4 className="text-xs font-black uppercase tracking-widest text-foreground">
+              {activePLData.title}
+            </h4>
+            <span
+              className={`inline-flex items-center h-5 px-2 text-[9px] font-black uppercase tracking-wider rounded-sm border shrink-0 ${selectedPeriod === '2025'
+                  ? 'bg-emerald-50 text-emerald-800 border-emerald-300 dark:bg-emerald-950/50 dark:text-emerald-300 dark:border-emerald-800'
+                  : selectedPeriod === '2026'
+                    ? 'bg-blue-50 text-blue-800 border-blue-300 dark:bg-blue-950/50 dark:text-blue-300 dark:border-blue-800'
+                    : 'bg-purple-50 text-purple-800 border-purple-300 dark:bg-purple-950/50 dark:text-purple-300 dark:border-purple-800'
+                }`}
+            >
+              {activePLData.badgeText}
+            </span>
+          </div>
+          <p className="text-[10px] text-muted-foreground font-medium mt-0.5">
+            {activePLData.subtitle}
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center justify-between sm:justify-end gap-2 shrink-0">
+          {uncollectedReceivables > 0 && (
+            <span className="inline-flex items-center h-7 px-2.5 bg-red-50 text-red-800 border border-red-300 dark:bg-red-950/50 dark:text-red-300 dark:border-red-800 text-[9px] font-bold uppercase tracking-wider rounded-sm shrink-0">
+              Uncollected: {formatCurrency(uncollectedReceivables)}
+            </span>
+          )}
+          <div className="flex items-center gap-1.5 shrink-0">
+            <Select value={selectedPeriod} onValueChange={(v) => { if (v) onPeriodChange(v); }}>
+              <SelectTrigger className="h-7 text-[9px] uppercase font-bold tracking-wider px-2.5 rounded-sm border-border">
+                <SelectValue placeholder="Period">
+                  {selectedPeriod === '2025' ? '2025' : selectedPeriod === '2026' ? '2026' : 'ALL'}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent className="rounded-sm w-auto min-w-55">
+                <SelectItem value="2025">Monthly 2025 (Q1 Audited)</SelectItem>
+                <SelectItem value="2026">Quarterly 2026 (Live Ops)</SelectItem>
+                <SelectItem value="all">All Periods (Consolidated)</SelectItem>
+              </SelectContent>
+            </Select>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 gap-1 px-2.5 text-[9px] font-black uppercase tracking-wider rounded-sm border-border shadow-none"
+              onClick={onExportCSV}
+            >
+              <Download className="w-3 h-3 text-foreground/70" /> CSV
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 gap-1 px-2.5 text-[9px] font-black uppercase tracking-wider rounded-sm border-border shadow-none"
+              onClick={() => {
+                const printContents = document.getElementById('pl-statement-print-area')?.outerHTML;
+                if (printContents) {
+                  const frame = document.createElement('iframe');
+                  frame.style.cssText = 'position:fixed;width:0;height:0;border:0;';
+                  document.body.appendChild(frame);
+                  const iframeDoc = frame.contentDocument;
+                  if (!iframeDoc || !frame.contentWindow) return;
+                  iframeDoc.head.innerHTML = `
+                    <style>
+                      @page { size: A4 portrait; margin: 15mm; }
+                      body { font-family: Arial, sans-serif; font-size: 11px; color: #111827; }
+                      h4 { margin: 0 0 5px 0; font-size: 14px; text-transform: uppercase; }
+                      p { margin: 0 0 15px 0; font-size: 10px; color: #64748b; }
+                      table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
+                      th, td { text-align: left; padding: 6px; border-bottom: 1px solid #e2e8f0; }
+                      th { background-color: #f8fafc; font-weight: bold; text-transform: uppercase; font-size: 9px; color: #64748b; }
+                      td.text-right, th.text-right { text-align: right; }
+                      .font-bold { font-weight: bold; }
+                      .font-black { font-weight: 900; }
+                      .pl-12 { padding-left: 2rem !important; }
+                      .pl-8 { padding-left: 1rem !important; }
+                      @media print { body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
+                    </style>
+                  `;
+                  const escapePrintHtml = (v: unknown) => String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                  iframeDoc.body.innerHTML = `<div><h4>${escapePrintHtml(activePLData.title)}</h4><p>${escapePrintHtml(activePLData.subtitle)}</p>${printContents}</div>`;
+                  frame.contentWindow.focus();
+                  frame.contentWindow.print();
+                  setTimeout(() => frame.remove(), 1000);
+                }
+              }}
+            >
+              <Printer className="w-3 h-3 text-foreground/70" /> Print
+            </Button>
+          </div>
+        </div>
+      </div>
+
+      <div className="overflow-x-auto w-full">
+        <Table id="pl-statement-print-area">
+          <TableHeader className="bg-neutral-100 dark:bg-neutral-900 border-b border-neutral-300 dark:border-neutral-700">
+            <TableRow className="hover:bg-transparent">
+              <TableHead className="text-[10px] font-black uppercase tracking-widest text-neutral-600 dark:text-neutral-400 py-2 pl-4 min-w-65">
+                Account / Line Item
+              </TableHead>
+              {activePLData.colHeaders.map((ch, cIdx) => (
+                <TableHead
+                  key={cIdx}
+                  className={`text-[10px] font-black uppercase tracking-widest text-right py-2 ${cIdx === activePLData.colHeaders.length - 2
+                      ? 'text-foreground font-bold bg-neutral-200/50 dark:bg-neutral-800/50 min-w-32.5 px-3'
+                      : cIdx === activePLData.colHeaders.length - 1
+                        ? 'text-neutral-600 dark:text-neutral-400 pr-4 min-w-22.5'
+                        : 'text-neutral-600 dark:text-neutral-400 min-w-27.5 px-3'
+                    }`}
+                >
+                  {ch}
+                </TableHead>
+              ))}
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {activePLData.rows.map((row, idx) => {
+              if (row.isHeader) {
+                return (
+                  <TableRow key={idx} className="bg-neutral-200/60 dark:bg-neutral-800/60 border-y border-neutral-300 dark:border-neutral-700 hover:bg-neutral-200/70">
+                    <TableCell colSpan={activePLData.colHeaders.length + 1} className="py-1.5 pl-4 font-black text-xs uppercase tracking-widest text-foreground">
+                      {row.section}
+                    </TableCell>
+                  </TableRow>
+                );
+              }
+              if (row.isSubheader) {
+                return (
+                  <TableRow key={idx} className="hover:bg-transparent border-none">
+                    <TableCell colSpan={activePLData.colHeaders.length + 1} className="py-1.5 pl-6 font-bold text-xs uppercase tracking-wider text-muted-foreground">
+                      {row.section}
+                    </TableCell>
+                  </TableRow>
+                );
+              }
+
+              const isHighlightEmerald = row.highlight === 'emerald';
+              const isHighlightRose = row.highlight === 'rose';
+              const isHighlightGold = row.highlight === 'gold';
+
+              return (
+                <TableRow
+                  key={idx}
+                  className={`border-b border-border/50 transition-colors ${row.isFinalNetIncome
+                      ? 'bg-amber-500/10 hover:bg-amber-500/15 font-black border-t-2 border-b-2 border-amber-500/60'
+                      : row.isGrandTotal
+                        ? 'bg-muted/40 font-black border-t border-border'
+                        : row.isTotal
+                          ? 'bg-muted/20 font-bold border-t border-border/60'
+                          : 'hover:bg-muted/30'
+                    }`}
+                >
+                  <TableCell className={`py-1.5 ${row.indent ? 'pl-10 text-xs font-medium text-foreground' : 'pl-6 font-bold text-xs text-foreground'}`}>
+                    {row.name}
+                  </TableCell>
+                  {row.cols.map((colVal, colIdx) => (
+                    <TableCell key={colIdx} className={`py-1.5 px-3 text-right text-xs font-mono tabular-nums ${row.isFinalNetIncome || row.isTotal || row.isGrandTotal ? 'font-bold' : 'text-muted-foreground'}`}>
+                      {formatCurrency(colVal)}
+                    </TableCell>
+                  ))}
+                  <TableCell className={`py-1.5 px-3 text-right text-xs font-mono tabular-nums font-black bg-muted/20 ${isHighlightEmerald
+                      ? 'text-emerald-700 dark:text-emerald-400'
+                      : isHighlightRose
+                        ? 'text-red-700 dark:text-red-400'
+                        : isHighlightGold
+                          ? 'text-amber-700 dark:text-amber-300 font-black'
+                          : 'text-foreground'
+                    }`}>
+                    {formatCurrency(row.total)}
+                  </TableCell>
+                  <TableCell className="py-1.5 pr-4 text-right text-xs font-mono tabular-nums font-semibold text-muted-foreground">
+                    {row.pct}
+                  </TableCell>
+                </TableRow>
+              );
+            })}
+          </TableBody>
+        </Table>
+      </div>
+    </div>
+  );
+});
+
+const ItemizedExpenseLedger = memo(function ItemizedExpenseLedger({
+  sortedExpenses,
+  isExpenseOnly,
+  sortKey,
+  sortDirection,
+  onToggleSort,
+  onEditExpense,
+  onDeleteExpense,
+}: {
+  sortedExpenses: IndexedExpense[];
+  isExpenseOnly: boolean;
+  sortKey: SortKey;
+  sortDirection: SortDirection;
+  onToggleSort: (key: SortKey) => void;
+  onEditExpense: (expense: Expense) => void;
+  onDeleteExpense: (id: string) => void;
+}) {
+  const [page, setPage] = useState(1);
+
+  useEffect(() => {
+    setPage(1);
+  }, [sortKey, sortDirection, sortedExpenses.length]);
+
+  const totalPages = Math.max(1, Math.ceil(sortedExpenses.length / LEDGER_PAGE_SIZE));
+  const safePage = Math.min(page, totalPages);
+  const pageStart = (safePage - 1) * LEDGER_PAGE_SIZE;
+  const paginatedExpenses = useMemo(
+    () => sortedExpenses.slice(pageStart, pageStart + LEDGER_PAGE_SIZE),
+    [sortedExpenses, pageStart],
+  );
+
+  return (
+    <>
+      <div className="lg:hidden space-y-3 mb-8">
+        {paginatedExpenses.map(({ expense: e, dateLabel, linkedOrderNumber }) => (
+          <div key={e.id} className="bg-background border border-border rounded-xl p-4 space-y-2">
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <Badge variant="outline" className="text-[9px] font-black uppercase bg-muted border-border text-muted-foreground mb-1">
+                  {e.category}
+                </Badge>
+                {linkedOrderNumber && (
+                  <p className="text-[9px] font-bold text-emerald-600 uppercase tracking-tighter">
+                    Order: {linkedOrderNumber}
+                  </p>
+                )}
+                <p className="text-xs font-semibold text-foreground truncate">{e.description}</p>
+              </div>
+              <span className="shrink-0 text-sm font-black text-red-600">-₱{e.amount.toLocaleString()}</span>
+            </div>
+            <div className="flex items-center justify-between border-t border-border pt-2">
+              <span className="text-[10px] text-muted-foreground font-medium">
+                {dateLabel}
+              </span>
+              {!isExpenseOnly && (
+                <div className="flex gap-1">
+                  <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-foreground hover:bg-muted"
+                    onClick={() => onEditExpense(e)}>
+                    <Edit2 className="w-3.5 h-3.5" />
+                  </Button>
+                  <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-red-500 hover:bg-red-500/10"
+                    onClick={() => onDeleteExpense(e.id)}>
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </Button>
+                </div>
+              )}
+            </div>
+          </div>
+        ))}
+        {sortedExpenses.length === 0 && (
+          <div className="text-center py-8 text-zinc-400 text-xs italic">No expense records found.</div>
+        )}
+        {totalPages > 1 && (
+          <div className="flex items-center justify-between pt-2 text-[11px] text-muted-foreground">
+            <span>
+              Showing {pageStart + 1}–{Math.min(pageStart + paginatedExpenses.length, sortedExpenses.length)} of {sortedExpenses.length}
+            </span>
+            <div className="flex items-center gap-1.5">
+              <Button variant="outline" size="sm" className="h-7 px-2 text-xs rounded-sm" disabled={safePage <= 1} onClick={() => setPage(p => Math.max(1, p - 1))}>
+                <ChevronLeft className="w-3.5 h-3.5" /> Prev
+              </Button>
+              <span className="tabular-nums font-mono">{safePage}/{totalPages}</span>
+              <Button variant="outline" size="sm" className="h-7 px-2 text-xs rounded-sm" disabled={safePage >= totalPages} onClick={() => setPage(p => Math.min(totalPages, p + 1))}>
+                Next <ChevronRight className="w-3.5 h-3.5" />
+              </Button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="hidden lg:block bg-card border border-border rounded-sm overflow-hidden mb-6 shadow-none">
+        <div className="overflow-x-auto w-full">
+          <Table>
+            <TableHeader className="bg-neutral-100 dark:bg-neutral-900 border-b border-neutral-300 dark:border-neutral-700">
+              <TableRow>
+                <TableHead
+                  className="text-[10px] font-black uppercase tracking-widest text-neutral-600 dark:text-neutral-400 py-2 px-2.5 cursor-pointer hover:bg-neutral-200/50 dark:hover:bg-neutral-800 transition-colors whitespace-nowrap"
+                  onClick={() => onToggleSort('date')}
+                >
+                  <div className="flex items-center gap-1">
+                    Date {sortKey === 'date' ? (sortDirection === 'asc' ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />) : <ArrowUpDown className="w-2.5 h-2.5 opacity-40" />}
+                  </div>
+                </TableHead>
+                <TableHead
+                  className="text-[10px] font-black uppercase tracking-widest text-neutral-600 dark:text-neutral-400 py-2 px-2.5 cursor-pointer hover:bg-neutral-200/50 dark:hover:bg-neutral-800 transition-colors whitespace-nowrap"
+                  onClick={() => onToggleSort('category')}
+                >
+                  <div className="flex items-center gap-1">
+                    Category {sortKey === 'category' ? (sortDirection === 'asc' ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />) : <ArrowUpDown className="w-2.5 h-2.5 opacity-40" />}
+                  </div>
+                </TableHead>
+                <TableHead
+                  className="text-[10px] font-black uppercase tracking-widest text-neutral-600 dark:text-neutral-400 py-2 px-2.5 cursor-pointer hover:bg-neutral-200/50 dark:hover:bg-neutral-800 transition-colors"
+                  onClick={() => onToggleSort('orderId')}
+                >
+                  <div className="flex items-center gap-1">
+                    Order / Description {sortKey === 'orderId' ? (sortDirection === 'asc' ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />) : <ArrowUpDown className="w-2.5 h-2.5 opacity-40" />}
+                  </div>
+                </TableHead>
+                <TableHead
+                  className="text-[10px] font-black uppercase tracking-widest text-neutral-600 dark:text-neutral-400 py-2 px-2.5 text-right cursor-pointer hover:bg-neutral-200/50 dark:hover:bg-neutral-800 transition-colors whitespace-nowrap"
+                  onClick={() => onToggleSort('amount')}
+                >
+                  <div className="flex items-center justify-end gap-1">
+                    Amount {sortKey === 'amount' ? (sortDirection === 'asc' ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />) : <ArrowUpDown className="w-2.5 h-2.5 opacity-40" />}
+                  </div>
+                </TableHead>
+                {!isExpenseOnly && (
+                  <TableHead className="text-[10px] font-black uppercase tracking-widest text-neutral-600 dark:text-neutral-400 py-2 px-2.5 text-right whitespace-nowrap w-16">Actions</TableHead>
+                )}
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {paginatedExpenses.map(({ expense: e, dateLabel, linkedOrderNumber }) => (
+                <TableRow key={e.id} className="group hover:bg-muted/30 border-b border-border/50">
+                  <TableCell className="text-xs text-muted-foreground font-mono py-1.5 px-2.5 whitespace-nowrap">
+                    {dateLabel}
+                  </TableCell>
+                  <TableCell className="py-1.5 px-2.5 whitespace-nowrap">
+                    <span className="text-[9px] font-black uppercase tracking-wider px-2 py-0.5 rounded-sm bg-neutral-100 text-neutral-700 border border-neutral-300 dark:bg-neutral-800 dark:text-neutral-300 dark:border-neutral-700">
+                      {e.category}
+                    </span>
+                  </TableCell>
+                  <TableCell className="text-xs font-semibold text-foreground max-w-44 xl:max-w-62.5 py-1.5 px-2.5">
+                    <div className="flex flex-col min-w-0">
+                      {linkedOrderNumber && (
+                        <span className="text-[9px] font-bold text-emerald-600 dark:text-emerald-400 uppercase tracking-tighter truncate">
+                          Linked Order: {linkedOrderNumber}
+                        </span>
+                      )}
+                      <span className="truncate">{e.description}</span>
+                    </div>
+                  </TableCell>
+                  <TableCell className="text-right font-black font-mono tabular-nums text-xs text-red-600 dark:text-red-400 py-1.5 px-2.5 whitespace-nowrap">
+                    -₱{e.amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </TableCell>
+                  {!isExpenseOnly && (
+                    <TableCell className="text-right py-1.5 px-2.5 whitespace-nowrap">
+                      <div className="flex justify-end gap-1">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-6 w-6 rounded-sm text-muted-foreground hover:text-foreground hover:bg-muted"
+                          onClick={() => onEditExpense(e)}
+                        >
+                          <Edit2 className="w-3 h-3" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-6 w-6 rounded-sm text-muted-foreground hover:text-red-500 hover:bg-red-500/10"
+                          onClick={() => onDeleteExpense(e.id)}
+                        >
+                          <Trash2 className="w-3 h-3" />
+                        </Button>
+                      </div>
+                    </TableCell>
+                  )}
+                </TableRow>
+              ))}
+              {sortedExpenses.length === 0 && (
+                <TableRow>
+                  <TableCell colSpan={isExpenseOnly ? 4 : 5} className="text-center py-6 text-xs italic text-muted-foreground">
+                    No operational expense records found.
+                  </TableCell>
+                </TableRow>
+              )}
+            </TableBody>
+          </Table>
+        </div>
+        {sortedExpenses.length > 0 && (
+          <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border bg-muted/20 px-3 py-2 text-[10px] text-muted-foreground">
+            <span className="font-medium">
+              Showing {pageStart + 1}–{Math.min(pageStart + paginatedExpenses.length, sortedExpenses.length)} of {sortedExpenses.length} expense records
+            </span>
+            {totalPages > 1 && (
+              <div className="flex items-center gap-1.5">
+                <Button variant="outline" size="sm" className="h-6 px-2 text-[10px] font-bold uppercase rounded-sm" disabled={safePage <= 1} onClick={() => setPage(p => Math.max(1, p - 1))}>
+                  <ChevronLeft className="w-3 h-3" /> Prev
+                </Button>
+                <span className="tabular-nums font-mono px-1">Page {safePage} of {totalPages}</span>
+                <Button variant="outline" size="sm" className="h-6 px-2 text-[10px] font-bold uppercase rounded-sm" disabled={safePage >= totalPages} onClick={() => setPage(p => Math.min(totalPages, p + 1))}>
+                  Next <ChevronRight className="w-3 h-3" />
+                </Button>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </>
+  );
+});
+
+const ExpenseAllocationSidebar = memo(function ExpenseAllocationSidebar({
+  pieData,
+  pieTotal,
+  expenseScope,
+  onExpenseScopeChange,
+  selectedPeriod,
+  onExportCSV,
+}: {
+  pieData: PieSlice[];
+  pieTotal: number;
+  expenseScope: 'opex' | 'all';
+  onExpenseScopeChange: (scope: 'opex' | 'all') => void;
+  selectedPeriod: '2025' | '2026' | 'all';
+  onExportCSV: () => void;
+}) {
+  const [showAllCategories, setShowAllCategories] = useState(false);
+
+  const visiblePieRows = useMemo(
+    () => (showAllCategories ? pieData : pieData.slice(0, 4)),
+    [showAllCategories, pieData],
+  );
+
+  return (
+    <>
+      <div className="border border-border bg-card rounded-sm shadow-none overflow-hidden">
+        <div className="p-3 border-b border-border bg-muted/20">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <PieChartIcon className="h-4 w-4 text-[#fdd001]" />
+              <div className="text-xs font-black uppercase tracking-widest text-foreground">Expense Allocation</div>
+            </div>
+            <div className="flex items-center bg-muted/80 p-0.5 rounded-sm border border-border text-[9px]">
+              <button
+                type="button"
+                onClick={() => onExpenseScopeChange('opex')}
+                className={`px-2 py-0.5 rounded-xs font-bold transition-all ${expenseScope === 'opex'
+                  ? 'bg-[#1A2332] text-white shadow-none'
+                  : 'text-muted-foreground hover:text-foreground'
+                  }`}
+                title="Operating Expenses (Excludes COGS to reveal operational spend)"
+              >
+                OPEX
+              </button>
+              <button
+                type="button"
+                onClick={() => onExpenseScopeChange('all')}
+                className={`px-2 py-0.5 rounded-xs font-bold transition-all ${expenseScope === 'all'
+                  ? 'bg-[#1A2332] text-white shadow-none'
+                  : 'text-muted-foreground hover:text-foreground'
+                  }`}
+                title="All Spend (Macro view including Cost of Goods Sold)"
+              >
+                All Spend
+              </button>
+            </div>
+          </div>
+          <div className="text-[10px] font-medium text-muted-foreground mt-1">
+            {expenseScope === 'opex' ? 'Operational Spend Breakdown' : 'Total Spend Breakdown'} &bull; {selectedPeriod === '2025' ? 'FY 2025 (Audited)' : selectedPeriod === '2026' ? 'FY 2026 (Live Ops)' : 'All Periods'}
+          </div>
+        </div>
+        <div className="p-3 min-w-0">
+          <div className="h-47.5 w-full min-w-0">
+            {pieData.length > 0 ? (
+              <ResponsiveContainer width="100%" height={190} minWidth={0}>
+                <PieChart>
+                  <Pie
+                    data={pieData}
+                    cx="50%"
+                    cy="50%"
+                    innerRadius={52}
+                    outerRadius={76}
+                    paddingAngle={3}
+                    dataKey="value"
+                    isAnimationActive={true}
+                    animationDuration={800}
+                    animationEasing="ease-in-out"
+                  >
+                    {pieData.map((_entry, index) => (
+                      <Cell
+                        key={`cell-${index}`}
+                        fill={PIE_COLORS[index % PIE_COLORS.length]}
+                        stroke="hsl(var(--card))"
+                        strokeWidth={2}
+                      />
+                    ))}
+                  </Pie>
+                  <Tooltip
+                    contentStyle={{
+                      borderRadius: '2px',
+                      border: '1px solid #302f2f',
+                      backgroundColor: '#1A2332',
+                      color: '#ffffff',
+                      fontSize: '11px',
+                      fontWeight: 'bold',
+                    }}
+                    formatter={(value: any, name: any) => {
+                      const numVal = Number(value ?? 0);
+                      const percent = pieTotal > 0 ? ((numVal / pieTotal) * 100).toFixed(1) : '0.0';
+                      return [`₱${numVal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (${percent}%)`, String(name ?? '')];
+                    }}
+                  />
+                </PieChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="h-full flex flex-col items-center justify-center text-center p-3">
+                <p className="text-[11px] font-bold text-muted-foreground">No expense data for this period</p>
+                <button
+                  type="button"
+                  onClick={() => onExpenseScopeChange('all')}
+                  className="mt-1.5 text-[10px] text-primary hover:underline font-bold"
+                >
+                  Switch to All Spend view
+                </button>
+              </div>
+            )}
+          </div>
+
+          {pieData.length > 0 && (
+            <div className="mt-3 space-y-1.5 border-t border-border pt-2.5">
+              {visiblePieRows.map((item, index) => {
+                const pct = pieTotal > 0 ? ((item.value / pieTotal) * 100).toFixed(1) : '0.0';
+                return (
+                  <div key={item.name} className="flex items-center justify-between text-[10px] py-0.5">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <div
+                        className="w-2 h-2 rounded-xs shrink-0"
+                        style={{ backgroundColor: PIE_COLORS[index % PIE_COLORS.length] }}
+                      />
+                      <span className="font-bold text-muted-foreground truncate" title={item.name}>
+                        {item.name}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1.5 shrink-0 ml-2">
+                      <span className="text-[9px] font-bold text-muted-foreground bg-muted px-1.5 py-0.2 rounded-xs border border-border">
+                        {pct}%
+                      </span>
+                      <span className="font-mono tabular-nums font-black text-foreground">
+                        ₱{item.value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
+              {pieData.length > 4 && (
+                <button
+                  type="button"
+                  onClick={() => setShowAllCategories(prev => !prev)}
+                  className="w-full text-[10px] text-primary hover:text-primary/80 font-bold text-center pt-1.5 hover:underline flex items-center justify-center gap-1 transition-colors"
+                >
+                  {showAllCategories ? (
+                    <>Show Top 4 Only <ChevronUp className="h-3 w-3" /></>
+                  ) : (
+                    <>+{pieData.length - 4} more categories <ChevronDown className="h-3 w-3" /></>
+                  )}
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="border border-[#243044] bg-[#1A2332] text-white rounded-sm overflow-hidden shadow-none">
+        <div className="p-3.5 space-y-1.5">
+          <h4 className="text-[9px] font-black uppercase tracking-[0.2em] text-[#fdd001]">Official Report Generator</h4>
+          <p className="text-xs text-slate-300 leading-normal">
+            Export audited and live Profit & Loss statements for external CPA, executive, and regulatory audit review.
+          </p>
+        </div>
+        <Button className="w-full rounded-none h-9 bg-white text-[#1A2332] hover:bg-slate-100 font-bold uppercase tracking-wider text-[10px] gap-2 border-t border-[#243044]" onClick={onExportCSV}>
+          <Download className="w-3.5 h-3.5 text-emerald-600" />
+          Generate Monthly P&L (CSV)
+        </Button>
+      </div>
+    </>
+  );
+});
 
 export function Finance() {
   const { profile } = useAuth();
@@ -745,77 +2235,30 @@ export function Finance() {
   const [categories, setCategories] = useState<ExpenseCategory[]>([]);
   const [isAddExpenseOpen, setIsAddExpenseOpen] = useState(false);
   const [isManageCategoriesOpen, setIsManageCategoriesOpen] = useState(false);
-  const [isAddCategoryOpen, setIsAddCategoryOpen] = useState(false);
-  const [isEditCategoryOpen, setIsEditCategoryOpen] = useState(false);
-  const [editingCategory, setEditingCategory] = useState<ExpenseCategory | null>(null);
   const [editingExpense, setEditingExpense] = useState<Expense | null>(null);
   const [isEditExpenseOpen, setIsEditExpenseOpen] = useState(false);
   const [isCSVImportOpen, setIsCSVImportOpen] = useState(false);
 
-  // Order selection & search in Record Entry modal
-  const [selectedExpenseOrderId, setSelectedExpenseOrderId] = useState<string>('none');
-  const [expenseOrderSearch, setExpenseOrderSearch] = useState('');
-  const [isExpenseOrderPickerOpen, setIsExpenseOrderPickerOpen] = useState(false);
+  const ordersById = useMemo(() => {
+    const map = new Map<string, Order>();
+    orders.forEach(o => map.set(o.id, o));
+    return map;
+  }, [orders]);
 
-  // Order selection & search in Edit Expense modal
-  const [editExpenseOrderId, setEditExpenseOrderId] = useState<string>('none');
-  const [editExpenseOrderSearch, setEditExpenseOrderSearch] = useState('');
-  const [isEditExpenseOrderPickerOpen, setIsEditExpenseOrderPickerOpen] = useState(false);
+  const sortedOrders = useMemo<IndexedOrder[]>(() => {
+    return [...orders]
+      .sort((a, b) => (b.orderNumber || '').localeCompare(a.orderNumber || ''))
+      .map(order => ({
+        order,
+        searchText: `${order.orderNumber || ''} ${order.clientName || ''}`.toLowerCase(),
+      }));
+  }, [orders]);
 
-  useEffect(() => {
-    if (!isAddExpenseOpen) {
-      setSelectedExpenseOrderId('none');
-      setExpenseOrderSearch('');
-      setIsExpenseOrderPickerOpen(false);
-    }
-  }, [isAddExpenseOpen]);
-
-  useEffect(() => {
-    if (editingExpense) {
-      setEditExpenseOrderId(editingExpense.orderId || 'none');
-    } else {
-      setEditExpenseOrderId('none');
-    }
-    setEditExpenseOrderSearch('');
-    setIsEditExpenseOrderPickerOpen(false);
-  }, [editingExpense, isEditExpenseOpen]);
-
-  const filteredExpenseOrders = React.useMemo(() => {
-    const sorted = [...orders].sort((a, b) => (b.orderNumber || '').localeCompare(a.orderNumber || ''));
-    if (!expenseOrderSearch.trim()) return sorted;
-    const q = expenseOrderSearch.toLowerCase();
-    return sorted.filter(o =>
-      (o.orderNumber || '').toLowerCase().includes(q) ||
-      (o.clientName || '').toLowerCase().includes(q)
-    );
-  }, [orders, expenseOrderSearch]);
-
-  const selectedExpenseOrder = React.useMemo(() => {
-    return orders.find(o => o.id === selectedExpenseOrderId);
-  }, [orders, selectedExpenseOrderId]);
-
-  const filteredEditExpenseOrders = React.useMemo(() => {
-    const sorted = [...orders].sort((a, b) => (b.orderNumber || '').localeCompare(a.orderNumber || ''));
-    if (!editExpenseOrderSearch.trim()) return sorted;
-    const q = editExpenseOrderSearch.toLowerCase();
-    return sorted.filter(o =>
-      (o.orderNumber || '').toLowerCase().includes(q) ||
-      (o.clientName || '').toLowerCase().includes(q)
-    );
-  }, [orders, editExpenseOrderSearch]);
-
-  const selectedEditExpenseOrder = React.useMemo(() => {
-    return orders.find(o => o.id === editExpenseOrderId);
-  }, [orders, editExpenseOrderId]);
-
-  type SortKey = 'date' | 'category' | 'amount' | 'orderId';
-  type SortDirection = 'asc' | 'desc';
   const [sortKey, setSortKey] = useState<SortKey>('date');
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
 
-  // Expense Allocation View Mode & Category Expansion
+  // Expense Allocation View Mode
   const [expenseScope, setExpenseScope] = useState<'opex' | 'all'>('opex');
-  const [showAllCategories, setShowAllCategories] = useState(false);
 
   const uncollectedReceivables = React.useMemo(() => {
     return orders
@@ -825,17 +2268,31 @@ export function Finance() {
 
   useEffect(() => {
     const unsubExpenses = onSnapshot(query(collection(db, 'expenses'), orderBy('date', 'desc')), (snap) => {
-      setExpenses(snap.docs.map(d => ({ id: d.id, ...d.data() } as Expense)));
+      const raw: Expense[] = snap.docs
+        .map((d: { id: string; data: () => Record<string, unknown> }) => ({ id: d.id, ...d.data() } as Expense))
+        .filter(isOperationalExpenseRecord);
+      const hasReal2025 = raw.some(e => {
+        if (String(e.id || '').startsWith('00000000-2025-')) return false;
+        const dt = parseDate(e.date);
+        return dt && dt.getFullYear() === 2025;
+      });
+      setExpenses(hasReal2025 ? raw.filter(e => !String(e.id || '').startsWith('00000000-2025-')) : raw);
     }, (error) => {
       handleSupabaseError(error, OperationType.GET, 'expenses');
     });
     const unsubOrders = onSnapshot(collection(db, 'orders'), (snap) => {
-      setOrders(snap.docs.map(d => ({ id: d.id, ...d.data() } as Order)));
+      const raw: Order[] = snap.docs.map((d: { id: string; data: () => Record<string, unknown> }) => ({ id: d.id, ...d.data() } as Order));
+      const hasReal2025 = raw.some(o => {
+        if (String(o.id || '').startsWith('00000000-2025-')) return false;
+        const dt = parseDate(o.createdAt);
+        return dt && dt.getFullYear() === 2025;
+      });
+      setOrders(hasReal2025 ? raw.filter(o => !String(o.id || '').startsWith('00000000-2025-')) : raw);
     }, (error) => {
       handleSupabaseError(error, OperationType.GET, 'orders');
     });
     const unsubCategories = onSnapshot(query(collection(db, 'expenseCategories'), orderBy('createdAt', 'asc')), (snap) => {
-      setCategories(snap.docs.map(d => ({ id: d.id, ...d.data() } as ExpenseCategory)));
+      setCategories(snap.docs.map((d: { id: string; data: () => Record<string, unknown> }) => ({ id: d.id, ...d.data() } as ExpenseCategory)));
     }, (error) => {
       handleSupabaseError(error, OperationType.GET, 'expenseCategories');
     });
@@ -846,17 +2303,6 @@ export function Finance() {
       unsubCategories();
     };
   }, []);
-
-  const parseDate = (d: any): Date | null => {
-    if (!d) return null;
-    if (typeof d?.toDate === 'function') return d.toDate();
-    if (d instanceof Date) return isNaN(d.getTime()) ? null : d;
-    if (typeof d === 'string' || typeof d === 'number') {
-      const parsed = new Date(d);
-      return isNaN(parsed.getTime()) ? null : parsed;
-    }
-    return null;
-  };
 
   const filteredOrders = React.useMemo(() => {
     if (selectedPeriod === 'all') return orders;
@@ -874,28 +2320,23 @@ export function Finance() {
     });
   }, [expenses, selectedPeriod]);
 
-  // 100% Dynamic Financial Health KPIs (Computed directly from live Supabase collections)
+  // 100% Dynamic Financial Health KPIs (Audited Q1 2025 baseline + live Supabase collections)
   const displayRevenue = React.useMemo(() => {
+    if (selectedPeriod === '2025') return 21502353.40;
     const ordersRev = filteredOrders
       .filter(o => ['delivered', 'completed'].includes(o.status))
       .reduce((sum, o) => sum + (o.totalAmount || 0), 0);
-    // If Supabase has order records for this period, compute dynamically
-    if (ordersRev > 0) return ordersRev;
-    // Fallback baseline only if database has zero records and 2025 audited period is selected
-    if (selectedPeriod === '2025') return 21502353.40;
-    return 0;
+    return ordersRev;
   }, [filteredOrders, selectedPeriod]);
 
   const displayExpenses = React.useMemo(() => {
-    const totalExp = filteredExpenses.filter(e => (e as any).type !== 'income').reduce((sum, e) => sum + (e.amount || 0), 0);
-    // If Supabase has expense records for this period, compute dynamically
-    if (totalExp > 0) return totalExp;
-    // Fallback baseline only if database has zero records and 2025 audited period is selected
     if (selectedPeriod === '2025') return 17122588.64;
-    return 0;
+    const totalExp = filteredExpenses.filter(e => (e as any).type !== 'income').reduce((sum, e) => sum + (e.amount || 0), 0);
+    return totalExp;
   }, [filteredExpenses, selectedPeriod]);
 
   const displayGrossProfit = React.useMemo(() => {
+    if (selectedPeriod === '2025') return 4416518.11;
     const directCogs = filteredExpenses
       .filter(e => {
         const cat = (e.category || '').toLowerCase();
@@ -906,15 +2347,14 @@ export function Finance() {
     if (displayRevenue > 0 || directCogs > 0) {
       return displayRevenue - directCogs;
     }
-    if (selectedPeriod === '2025') return 4416518.11;
     return 0;
   }, [displayRevenue, filteredExpenses, selectedPeriod]);
 
   const displayNetProfit = React.useMemo(() => {
+    if (selectedPeriod === '2025') return 4379764.76;
     if (displayRevenue > 0 || displayExpenses > 0) {
       return displayRevenue - displayExpenses;
     }
-    if (selectedPeriod === '2025') return 4379764.76;
     return 0;
   }, [displayRevenue, displayExpenses, selectedPeriod]);
 
@@ -1270,10 +2710,6 @@ export function Finance() {
     return [...audited2025, ...live2026];
   }, [selectedPeriod, trajectoryGranularity, orders, expenses, filteredOrders, filteredExpenses]);
 
-  const currentMonthDate = new Date();
-  const currentMonthName = currentMonthDate.toLocaleString('default', { month: 'short' });
-  const currentMonthYear = currentMonthDate.getFullYear();
-
   const pieData = React.useMemo(() => {
     const isCogsCategory = (cat: string) => ['Cost of Goods Sold', 'COGS', 'Inventory Purchase', 'Raw Materials'].some(
       c => (cat || '').toLowerCase().includes(c.toLowerCase())
@@ -1518,7 +2954,7 @@ export function Finance() {
     };
   }, [selectedPeriod, orders, expenses]);
 
-  const exportPLStatementCSV = () => {
+  const handleExportPLStatementCSV = useCallback(() => {
     const headerLine = `"${activePLData.title}"`;
     const subheaderLine = `"${activePLData.subtitle}"`;
     const colHeaderLine = `"${['Account / Line Item', ...activePLData.colHeaders].join('","')}"`;
@@ -1549,22 +2985,9 @@ export function Finance() {
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
     toast.success(`Exported ${activePLData.title} to CSV`);
-  };
+  }, [activePLData, selectedPeriod]);
 
-  const PIE_COLORS = [
-    '#f59e0b', // Amber
-    '#10b981', // Emerald
-    '#3b82f6', // Sapphire Blue
-    '#8b5cf6', // Violet
-    '#ec4899', // Pink
-    '#06b6d4', // Cyan
-    '#f97316', // Orange
-    '#6366f1', // Indigo
-    '#14b8a6', // Teal
-    '#84cc16', // Lime
-  ];
-
-  const handleAddExpense = async (e: React.FormEvent<HTMLFormElement>) => {
+  const handleAddExpense = useCallback(async (e: React.FormEvent<HTMLFormElement>): Promise<boolean> => {
     e.preventDefault();
     const formData = new FormData(e.currentTarget);
     const orderId = formData.get('orderId') as string;
@@ -1572,7 +2995,7 @@ export function Finance() {
 
     if (isNaN(amount) || amount <= 0) {
       toast.error('Amount must be greater than ₱0.00');
-      return;
+      return false;
     }
 
     const dateVal = formData.get('date') as string;
@@ -1590,14 +3013,16 @@ export function Finance() {
       await addDoc(collection(db, 'expenses'), newExpense);
       setIsAddExpenseOpen(false);
       toast.success('Operational expense recorded');
+      return true;
     } catch (err) {
       handleSupabaseError(err, OperationType.CREATE, 'expenses');
+      return false;
     }
-  };
+  }, [profile?.uid]);
 
-  const handleUpdateExpense = async (e: React.FormEvent<HTMLFormElement>) => {
+  const handleUpdateExpense = useCallback(async (e: React.FormEvent<HTMLFormElement>): Promise<boolean> => {
     e.preventDefault();
-    if (!editingExpense) return;
+    if (!editingExpense || isExpenseOnly) return false;
 
     const formData = new FormData(e.currentTarget);
     const orderId = formData.get('orderId') as string;
@@ -1605,7 +3030,7 @@ export function Finance() {
 
     if (isNaN(amount) || amount <= 0) {
       toast.error('Amount must be greater than ₱0.00');
-      return;
+      return false;
     }
 
     const dateVal = formData.get('date') as string;
@@ -1623,31 +3048,34 @@ export function Finance() {
       setIsEditExpenseOpen(false);
       setEditingExpense(null);
       toast.success('Expense record updated');
+      return true;
     } catch (err) {
       handleSupabaseError(err, OperationType.UPDATE, `expenses/${editingExpense.id}`);
+      return false;
     }
-  };
+  }, [editingExpense, isExpenseOnly]);
 
-  const handleDeleteExpense = async (id: string) => {
+  const handleDeleteExpense = useCallback(async (id: string) => {
+    if (isExpenseOnly) return;
     if (!confirm('Are you sure you want to delete this expense record? This action is permanent.')) return;
     try {
-      // For deletion we reach for a lower-level UI but here we just use native confirm for safety
       const { deleteDoc } = await import('../lib/supabaseAdapter');
       await deleteDoc(doc(db, 'expenses', id));
       toast.success('Expense record deleted');
     } catch (err) {
       handleSupabaseError(err, OperationType.DELETE, `expenses/${id}`);
     }
-  };
+  }, [isExpenseOnly]);
 
-  const handleAddCategory = async (e: React.FormEvent<HTMLFormElement>) => {
+  const handleAddCategory = useCallback(async (e: React.FormEvent<HTMLFormElement>): Promise<boolean> => {
     e.preventDefault();
+    if (isExpenseOnly) return false;
     const formData = new FormData(e.currentTarget);
     const name = formData.get('name') as string;
 
     if (categories.some(c => c.name.toLowerCase() === name.toLowerCase())) {
       toast.error('Category with this name already exists');
-      return;
+      return false;
     }
 
     const isActive = formData.get('status') === 'active';
@@ -1660,14 +3088,16 @@ export function Finance() {
 
     try {
       await addDoc(collection(db, 'expenseCategories'), newCategory);
-      setIsAddCategoryOpen(false);
       toast.success('Expense category added');
+      return true;
     } catch (err) {
       handleSupabaseError(err, OperationType.CREATE, 'expenseCategories');
+      return false;
     }
-  };
+  }, [categories, isExpenseOnly]);
 
-  const toggleCategoryStatus = async (category: ExpenseCategory) => {
+  const toggleCategoryStatus = useCallback(async (category: ExpenseCategory) => {
+    if (isExpenseOnly) return;
     const action = category.isActive ? 'archive' : 'activate';
     if (!confirm(`Are you sure you want to ${action} the "${category.name}" category?`)) return;
 
@@ -1679,69 +3109,105 @@ export function Finance() {
     } catch (err) {
       handleSupabaseError(err, OperationType.UPDATE, `expenseCategories/${category.id}`);
     }
-  };
+  }, [isExpenseOnly]);
 
-  const handleEditCategory = async (e: React.FormEvent<HTMLFormElement>) => {
+  const handleEditCategory = useCallback(async (category: ExpenseCategory, e: React.FormEvent<HTMLFormElement>): Promise<boolean> => {
     e.preventDefault();
-    if (!editingCategory) return;
+    if (isExpenseOnly) return false;
 
     const formData = new FormData(e.currentTarget);
     const name = formData.get('name') as string;
     const description = formData.get('description') as string;
 
-    if (categories.some(c => c.id !== editingCategory.id && c.name.toLowerCase() === name.toLowerCase())) {
+    if (categories.some(c => c.id !== category.id && c.name.toLowerCase() === name.toLowerCase())) {
       toast.error('Another category with this name already exists');
-      return;
+      return false;
     }
 
     try {
-      await updateDoc(doc(db, 'expenseCategories', editingCategory.id), {
+      await updateDoc(doc(db, 'expenseCategories', category.id), {
         name,
         description
       });
-      setIsEditCategoryOpen(false);
-      setEditingCategory(null);
       toast.success('Category updated successfully');
+      return true;
     } catch (err) {
-      handleSupabaseError(err, OperationType.UPDATE, `expenseCategories/${editingCategory.id}`);
+      handleSupabaseError(err, OperationType.UPDATE, `expenseCategories/${category.id}`);
+      return false;
     }
-  };
+  }, [categories, isExpenseOnly]);
 
-  const activeCategories = categories.filter(c => c.isActive);
+  const activeCategories = useMemo(
+    () => categories.filter(c => c.isActive),
+    [categories],
+  );
 
-  const toggleSort = (key: SortKey) => {
-    if (sortKey === key) {
-      setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
-    } else {
-      setSortKey(key);
+  const toggleSort = useCallback((key: SortKey) => {
+    setSortKey(prev => {
+      if (prev === key) {
+        setSortDirection(dir => dir === 'asc' ? 'desc' : 'asc');
+        return prev;
+      }
       setSortDirection('asc');
-    }
-  };
+      return key;
+    });
+  }, []);
 
-  const sortedExpenses = [...filteredExpenses].sort((a, b) => {
-    let valA: any;
-    let valB: any;
+  const indexedExpenses = useMemo<IndexedExpense[]>(() => {
+    return filteredExpenses.map(expense => {
+      const dt = parseDate(expense.date);
+      const linkedOrder = expense.orderId ? ordersById.get(expense.orderId) : undefined;
+      return {
+        expense,
+        dateMs: dt?.getTime() ?? 0,
+        dateLabel: dt ? dt.toLocaleDateString() : 'N/A',
+        linkedOrderNumber: linkedOrder?.orderNumber ?? null,
+      };
+    });
+  }, [filteredExpenses, ordersById]);
 
-    if (sortKey === 'date') {
-      valA = parseDate(a.date)?.getTime() ?? 0;
-      valB = parseDate(b.date)?.getTime() ?? 0;
-    } else if (sortKey === 'orderId') {
-      const orderA = orders.find(o => o.id === a.orderId);
-      const orderB = orders.find(o => o.id === b.orderId);
-      valA = orderA?.orderNumber || '';
-      valB = orderB?.orderNumber || '';
-    } else if (sortKey === 'category') {
-      valA = a.category || '';
-      valB = b.category || '';
-    } else if (sortKey === 'amount') {
-      valA = a.amount || 0;
-      valB = b.amount || 0;
-    }
+  const sortedExpenses = useMemo<IndexedExpense[]>(() => {
+    const mult = sortDirection === 'asc' ? 1 : -1;
+    return [...indexedExpenses].sort((a, b) => {
+      let valA: string | number;
+      let valB: string | number;
 
-    if (valA < valB) return sortDirection === 'asc' ? -1 : 1;
-    if (valA > valB) return sortDirection === 'asc' ? 1 : -1;
-    return 0;
-  });
+      if (sortKey === 'date') {
+        valA = a.dateMs;
+        valB = b.dateMs;
+      } else if (sortKey === 'orderId') {
+        valA = a.linkedOrderNumber || '';
+        valB = b.linkedOrderNumber || '';
+      } else if (sortKey === 'category') {
+        valA = a.expense.category || '';
+        valB = b.expense.category || '';
+      } else {
+        valA = a.expense.amount || 0;
+        valB = b.expense.amount || 0;
+      }
+
+      if (valA < valB) return -1 * mult;
+      if (valA > valB) return 1 * mult;
+      return 0;
+    });
+  }, [indexedExpenses, sortKey, sortDirection]);
+
+  const pieTotal = useMemo(
+    () => pieData.reduce((acc, curr) => acc + curr.value, 0),
+    [pieData],
+  );
+
+  const handleStartEditExpense = useCallback((expense: Expense) => {
+    setEditingExpense(expense);
+    setIsEditExpenseOpen(true);
+  }, []);
+
+  const handleEditDialogOpenChange = useCallback((open: boolean) => {
+    setIsEditExpenseOpen(open);
+    if (!open) setEditingExpense(null);
+  }, []);
+
+  const handleCloseCSVImport = useCallback(() => setIsCSVImportOpen(false), []);
 
   return (
     <div className="space-y-6">
@@ -1805,7 +3271,7 @@ export function Finance() {
               variant="outline"
               size="sm"
               className="h-7 gap-1.5 px-2.5 text-[9px] font-black uppercase tracking-wider rounded-sm border-border hover:bg-muted shadow-none"
-              onClick={exportPLStatementCSV}
+              onClick={handleExportPLStatementCSV}
             >
               <Download className="w-3.5 h-3.5 text-foreground/70" /> Export P&L (CSV)
             </Button>
@@ -1815,259 +3281,26 @@ export function Finance() {
 
       {!isExpenseOnly && (
         <>
-          {/* Financial Health Summary (4 KPIs) - Flat Enterprise Density */}
-          <div className="grid gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-4">
-        {/* Total Revenue - Green accounting indicator preserved */}
-        <div className="border border-emerald-300 dark:border-emerald-800/60 bg-emerald-50/40 dark:bg-emerald-950/20 rounded-sm p-3 shadow-none">
-          <div className="flex items-center justify-between pb-1.5 border-b border-emerald-200/60 dark:border-emerald-900/40">
-            <span className="text-[10px] font-black uppercase tracking-widest text-emerald-700 dark:text-emerald-400">Total Revenue</span>
-            <TrendingUp className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
-          </div>
-          <div className="pt-2">
-            <div className="text-xl font-mono font-black text-emerald-700 dark:text-emerald-300 tabular-nums">
-              ₱{displayRevenue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-            </div>
-            <p className="text-[10px] text-emerald-600/90 dark:text-emerald-400/80 font-bold mt-0.5 uppercase tracking-tight">
-              {selectedPeriod === '2025' ? 'Q1 Net Total Income' : 'Confirmed B2B Sales'}
-            </p>
-          </div>
-        </div>
+          <FinanceKpiGrid
+            selectedPeriod={selectedPeriod}
+            displayRevenue={displayRevenue}
+            displayExpenses={displayExpenses}
+            displayGrossProfit={displayGrossProfit}
+            displayNetProfit={displayNetProfit}
+            grossMargin={grossMargin}
+            netMargin={netMargin}
+          />
 
-        {/* Total COGS & Expenses - Red accounting indicator preserved */}
-        <div className="border border-red-300 dark:border-red-800/60 bg-red-50/40 dark:bg-red-950/20 rounded-sm p-3 shadow-none">
-          <div className="flex items-center justify-between pb-1.5 border-b border-red-200/60 dark:border-red-900/40">
-            <span className="text-[10px] font-black uppercase tracking-widest text-red-700 dark:text-red-400">Total COGS & Expenses</span>
-            <TrendingDown className="h-3.5 w-3.5 text-red-600 dark:text-red-400" />
-          </div>
-          <div className="pt-2">
-            <div className="text-xl font-mono font-black text-red-700 dark:text-red-300 tabular-nums">
-              ₱{displayExpenses.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-            </div>
-            <p className="text-[10px] text-red-600/90 dark:text-red-400/80 font-bold mt-0.5 uppercase tracking-tight">
-              {selectedPeriod === '2025' ? 'COGS + SGA + Audit Expenses' : 'SGA & Operational Costs'}
-            </p>
-          </div>
-        </div>
-
-        {/* Gross Profit - Corporate Charcoal / Neutral */}
-        <div className="border border-neutral-200 dark:border-neutral-800 bg-card rounded-sm p-3 shadow-none">
-          <div className="flex items-center justify-between pb-1.5 border-b border-border">
-            <span className="text-[10px] font-black uppercase tracking-widest text-neutral-600 dark:text-neutral-400">Gross Profit</span>
-            <Wallet className="h-3.5 w-3.5 text-neutral-500" />
-          </div>
-          <div className="pt-2">
-            <div className="text-xl font-mono font-black text-foreground tabular-nums">
-              ₱{displayGrossProfit.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-            </div>
-            <p className="text-[10px] text-neutral-500 font-bold mt-0.5 uppercase tracking-tight">
-              {grossMargin}% Gross Margin
-            </p>
-          </div>
-        </div>
-
-        {/* Net Profit - ActivePro Signature Gold Highlight */}
-        <div className="border border-amber-300/80 dark:border-amber-700/60 bg-amber-50/30 dark:bg-amber-950/20 rounded-sm p-3 shadow-none">
-          <div className="flex items-center justify-between pb-1.5 border-b border-amber-200/60 dark:border-amber-900/40">
-            <span className="text-[10px] font-black uppercase tracking-widest text-amber-800 dark:text-amber-400">Net Profit</span>
-            <span className="text-[8px] font-black px-1.5 py-0.5 bg-[#fdd001] text-[#1A2332] rounded-xs uppercase tracking-wider">Audited</span>
-          </div>
-          <div className="pt-2">
-            <div className={`text-xl font-mono font-black tabular-nums ${displayNetProfit >= 0 ? 'text-amber-700 dark:text-amber-300' : 'text-red-600'}`}>
-              ₱{displayNetProfit.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-            </div>
-            <p className="text-[10px] text-amber-700/80 dark:text-amber-400/80 font-bold mt-0.5 uppercase tracking-tight">
-              {netMargin}% Net Margin
-            </p>
-          </div>
-        </div>
-      </div>
-
-      {/* Performance Chart */}
-      <div className="border border-border bg-card rounded-sm overflow-hidden shadow-none">
-        <div className="px-3.5 py-2.5 border-b border-border bg-muted/20 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-          <div>
-            <div className="text-xs font-black uppercase tracking-widest text-foreground flex items-center gap-2">
-              <BarChartIcon className="w-4 h-4" /> Financial Performance
-            </div>
-            <div className="text-[10px] font-medium text-muted-foreground mt-0.5">
-              Historical Revenue vs Operational Expenditure ({chartGranularity})
-            </div>
-          </div>
-          <div className="flex flex-wrap items-center gap-3">
-            {/* Granularity Selector */}
-            <div className="flex items-center gap-0.5 bg-muted/80 p-0.5 rounded-sm border border-border">
-              {(['monthly', 'quarterly', 'annual'] as const).map(gran => (
-                <Button
-                  key={gran}
-                  variant={chartGranularity === gran ? 'default' : 'ghost'}
-                  size="sm"
-                  className={`h-6 px-2 text-[9px] font-black uppercase tracking-wider rounded-sm transition-all ${chartGranularity === gran
-                      ? 'bg-[#1A2332] text-white shadow-none'
-                      : 'text-muted-foreground hover:text-foreground hover:bg-muted'
-                    }`}
-                  onClick={() => setChartGranularity(gran)}
-                >
-                  {gran}
-                </Button>
-              ))}
-            </div>
-            <div className="flex items-center gap-3 pl-1 border-l border-border/60">
-              <div className="flex items-center gap-1.5">
-                <div className="w-2 h-2 rounded-xs bg-emerald-500" />
-                <span className="text-[10px] font-bold text-muted-foreground uppercase">Revenue</span>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <div className="w-2 h-2 rounded-xs bg-red-500" />
-                <span className="text-[10px] font-bold text-muted-foreground uppercase">Expenses</span>
-              </div>
-            </div>
-          </div>
-        </div>
-        <div className="p-4 h-75 overflow-hidden">
-          <ResponsiveContainer width="100%" height={260}>
-            <BarChart
-              data={chartData}
-              margin={{ top: 0, right: 0, left: -20, bottom: 0 }}
-              barGap={2}
-              barCategoryGap="25%"
-            >
-              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--border)" />
-              <XAxis
-                dataKey="name"
-                axisLine={false}
-                tickLine={false}
-                tick={{ fontSize: 10, fontWeight: 700, fill: '#71717a' }}
-                dy={10}
-              />
-              <YAxis
-                axisLine={false}
-                tickLine={false}
-                tick={{ fontSize: 10, fontWeight: 700, fill: '#71717a' }}
-                tickFormatter={(value) => `₱${value >= 1000 ? (value / 1000) + 'k' : value}`}
-              />
-              <Tooltip
-                cursor={{ fill: 'rgba(253,208,1,0.06)' }}
-                contentStyle={{
-                  borderRadius: '2px',
-                  border: '1px solid #302f2f',
-                  backgroundColor: '#1A2332',
-                  color: '#ffffff',
-                  fontSize: '11px',
-                  fontWeight: 'bold'
-                }}
-                formatter={(value: number) => [`₱${value.toLocaleString()}`, '']}
-              />
-              <Bar
-                dataKey="Revenue"
-                fill="#10b981"
-                radius={[2, 2, 0, 0]}
-              />
-              <Bar
-                dataKey="Expenses"
-                fill="#ef4444"
-                radius={[2, 2, 0, 0]}
-              />
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-      </div>
-
-      {/* Trajectory Chart — Zero Cliff Drop & Granularity Hover */}
-      <div className="border border-border bg-card rounded-sm overflow-hidden shadow-none">
-        <div className="px-3.5 py-2.5 border-b border-border bg-muted/20 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-          <div>
-            <div className="text-xs font-black uppercase tracking-widest text-foreground flex items-center gap-2">
-              <TrendingUp className="w-4 h-4" />
-              {selectedPeriod === '2025'
-                ? 'Financial Trajectory (Q1 2025 Audited Baseline)'
-                : selectedPeriod === '2026'
-                  ? 'Financial Trajectory (FY 2026 Live Operations)'
-                  : 'Financial Trajectory (Historical & Live Trend)'}
-            </div>
-            <div className="text-[10px] font-medium text-muted-foreground mt-0.5">
-              {selectedPeriod === '2025'
-                ? `Audited Baseline — Jan to Mar 2025 (${trajectoryGranularity.toUpperCase()} Timeline & Paced Scale)`
-                : selectedPeriod === '2026'
-                  ? `Continuous Operational Revenue vs Expense Trend (${trajectoryGranularity.toUpperCase()} Granularity)`
-                  : `Cross-Period Multi-Year Revenue vs Expense Trend (${trajectoryGranularity.toUpperCase()} Granularity)`}
-            </div>
-          </div>
-          <div className="flex flex-wrap items-center gap-3">
-            {/* Trajectory Granularity Selector */}
-            <div className="flex items-center gap-0.5 bg-muted/80 p-0.5 rounded-sm border border-border">
-              {(['daily', 'weekly', 'monthly'] as const).map(gran => (
-                <Button
-                  key={gran}
-                  variant={trajectoryGranularity === gran ? 'default' : 'ghost'}
-                  size="sm"
-                  className={`h-6 px-2 text-[9px] font-black uppercase tracking-wider rounded-sm transition-all ${trajectoryGranularity === gran
-                      ? 'bg-[#1A2332] text-white shadow-none'
-                      : 'text-muted-foreground hover:text-foreground hover:bg-muted'
-                    }`}
-                  onClick={() => setTrajectoryGranularity(gran)}
-                >
-                  {gran}
-                </Button>
-              ))}
-            </div>
-            <div className="flex items-center gap-3 pl-1 border-l border-border/60">
-              <div className="flex items-center gap-1.5">
-                <div className="w-2 h-2 rounded-xs bg-emerald-500" />
-                <span className="text-[10px] font-bold text-muted-foreground uppercase">Revenue</span>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <div className="w-2 h-2 rounded-xs bg-red-500" />
-                <span className="text-[10px] font-bold text-muted-foreground uppercase">Expenses</span>
-              </div>
-            </div>
-          </div>
-        </div>
-        <div className="p-4 h-75 overflow-hidden">
-          <ResponsiveContainer width="100%" height={260}>
-            <LineChart data={chartData12Months} margin={{ top: 5, right: 20, left: -20, bottom: 5 }}>
-              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--border)" />
-              <XAxis
-                dataKey="name"
-                axisLine={false}
-                tickLine={false}
-                tick={{ fontSize: 10, fontWeight: 700, fill: '#71717a' }}
-                dy={10}
-                interval={trajectoryGranularity === 'daily' ? 9 : trajectoryGranularity === 'weekly' ? 1 : 0}
-              />
-              <YAxis
-                axisLine={false}
-                tickLine={false}
-                tick={{ fontSize: 10, fontWeight: 700, fill: '#71717a' }}
-                tickFormatter={(value) => `₱${value >= 1000 ? (value / 1000) + 'k' : value}`}
-              />
-              <Tooltip content={<CustomTrajectoryTooltip />} />
-              <Line
-                type="monotone"
-                dataKey="Revenue"
-                stroke="#10b981"
-                strokeWidth={2.5}
-                isAnimationActive={true}
-                animationDuration={800}
-                animationEasing="ease-in-out"
-                dot={trajectoryGranularity === 'daily' ? false : { r: 3, fill: '#10b981', strokeWidth: 1.5, stroke: '#fff' }}
-                activeDot={{ r: 5, strokeWidth: 0 }}
-              />
-              <Line
-                type="monotone"
-                dataKey="Expenses"
-                stroke="#ef4444"
-                strokeWidth={2.5}
-                isAnimationActive={true}
-                animationDuration={800}
-                animationEasing="ease-in-out"
-                dot={trajectoryGranularity === 'daily' ? false : { r: 3, fill: '#ef4444', strokeWidth: 1.5, stroke: '#fff' }}
-                activeDot={{ r: 5, strokeWidth: 0 }}
-              />
-            </LineChart>
-          </ResponsiveContainer>
-        </div>
-      </div>
-      </>
+          <FinanceChartsSection
+            selectedPeriod={selectedPeriod}
+            chartData={chartData}
+            chartGranularity={chartGranularity}
+            onChartGranularityChange={setChartGranularity}
+            chartData12Months={chartData12Months}
+            trajectoryGranularity={trajectoryGranularity}
+            onTrajectoryGranularityChange={setTrajectoryGranularity}
+          />
+        </>
       )}
 
       <div className="flex flex-col lg:flex-row gap-6">
@@ -2122,951 +3355,116 @@ export function Finance() {
                     variant="outline"
                     size="sm"
                     className="h-7 gap-1.5 px-2.5 text-[9px] font-black uppercase tracking-wider rounded-sm border-border hover:bg-muted shadow-none shrink-0"
-                    onClick={exportPLStatementCSV}
+                    onClick={handleExportPLStatementCSV}
                   >
                     <Download className="w-3 h-3 text-foreground/70" /> Export CSV
                   </Button>
                 </div>
               ) : (
                 <>
-                  <Dialog open={isManageCategoriesOpen} onOpenChange={setIsManageCategoriesOpen}>
-                    <DialogTrigger render={
-                      <Button variant="outline" className="h-7 gap-1.5 px-2.5 text-[9px] font-bold uppercase tracking-wider rounded-sm border-border hover:bg-muted shadow-none">
+                  {!isExpenseOnly && (
+                    <>
+                      <Button
+                        variant="outline"
+                        className="h-7 gap-1.5 px-2.5 text-[9px] font-bold uppercase tracking-wider rounded-sm border-border hover:bg-muted shadow-none"
+                        onClick={() => setIsManageCategoriesOpen(true)}
+                      >
                         <Settings className="w-3 h-3" /> Manage Categories
                       </Button>
-                    } />
-                    <DialogContent className="sm:max-w-175 max-h-[85vh] flex flex-col rounded-sm border border-border shadow-lg p-5">
-                      <DialogHeader className="pb-2 border-b border-border">
-                        <DialogTitle className="text-sm font-black uppercase tracking-wider">Expense Category Management</DialogTitle>
-                        <DialogDescription className="text-xs text-muted-foreground">Add, edit, or archive operational expenditure classifications.</DialogDescription>
-                      </DialogHeader>
 
-                      <div className="flex-1 overflow-y-auto py-3 space-y-4">
-                        <div className="flex items-center justify-between">
-                          <h4 className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Inventory of Categories</h4>
-                          <Dialog open={isAddCategoryOpen} onOpenChange={setIsAddCategoryOpen}>
-                            <DialogTrigger render={
-                              <Button size="sm" className="h-6.5 gap-1.5 px-2.5 text-[9px] font-bold uppercase rounded-sm bg-[#1A2332] text-white hover:bg-[#1A2332]/90 shadow-none">
-                                <Plus className="w-3 h-3" /> Create New
-                              </Button>
-                            } />
-                            <DialogContent className="rounded-sm border border-border shadow-lg p-5 max-w-sm">
-                              <DialogHeader className="pb-2 border-b border-border">
-                                <DialogTitle className="text-sm font-black uppercase tracking-wider">Add Expense Category</DialogTitle>
-                              </DialogHeader>
-                              <form onSubmit={handleAddCategory} className="space-y-3 pt-2 font-sans">
-                                <div className="space-y-1">
-                                  <Label htmlFor="name" className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Category Name</Label>
-                                  <Input id="name" name="name" required placeholder="e.g., Marketing, Logistics..." className="h-8 rounded-sm text-xs border-border" />
-                                </div>
-                                <div className="space-y-1">
-                                  <Label htmlFor="desc" className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Description (Optional)</Label>
-                                  <Input id="desc" name="description" placeholder="Brief purpose..." className="h-8 rounded-sm text-xs border-border" />
-                                </div>
-                                <div className="space-y-1">
-                                  <Label htmlFor="status" className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Initial Status</Label>
-                                  <Select name="status" defaultValue="active">
-                                    <SelectTrigger id="status" className="h-8 rounded-sm text-xs border-border">
-                                      <SelectValue placeholder="Select status" />
-                                    </SelectTrigger>
-                                    <SelectContent className="rounded-sm">
-                                      <SelectItem value="active" className="text-xs font-semibold">Active</SelectItem>
-                                      <SelectItem value="archived" className="text-xs font-semibold">Archived</SelectItem>
-                                    </SelectContent>
-                                  </Select>
-                                </div>
-                                <DialogFooter className="pt-2">
-                                  <Button type="submit" className="w-full h-8 rounded-sm bg-[#1A2332] text-white hover:bg-[#1A2332]/90 font-bold uppercase tracking-wider text-xs">Save Category</Button>
-                                </DialogFooter>
-                              </form>
-                            </DialogContent>
-                          </Dialog>
-                        </div>
-
-                        <div className="border rounded-sm overflow-hidden bg-card border-border shadow-none">
-                          <Table>
-                            <TableHeader className="bg-neutral-100 dark:bg-neutral-900 border-b border-neutral-300 dark:border-neutral-700">
-                              <TableRow className="hover:bg-transparent">
-                                <TableHead className="text-[10px] font-black uppercase tracking-widest py-2 px-3 text-neutral-600 dark:text-neutral-400">Classification Details</TableHead>
-                                <TableHead className="text-[10px] font-black uppercase tracking-widest py-2 text-center text-neutral-600 dark:text-neutral-400">Current Status</TableHead>
-                                <TableHead className="text-[10px] font-black uppercase tracking-widest py-2 pr-3 text-right text-neutral-600 dark:text-neutral-400">Management</TableHead>
-                              </TableRow>
-                            </TableHeader>
-                            <TableBody>
-                              {categories.map((cat) => (
-                                <TableRow key={cat.id} className="group hover:bg-muted/30 border-b border-border/50 last:border-0 transition-colors">
-                                  <TableCell className="px-3 py-2">
-                                    <div className="flex flex-col">
-                                      <span className="text-xs font-bold text-foreground uppercase tracking-tight">{cat.name}</span>
-                                      {cat.description && (
-                                        <span className="text-[10px] text-muted-foreground font-medium leading-tight mt-0.5 line-clamp-1 max-w-70">
-                                          {cat.description}
-                                        </span>
-                                      )}
-                                    </div>
-                                  </TableCell>
-                                  <TableCell className="text-center py-2">
-                                    <span
-                                      className={`text-[9px] font-black uppercase tracking-wider rounded-sm px-2 py-0.5 border ${cat.isActive
-                                        ? "bg-emerald-50 text-emerald-700 border-emerald-300 dark:bg-emerald-950/40 dark:text-emerald-300"
-                                        : "bg-neutral-100 text-neutral-500 border-neutral-300 dark:bg-neutral-800 dark:text-neutral-400"
-                                        }`}
-                                    >
-                                      {cat.isActive ? 'Active' : 'Archived'}
-                                    </span>
-                                  </TableCell>
-                                  <TableCell className="pr-3 py-2">
-                                    <div className="flex justify-end items-center gap-1.5 font-sans">
-                                      <Button
-                                        variant="ghost"
-                                        size="sm"
-                                        className="h-6.5 px-2 text-[9px] font-black uppercase tracking-wider text-muted-foreground hover:text-foreground rounded-sm"
-                                        onClick={() => {
-                                          setEditingCategory(cat);
-                                          setIsEditCategoryOpen(true);
-                                        }}
-                                      >
-                                        Edit
-                                      </Button>
-                                      <Separator orientation="vertical" className="h-3 bg-border" />
-                                      <Button
-                                        variant="ghost"
-                                        size="sm"
-                                        className={`h-6.5 px-2 text-[9px] font-black uppercase tracking-wider rounded-sm ${cat.isActive
-                                          ? "text-red-500 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/40"
-                                          : "text-emerald-600 hover:text-emerald-800 hover:bg-emerald-50 dark:hover:bg-emerald-950/40"
-                                          }`}
-                                        onClick={() => toggleCategoryStatus(cat)}
-                                      >
-                                        {cat.isActive ? 'Archive' : 'Activate'}
-                                      </Button>
-                                    </div>
-                                  </TableCell>
-                                </TableRow>
-                              ))}
-                              {categories.length === 0 && (
-                                <TableRow>
-                                  <TableCell colSpan={3} className="text-center py-6 text-xs italic text-muted-foreground">
-                                    No categories defined.
-                                  </TableCell>
-                                </TableRow>
-                              )}
-                            </TableBody>
-                          </Table>
-                        </div>
-
-                        <Dialog open={isEditCategoryOpen} onOpenChange={(open) => {
-                          setIsEditCategoryOpen(open);
-                          if (!open) setEditingCategory(null);
-                        }}>
-                          <DialogContent className="rounded-sm border border-border shadow-lg p-5 max-w-sm">
-                            <DialogHeader className="pb-2 border-b border-border">
-                              <DialogTitle className="text-sm font-black uppercase tracking-wider">Edit Category</DialogTitle>
-                            </DialogHeader>
-                            {editingCategory && (
-                              <form onSubmit={handleEditCategory} className="space-y-3 pt-2 font-sans">
-                                <div className="space-y-1">
-                                  <Label htmlFor="edit-name" className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Category Name</Label>
-                                  <Input id="edit-name" name="name" defaultValue={editingCategory.name} required className="h-8 rounded-sm text-xs border-border" />
-                                </div>
-                                <div className="space-y-1">
-                                  <Label htmlFor="edit-desc" className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Description (Optional)</Label>
-                                  <Input id="edit-desc" name="description" defaultValue={editingCategory.description} className="h-8 rounded-sm text-xs border-border" />
-                                </div>
-                                <DialogFooter className="pt-2">
-                                  <Button type="submit" className="w-full h-8 rounded-sm bg-[#1A2332] text-white hover:bg-[#1A2332]/90 font-bold uppercase tracking-wider text-xs">Update Classification</Button>
-                                </DialogFooter>
-                              </form>
-                            )}
-                          </DialogContent>
-                        </Dialog>
-                      </div>
-                    </DialogContent>
-                  </Dialog>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-7 gap-1.5 px-2.5 border border-emerald-500/40 text-emerald-700 dark:text-emerald-400 bg-emerald-50/40 dark:bg-emerald-950/30 text-[9px] font-black uppercase tracking-wider hover:bg-emerald-50/60 transition-all rounded-sm shadow-none"
+                        onClick={() => setIsCSVImportOpen(true)}
+                      >
+                        <FileUp className="w-3 h-3 text-emerald-600 dark:text-emerald-400" /> Import Financial CSV
+                      </Button>
+                    </>
+                  )}
 
                   <Button
-                    variant="outline"
-                    size="sm"
-                    className="h-7 gap-1.5 px-2.5 border border-emerald-500/40 text-emerald-700 dark:text-emerald-400 bg-emerald-50/40 dark:bg-emerald-950/30 text-[9px] font-black uppercase tracking-wider hover:bg-emerald-50/60 transition-all rounded-sm shadow-none"
-                    onClick={() => setIsCSVImportOpen(true)}
+                    className="h-7 gap-1.5 px-2.5 bg-[#1A2332] text-white rounded-sm inline-flex items-center justify-center text-[9px] font-black uppercase tracking-wider transition-all hover:bg-[#1A2332]/90 shadow-none"
+                    onClick={() => setIsAddExpenseOpen(true)}
                   >
-                    <FileUp className="w-3 h-3 text-emerald-600 dark:text-emerald-400" /> Import Financial CSV
+                    <Plus className="w-3 h-3" /> Record Entry
                   </Button>
-
-                  <Dialog open={isAddExpenseOpen} onOpenChange={setIsAddExpenseOpen}>
-                    <DialogTrigger render={
-                      <Button className="h-7 gap-1.5 px-2.5 bg-[#1A2332] text-white rounded-sm inline-flex items-center justify-center text-[9px] font-black uppercase tracking-wider transition-all hover:bg-[#1A2332]/90 shadow-none">
-                        <Plus className="w-3 h-3" /> Record Entry
-                      </Button>
-                    } />
-                    <DialogContent className="rounded-sm sm:max-w-xl max-w-xl border border-border shadow-lg p-6">
-                      <DialogHeader className="pb-3 border-b border-border">
-                        <DialogTitle className="text-base font-black uppercase tracking-wider">Record Operational Expense</DialogTitle>
-                        <DialogDescription className="text-xs text-muted-foreground">Map local expenses to the centralized financial ledger.</DialogDescription>
-                      </DialogHeader>
-                      <form onSubmit={handleAddExpense} className="space-y-3.5 pt-3 font-sans">
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                          <div className="space-y-1">
-                            <Label htmlFor="expense-category" className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Category</Label>
-                            <Select name="category" required>
-                              <SelectTrigger id="expense-category" className="rounded-sm border-border h-8 text-xs">
-                                <SelectValue placeholder="Classification" />
-                              </SelectTrigger>
-                              <SelectContent className="rounded-sm">
-                                {activeCategories.map(cat => (
-                                  <SelectItem key={cat.id} value={cat.name} className="text-xs font-semibold uppercase tracking-wider">{cat.name}</SelectItem>
-                                ))}
-                                {activeCategories.length === 0 && (
-                                  <div className="p-2 text-[10px] text-muted-foreground italic font-medium uppercase tracking-tight">No active categories.</div>
-                                )}
-                              </SelectContent>
-                            </Select>
-                          </div>
-                          <div className="space-y-1">
-                            <Label htmlFor="expense-date" className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Expense Date</Label>
-                            <Input id="expense-date" name="date" type="date" defaultValue={new Date().toISOString().split('T')[0]} required className="rounded-sm border-border h-8 text-xs font-mono" />
-                          </div>
-                        </div>
-
-                        <div className="space-y-1">
-                          <Label htmlFor="expense-amount" className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Amount (₱)</Label>
-                          <div className="relative">
-                            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground font-mono font-bold text-xs">₱</span>
-                            <Input id="expense-amount" name="amount" type="number" step="0.01" required placeholder="0.00" className="rounded-sm border-border h-8 pl-6 font-mono font-bold tabular-nums text-xs" />
-                          </div>
-                        </div>
-
-                        <div className="space-y-1">
-                          <Label htmlFor="expense-description" className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Description</Label>
-                          <Input id="expense-description" name="description" placeholder="Operational details..." className="rounded-sm border-border h-8 text-xs" />
-                        </div>
-
-                        <div className="space-y-1">
-                          <Label htmlFor="expense-order" className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Linked Order (Optional)</Label>
-                          <input type="hidden" name="orderId" value={selectedExpenseOrderId} />
-                          <Popover open={isExpenseOrderPickerOpen} onOpenChange={open => {
-                            setIsExpenseOrderPickerOpen(open);
-                            if (!open) setExpenseOrderSearch('');
-                          }}>
-                            <PopoverTrigger
-                              render={
-                                <Button
-                                  id="expense-order"
-                                  type="button"
-                                  variant="outline"
-                                  className="w-full justify-between rounded-sm border-border h-8 text-xs font-normal bg-background px-3 hover:bg-muted/50"
-                                />
-                              }
-                              role="combobox"
-                              aria-expanded={isExpenseOrderPickerOpen}
-                            >
-                              <span className={`truncate ${selectedExpenseOrderId === 'none' || !selectedExpenseOrder ? 'text-muted-foreground' : 'text-foreground font-semibold'}`}>
-                                {selectedExpenseOrderId !== 'none' && selectedExpenseOrder
-                                  ? `${selectedExpenseOrder.orderNumber} - ${selectedExpenseOrder.clientName}`
-                                  : 'No order linked'}
-                              </span>
-                              <ChevronDown className="w-3.5 h-3.5 shrink-0 opacity-50 ml-1" />
-                            </PopoverTrigger>
-                            <PopoverContent className="w-(--anchor-width,340px) min-w-70 p-2 bg-popover rounded-sm border border-border shadow-md" align="start">
-                              <div className="relative mb-2">
-                                <SearchIcon className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground pointer-events-none" />
-                                <Input
-                                  autoFocus
-                                  placeholder="Search by order # or client name..."
-                                  value={expenseOrderSearch}
-                                  onChange={e => setExpenseOrderSearch(e.target.value)}
-                                  className="h-8 pl-8 text-xs rounded-sm border-border"
-                                />
-                              </div>
-                              <div className="max-h-56 overflow-y-auto space-y-0.5">
-                                <button
-                                  type="button"
-                                  className={`flex w-full items-center justify-between rounded-sm px-2.5 py-1.5 text-xs text-left cursor-pointer transition-colors ${
-                                    selectedExpenseOrderId === 'none' ? 'bg-primary/10 text-primary font-bold' : 'hover:bg-muted text-foreground font-medium'
-                                  }`}
-                                  onClick={() => {
-                                    setSelectedExpenseOrderId('none');
-                                    setIsExpenseOrderPickerOpen(false);
-                                    setExpenseOrderSearch('');
-                                  }}
-                                >
-                                  <span>None / General</span>
-                                  {selectedExpenseOrderId === 'none' && <Check className="w-3.5 h-3.5 text-primary shrink-0" />}
-                                </button>
-                                {filteredExpenseOrders.map(order => (
-                                  <button
-                                    key={order.id}
-                                    type="button"
-                                    className={`flex w-full items-center justify-between rounded-sm px-2.5 py-1.5 text-xs text-left cursor-pointer transition-colors ${
-                                      selectedExpenseOrderId === order.id ? 'bg-primary/10 text-primary font-bold' : 'hover:bg-muted text-foreground font-medium'
-                                    }`}
-                                    onClick={() => {
-                                      setSelectedExpenseOrderId(order.id);
-                                      setIsExpenseOrderPickerOpen(false);
-                                      setExpenseOrderSearch('');
-                                    }}
-                                  >
-                                    <span className="truncate">{order.orderNumber} - {order.clientName}</span>
-                                    {selectedExpenseOrderId === order.id && <Check className="w-3.5 h-3.5 text-primary shrink-0" />}
-                                  </button>
-                                ))}
-                                {filteredExpenseOrders.length === 0 && expenseOrderSearch.trim() !== '' && (
-                                  <p className="p-3 text-center text-xs text-muted-foreground">
-                                    No matching orders found.
-                                  </p>
-                                )}
-                              </div>
-                            </PopoverContent>
-                          </Popover>
-                          <p className="text-[9px] text-muted-foreground font-medium italic">Link this expense to a specific B2B order for job-costing.</p>
-                        </div>
-
-                        <DialogFooter className="pt-2">
-                          <Button type="submit" className="w-full h-8 bg-[#1A2332] text-white font-bold uppercase tracking-wider text-xs rounded-sm hover:bg-[#1A2332]/90 shadow-none" disabled={activeCategories.length === 0}>
-                            Post to Ledger <ArrowUpRight className="w-3.5 h-3.5 ml-1.5" />
-                          </Button>
-                        </DialogFooter>
-                      </form>
-                    </DialogContent>
-                  </Dialog>
                 </>
               )}
             </div>
           </div>
 
           {activeLedgerTab === 'statement' ? (
-            <div className="bg-card border border-border rounded-sm overflow-hidden shadow-none">
-              <div className="px-3.5 py-2.5 bg-neutral-100 dark:bg-neutral-900 border-b border-border flex flex-col 2xl:flex-row 2xl:items-center justify-between gap-3">
-                <div className="min-w-0">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <h4 className="text-xs font-black uppercase tracking-widest text-foreground">
-                      {activePLData.title}
-                    </h4>
-                    <span
-                      className={`inline-flex items-center h-5 px-2 text-[9px] font-black uppercase tracking-wider rounded-sm border shrink-0 ${selectedPeriod === '2025'
-                          ? 'bg-emerald-50 text-emerald-800 border-emerald-300 dark:bg-emerald-950/50 dark:text-emerald-300 dark:border-emerald-800'
-                          : selectedPeriod === '2026'
-                            ? 'bg-blue-50 text-blue-800 border-blue-300 dark:bg-blue-950/50 dark:text-blue-300 dark:border-blue-800'
-                            : 'bg-purple-50 text-purple-800 border-purple-300 dark:bg-purple-950/50 dark:text-purple-300 dark:border-purple-800'
-                        }`}
-                    >
-                      {activePLData.badgeText}
-                    </span>
-                  </div>
-                  <p className="text-[10px] text-muted-foreground font-medium mt-0.5">
-                    {activePLData.subtitle}
-                  </p>
-                </div>
-                <div className="flex flex-wrap items-center justify-between sm:justify-end gap-2 shrink-0">
-                  {uncollectedReceivables > 0 && (
-                    <span className="inline-flex items-center h-7 px-2.5 bg-red-50 text-red-800 border border-red-300 dark:bg-red-950/50 dark:text-red-300 dark:border-red-800 text-[9px] font-bold uppercase tracking-wider rounded-sm shrink-0">
-                      Uncollected: {formatCurrency(uncollectedReceivables)}
-                    </span>
-                  )}
-                  <div className="flex items-center gap-1.5 shrink-0">
-                    <Select value={selectedPeriod} onValueChange={(v: '2025' | '2026' | 'all') => setSelectedPeriod(v)}>
-                      <SelectTrigger className="h-7 text-[9px] uppercase font-bold tracking-wider px-2.5 rounded-sm border-border">
-                        <SelectValue placeholder="Period">
-                          {selectedPeriod === '2025' ? '2025' : selectedPeriod === '2026' ? '2026' : 'ALL'}
-                        </SelectValue>
-                      </SelectTrigger>
-                      <SelectContent className="rounded-sm w-auto min-w-55">
-                        <SelectItem value="2025">Monthly 2025 (Q1 Audited)</SelectItem>
-                        <SelectItem value="2026">Quarterly 2026 (Live Ops)</SelectItem>
-                        <SelectItem value="all">All Periods (Consolidated)</SelectItem>
-                      </SelectContent>
-                    </Select>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="h-7 gap-1 px-2.5 text-[9px] font-black uppercase tracking-wider rounded-sm border-border shadow-none"
-                      onClick={exportPLStatementCSV}
-                    >
-                      <Download className="w-3 h-3 text-foreground/70" /> CSV
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="h-7 gap-1 px-2.5 text-[9px] font-black uppercase tracking-wider rounded-sm border-border shadow-none"
-                      onClick={() => {
-                      const printContents = document.getElementById('pl-statement-print-area')?.outerHTML;
-                      if (printContents) {
-                        const frame = document.createElement('iframe');
-                        frame.style.cssText = 'position:fixed;width:0;height:0;border:0;';
-                        document.body.appendChild(frame);
-                        const doc = frame.contentDocument;
-                        if (!doc || !frame.contentWindow) return;
-                        doc.head.innerHTML = `
-                          <style>
-                            @page { size: A4 portrait; margin: 15mm; }
-                            body { font-family: Arial, sans-serif; font-size: 11px; color: #111827; }
-                            h4 { margin: 0 0 5px 0; font-size: 14px; text-transform: uppercase; }
-                            p { margin: 0 0 15px 0; font-size: 10px; color: #64748b; }
-                            table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
-                            th, td { text-align: left; padding: 6px; border-bottom: 1px solid #e2e8f0; }
-                            th { background-color: #f8fafc; font-weight: bold; text-transform: uppercase; font-size: 9px; color: #64748b; }
-                            td.text-right, th.text-right { text-align: right; }
-                            .font-bold { font-weight: bold; }
-                            .font-black { font-weight: 900; }
-                            .pl-12 { padding-left: 2rem !important; }
-                            .pl-8 { padding-left: 1rem !important; }
-                            @media print { body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
-                          </style>
-                        `;
-                        doc.body.innerHTML = `<div><h4>${activePLData.title}</h4><p>${activePLData.subtitle}</p>${printContents}</div>`;
-                        frame.contentWindow.focus();
-                        frame.contentWindow.print();
-                        setTimeout(() => frame.remove(), 250);
-                      }
-                    }}
-                  >
-                    <Printer className="w-3 h-3 text-foreground/70" /> Print
-                  </Button>
-                </div>
-              </div>
-            </div>
-
-              <div className="overflow-x-auto w-full">
-                <Table id="pl-statement-print-area">
-                  <TableHeader className="bg-neutral-100 dark:bg-neutral-900 border-b border-neutral-300 dark:border-neutral-700">
-                    <TableRow className="hover:bg-transparent">
-                      <TableHead className="text-[10px] font-black uppercase tracking-widest text-neutral-600 dark:text-neutral-400 py-2 pl-4 min-w-65">
-                        Account / Line Item
-                      </TableHead>
-                      {activePLData.colHeaders.map((ch, cIdx) => (
-                        <TableHead
-                          key={cIdx}
-                          className={`text-[10px] font-black uppercase tracking-widest text-right py-2 ${cIdx === activePLData.colHeaders.length - 2
-                              ? 'text-foreground font-bold bg-neutral-200/50 dark:bg-neutral-800/50 min-w-32.5 px-3'
-                              : cIdx === activePLData.colHeaders.length - 1
-                                ? 'text-neutral-600 dark:text-neutral-400 pr-4 min-w-22.5'
-                                : 'text-neutral-600 dark:text-neutral-400 min-w-27.5 px-3'
-                            }`}
-                        >
-                          {ch}
-                        </TableHead>
-                      ))}
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {activePLData.rows.map((row, idx) => {
-                      if (row.isHeader) {
-                        return (
-                          <TableRow key={idx} className="bg-neutral-200/60 dark:bg-neutral-800/60 border-y border-neutral-300 dark:border-neutral-700 hover:bg-neutral-200/70">
-                            <TableCell colSpan={activePLData.colHeaders.length + 1} className="py-1.5 pl-4 font-black text-xs uppercase tracking-widest text-foreground">
-                              {row.section}
-                            </TableCell>
-                          </TableRow>
-                        );
-                      }
-                      if (row.isSubheader) {
-                        return (
-                          <TableRow key={idx} className="hover:bg-transparent border-none">
-                            <TableCell colSpan={activePLData.colHeaders.length + 1} className="py-1.5 pl-6 font-bold text-xs uppercase tracking-wider text-muted-foreground">
-                              {row.section}
-                            </TableCell>
-                          </TableRow>
-                        );
-                      }
-
-                      const isHighlightEmerald = row.highlight === 'emerald';
-                      const isHighlightRose = row.highlight === 'rose';
-                      const isHighlightGold = row.highlight === 'gold';
-
-                      return (
-                        <TableRow
-                          key={idx}
-                          className={`border-b border-border/50 transition-colors ${row.isFinalNetIncome
-                              ? 'bg-amber-500/10 hover:bg-amber-500/15 font-black border-t-2 border-b-2 border-amber-500/60'
-                              : row.isGrandTotal
-                                ? 'bg-muted/40 font-black border-t border-border'
-                                : row.isTotal
-                                  ? 'bg-muted/20 font-bold border-t border-border/60'
-                                  : 'hover:bg-muted/30'
-                            }`}
-                        >
-                          <TableCell className={`py-1.5 ${row.indent ? 'pl-10 text-xs font-medium text-foreground' : 'pl-6 font-bold text-xs text-foreground'}`}>
-                            {row.name}
-                          </TableCell>
-                          {row.cols.map((colVal, colIdx) => (
-                            <TableCell key={colIdx} className={`py-1.5 px-3 text-right text-xs font-mono tabular-nums ${row.isFinalNetIncome || row.isTotal || row.isGrandTotal ? 'font-bold' : 'text-muted-foreground'}`}>
-                              {formatCurrency(colVal)}
-                            </TableCell>
-                          ))}
-                          <TableCell className={`py-1.5 px-3 text-right text-xs font-mono tabular-nums font-black bg-muted/20 ${isHighlightEmerald
-                              ? 'text-emerald-700 dark:text-emerald-400'
-                              : isHighlightRose
-                                ? 'text-red-700 dark:text-red-400'
-                                : isHighlightGold
-                                  ? 'text-amber-700 dark:text-amber-300 font-black'
-                                  : 'text-foreground'
-                            }`}>
-                            {formatCurrency(row.total)}
-                          </TableCell>
-                          <TableCell className="py-1.5 pr-4 text-right text-xs font-mono tabular-nums font-semibold text-muted-foreground">
-                            {row.pct}
-                          </TableCell>
-                        </TableRow>
-                      );
-                    })}
-                  </TableBody>
-                </Table>
-              </div>
-            </div>
+            <PLStatementSection
+              activePLData={activePLData}
+              selectedPeriod={selectedPeriod}
+              onPeriodChange={setSelectedPeriod}
+              uncollectedReceivables={uncollectedReceivables}
+              onExportCSV={handleExportPLStatementCSV}
+            />
           ) : (
-            <>
-              {/* Mobile Card View */}
-              <div className="lg:hidden space-y-3 mb-8">
-                {sortedExpenses.map((e) => {
-                  const linkedOrder = e.orderId ? orders.find(o => o.id === e.orderId) : null;
-                  return (
-                    <div key={e.id} className="bg-background border border-border rounded-xl p-4 space-y-2">
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="min-w-0">
-                          <Badge variant="outline" className="text-[9px] font-black uppercase bg-muted border-border text-muted-foreground mb-1">
-                            {e.category}
-                          </Badge>
-                          {linkedOrder && (
-                            <p className="text-[9px] font-bold text-emerald-600 uppercase tracking-tighter">
-                              Order: {linkedOrder.orderNumber}
-                            </p>
-                          )}
-                          <p className="text-xs font-semibold text-foreground truncate">{e.description}</p>
-                        </div>
-                        <span className="shrink-0 text-sm font-black text-red-600">-₱{e.amount.toLocaleString()}</span>
-                      </div>
-                      <div className="flex items-center justify-between border-t border-border pt-2">
-                        <span className="text-[10px] text-muted-foreground font-medium">
-                          {parseDate(e.date)?.toLocaleDateString() ?? 'N/A'}
-                        </span>
-                        <div className="flex gap-1">
-                          <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-foreground hover:bg-muted"
-                            onClick={() => { setEditingExpense(e); setIsEditExpenseOpen(true); }}>
-                            <Edit2 className="w-3.5 h-3.5" />
-                          </Button>
-                          <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-red-500 hover:bg-red-500/10"
-                            onClick={() => handleDeleteExpense(e.id)}>
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </Button>
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-                {expenses.length === 0 && (
-                  <div className="text-center py-8 text-zinc-400 text-xs italic">No expense records found.</div>
-                )}
-              </div>
-
-              {/* Desktop Table View */}
-              <div className="hidden lg:block bg-card border border-border rounded-sm overflow-hidden mb-6 shadow-none">
-                <div className="overflow-x-auto w-full">
-                  <Table>
-                    <TableHeader className="bg-neutral-100 dark:bg-neutral-900 border-b border-neutral-300 dark:border-neutral-700">
-                      <TableRow>
-                        <TableHead
-                          className="text-[10px] font-black uppercase tracking-widest text-neutral-600 dark:text-neutral-400 py-2 px-3 cursor-pointer hover:bg-neutral-200/50 dark:hover:bg-neutral-800 transition-colors min-w-22.5"
-                          onClick={() => toggleSort('date')}
-                        >
-                          <div className="flex items-center gap-1">
-                            Date {sortKey === 'date' ? (sortDirection === 'asc' ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />) : <ArrowUpDown className="w-2.5 h-2.5 opacity-40" />}
-                          </div>
-                        </TableHead>
-                        <TableHead
-                          className="text-[10px] font-black uppercase tracking-widest text-neutral-600 dark:text-neutral-400 py-2 px-3 cursor-pointer hover:bg-neutral-200/50 dark:hover:bg-neutral-800 transition-colors min-w-30"
-                          onClick={() => toggleSort('category')}
-                        >
-                          <div className="flex items-center gap-1">
-                            Category {sortKey === 'category' ? (sortDirection === 'asc' ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />) : <ArrowUpDown className="w-2.5 h-2.5 opacity-40" />}
-                          </div>
-                        </TableHead>
-                        <TableHead
-                          className="text-[10px] font-black uppercase tracking-widest text-neutral-600 dark:text-neutral-400 py-2 px-3 cursor-pointer hover:bg-neutral-200/50 dark:hover:bg-neutral-800 transition-colors min-w-50"
-                          onClick={() => toggleSort('orderId')}
-                        >
-                          <div className="flex items-center gap-1">
-                            Order / Description {sortKey === 'orderId' ? (sortDirection === 'asc' ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />) : <ArrowUpDown className="w-2.5 h-2.5 opacity-40" />}
-                          </div>
-                        </TableHead>
-                        <TableHead
-                          className="text-[10px] font-black uppercase tracking-widest text-neutral-600 dark:text-neutral-400 py-2 px-3 text-right cursor-pointer hover:bg-neutral-200/50 dark:hover:bg-neutral-800 transition-colors min-w-25"
-                          onClick={() => toggleSort('amount')}
-                        >
-                          <div className="flex items-center justify-end gap-1">
-                            Amount {sortKey === 'amount' ? (sortDirection === 'asc' ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />) : <ArrowUpDown className="w-2.5 h-2.5 opacity-40" />}
-                          </div>
-                        </TableHead>
-                        <TableHead className="text-[10px] font-black uppercase tracking-widest text-neutral-600 dark:text-neutral-400 py-2 px-3 text-right min-w-20">Actions</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {sortedExpenses.map((e) => {
-                        const linkedOrder = e.orderId ? orders.find(o => o.id === e.orderId) : null;
-                        return (
-                          <TableRow key={e.id} className="group hover:bg-muted/30 border-b border-border/50">
-                            <TableCell className="text-xs text-muted-foreground font-mono py-1.5 px-3">
-                              {parseDate(e.date)?.toLocaleDateString() ?? 'N/A'}
-                            </TableCell>
-                            <TableCell className="py-1.5 px-3">
-                              <span className="text-[9px] font-black uppercase tracking-wider px-2 py-0.5 rounded-sm bg-neutral-100 text-neutral-700 border border-neutral-300 dark:bg-neutral-800 dark:text-neutral-300 dark:border-neutral-700">
-                                {e.category}
-                              </span>
-                            </TableCell>
-                            <TableCell className="text-xs font-semibold text-foreground max-w-62.5 py-1.5 px-3">
-                              <div className="flex flex-col">
-                                {linkedOrder && (
-                                  <span className="text-[9px] font-bold text-emerald-600 dark:text-emerald-400 uppercase tracking-tighter">
-                                    Linked Order: {linkedOrder.orderNumber}
-                                  </span>
-                                )}
-                                <span className="truncate">{e.description}</span>
-                              </div>
-                            </TableCell>
-                            <TableCell className="text-right font-black font-mono tabular-nums text-xs text-red-600 dark:text-red-400 py-1.5 px-3">
-                              -₱{e.amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                            </TableCell>
-                            <TableCell className="text-right py-1.5 px-3">
-                              <div className="flex justify-end gap-1">
-                                <Button
-                                  variant="ghost"
-                                  size="icon"
-                                  className="h-6 w-6 rounded-sm text-muted-foreground hover:text-foreground hover:bg-muted"
-                                  onClick={() => {
-                                    setEditingExpense(e);
-                                    setIsEditExpenseOpen(true);
-                                  }}
-                                >
-                                  <Edit2 className="w-3 h-3" />
-                                </Button>
-                                <Button
-                                  variant="ghost"
-                                  size="icon"
-                                  className="h-6 w-6 rounded-sm text-muted-foreground hover:text-red-500 hover:bg-red-500/10"
-                                  onClick={() => handleDeleteExpense(e.id)}
-                                >
-                                  <Trash2 className="w-3 h-3" />
-                                </Button>
-                              </div>
-                            </TableCell>
-                          </TableRow>
-                        );
-                      })}
-                      {sortedExpenses.length === 0 && (
-                        <TableRow>
-                          <TableCell colSpan={5} className="text-center py-6 text-xs italic text-muted-foreground">
-                            No operational expense records found.
-                          </TableCell>
-                        </TableRow>
-                      )}
-                    </TableBody>
-                  </Table>
-                </div>
-              </div>
-            </>
+            <ItemizedExpenseLedger
+              sortedExpenses={sortedExpenses}
+              isExpenseOnly={isExpenseOnly}
+              sortKey={sortKey}
+              sortDirection={sortDirection}
+              onToggleSort={toggleSort}
+              onEditExpense={handleStartEditExpense}
+              onDeleteExpense={handleDeleteExpense}
+            />
           )}
-
-          <Dialog open={isEditExpenseOpen} onOpenChange={setIsEditExpenseOpen}>
-            <DialogContent className="rounded-sm max-w-md border border-border shadow-lg p-5">
-              <DialogHeader className="pb-2 border-b border-border">
-                <DialogTitle className="text-sm font-black uppercase tracking-wider">Edit Expense Record</DialogTitle>
-                <DialogDescription className="text-xs text-muted-foreground">Modify existing financial expenditure data.</DialogDescription>
-              </DialogHeader>
-              {editingExpense && (
-                <form onSubmit={handleUpdateExpense} className="space-y-3.5 pt-3 font-sans">
-                  <div className="space-y-1">
-                    <Label htmlFor="edit-expense-category" className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Category</Label>
-                    <Select name="category" defaultValue={editingExpense.category}>
-                      <SelectTrigger id="edit-expense-category" className="rounded-sm border-border h-8 text-xs">
-                        <SelectValue placeholder="Select classification" />
-                      </SelectTrigger>
-                      <SelectContent className="rounded-sm">
-                        {categories.map(cat => (
-                          <SelectItem
-                            key={cat.id}
-                            value={cat.name}
-                            disabled={!cat.isActive && editingExpense.category !== cat.name}
-                            className="text-xs font-semibold"
-                          >
-                            {cat.name} {!cat.isActive && '(Archived)'}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div className="space-y-1">
-                    <Label htmlFor="edit-expense-date" className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Expense Date</Label>
-                    <Input
-                      id="edit-expense-date"
-                      name="date"
-                      type="date"
-                      defaultValue={
-                        editingExpense.date
-                          ? (typeof editingExpense.date.toDate === 'function'
-                            ? editingExpense.date.toDate()
-                            : new Date(editingExpense.date as any)
-                          ).toISOString().split('T')[0]
-                          : new Date().toISOString().split('T')[0]
-                      }
-                      required
-                      className="rounded-sm border-border h-8 text-xs font-mono"
-                    />
-                  </div>
-                  <div className="space-y-1">
-                    <Label htmlFor="edit-expense-amount" className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Amount (₱)</Label>
-                    <Input id="edit-expense-amount" name="amount" type="number" step="0.01" defaultValue={editingExpense.amount} required className="rounded-sm border-border h-8 text-xs font-mono font-bold tabular-nums" />
-                  </div>
-                  <div className="space-y-1">
-                    <Label htmlFor="edit-expense-description" className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Description</Label>
-                    <Input id="edit-expense-description" name="description" defaultValue={editingExpense.description} placeholder="Details about the expense..." className="rounded-sm border-border h-8 text-xs" />
-                  </div>
-                  <div className="space-y-1">
-                    <Label htmlFor="edit-expense-orderId" className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Linked Order (Optional)</Label>
-                    <input type="hidden" name="orderId" value={editExpenseOrderId} />
-                    <Popover open={isEditExpenseOrderPickerOpen} onOpenChange={open => {
-                      setIsEditExpenseOrderPickerOpen(open);
-                      if (!open) setEditExpenseOrderSearch('');
-                    }}>
-                      <PopoverTrigger
-                        render={
-                          <Button
-                            id="edit-expense-orderId"
-                            type="button"
-                            variant="outline"
-                            className="w-full justify-between rounded-sm border-border h-8 text-xs font-normal bg-background px-3 hover:bg-muted/50"
-                          />
-                        }
-                        role="combobox"
-                        aria-expanded={isEditExpenseOrderPickerOpen}
-                      >
-                        <span className={`truncate ${editExpenseOrderId === 'none' || !selectedEditExpenseOrder ? 'text-muted-foreground' : 'text-foreground font-semibold'}`}>
-                          {editExpenseOrderId !== 'none' && selectedEditExpenseOrder
-                            ? `${selectedEditExpenseOrder.orderNumber} - ${selectedEditExpenseOrder.clientName}`
-                            : 'No order linked'}
-                        </span>
-                        <ChevronDown className="w-3.5 h-3.5 shrink-0 opacity-50 ml-1" />
-                      </PopoverTrigger>
-                      <PopoverContent className="w-(--anchor-width,340px) min-w-70 p-2 bg-popover rounded-sm border border-border shadow-md" align="start">
-                        <div className="relative mb-2">
-                          <SearchIcon className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground pointer-events-none" />
-                          <Input
-                            autoFocus
-                            placeholder="Search by order # or client name..."
-                            value={editExpenseOrderSearch}
-                            onChange={e => setEditExpenseOrderSearch(e.target.value)}
-                            className="h-8 pl-8 text-xs rounded-sm border-border"
-                          />
-                        </div>
-                        <div className="max-h-56 overflow-y-auto space-y-0.5">
-                          <button
-                            type="button"
-                            className={`flex w-full items-center justify-between rounded-sm px-2.5 py-1.5 text-xs text-left cursor-pointer transition-colors ${
-                              editExpenseOrderId === 'none' ? 'bg-primary/10 text-primary font-bold' : 'hover:bg-muted text-foreground font-medium'
-                            }`}
-                            onClick={() => {
-                              setEditExpenseOrderId('none');
-                              setIsEditExpenseOrderPickerOpen(false);
-                              setEditExpenseOrderSearch('');
-                            }}
-                          >
-                            <span>None / General Expense</span>
-                            {editExpenseOrderId === 'none' && <Check className="w-3.5 h-3.5 text-primary shrink-0" />}
-                          </button>
-                          {filteredEditExpenseOrders.map(order => (
-                            <button
-                              key={order.id}
-                              type="button"
-                              className={`flex w-full items-center justify-between rounded-sm px-2.5 py-1.5 text-xs text-left cursor-pointer transition-colors ${
-                                editExpenseOrderId === order.id ? 'bg-primary/10 text-primary font-bold' : 'hover:bg-muted text-foreground font-medium'
-                              }`}
-                              onClick={() => {
-                                setEditExpenseOrderId(order.id);
-                                setIsEditExpenseOrderPickerOpen(false);
-                                setEditExpenseOrderSearch('');
-                              }}
-                            >
-                              <span className="truncate">{order.orderNumber} - {order.clientName}</span>
-                              {editExpenseOrderId === order.id && <Check className="w-3.5 h-3.5 text-primary shrink-0" />}
-                            </button>
-                          ))}
-                          {filteredEditExpenseOrders.length === 0 && editExpenseOrderSearch.trim() !== '' && (
-                            <p className="p-3 text-center text-xs text-muted-foreground">
-                              No matching orders found.
-                            </p>
-                          )}
-                        </div>
-                      </PopoverContent>
-                    </Popover>
-                  </div>
-                  <DialogFooter className="pt-2">
-                    <Button type="submit" className="w-full h-8 bg-[#1A2332] text-white font-bold uppercase tracking-wider text-xs rounded-sm hover:bg-[#1A2332]/90 shadow-none">Save Changes</Button>
-                  </DialogFooter>
-                </form>
-              )}
-            </DialogContent>
-          </Dialog>
-
         </div>
 
         {/* Financial Policy & Compliance Sidebar */}
-        <div className="w-full lg:w-80 space-y-4">
-          <div className="border border-border bg-card rounded-sm shadow-none overflow-hidden">
-            <div className="p-3 border-b border-border bg-muted/20">
-              <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2">
-                  <PieChartIcon className="h-4 w-4 text-[#fdd001]" />
-                  <div className="text-xs font-black uppercase tracking-widest text-foreground">Expense Allocation</div>
-                </div>
-                <div className="flex items-center bg-muted/80 p-0.5 rounded-sm border border-border text-[9px]">
-                  <button
-                    type="button"
-                    onClick={() => setExpenseScope('opex')}
-                    className={`px-2 py-0.5 rounded-xs font-bold transition-all ${expenseScope === 'opex'
-                      ? 'bg-[#1A2332] text-white shadow-none'
-                      : 'text-muted-foreground hover:text-foreground'
-                      }`}
-                    title="Operating Expenses (Excludes COGS to reveal operational spend)"
-                  >
-                    OPEX
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setExpenseScope('all')}
-                    className={`px-2 py-0.5 rounded-xs font-bold transition-all ${expenseScope === 'all'
-                      ? 'bg-[#1A2332] text-white shadow-none'
-                      : 'text-muted-foreground hover:text-foreground'
-                      }`}
-                    title="All Spend (Macro view including Cost of Goods Sold)"
-                  >
-                    All Spend
-                  </button>
-                </div>
-              </div>
-              <div className="text-[10px] font-medium text-muted-foreground mt-1">
-                {expenseScope === 'opex' ? 'Operational Spend Breakdown' : 'Total Spend Breakdown'} &bull; {selectedPeriod === '2025' ? 'FY 2025 (Audited)' : selectedPeriod === '2026' ? 'FY 2026 (Live Ops)' : 'All Periods'}
-              </div>
-            </div>
-            <div className="p-3">
-              <div className="h-47.5 w-full">
-                {pieData.length > 0 ? (
-                  <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={190}>
-                    <PieChart>
-                      <Pie
-                        data={pieData}
-                        cx="50%"
-                        cy="50%"
-                        innerRadius={52}
-                        outerRadius={76}
-                        paddingAngle={3}
-                        dataKey="value"
-                        isAnimationActive={true}
-                        animationDuration={800}
-                        animationEasing="ease-in-out"
-                      >
-                        {pieData.map((entry, index) => (
-                          <Cell
-                            key={`cell-${index}`}
-                            fill={PIE_COLORS[index % PIE_COLORS.length]}
-                            stroke="hsl(var(--card))"
-                            strokeWidth={2}
-                          />
-                        ))}
-                      </Pie>
-                      <Tooltip
-                        contentStyle={{
-                          borderRadius: '2px',
-                          border: '1px solid #302f2f',
-                          backgroundColor: '#1A2332',
-                          color: '#ffffff',
-                          fontSize: '11px',
-                          fontWeight: 'bold',
-                        }}
-                        formatter={(value: number, name: string) => {
-                          const total = pieData.reduce((acc, curr) => acc + curr.value, 0);
-                          const percent = total > 0 ? ((value / total) * 100).toFixed(1) : '0.0';
-                          return [`₱${value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (${percent}%)`, name];
-                        }}
-                      />
-                    </PieChart>
-                  </ResponsiveContainer>
-                ) : (
-                  <div className="h-full flex flex-col items-center justify-center text-center p-3">
-                    <p className="text-[11px] font-bold text-muted-foreground">No expense data for this period</p>
-                    <button
-                      type="button"
-                      onClick={() => setExpenseScope('all')}
-                      className="mt-1.5 text-[10px] text-primary hover:underline font-bold"
-                    >
-                      Switch to All Spend view
-                    </button>
-                  </div>
-                )}
-              </div>
-
-              {pieData.length > 0 && (
-                <div className="mt-3 space-y-1.5 border-t border-border pt-2.5">
-                  {(showAllCategories ? pieData : pieData.slice(0, 4)).map((item, index) => {
-                    const total = pieData.reduce((acc, curr) => acc + curr.value, 0);
-                    const pct = total > 0 ? ((item.value / total) * 100).toFixed(1) : '0.0';
-                    return (
-                      <div key={item.name} className="flex items-center justify-between text-[10px] py-0.5">
-                        <div className="flex items-center gap-2 min-w-0">
-                          <div
-                            className="w-2 h-2 rounded-xs shrink-0"
-                            style={{ backgroundColor: PIE_COLORS[index % PIE_COLORS.length] }}
-                          />
-                          <span className="font-bold text-muted-foreground truncate" title={item.name}>
-                            {item.name}
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-1.5 shrink-0 ml-2">
-                          <span className="text-[9px] font-bold text-muted-foreground bg-muted px-1.5 py-0.2 rounded-xs border border-border">
-                            {pct}%
-                          </span>
-                          <span className="font-mono tabular-nums font-black text-foreground">
-                            ₱{item.value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                          </span>
-                        </div>
-                      </div>
-                    );
-                  })}
-                  {pieData.length > 4 && (
-                    <button
-                      type="button"
-                      onClick={() => setShowAllCategories(!showAllCategories)}
-                      className="w-full text-[10px] text-primary hover:text-primary/80 font-bold text-center pt-1.5 hover:underline flex items-center justify-center gap-1 transition-colors"
-                    >
-                      {showAllCategories ? (
-                        <>Show Top 4 Only <ChevronUp className="h-3 w-3" /></>
-                      ) : (
-                        <>+{pieData.length - 4} more categories <ChevronDown className="h-3 w-3" /></>
-                      )}
-                    </button>
-                  )}
-                </div>
-              )}
-            </div>
-          </div>
-
-          <div className="border border-[#243044] bg-[#1A2332] text-white rounded-sm overflow-hidden shadow-none">
-            <div className="p-3.5 space-y-1.5">
-              <h4 className="text-[9px] font-black uppercase tracking-[0.2em] text-[#fdd001]">Official Report Generator</h4>
-              <p className="text-xs text-slate-300 leading-normal">
-                Export audited and live Profit & Loss statements for external CPA, executive, and regulatory audit review.
-              </p>
-            </div>
-            <Button className="w-full rounded-none h-9 bg-white text-[#1A2332] hover:bg-slate-100 font-bold uppercase tracking-wider text-[10px] gap-2 border-t border-[#243044]" onClick={exportPLStatementCSV}>
-              <Download className="w-3.5 h-3.5 text-emerald-600" />
-              Generate Monthly P&L (CSV)
-            </Button>
-          </div>
-          {/* Financial CSV Importer Dialog */}
-          <FinancialImportModal
-            isOpen={isCSVImportOpen}
-            onClose={() => setIsCSVImportOpen(false)}
-            categories={categories}
+        <div className="w-full lg:w-80 min-w-0 space-y-4">
+          <ExpenseAllocationSidebar
+            pieData={pieData}
+            pieTotal={pieTotal}
+            expenseScope={expenseScope}
+            onExpenseScopeChange={setExpenseScope}
+            selectedPeriod={selectedPeriod}
+            onExportCSV={handleExportPLStatementCSV}
           />
         </div>
       </div>
+
+      {!isExpenseOnly && (
+        <ManageCategoriesDialog
+          open={isManageCategoriesOpen}
+          onOpenChange={setIsManageCategoriesOpen}
+          categories={categories}
+          onAddCategory={handleAddCategory}
+          onEditCategory={handleEditCategory}
+          onToggleCategoryStatus={toggleCategoryStatus}
+        />
+      )}
+
+      <RecordExpenseDialog
+        open={isAddExpenseOpen}
+        onOpenChange={setIsAddExpenseOpen}
+        activeCategories={activeCategories}
+        sortedOrders={sortedOrders}
+        ordersById={ordersById}
+        onSubmit={handleAddExpense}
+      />
+
+      {!isExpenseOnly && (
+        <EditExpenseDialog
+          open={isEditExpenseOpen}
+          onOpenChange={handleEditDialogOpenChange}
+          editingExpense={editingExpense}
+          categories={categories}
+          sortedOrders={sortedOrders}
+          ordersById={ordersById}
+          onSubmit={handleUpdateExpense}
+        />
+      )}
+
+      <FinancialImportModal
+        isOpen={isCSVImportOpen}
+        onClose={handleCloseCSVImport}
+        categories={categories}
+      />
     </div>
   );
 }

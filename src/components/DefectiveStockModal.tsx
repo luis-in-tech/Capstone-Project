@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useMemo } from 'react';
+import React, { useCallback, useState, useRef, useEffect, useMemo } from 'react';
 import {
   WarningIcon as AlertTriangle,
   PackageIcon as Package,
@@ -8,11 +8,8 @@ import {
   CheckCircleIcon as CheckCircle2,
   MagnifyingGlassIcon as Search,
   XIcon as X,
-  CaretDownIcon as ChevronDown,
   CaretUpDownIcon as ChevronsUpDown,
   ShieldWarningIcon as ShieldAlert,
-  WarningCircleIcon as AlertCircle,
-  CheckIcon as Check,
 } from '@phosphor-icons/react';
 import {
   Dialog,
@@ -30,6 +27,7 @@ import type { Product, InventoryItem, Warehouse as WarehouseType, UserProfile, D
 import { logDefectiveStockException, exportDefectiveProductsReportCSV } from '../lib/itilService';
 import { compressImage } from '../lib/imageCompressor';
 import { storage, ref, uploadBytes, getDownloadURL } from '../lib/supabaseAdapter';
+import { hasAdminRole } from '../lib/staffPermissions';
 import { toast } from 'sonner';
 
 interface DefectiveStockModalProps {
@@ -39,18 +37,29 @@ interface DefectiveStockModalProps {
   inventory: InventoryItem[];
   warehouses: WarehouseType[];
   profile?: UserProfile | null;
+  canAdjustStock?: boolean;
+  allowedWarehouseIds?: string[] | null;
   onSuccess: (ticket: DefectiveStockTicket) => void;
 }
 
-export function DefectiveStockModal({
+const PRODUCT_DROPDOWN_PAGE_SIZE = 50;
+
+export const DefectiveStockModal = React.memo(function DefectiveStockModal({
   open,
   onClose,
   products,
   inventory,
   warehouses,
   profile,
+  canAdjustStock,
+  allowedWarehouseIds,
   onSuccess,
 }: DefectiveStockModalProps) {
+  const canAdjust = canAdjustStock ?? hasAdminRole(profile ?? null);
+  const warehouseAllowed = useCallback(
+    (warehouseId: string) => !allowedWarehouseIds || allowedWarehouseIds.includes(warehouseId),
+    [allowedWarehouseIds],
+  );
   const [selectedProductId, setSelectedProductId] = useState('');
   const [selectedWarehouseId, setSelectedWarehouseId] = useState('');
   const [quantity, setQuantity] = useState('1');
@@ -65,11 +74,14 @@ export function DefectiveStockModal({
   // Search & Combobox states for Product and Warehouse
   const [isProductOpen, setIsProductOpen] = useState(false);
   const [productSearch, setProductSearch] = useState('');
+  const [productPage, setProductPage] = useState(1);
   const [isWarehouseOpen, setIsWarehouseOpen] = useState(false);
   const [warehouseSearch, setWarehouseSearch] = useState('');
 
   const productDropdownRef = useRef<HTMLDivElement>(null);
+  const productResultsRef = useRef<HTMLDivElement>(null);
   const warehouseDropdownRef = useRef<HTMLDivElement>(null);
+  const submitLockRef = useRef(false);
 
   // Close dropdowns on outside click
   useEffect(() => {
@@ -95,26 +107,40 @@ export function DefectiveStockModal({
     [warehouses, selectedWarehouseId]
   );
 
+  // Pre-index inventory quantities once per snapshot so modal & dropdown lookups stay O(1)
+  const inventoryIndex = useMemo(() => {
+    const byProductWarehouse = new Map<string, number>();
+    const byProductTotal = new Map<string, number>();
+    for (const item of inventory) {
+      const qty = Math.max(0, Number(item.quantity) || 0);
+      if (qty <= 0) continue;
+      const pwKey = `${item.productId}\0${item.warehouseId}`;
+      byProductWarehouse.set(pwKey, (byProductWarehouse.get(pwKey) ?? 0) + qty);
+      byProductTotal.set(item.productId, (byProductTotal.get(item.productId) ?? 0) + qty);
+    }
+    return { byProductWarehouse, byProductTotal };
+  }, [inventory]);
+
   // Available stock specifically in the selected warehouse
-  const availableInWarehouse = useMemo(() => {
-    if (!selectedProductId || !selectedWarehouseId) return 0;
-    return inventory
-      .filter((i) => i.productId === selectedProductId && i.warehouseId === selectedWarehouseId)
-      .reduce((sum, i) => sum + Math.max(0, i.quantity), 0);
-  }, [selectedProductId, selectedWarehouseId, inventory]);
+  const availableInWarehouse =
+    selectedProductId && selectedWarehouseId
+      ? (inventoryIndex.byProductWarehouse.get(`${selectedProductId}\0${selectedWarehouseId}`) ?? 0)
+      : 0;
 
   // Total stock across all warehouses for this product
-  const totalStockAllWarehouses = useMemo(() => {
-    if (!selectedProductId) return 0;
-    return inventory
-      .filter((i) => i.productId === selectedProductId)
-      .reduce((sum, i) => sum + Math.max(0, i.quantity), 0);
-  }, [selectedProductId, inventory]);
+  const totalStockAllWarehouses = selectedProductId
+    ? (inventoryIndex.byProductTotal.get(selectedProductId) ?? 0)
+    : 0;
 
-  // Filter products by SKU, name, brand, category, supplier
+  const leafProducts = useMemo(
+    () => products.filter((p) => p.variantEnabled !== false && (!p.hasVariations || (inventoryIndex.byProductTotal.get(p.id) ?? 0) > 0)),
+    [products, inventoryIndex.byProductTotal]
+  );
+
+  // Filter products only when the CI picker is open
   const filteredProducts = useMemo(() => {
+    if (!open || !isProductOpen) return [];
     const query = productSearch.trim().toLowerCase();
-    const leafProducts = products.filter((p) => !p.hasVariations);
     if (!query) return leafProducts;
     return leafProducts.filter((p) => {
       const matchSku = p.sku?.toLowerCase().includes(query);
@@ -124,12 +150,21 @@ export function DefectiveStockModal({
       const matchSupplier = p.supplier?.toLowerCase().includes(query);
       return matchSku || matchName || matchBrand || matchCategory || matchSupplier;
     });
-  }, [products, productSearch]);
+  }, [open, isProductOpen, leafProducts, productSearch]);
+
+  const totalProductPages = Math.max(1, Math.ceil(filteredProducts.length / PRODUCT_DROPDOWN_PAGE_SIZE));
+  const safeProductPage = Math.min(productPage, totalProductPages);
+  const productPageStart = (safeProductPage - 1) * PRODUCT_DROPDOWN_PAGE_SIZE;
+  const visibleProducts = useMemo(
+    () => filteredProducts.slice(productPageStart, productPageStart + PRODUCT_DROPDOWN_PAGE_SIZE),
+    [filteredProducts, productPageStart],
+  );
 
   // Filter warehouses - sort facilities with positive stock to the top when a product is selected
   const filteredWarehouses = useMemo(() => {
+    if (!open || !isWarehouseOpen) return [];
     const query = warehouseSearch.trim().toLowerCase();
-    const activeWarehouses = warehouses.filter((w) => w.active !== false);
+    const activeWarehouses = warehouses.filter((w) => w.active !== false && warehouseAllowed(w.id));
     const list = !query
       ? activeWarehouses
       : activeWarehouses.filter((w) => {
@@ -141,18 +176,14 @@ export function DefectiveStockModal({
 
     if (selectedProductId) {
       return [...list].sort((a, b) => {
-        const stockA = inventory
-          .filter((i) => i.productId === selectedProductId && i.warehouseId === a.id)
-          .reduce((sum, i) => sum + Math.max(0, i.quantity), 0);
-        const stockB = inventory
-          .filter((i) => i.productId === selectedProductId && i.warehouseId === b.id)
-          .reduce((sum, i) => sum + Math.max(0, i.quantity), 0);
+        const stockA = inventoryIndex.byProductWarehouse.get(`${selectedProductId}\0${a.id}`) ?? 0;
+        const stockB = inventoryIndex.byProductWarehouse.get(`${selectedProductId}\0${b.id}`) ?? 0;
         return stockB - stockA;
       });
     }
 
     return list;
-  }, [warehouses, warehouseSearch, selectedProductId, inventory]);
+  }, [open, isWarehouseOpen, warehouses, warehouseSearch, selectedProductId, inventoryIndex, warehouseAllowed]);
 
   const handleSelectProduct = (prod: Product) => {
     setSelectedProductId(prod.id);
@@ -162,17 +193,13 @@ export function DefectiveStockModal({
 
     // Smart warehouse resolution: Auto-select facility holding positive stock if current selection is empty or has 0 stock
     const currentStockInSelectedWh = selectedWarehouseId
-      ? inventory
-          .filter((i) => i.productId === prod.id && i.warehouseId === selectedWarehouseId)
-          .reduce((sum, i) => sum + Math.max(0, i.quantity), 0)
+      ? (inventoryIndex.byProductWarehouse.get(`${prod.id}\0${selectedWarehouseId}`) ?? 0)
       : 0;
 
     if (!selectedWarehouseId || currentStockInSelectedWh === 0) {
       const facilityWithStock = warehouses.find((w) => {
-        const count = inventory
-          .filter((i) => i.productId === prod.id && i.warehouseId === w.id)
-          .reduce((sum, i) => sum + Math.max(0, i.quantity), 0);
-        return count > 0;
+        if (w.active === false || !warehouseAllowed(w.id)) return false;
+        return (inventoryIndex.byProductWarehouse.get(`${prod.id}\0${w.id}`) ?? 0) > 0;
       });
       if (facilityWithStock) {
         setSelectedWarehouseId(facilityWithStock.id);
@@ -181,6 +208,7 @@ export function DefectiveStockModal({
 
     setIsProductOpen(false);
     setProductSearch('');
+    setProductPage(1);
   };
 
   const handleSelectWarehouse = (wh: WarehouseType) => {
@@ -226,12 +254,17 @@ export function DefectiveStockModal({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (submitLockRef.current || isSubmitting) return;
     if (!selectedProduct) {
       toast.error('Please select a product CI.');
       return;
     }
-    if (!selectedWarehouseId) {
-      toast.error('Please select the originating warehouse.');
+    if (!canAdjust) {
+      toast.error('You do not have permission to log damaged stock.');
+      return;
+    }
+    if (!selectedWarehouseId || !warehouseAllowed(selectedWarehouseId)) {
+      toast.error('Please select a permitted originating warehouse.');
       return;
     }
     if (availableInWarehouse <= 0) {
@@ -248,21 +281,17 @@ export function DefectiveStockModal({
       return;
     }
 
+    submitLockRef.current = true;
     setIsSubmitting(true);
     try {
       let resolvedPhotoUrl = '';
       if (photoFile) {
-        try {
-          const safeName = photoFile.name.replace(/[^a-zA-Z0-9._-]/g, '');
-          const nonce = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID().slice(0, 8) : Math.random().toString(36).substring(2, 8);
-          const storagePath = `quarantine/${Date.now()}_${nonce}_${safeName}`;
-          const fileRef = ref(storage, storagePath);
-          await uploadBytes(fileRef, photoFile);
-          resolvedPhotoUrl = await getDownloadURL(fileRef);
-        } catch (uploadErr) {
-          console.warn('Storage upload fallback:', uploadErr);
-          resolvedPhotoUrl = '';
-        }
+        const safeName = photoFile.name.replace(/[^a-zA-Z0-9._-]/g, '');
+        const nonce = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID().slice(0, 8) : Math.random().toString(36).substring(2, 8);
+        const storagePath = `quarantine/${Date.now()}_${nonce}_${safeName}`;
+        const fileRef = ref(storage, storagePath);
+        await uploadBytes(fileRef, photoFile);
+        resolvedPhotoUrl = await getDownloadURL(fileRef);
       }
 
       const { ticket } = await logDefectiveStockException({
@@ -289,6 +318,7 @@ export function DefectiveStockModal({
       toast.error(err?.message || 'Failed to log defective stock exception.');
     } finally {
       setIsSubmitting(false);
+      submitLockRef.current = false;
     }
   };
 
@@ -298,6 +328,7 @@ export function DefectiveStockModal({
   };
 
   const handleCloseAll = () => {
+    if (isSubmitting) return;
     if (photoPreview) {
       URL.revokeObjectURL(photoPreview);
     }
@@ -311,13 +342,14 @@ export function DefectiveStockModal({
     setIsProductOpen(false);
     setIsWarehouseOpen(false);
     setProductSearch('');
+    setProductPage(1);
     setWarehouseSearch('');
     onClose();
   };
 
 
   return (
-    <Dialog open={open} onOpenChange={(val) => !val && handleCloseAll()}>
+    <Dialog open={open} onOpenChange={(val) => { if (!val && !isSubmitting) handleCloseAll(); }}>
       <DialogContent className="sm:max-w-2xl md:max-w-3xl max-h-[90vh] overflow-y-auto">
         {!generatedTicket ? (
           <form onSubmit={handleSubmit} className="space-y-4">
@@ -340,7 +372,7 @@ export function DefectiveStockModal({
             <div className="space-y-3.5 py-1 text-xs">
               {/* Product CI Selection (Searchable & Expanded) */}
               <div className="space-y-1.5 relative" ref={productDropdownRef}>
-                <div className="flex items-center justify-between">
+                <div className="flex items-center justify-between min-h-4">
                   <Label className="text-xs font-semibold">
                     Select Configuration Item (CI) *
                   </Label>
@@ -355,8 +387,13 @@ export function DefectiveStockModal({
                 <button
                   type="button"
                   id="select-ci-trigger"
-                  onClick={() => setIsProductOpen((prev) => !prev)}
-                  className={`w-full min-h-10.5 px-3 py-2 rounded-xl border text-left flex items-center justify-between gap-2 transition-all ${isProductOpen
+                  onClick={() => {
+                    setIsProductOpen((prev) => {
+                      if (!prev) setProductPage(1);
+                      return !prev;
+                    });
+                  }}
+                  className={`w-full h-10.5 px-3 py-2 rounded-xl border text-left flex items-center justify-between gap-2 transition-all ${isProductOpen
                     ? 'border-amber-500 ring-2 ring-amber-500/20 bg-background'
                     : 'border-input bg-background/60 hover:bg-muted/40'
                     }`}
@@ -367,7 +404,10 @@ export function DefectiveStockModal({
                       <span className="px-2 py-0.5 rounded bg-muted font-mono font-bold text-[11px] text-foreground shrink-0 border border-border/50">
                         {selectedProduct.sku}
                       </span>
-                      <span className="font-semibold text-foreground text-xs leading-tight wrap-break-word flex-1">
+                      <span
+                        title={selectedProduct.name}
+                        className="font-semibold text-foreground text-xs leading-tight truncate flex-1"
+                      >
                         {selectedProduct.name}
                       </span>
                       {selectedProduct.category && (
@@ -377,9 +417,9 @@ export function DefectiveStockModal({
                       )}
                     </div>
                   ) : (
-                    <div className="flex items-center gap-2 text-muted-foreground">
+                    <div className="flex items-center gap-2 text-muted-foreground min-w-0">
                       <Search className="size-4 shrink-0" />
-                      <span>Search by SKU, product name, brand, or category...</span>
+                      <span className="truncate">Search by SKU, product name, brand, or category...</span>
                     </div>
                   )}
                   <ChevronsUpDown className="size-4 text-muted-foreground shrink-0" />
@@ -387,7 +427,7 @@ export function DefectiveStockModal({
 
                 {/* Searchable Dropdown Popup */}
                 {isProductOpen && (
-                  <div className="absolute top-full left-0 right-0 mt-1.5 z-50 rounded-xl border bg-popover shadow-xl ring-1 ring-foreground/10 overflow-hidden animate-in fade-in-0 zoom-in-95">
+                  <div className="absolute top-full left-0 right-0 mt-1.5 z-50 rounded-xl border bg-popover shadow-xl ring-1 ring-foreground/10 overflow-hidden">
                     {/* Search Input */}
                     <div className="p-2.5 border-b bg-muted/40 flex items-center gap-2">
                       <Search className="size-4 text-muted-foreground shrink-0" />
@@ -396,13 +436,19 @@ export function DefectiveStockModal({
                         type="text"
                         placeholder="Search product name, SKU (e.g., SKU-2001), brand..."
                         value={productSearch}
-                        onChange={(e) => setProductSearch(e.target.value)}
+                        onChange={(e) => {
+                          setProductSearch(e.target.value);
+                          setProductPage(1);
+                        }}
                         className="w-full bg-transparent text-xs outline-none placeholder:text-muted-foreground"
                       />
                       {productSearch && (
                         <button
                           type="button"
-                          onClick={() => setProductSearch('')}
+                          onClick={() => {
+                            setProductSearch('');
+                            setProductPage(1);
+                          }}
                           className="p-1 text-muted-foreground hover:text-foreground rounded"
                         >
                           <X className="size-3.5" />
@@ -411,23 +457,18 @@ export function DefectiveStockModal({
                     </div>
 
                     {/* Results List */}
-                    <div className="max-h-64 overflow-y-auto divide-y divide-border/40">
+                    <div ref={productResultsRef} className="max-h-64 overflow-y-auto divide-y divide-border/40">
                       {filteredProducts.length === 0 ? (
                         <div className="p-4 text-center text-muted-foreground text-xs">
                           No configuration items matching "{productSearch}".
                         </div>
                       ) : (
-                        filteredProducts.map((p) => {
+                        visibleProducts.map((p) => {
                           const isCurrent = p.id === selectedProductId;
-                          // Stock in selected warehouse if selected
                           const stockInWh = selectedWarehouseId
-                            ? inventory
-                              .filter((i) => i.productId === p.id && i.warehouseId === selectedWarehouseId)
-                              .reduce((sum, i) => sum + Math.max(0, i.quantity), 0)
+                            ? (inventoryIndex.byProductWarehouse.get(`${p.id}\0${selectedWarehouseId}`) ?? 0)
                             : null;
-                          const totalStock = inventory
-                            .filter((i) => i.productId === p.id)
-                            .reduce((sum, i) => sum + Math.max(0, i.quantity), 0);
+                          const totalStock = inventoryIndex.byProductTotal.get(p.id) ?? 0;
 
                           return (
                             <button
@@ -476,8 +517,40 @@ export function DefectiveStockModal({
                       )}
                     </div>
 
-                    <div className="p-2 border-t bg-muted/20 text-[10px] text-muted-foreground text-center">
-                      Showing {filteredProducts.length} of {products.filter((p) => !p.hasVariations).length} items
+                    <div className="p-2 border-t bg-muted/20 text-[10px] text-muted-foreground flex items-center justify-between gap-2">
+                      <span>
+                        Showing {filteredProducts.length === 0 ? 0 : productPageStart + 1}–{Math.min(productPageStart + visibleProducts.length, filteredProducts.length)} of {filteredProducts.length}
+                        {filteredProducts.length !== leafProducts.length ? ` (${leafProducts.length} total)` : ' items'}
+                      </span>
+                      {totalProductPages > 1 && (
+                        <div className="flex items-center gap-1">
+                          <button
+                            type="button"
+                            disabled={safeProductPage <= 1}
+                            onClick={() => {
+                              setProductPage((p) => Math.max(1, p - 1));
+                              if (productResultsRef.current) productResultsRef.current.scrollTop = 0;
+                            }}
+                            className="px-2 py-0.5 rounded border border-border bg-background text-foreground disabled:opacity-40 hover:bg-muted"
+                          >
+                            Prev
+                          </button>
+                          <span className="px-1 font-medium text-foreground">
+                            {safeProductPage}/{totalProductPages}
+                          </span>
+                          <button
+                            type="button"
+                            disabled={safeProductPage >= totalProductPages}
+                            onClick={() => {
+                              setProductPage((p) => Math.min(totalProductPages, p + 1));
+                              if (productResultsRef.current) productResultsRef.current.scrollTop = 0;
+                            }}
+                            className="px-2 py-0.5 rounded border border-border bg-background text-foreground disabled:opacity-40 hover:bg-muted"
+                          >
+                            Next
+                          </button>
+                        </div>
+                      )}
                     </div>
                   </div>
                 )}
@@ -486,12 +559,14 @@ export function DefectiveStockModal({
               {/* Warehouse Selection (Searchable & Label Display) */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
                 <div className="space-y-1.5 relative" ref={warehouseDropdownRef}>
-                  <Label className="text-xs font-semibold">Warehouse Location *</Label>
+                  <div className="flex items-center min-h-4">
+                    <Label className="text-xs font-semibold">Warehouse Location *</Label>
+                  </div>
                   <button
                     type="button"
                     id="select-wh-trigger"
                     onClick={() => setIsWarehouseOpen((prev) => !prev)}
-                    className={`w-full min-h-10.5 px-3 py-2 rounded-xl border text-left flex items-center justify-between gap-2 transition-all ${isWarehouseOpen
+                    className={`w-full h-10.5 px-3 py-2 rounded-xl border text-left flex items-center justify-between gap-2 transition-all ${isWarehouseOpen
                       ? 'border-amber-500 ring-2 ring-amber-500/20 bg-background'
                       : 'border-input bg-background/60 hover:bg-muted/40'
                       }`}
@@ -530,9 +605,7 @@ export function DefectiveStockModal({
                         {filteredWarehouses.map((w) => {
                           const isCurrent = w.id === selectedWarehouseId;
                           const stockHere = selectedProductId
-                            ? inventory
-                              .filter((i) => i.productId === selectedProductId && i.warehouseId === w.id)
-                              .reduce((sum, i) => sum + Math.max(0, i.quantity), 0)
+                            ? (inventoryIndex.byProductWarehouse.get(`${selectedProductId}\0${w.id}`) ?? 0)
                             : null;
 
                           return (
@@ -571,7 +644,7 @@ export function DefectiveStockModal({
 
                 {/* Defective Quantity */}
                 <div className="space-y-1.5">
-                  <div className="flex items-center justify-between">
+                  <div className="flex items-center justify-between min-h-4">
                     <Label className="text-xs font-semibold">Defective Quantity *</Label>
                     {selectedProduct && (
                       <span
@@ -615,7 +688,7 @@ export function DefectiveStockModal({
               </div>
 
               {/* Zero Stock Guardrail Banner */}
-              {isZeroStock && (
+              {isZeroStock && selectedProduct && (
                 <div className="flex items-start gap-3 p-3.5 rounded-xl bg-destructive/10 border border-destructive/30 text-destructive text-xs animate-in fade-in-0 duration-200">
                   <ShieldAlert className="size-5 shrink-0 mt-0.5 text-destructive" />
                   <div className="space-y-1 flex-1">
@@ -693,7 +766,7 @@ export function DefectiveStockModal({
                 </div>
                 {photoPreview && (
                   <div className="relative mt-2 rounded-xl overflow-hidden border max-w-xs h-28 shadow-sm">
-                    <img src={photoPreview} alt="Defect proof" className="w-full h-full object-cover" />
+                    <img src={photoPreview} alt="Defect proof" width={320} height={112} decoding="async" className="w-full h-full object-cover" />
                   </div>
                 )}
               </div>
@@ -758,7 +831,10 @@ export function DefectiveStockModal({
                 <div className="text-right">
                   <p className="font-mono font-bold text-amber-600 text-base">{generatedTicket.ticketNumber}</p>
                   <p className="text-[10px] text-muted-foreground">
-                    {new Date(generatedTicket.createdAt).toLocaleDateString()}
+                    {(() => {
+                      const d = new Date(generatedTicket.createdAt);
+                      return Number.isNaN(d.getTime()) ? 'N/A' : d.toLocaleDateString();
+                    })()}
                   </p>
                 </div>
               </div>
@@ -842,4 +918,4 @@ export function DefectiveStockModal({
       </DialogContent>
     </Dialog>
   );
-}
+});

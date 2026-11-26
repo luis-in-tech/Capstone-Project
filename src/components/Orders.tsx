@@ -3,7 +3,9 @@ import { SearchBar } from '@/components/ui/search-bar';
 import { previousOrderStatus } from '../lib/orderStatus';
 import { hasAdminRole } from '../lib/staffPermissions';
 import { useStaffAccess } from '../hooks/useStaffAccess';
-import React, { useState, useEffect, useRef } from 'react';
+import React, { lazy, Suspense, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
+import { matchesOrderNotificationParam } from '../lib/notificationLinks';
 import { db, storage } from '../lib/supabaseAdapter';
 import { collection, onSnapshot, query, orderBy, where, getDocs, getDoc, updateDoc, deleteDoc, doc, serverTimestamp, addDoc } from '../lib/supabaseAdapter';
 import { Order, OrderStatus, Product, InventoryItem, OrderItem, UserProfile } from '../types';
@@ -21,7 +23,6 @@ import {
   TruckIcon as Truck,
   CheckCircleIcon as CheckCircle2,
   CameraIcon as Camera,
-  WarningCircleIcon as AlertCircle,
   WarningIcon as AlertTriangle,
   CaretRightIcon as ChevronRight,
   CaretUpIcon as ChevronUp,
@@ -36,9 +37,7 @@ import {
   XCircleIcon as XCircle,
   ImageIcon,
   ShieldWarningIcon as ShieldAlert,
-  DownloadIcon as Download,
   FunnelSimpleIcon as ListFilter,
-  ChecksIcon as CheckCheck,
   PencilSimpleIcon as Pencil,
   TrashIcon as Trash2,
   DotsSixVerticalIcon as DotsSixVertical,
@@ -47,21 +46,84 @@ import { Badge } from '@/components/ui/badge';
 import { useAuth } from '../hooks/useAuth';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
-import { OrderEntry } from './OrderEntry';
-import { DeliveryReceipt } from './DeliveryReceipt';
 import { supabase } from '../lib/supabase';
 import { type ReceiptOrder, type ReceiptItem, money, roundMoney } from '../lib/orderEntry';
 import {
   evaluateAndSyncSLAIncidents,
   getLocalIncidents,
-  resolveITILIncident,
-  exportIncidentsCSV,
 } from '../lib/itilService';
 import { prioritizeOrderQueue } from '../lib/fifoQueueEngine';
 import type { ITILIncident } from '../types';
 import { compressImage } from '../lib/imageCompressor';
 
-import { ITILIncidentConsole } from './ITILIncidentConsole';
+const loadOrderEntryModule = () => import('./OrderEntry');
+const loadDeliveryReceiptModule = () => import('./DeliveryReceipt');
+const loadITILIncidentConsoleModule = () => import('./ITILIncidentConsole');
+
+const OrderEntryLazy = lazy(() => loadOrderEntryModule().then((m) => ({ default: m.OrderEntry })));
+const DeliveryReceiptLazy = lazy(() => loadDeliveryReceiptModule().then((m) => ({ default: m.DeliveryReceipt })));
+const ITILIncidentConsoleLazy = lazy(() => loadITILIncidentConsoleModule().then((m) => ({ default: m.ITILIncidentConsole })));
+
+function useMountedOnce(open: boolean): boolean {
+  const [mounted, setMounted] = useState(open);
+  useEffect(() => {
+    if (open) setMounted(true);
+  }, [open]);
+  return open || mounted;
+}
+
+const OrderEntry = React.memo(function OrderEntry(
+  props: React.ComponentProps<typeof import('./OrderEntry').OrderEntry>,
+) {
+  const shouldRender = useMountedOnce(Boolean(props.open));
+  if (!shouldRender) return null;
+  return (
+    <Suspense fallback={null}>
+      <OrderEntryLazy {...props} />
+    </Suspense>
+  );
+});
+
+const DeliveryReceipt = React.memo(function DeliveryReceipt(
+  props: React.ComponentProps<typeof import('./DeliveryReceipt').DeliveryReceipt>,
+) {
+  const shouldRender = useMountedOnce(Boolean(props.order));
+  if (!shouldRender) return null;
+  return (
+    <Suspense fallback={null}>
+      <DeliveryReceiptLazy {...props} />
+    </Suspense>
+  );
+});
+
+const ITILIncidentConsole = React.memo(function ITILIncidentConsole(
+  props: React.ComponentProps<typeof import('./ITILIncidentConsole').ITILIncidentConsole>,
+) {
+  const shouldRender = useMountedOnce(Boolean(props.open));
+  if (!shouldRender) return null;
+  return (
+    <Suspense fallback={null}>
+      <ITILIncidentConsoleLazy {...props} />
+    </Suspense>
+  );
+});
+
+function useIsDesktop(): boolean {
+  const [isDesktop, setIsDesktop] = useState(() =>
+    typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+      ? window.matchMedia('(min-width: 1024px)').matches
+      : true,
+  );
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
+    const mq = window.matchMedia('(min-width: 1024px)');
+    const onChange = () => setIsDesktop(mq.matches);
+    onChange();
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
+  return isDesktop;
+}
 
 type OrderSortKey = 'orderNumber' | 'clientName' | 'status' | 'deadline' | 'amount';
 type SortDirection = 'asc' | 'desc';
@@ -86,7 +148,342 @@ const toTimeMs = (value: any): number => {
   return Number.isFinite(parsed) ? parsed : 0;
 };
 
+// Chronological Status Priority Sorting (Client Feedback Page 18)
+const statusGroupRank = (st: OrderStatus): number => {
+  switch (st) {
+    case 'pending': return 0;
+    case 'preparing': return 1;
+    case 'out_for_delivery': return 2;
+    case 'delivered': return 3;
+    case 'completed': return 4;
+    case 'cancelled': return 5;
+    case 'escalated': return 6;
+    default: return 7;
+  }
+};
+
+const getStatusIcon = (status: OrderStatus) => {
+  switch (status) {
+    case 'pending': return <Clock className="w-3 h-3" />;
+    case 'preparing': return <ShoppingCart className="w-3 h-3" />;
+    case 'out_for_delivery': return <Truck className="w-3 h-3" />;
+    case 'delivered': return <CheckCircle2 className="w-3 h-3" />;
+    case 'completed': return <CheckCircle2 className="w-3 h-3" />;
+    case 'escalated': return <AlertTriangle className="w-3 h-3 text-purple-500" />;
+    case 'cancelled': return <XCircle className="w-3 h-3 text-red-500" />;
+    default: return null;
+  }
+};
+
+type OrderRowActions = {
+  handleDragStart: (e: React.DragEvent, id: string) => void;
+  handleDragOver: (e: React.DragEvent, targetId: string) => void;
+  handleDrop: (e: React.DragEvent, targetId: string) => void;
+  handleDragEnd: () => void;
+  handleViewDetails: (order: Order) => void;
+  revertOrderStatus: (order: Order) => void;
+  handleStartEditPendingOrder: (order: Order) => void;
+  updateOrderStatus: (order: Order, newStatus: OrderStatus) => void;
+};
+
+type OrderRowProps = {
+  order: Order;
+  nowMs: number;
+  isDragged: boolean;
+  isDragOver: boolean;
+  canCreate: boolean;
+  canManageOrders: boolean;
+  isReverting: boolean;
+  actionsRef: React.MutableRefObject<OrderRowActions>;
+};
+
+const OrderMobileCard = React.memo(function OrderMobileCard({
+  order,
+  nowMs,
+  isDragged,
+  isDragOver,
+  canCreate,
+  canManageOrders,
+  isReverting,
+  actionsRef,
+}: OrderRowProps) {
+  const deadlineDate = typeof order.deliveryDeadline?.toDate === 'function' ? order.deliveryDeadline.toDate() : order.deliveryDeadline ? new Date(order.deliveryDeadline) : null;
+  const isOverdue = Boolean(deadlineDate && deadlineDate.getTime() < nowMs && !['delivered', 'completed', 'cancelled', 'escalated'].includes(order.status));
+  const revertTarget = previousOrderStatus(order);
+  return (
+    <div
+      draggable
+      onDragStart={(e) => actionsRef.current.handleDragStart(e, order.id)}
+      onDragOver={(e) => actionsRef.current.handleDragOver(e, order.id)}
+      onDrop={(e) => actionsRef.current.handleDrop(e, order.id)}
+      onDragEnd={() => actionsRef.current.handleDragEnd()}
+      className={`bg-card border border-border rounded-xl p-4 space-y-3 transition-colors ${
+        isDragged ? 'opacity-30 bg-muted/70' : ''
+      } ${
+        isDragOver ? 'border-t-2 border-blue-500 bg-blue-50/20 dark:bg-blue-950/20' : ''
+      }`}
+    >
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex items-start gap-2 min-w-0">
+          <div className="pt-0.5 cursor-grab active:cursor-grabbing text-zinc-400 hover:text-zinc-800" title="Drag to reorder">
+            <DotsSixVertical className="w-4 h-4 shrink-0" />
+          </div>
+          <div className="min-w-0">
+            <p className="text-xs font-mono text-zinc-400">{order.orderNumber}</p>
+            <p className="text-sm font-bold text-zinc-900 dark:text-white mt-0.5">{order.clientName}</p>
+            <p className="text-[10px] text-zinc-400 uppercase font-bold tracking-tighter">
+              {order.deliveryRegion}{order.deliveryCity ? ` • ${order.deliveryCity}` : ''}
+            </p>
+          </div>
+        </div>
+        <Badge variant="outline" className={`shrink-0 gap-1.5 h-6 capitalize text-[10px] font-bold ${order.status === 'delivered' || order.status === 'completed' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
+          order.status === 'out_for_delivery' ? 'bg-blue-50 text-blue-700 border-blue-200' :
+            order.status === 'cancelled' ? 'bg-red-50 text-red-700 border-red-200' :
+              order.status === 'escalated' ? 'bg-purple-50 text-purple-700 border-purple-200' :
+                'bg-amber-50 text-amber-700 border-amber-200'
+          }`}>
+          {getStatusIcon(order.status)}
+          {order.status.replace('_', ' ')}
+        </Badge>
+      </div>
+      <div className="flex items-center justify-between">
+        <div>
+          <p className={`text-[10px] font-bold ${isOverdue ? 'text-red-500' : 'text-zinc-500'}`}>
+            {deadlineDate ? deadlineDate.toLocaleDateString() : 'N/A'}
+            {isOverdue && <span className="ml-1 uppercase text-[8px] bg-red-100 px-1 rounded">SLA Breach</span>}
+          </p>
+        </div>
+        <span className="font-black text-sm">₱{order.totalAmount.toLocaleString()}</span>
+      </div>
+      <div className="flex items-center justify-end gap-1 border-t border-border pt-2">
+        <Button size="icon" variant="ghost" className="h-7 w-7 text-muted-foreground hover:text-foreground" onClick={() => actionsRef.current.handleViewDetails(order)} title="View Details">
+          <Eye className="w-4 h-4" />
+        </Button>
+        {canCreate && revertTarget ? (
+          <Button size="icon" variant="outline" disabled={isReverting}
+            onClick={() => actionsRef.current.revertOrderStatus(order)}
+            aria-label={`Revert to ${revertTarget.replaceAll('_', ' ')}`}
+            title={`Revert to ${revertTarget.replaceAll('_', ' ')}`}>
+            <Undo2 className="w-3 h-3" />
+          </Button>
+        ) : null}
+        {canManageOrders && (
+          <>
+            {order.status === 'pending' && (
+              <>
+                <Button size="icon" variant="ghost" className="h-7 w-7 text-amber-600 hover:bg-amber-50" onClick={() => actionsRef.current.handleStartEditPendingOrder(order)} title="Edit Pending Order">
+                  <Pencil className="w-4 h-4" />
+                </Button>
+                <Button size="icon" variant="ghost" className="h-7 w-7 text-zinc-400 hover:text-zinc-900" onClick={() => actionsRef.current.updateOrderStatus(order, 'preparing')} title="Move to Preparing">
+                  <ChevronRight className="w-4 h-4" />
+                </Button>
+              </>
+            )}
+            {order.status === 'preparing' && (
+              <Button size="icon" variant="ghost" className="h-7 w-7 text-blue-500 hover:bg-blue-50" onClick={() => actionsRef.current.updateOrderStatus(order, 'out_for_delivery')} title="Dispatch Order">
+                <Camera className="w-4 h-4" />
+              </Button>
+            )}
+            {order.status === 'out_for_delivery' && (
+              <Button size="icon" variant="ghost" className="h-7 w-7 text-emerald-500 hover:bg-emerald-50" onClick={() => actionsRef.current.updateOrderStatus(order, 'delivered')} title="Confirm Delivery">
+                <CheckCircle2 className="w-4 h-4" />
+              </Button>
+            )}
+            {order.status === 'delivered' && <Button size="sm" variant="outline" onClick={() => actionsRef.current.updateOrderStatus(order, 'completed')}>Complete</Button>}
+            {order.status !== 'delivered' && order.status !== 'completed' && order.status !== 'cancelled' && order.status !== 'escalated' && (
+              <>
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className="h-7 w-7 text-amber-500 hover:bg-amber-50"
+                  onClick={() => {
+                    if (window.confirm(`Escalate order ${order.orderNumber}? Reserved stock will be replenished to inventory.`)) {
+                      actionsRef.current.updateOrderStatus(order, 'escalated');
+                    }
+                  }}
+                  title="Escalate Order (Restores Stock)"
+                >
+                  <AlertTriangle className="w-4 h-4" />
+                </Button>
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className="h-7 w-7 text-red-500 hover:bg-red-50"
+                  onClick={() => {
+                    if (window.confirm(`Cancel order ${order.orderNumber}? Deducted stock will be restored to inventory.`)) {
+                      actionsRef.current.updateOrderStatus(order, 'cancelled');
+                    }
+                  }}
+                  title="Cancel Order (Restores Stock)"
+                >
+                  <XCircle className="w-4 h-4" />
+                </Button>
+              </>
+            )}
+          </>
+        )}
+        {order.photoValidationUrl && (
+          <Button size="icon" variant="ghost" className="h-7 w-7 text-blue-600 hover:text-blue-700 hover:bg-blue-50" title="View Dispatch Photo Proof" onClick={() => window.open(order.photoValidationUrl)}>
+            <ImageIcon className="w-4 h-4" />
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+});
+
+const OrderDesktopRow = React.memo(function OrderDesktopRow({
+  order,
+  nowMs,
+  isDragged,
+  isDragOver,
+  canCreate,
+  canManageOrders,
+  isReverting,
+  actionsRef,
+}: OrderRowProps) {
+  const deadlineDate = typeof order.deliveryDeadline?.toDate === 'function' ? order.deliveryDeadline.toDate() : order.deliveryDeadline ? new Date(order.deliveryDeadline) : null;
+  const isOverdue = Boolean(deadlineDate && deadlineDate.getTime() < nowMs && !['delivered', 'completed', 'cancelled', 'escalated'].includes(order.status));
+  const revertTarget = previousOrderStatus(order);
+  return (
+    <TableRow
+      draggable
+      onDragStart={(e) => actionsRef.current.handleDragStart(e, order.id)}
+      onDragOver={(e) => actionsRef.current.handleDragOver(e, order.id)}
+      onDrop={(e) => actionsRef.current.handleDrop(e, order.id)}
+      onDragEnd={() => actionsRef.current.handleDragEnd()}
+      className={`group transition-colors select-none ${
+        isDragged ? 'opacity-30 bg-muted/70' : ''
+      } ${
+        isDragOver ? 'border-t-2 border-blue-500 bg-blue-50/20 dark:bg-blue-950/20' : ''
+      }`}
+    >
+      <TableCell className="w-9 px-2 py-3 text-center cursor-grab active:cursor-grabbing text-zinc-400 hover:text-zinc-800 dark:hover:text-zinc-100">
+        <div className="flex items-center justify-center p-1 rounded hover:bg-muted" title="Drag to reorder row">
+          <DotsSixVertical className="w-4 h-4" />
+        </div>
+      </TableCell>
+      <TableCell className="font-mono text-xs text-zinc-400 font-medium">
+        {order.orderNumber}
+      </TableCell>
+      <TableCell>
+        <div className="flex flex-col">
+          <span className="text-xs font-bold text-zinc-900 dark:text-white">{order.clientName}</span>
+          <span className="text-[10px] text-zinc-400 uppercase font-bold tracking-tighter">
+            {order.deliveryRegion}{order.deliveryCity ? ` • ${order.deliveryCity}` : ''}
+          </span>
+        </div>
+      </TableCell>
+      <TableCell>
+        <Badge variant="outline" className={`gap-1.5 h-6 capitalize text-[10px] font-bold ${order.status === 'delivered' || order.status === 'completed' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
+          order.status === 'out_for_delivery' ? 'bg-blue-50 text-blue-700 border-blue-200' :
+            order.status === 'cancelled' ? 'bg-red-50 text-red-700 border-red-200' :
+              order.status === 'escalated' ? 'bg-purple-50 text-purple-700 border-purple-200' :
+                'bg-amber-50 text-amber-700 border-amber-200'
+          }`}>
+          {getStatusIcon(order.status)}
+          {order.status.replace('_', ' ')}
+        </Badge>
+      </TableCell>
+      <TableCell className="text-center">
+        <div className={`text-[10px] font-bold ${isOverdue ? 'text-red-500' : 'text-zinc-500'}`}>
+          {deadlineDate ? deadlineDate.toLocaleDateString() : 'N/A'}
+          {isOverdue && <span className="ml-1 uppercase text-[8px] bg-red-100 px-1 rounded">SLA Breach</span>}
+        </div>
+      </TableCell>
+      <TableCell className="text-right font-black text-xs">
+        ₱{order.totalAmount.toLocaleString()}
+      </TableCell>
+      <TableCell className="text-center">
+        <div className="flex items-center justify-center gap-1">
+          <Button
+            size="icon"
+            variant="ghost"
+            className="h-7 w-7 text-muted-foreground hover:text-foreground"
+            onClick={() => actionsRef.current.handleViewDetails(order)}
+            title="View Details"
+          >
+            <Eye className="w-4 h-4" />
+          </Button>
+          {canCreate && revertTarget ? (
+            <Button size="icon" variant="outline" disabled={isReverting}
+              onClick={() => actionsRef.current.revertOrderStatus(order)}
+              aria-label={`Revert to ${revertTarget.replaceAll('_', ' ')}`}
+              title={`Revert to ${revertTarget.replaceAll('_', ' ')}`}>
+              <Undo2 className="w-3 h-3" />
+            </Button>
+          ) : null}
+          {canManageOrders && (
+            <>
+              {order.status === 'pending' && (
+                <>
+                  <Button size="icon" variant="ghost" className="h-7 w-7 text-amber-600 hover:bg-amber-50" onClick={() => actionsRef.current.handleStartEditPendingOrder(order)} title="Edit Pending Order">
+                    <Pencil className="w-4 h-4" />
+                  </Button>
+                  <Button size="icon" variant="ghost" className="h-7 w-7 text-zinc-400 hover:text-zinc-900" onClick={() => actionsRef.current.updateOrderStatus(order, 'preparing')} title="Move to Preparing">
+                    <ChevronRight className="w-4 h-4" />
+                  </Button>
+                </>
+              )}
+              {order.status === 'preparing' && (
+                <Button size="icon" variant="ghost" className="h-7 w-7 text-blue-500 hover:bg-blue-50" onClick={() => actionsRef.current.updateOrderStatus(order, 'out_for_delivery')} title="Dispatch Order">
+                  <Camera className="w-4 h-4" />
+                </Button>
+              )}
+              {order.status === 'out_for_delivery' && (
+                <Button size="icon" variant="ghost" className="h-7 w-7 text-emerald-500 hover:bg-emerald-50" onClick={() => actionsRef.current.updateOrderStatus(order, 'delivered')} title="Confirm Delivery">
+                  <CheckCircle2 className="w-4 h-4" />
+                </Button>
+              )}
+              {order.status === 'delivered' && <Button size="sm" variant="outline" onClick={() => actionsRef.current.updateOrderStatus(order, 'completed')}>Complete</Button>}
+              {order.status !== 'delivered' && order.status !== 'completed' && order.status !== 'cancelled' && order.status !== 'escalated' && (
+                <>
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    className="h-7 w-7 text-amber-500 hover:bg-amber-50"
+                    onClick={() => {
+                      if (window.confirm(`Escalate order ${order.orderNumber}? Reserved stock will be replenished to inventory.`)) {
+                        actionsRef.current.updateOrderStatus(order, 'escalated');
+                      }
+                    }}
+                    title="Escalate Order (Restores Stock)"
+                  >
+                    <AlertTriangle className="w-4 h-4" />
+                  </Button>
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    className="h-7 w-7 text-red-500 hover:bg-red-50"
+                    onClick={() => {
+                      if (window.confirm(`Cancel order ${order.orderNumber}? Deducted stock will be restored to inventory.`)) {
+                        actionsRef.current.updateOrderStatus(order, 'cancelled');
+                      }
+                    }}
+                    title="Cancel Order (Restores Stock)"
+                  >
+                    <XCircle className="w-4 h-4" />
+                  </Button>
+                </>
+              )}
+            </>
+          )}
+          {order.photoValidationUrl && (
+            <Button size="icon" variant="ghost" className="h-7 w-7 text-blue-600 hover:text-blue-700 hover:bg-blue-50" title="View Dispatch Photo Proof" onClick={() => window.open(order.photoValidationUrl)}>
+              <ImageIcon className="w-4 h-4" />
+            </Button>
+          )}
+        </div>
+      </TableCell>
+    </TableRow>
+  );
+});
+
 export function Orders() {
+  const isDesktop = useIsDesktop();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const orderIdParam = searchParams.get('orderId');
+  const lastAppliedOrderParamRef = useRef<string | null>(null);
   const { profile } = useAuth();
   const { permissions } = useStaffAccess();
   const canCreate = permissions.orders === 'create';
@@ -116,7 +513,6 @@ export function Orders() {
   // ITIL 4 Incident Management & SLA Tracking (FR-06)
   const [incidents, setIncidents] = useState<ITILIncident[]>(() => getLocalIncidents());
   const [isIncidentsDialogOpen, setIsIncidentsDialogOpen] = useState(false);
-  const [incidentFilter, setIncidentFilter] = useState<'all' | 'SLA_BREACH' | 'DEFECTIVE_ASSET'>('all');
   const [orderViewMode, setOrderViewMode] = useState<'all' | 'fifo_queue'>('all');
   const [sortKey, setSortKey] = useState<OrderSortKey | null>(null);
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
@@ -130,9 +526,6 @@ export function Orders() {
   });
   const [draggedOrderId, setDraggedOrderId] = useState<string | null>(null);
   const [dragOverOrderId, setDragOverOrderId] = useState<string | null>(null);
-  const [resolvingIncident, setResolvingIncident] = useState<ITILIncident | null>(null);
-  const [resolutionInput, setResolutionInput] = useState('');
-  const [isSubmittingResolution, setIsSubmittingResolution] = useState(false);
 
   const [activeTab, setActiveTab] = useState<'items' | 'history'>('items');
 
@@ -145,6 +538,9 @@ export function Orders() {
 
   // Admin OR / Delivery Receipt Template State
   const [isOrEditorOpen, setIsOrEditorOpen] = useState(false);
+  const [orCompanyName, setOrCompanyName] = useState('ACTIVE PRO');
+  const [orCompanyTagline, setOrCompanyTagline] = useState('Bicycle Parts, Accessories & Wholesale Distribution');
+  const [orShowLogo, setOrShowLogo] = useState(true);
   const [orDocSubtitle, setOrDocSubtitle] = useState('DELIVERY DOCUMENT');
   const [orDocTitle, setOrDocTitle] = useState('DELIVERY RECEIPT');
   const [orFooterHeading, setOrFooterHeading] = useState('PACKING LIST / ACKNOWLEDGEMENT');
@@ -156,6 +552,9 @@ export function Orders() {
     try {
       const raw = localStorage.getItem('activepro_dr_template');
       const parsed = raw ? JSON.parse(raw) : {};
+      setOrCompanyName(typeof parsed.companyName === 'string' && parsed.companyName.trim() ? parsed.companyName : 'ACTIVE PRO');
+      setOrCompanyTagline(typeof parsed.companyTagline === 'string' ? parsed.companyTagline : 'Bicycle Parts, Accessories & Wholesale Distribution');
+      setOrShowLogo(typeof parsed.showLogo === 'boolean' ? parsed.showLogo : true);
       setOrDocSubtitle(typeof parsed.docSubtitle === 'string' && parsed.docSubtitle.trim() ? parsed.docSubtitle : 'DELIVERY DOCUMENT');
       setOrDocTitle(typeof parsed.docTitle === 'string' && parsed.docTitle.trim() ? parsed.docTitle : 'DELIVERY RECEIPT');
       setOrFooterHeading(typeof parsed.footerHeading === 'string' && parsed.footerHeading.trim() ? parsed.footerHeading : 'PACKING LIST / ACKNOWLEDGEMENT');
@@ -163,6 +562,9 @@ export function Orders() {
       setOrNote(typeof parsed.note === 'string' ? parsed.note : '');
       setOrFooterNote(typeof parsed.footerNote === 'string' ? parsed.footerNote : '');
     } catch {
+      setOrCompanyName('ACTIVE PRO');
+      setOrCompanyTagline('Bicycle Parts, Accessories & Wholesale Distribution');
+      setOrShowLogo(true);
       setOrDocSubtitle('DELIVERY DOCUMENT');
       setOrDocTitle('DELIVERY RECEIPT');
       setOrFooterHeading('PACKING LIST / ACKNOWLEDGEMENT');
@@ -177,6 +579,9 @@ export function Orders() {
     e.preventDefault();
     if (!hasAdminRole(profile)) return;
     const nextTemplate = {
+      companyName: orCompanyName.trim() || 'ACTIVE PRO',
+      companyTagline: orCompanyTagline.trim(),
+      showLogo: orShowLogo,
       docSubtitle: orDocSubtitle.trim() || 'DELIVERY DOCUMENT',
       docTitle: orDocTitle.trim() || 'DELIVERY RECEIPT',
       footerHeading: orFooterHeading.trim() || 'PACKING LIST / ACKNOWLEDGEMENT',
@@ -194,31 +599,48 @@ export function Orders() {
     }
   };
 
-  const filteredOrders = orders.filter(order => {
-    const queryStr = searchQuery.toLowerCase();
-    const matchesSku = order.skus?.some(sku => sku.toLowerCase().includes(queryStr));
-    const matchesOrderNumber = order.orderNumber.toLowerCase().includes(queryStr);
-    const matchesClient = order.clientName.toLowerCase().includes(queryStr);
-    const matchesCity = order.deliveryCity?.toLowerCase().includes(queryStr);
-    const matchesRegion = order.deliveryRegion?.toLowerCase().includes(queryStr);
-    return matchesSku || matchesOrderNumber || matchesClient || matchesCity || matchesRegion;
-  });
+  const showOrEditor = useMountedOnce(isOrEditorOpen);
+  const showOrderDetails = useMountedOnce(isOrderDetailsOpen);
+  const showDispatchDialog = useMountedOnce(isDispatchDialogOpen);
+  const showEditPendingDialog = useMountedOnce(Boolean(editingPendingOrder));
 
-  // Chronological Status Priority Sorting (Client Feedback Page 18)
-  const statusGroupRank = (st: OrderStatus): number => {
-    switch (st) {
-      case 'pending': return 0;
-      case 'preparing': return 1;
-      case 'out_for_delivery': return 2;
-      case 'delivered': return 3;
-      case 'completed': return 4;
-      case 'cancelled': return 5;
-      case 'escalated': return 6;
-      default: return 7;
-    }
-  };
+  const [fulfillmentStrategy, setFulfillmentStrategy] = useState<'FIFO' | 'LIFO'>(() =>
+    (localStorage.getItem('activepro.fulfillment_strategy') as 'FIFO' | 'LIFO') === 'LIFO' ? 'LIFO' : 'FIFO',
+  );
 
-  const toggleSort = (key: OrderSortKey) => {
+  useEffect(() => {
+    const syncStrategy = () => {
+      setFulfillmentStrategy(
+        localStorage.getItem('activepro.fulfillment_strategy') === 'LIFO' ? 'LIFO' : 'FIFO',
+      );
+    };
+    const onStorage = (e: StorageEvent) => {
+      if (!e.key || e.key === 'activepro.fulfillment_strategy') syncStrategy();
+    };
+    window.addEventListener('activepro_fulfillment_strategy_changed', syncStrategy);
+    window.addEventListener('storage', onStorage);
+    return () => {
+      window.removeEventListener('activepro_fulfillment_strategy_changed', syncStrategy);
+      window.removeEventListener('storage', onStorage);
+    };
+  }, []);
+
+  const deferredSearchQuery = useDeferredValue(searchQuery);
+
+  const filteredOrders = useMemo(() => {
+    const queryStr = deferredSearchQuery.toLowerCase();
+    if (!queryStr) return orders;
+    return orders.filter(order => {
+      const matchesSku = order.skus?.some(sku => sku.toLowerCase().includes(queryStr));
+      const matchesOrderNumber = order.orderNumber.toLowerCase().includes(queryStr);
+      const matchesClient = order.clientName.toLowerCase().includes(queryStr);
+      const matchesCity = order.deliveryCity?.toLowerCase().includes(queryStr);
+      const matchesRegion = order.deliveryRegion?.toLowerCase().includes(queryStr);
+      return matchesSku || matchesOrderNumber || matchesClient || matchesCity || matchesRegion;
+    });
+  }, [orders, deferredSearchQuery]);
+
+  const toggleSort = useCallback((key: OrderSortKey) => {
     setOrderViewMode('all');
     if (sortKey === key) {
       setSortDirection(prev => (prev === 'asc' ? 'desc' : 'asc'));
@@ -226,7 +648,7 @@ export function Orders() {
       setSortKey(key);
       setSortDirection('asc');
     }
-  };
+  }, [sortKey]);
 
   const statusChronologicalOrders = React.useMemo(() => {
     return [...filteredOrders].sort((a, b) => {
@@ -236,8 +658,6 @@ export function Orders() {
       return toTimeMs(b.createdAt) - toTimeMs(a.createdAt);
     });
   }, [filteredOrders]);
-
-  const fulfillmentStrategy = (localStorage.getItem('activepro.fulfillment_strategy') as 'FIFO'|'LIFO') || 'FIFO';
 
   // System-wide unified ordering: Supports column sorting, Status Grouping, In-place Row Stability, and Manual Drag & Drop
   const displayOrders = React.useMemo(() => {
@@ -339,7 +759,42 @@ export function Orders() {
     setDragOverOrderId(null);
   };
 
-  const activeIncidents = incidents.filter(i => i.status !== 'RESOLVED' && i.status !== 'CLOSED');
+  const activeIncidents = useMemo(
+    () => incidents.filter(i => i.status !== 'RESOLVED' && i.status !== 'CLOSED'),
+    [incidents],
+  );
+
+  const editProductInventoryIndex = useMemo(() => {
+    const stockByProduct = new Map<string, number>();
+    const bestInvByProduct = new Map<string, InventoryItem>();
+    if (!editingPendingOrder || !isAddDropdownOpen) {
+      return { stockByProduct, bestInvByProduct };
+    }
+    for (const inv of inventory) {
+      const qty = Math.max(0, Number(inv.quantity) || 0);
+      stockByProduct.set(inv.productId, (stockByProduct.get(inv.productId) ?? 0) + qty);
+      const currentBest = bestInvByProduct.get(inv.productId);
+      if (!currentBest || Number(inv.quantity) > Number(currentBest.quantity)) {
+        bestInvByProduct.set(inv.productId, inv);
+      }
+    }
+    return { stockByProduct, bestInvByProduct };
+  }, [editingPendingOrder, isAddDropdownOpen, inventory]);
+
+  const editAddProducts = useMemo(() => {
+    if (!editingPendingOrder || !isAddDropdownOpen) return [];
+    const q = editAddSearch.trim().toLowerCase();
+    const { stockByProduct } = editProductInventoryIndex;
+    return products
+      .filter(p => p.variantEnabled !== false && (!p.hasVariations || (stockByProduct.get(p.id) ?? 0) > 0) && (!q || `${p.name} ${p.sku}${p.hasVariations ? ' original' : ''}`.toLowerCase().includes(q)))
+      .sort((a, b) => {
+        const stockA = stockByProduct.get(a.id) ?? 0;
+        const stockB = stockByProduct.get(b.id) ?? 0;
+        if ((stockA > 0) !== (stockB > 0)) return stockB > 0 ? 1 : -1;
+        return (a.name || '').localeCompare(b.name || '');
+      })
+      .slice(0, 50);
+  }, [editingPendingOrder, isAddDropdownOpen, products, editAddSearch, editProductInventoryIndex]);
 
   const resolveUserName = (changedBy?: string): string => {
     if (!changedBy) return 'Staff';
@@ -389,35 +844,42 @@ export function Orders() {
       ? query(collection(db, 'orders'), orderBy('createdAt', 'desc'))
       : query(collection(db, 'orders'), where('agentId', '==', profile?.uid || ''), orderBy('createdAt', 'desc'));
 
+    type SnapshotDoc = { id: string; data: () => any };
+    let slaTimer: ReturnType<typeof setTimeout> | null = null;
+
     const unsubOrders = onSnapshot(q, (snap) => {
       const overrides = getOrderOverrides();
-      const rawOrders = snap.docs.map(d => ({ id: d.id, ...d.data() } as Order));
-      const fetchedOrders = rawOrders.map(order => overrides[order.id] ? { ...order, ...overrides[order.id] } : order);
+      const rawOrders: Order[] = snap.docs.map((d: SnapshotDoc) => ({ id: d.id, ...d.data() } as Order));
+      const fetchedOrders = rawOrders.map((order: Order) => overrides[order.id] ? { ...order, ...overrides[order.id] } : order);
       setOrders(fetchedOrders);
-      // Auto-evaluate continuous SLAs & generate ITIL incident tickets (FR-06)
-      evaluateAndSyncSLAIncidents(fetchedOrders, profile).then(synced => setIncidents(synced));
+      // Defer non-blocking SLA sync so initial render and LCP paint uncontested
+      if (slaTimer !== null) clearTimeout(slaTimer);
+      slaTimer = setTimeout(() => {
+        void evaluateAndSyncSLAIncidents(fetchedOrders, profile).then(synced => setIncidents(synced));
+      }, 150);
     }, (error) => {
       handleSupabaseError(error, OperationType.GET, 'orders');
     });
 
     const unsubProducts = onSnapshot(collection(db, 'products'), (snap) => {
-      setProducts(snap.docs.map(d => ({ id: d.id, ...d.data() } as Product)));
+      setProducts(snap.docs.map((d: SnapshotDoc) => ({ id: d.id, ...d.data() } as Product)));
     }, (error) => {
       handleSupabaseError(error, OperationType.GET, 'products');
     });
 
     const unsubInventory = onSnapshot(collection(db, 'inventory'), (snap) => {
-      setInventory(snap.docs.map(d => ({ id: d.id, ...d.data() } as InventoryItem)));
+      setInventory(snap.docs.map((d: SnapshotDoc) => ({ id: d.id, ...d.data() } as InventoryItem)));
     }, (error) => {
       handleSupabaseError(error, OperationType.GET, 'inventory');
     });
 
     const unsubUsers = onSnapshot(collection(db, 'users'), (snap) => {
-      setUsers(snap.docs.map(d => ({ id: d.id, ...d.data() } as UserProfile)));
+      setUsers(snap.docs.map((d: SnapshotDoc) => ({ id: d.id, ...d.data() } as UserProfile)));
     }, () => {
     });
 
     return () => {
+      if (slaTimer !== null) clearTimeout(slaTimer);
       unsubOrders();
       unsubProducts();
       unsubInventory();
@@ -616,6 +1078,29 @@ export function Orders() {
     }
   };
 
+  const clearOrderParam = () => {
+    lastAppliedOrderParamRef.current = null;
+    if (searchParams.has('orderId')) {
+      const next = new URLSearchParams(searchParams);
+      next.delete('orderId');
+      setSearchParams(next, { replace: true });
+    }
+  };
+
+  useEffect(() => {
+    if (!orderIdParam) {
+      lastAppliedOrderParamRef.current = null;
+      return;
+    }
+    if (lastAppliedOrderParamRef.current === orderIdParam || !orders.length) return;
+    const matchedOrder = orders.find(o => matchesOrderNotificationParam(o, orderIdParam));
+    if (matchedOrder) {
+      lastAppliedOrderParamRef.current = orderIdParam;
+      setSearchQuery('');
+      void handleViewDetails(matchedOrder);
+    }
+  }, [orderIdParam, orders]);
+
   const handleStartEditPendingOrder = async (order: Order) => {
     setEditingPendingOrder(order as ReceiptOrder);
     setEditOrderItems([]);
@@ -756,8 +1241,7 @@ export function Orders() {
         if (orig) {
           await updateDoc(doc(db, 'order_items', item.id), {
             quantity: Number(item.quantity),
-            subtotal: newSubtotal,
-            updatedAt: serverTimestamp()
+            subtotal: newSubtotal
           });
         } else {
           await addDoc(collection(db, 'orders', editingPendingOrder.id, 'items'), {
@@ -909,18 +1393,185 @@ export function Orders() {
     }
   };
 
-  const getStatusIcon = (status: OrderStatus) => {
-    switch (status) {
-      case 'pending': return <Clock className="w-3 h-3" />;
-      case 'preparing': return <ShoppingCart className="w-3 h-3" />;
-      case 'out_for_delivery': return <Truck className="w-3 h-3" />;
-      case 'delivered': return <CheckCircle2 className="w-3 h-3" />;
-      case 'completed': return <CheckCircle2 className="w-3 h-3" />;
-      case 'escalated': return <AlertTriangle className="w-3 h-3 text-purple-500" />;
-      case 'cancelled': return <XCircle className="w-3 h-3 text-red-500" />;
-      default: return null;
-    }
+  const nowMs = useMemo(() => Date.now(), [orders]);
+
+  const rowActionsRef = useRef<OrderRowActions>({
+    handleDragStart,
+    handleDragOver,
+    handleDrop,
+    handleDragEnd,
+    handleViewDetails,
+    revertOrderStatus,
+    handleStartEditPendingOrder,
+    updateOrderStatus,
+  });
+  rowActionsRef.current = {
+    handleDragStart,
+    handleDragOver,
+    handleDrop,
+    handleDragEnd,
+    handleViewDetails,
+    revertOrderStatus,
+    handleStartEditPendingOrder,
+    updateOrderStatus,
   };
+
+  const handleOpenNewOrder = useCallback(() => setIsNewOrderOpen(true), []);
+  const handleCloseOrderEntry = useCallback(() => setIsNewOrderOpen(false), []);
+  const handleOrderEntrySaved = useCallback((order: ReceiptOrder, items: ReceiptItem[]) => {
+    saveOrderOverride(order.id, order);
+    setOrders(current => [order, ...current.filter(item => item.id !== order.id)]);
+    setSortKey(null);
+    setOrderViewMode('all');
+    setCustomOrderIds(currentIds => {
+      if (currentIds.length === 0) return currentIds;
+      const nextIds = [order.id, ...currentIds.filter(id => id !== order.id)];
+      localStorage.setItem('activepro_custom_order_ids', JSON.stringify(nextIds));
+      return nextIds;
+    });
+    setIsNewOrderOpen(false);
+    setOrderEntryKey(value => value + 1);
+    setReceiptItems(items);
+    setReceiptOrder(order);
+  }, []);
+  const handleCloseReceipt = useCallback(() => setReceiptOrder(null), []);
+  const handleCloseIncidents = useCallback(() => setIsIncidentsDialogOpen(false), []);
+  const handleRefreshIncidents = useCallback(() => setIncidents(getLocalIncidents()), []);
+
+  const ordersListContent = useMemo(() => (
+    <>
+      {/* Mobile Card View (mounted only below lg breakpoint) */}
+      {!isDesktop && (
+      <div className="space-y-3">
+        <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border bg-card p-2.5">
+          <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground px-1">Sort by</span>
+          <div className="flex flex-wrap gap-1.5 flex-1">
+            {ORDER_SORT_COLUMNS.map(col => {
+              const active = orderViewMode === 'all' && sortKey === col.key;
+              return (
+                <button
+                  key={col.key}
+                  type="button"
+                  onClick={() => toggleSort(col.key)}
+                  className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-xs font-medium transition-colors ${
+                    active
+                      ? 'border-primary/40 bg-primary/10 text-foreground font-semibold'
+                      : 'border-border bg-background text-muted-foreground hover:text-foreground'
+                  }`}
+                >
+                  <span>{col.label}</span>
+                  {active ? (sortDirection === 'asc' ? <ChevronUp className="size-3" /> : <ChevronDown className="size-3" />) : <ArrowUpDown className="size-3 opacity-40" />}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+        {displayOrders.map(order => (
+          <OrderMobileCard
+            key={order.id}
+            order={order}
+            nowMs={nowMs}
+            isDragged={draggedOrderId === order.id}
+            isDragOver={dragOverOrderId === order.id}
+            canCreate={canCreate}
+            canManageOrders={canManageOrders}
+            isReverting={isReverting}
+            actionsRef={rowActionsRef}
+          />
+        ))}
+        {displayOrders.length === 0 && (
+          <div className="flex flex-col items-center gap-2 py-12 text-zinc-400">
+            <ShoppingCart className="w-8 h-8 opacity-20" />
+            <p className="text-xs font-medium italic">
+              {orderViewMode === 'fifo_queue'
+                ? 'No pending orders currently in the FIFO fulfillment queue.'
+                : 'No orders match your search criteria.'}
+            </p>
+          </div>
+        )}
+      </div>
+      )}
+
+      {/* Desktop Table View (mounted only at lg+ breakpoint) */}
+      {isDesktop && (
+      <div className="bg-card border border-border rounded-xl overflow-hidden">
+        <div className="overflow-x-auto w-full">
+          <Table>
+            <TableHeader className="bg-muted/50">
+              <TableRow>
+                <TableHead className="w-9 px-2 text-center"><span className="sr-only">Reorder</span></TableHead>
+                {ORDER_SORT_COLUMNS.map(col => {
+                  const active = orderViewMode === 'all' && sortKey === col.key;
+                  const justifyClass = col.align === 'right' ? 'justify-end' : col.align === 'center' ? 'justify-center' : 'justify-start';
+                  return (
+                    <TableHead
+                      key={col.key}
+                      aria-sort={active ? (sortDirection === 'asc' ? 'ascending' : 'descending') : 'none'}
+                      className={`text-[10px] font-bold uppercase tracking-widest p-0 ${col.headClass}`}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => toggleSort(col.key)}
+                        className={`flex w-full items-center gap-1 px-2 py-2.5 hover:bg-muted/80 hover:text-foreground transition-colors cursor-pointer ${justifyClass} ${active ? 'text-foreground' : ''}`}
+                      >
+                        <span>{col.label}</span>
+                        {active ? (
+                          sortDirection === 'asc' ? <ChevronUp className="size-3.5 shrink-0" /> : <ChevronDown className="size-3.5 shrink-0" />
+                        ) : (
+                          <ArrowUpDown className="size-3 shrink-0 opacity-40" />
+                        )}
+                      </button>
+                    </TableHead>
+                  );
+                })}
+                <TableHead className="text-[10px] font-bold uppercase tracking-widest text-center min-w-35">Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {displayOrders.map(order => (
+                <OrderDesktopRow
+                  key={order.id}
+                  order={order}
+                  nowMs={nowMs}
+                  isDragged={draggedOrderId === order.id}
+                  isDragOver={dragOverOrderId === order.id}
+                  canCreate={canCreate}
+                  canManageOrders={canManageOrders}
+                  isReverting={isReverting}
+                  actionsRef={rowActionsRef}
+                />
+              ))}
+              {filteredOrders.length === 0 && (
+                <TableRow>
+                  <TableCell colSpan={7} className="text-center py-12">
+                    <div className="flex flex-col items-center gap-2 text-zinc-400">
+                      <ShoppingCart className="w-8 h-8 opacity-20" />
+                      <p className="text-xs font-medium italic">No orders match your search criteria.</p>
+                    </div>
+                  </TableCell>
+                </TableRow>
+              )}
+            </TableBody>
+          </Table>
+        </div>
+      </div>
+      )}
+    </>
+  ), [
+    isDesktop,
+    orderViewMode,
+    sortKey,
+    sortDirection,
+    toggleSort,
+    displayOrders,
+    nowMs,
+    draggedOrderId,
+    dragOverOrderId,
+    canCreate,
+    canManageOrders,
+    isReverting,
+    filteredOrders.length,
+  ]);
 
   return (
     <div className="space-y-6">
@@ -944,6 +1595,8 @@ export function Orders() {
                 ? 'border-red-300 bg-red-50 text-red-700 hover:bg-red-100 dark:border-red-900/60 dark:bg-red-950/40 dark:text-red-300'
                 : 'text-zinc-600'
             }`}
+            onMouseEnter={() => { void loadITILIncidentConsoleModule(); }}
+            onFocus={() => { void loadITILIncidentConsoleModule(); }}
             onClick={() => setIsIncidentsDialogOpen(true)}
           >
             <ShieldAlert className="size-4 shrink-0 text-red-500" />
@@ -954,24 +1607,159 @@ export function Orders() {
               </Badge>
             )}
           </Button>
-          {canCreate && <Button onClick={() => setIsNewOrderOpen(true)}><Plus className="size-4" />Create Order</Button>}
+          {canCreate && (
+            <Button
+              onMouseEnter={() => { void loadOrderEntryModule(); }}
+              onFocus={() => { void loadOrderEntryModule(); }}
+              onClick={handleOpenNewOrder}
+            >
+              <Plus className="size-4" />Create Order
+            </Button>
+          )}
         </div>
-        {profile && canCreate && <OrderEntry key={`${profile.uid}:${orderEntryKey}`} open={isNewOrderOpen} onClose={() => setIsNewOrderOpen(false)} orders={orders} products={products} inventory={inventory} profile={profile} onSaved={(order, items) => {
-          saveOrderOverride(order.id, order);
-          setOrders(current => [order, ...current.filter(item => item.id !== order.id)]);
-          setSortKey(null);
-          setOrderViewMode('all');
-          if (customOrderIds.length > 0) {
-            const nextIds = [order.id, ...customOrderIds.filter(id => id !== order.id)];
-            setCustomOrderIds(nextIds);
-            localStorage.setItem('activepro_custom_order_ids', JSON.stringify(nextIds));
-          }
-          setIsNewOrderOpen(false);
-          setOrderEntryKey(value => value + 1);
-          setReceiptItems(items);
-          setReceiptOrder(order);
-        }} />}
-        <DeliveryReceipt order={receiptOrder} items={receiptItems} onClose={() => setReceiptOrder(null)} />
+        {profile && canCreate && (
+          <OrderEntry
+            key={`${profile.uid}:${orderEntryKey}`}
+            open={isNewOrderOpen}
+            onClose={handleCloseOrderEntry}
+            orders={orders}
+            products={products}
+            inventory={inventory}
+            profile={profile}
+            onSaved={handleOrderEntrySaved}
+          />
+        )}
+        <DeliveryReceipt order={receiptOrder} items={receiptItems} onClose={handleCloseReceipt} />
+
+        {hasAdminRole(profile) && showOrEditor && (
+          <Dialog open={isOrEditorOpen} onOpenChange={setIsOrEditorOpen}>
+            <DialogContent className="sm:max-w-xl w-[95vw]">
+              <DialogHeader>
+                <DialogTitle>Edit OR / Delivery Receipt Content</DialogTitle>
+                <DialogDescription>
+                  Customize the receipt header, default remarks/note lines, and the bottom footer note shown on printed receipts.
+                </DialogDescription>
+              </DialogHeader>
+              <form onSubmit={handleSaveOrTemplate} className="space-y-4">
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="space-y-1">
+                    <Label htmlFor="or-edit-company-name" className="text-xs">Company / Business Name</Label>
+                    <Input
+                      id="or-edit-company-name"
+                      value={orCompanyName}
+                      onChange={(e) => setOrCompanyName(e.target.value)}
+                      placeholder="ACTIVE PRO"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label htmlFor="or-edit-company-tagline" className="text-xs">Company Tagline / Address Line</Label>
+                    <Input
+                      id="or-edit-company-tagline"
+                      value={orCompanyTagline}
+                      onChange={(e) => setOrCompanyTagline(e.target.value)}
+                      placeholder="Bicycle Parts, Accessories & Wholesale Distribution"
+                    />
+                  </div>
+                </div>
+                <label className="flex items-center gap-2 text-xs font-medium text-foreground">
+                  <input
+                    type="checkbox"
+                    checked={orShowLogo}
+                    onChange={(e) => setOrShowLogo(e.target.checked)}
+                    className="size-4 rounded border-input"
+                  />
+                  Show Active Pro logo on printed Delivery Receipt / OR
+                </label>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="space-y-1">
+                    <Label htmlFor="or-edit-subtitle" className="text-xs">Header Subtitle</Label>
+                    <Input
+                      id="or-edit-subtitle"
+                      value={orDocSubtitle}
+                      onChange={(e) => setOrDocSubtitle(e.target.value)}
+                      placeholder="DELIVERY DOCUMENT"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label htmlFor="or-edit-title" className="text-xs">Document Title</Label>
+                    <Input
+                      id="or-edit-title"
+                      value={orDocTitle}
+                      onChange={(e) => setOrDocTitle(e.target.value)}
+                      placeholder="DELIVERY RECEIPT"
+                    />
+                  </div>
+                </div>
+                <div className="space-y-1">
+                  <Label htmlFor="or-edit-footer-heading" className="text-xs">Footer Section Heading</Label>
+                  <Input
+                    id="or-edit-footer-heading"
+                    value={orFooterHeading}
+                    onChange={(e) => setOrFooterHeading(e.target.value)}
+                    placeholder="PACKING LIST / ACKNOWLEDGEMENT"
+                  />
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="space-y-1">
+                    <Label htmlFor="or-edit-remarks" className="text-xs">Default Remarks Line</Label>
+                    <Input
+                      id="or-edit-remarks"
+                      value={orRemarks}
+                      onChange={(e) => setOrRemarks(e.target.value)}
+                      placeholder="Leave blank for handwritten line"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label htmlFor="or-edit-note" className="text-xs">Default Note Line</Label>
+                    <Input
+                      id="or-edit-note"
+                      value={orNote}
+                      onChange={(e) => setOrNote(e.target.value)}
+                      placeholder="Leave blank for handwritten line"
+                    />
+                  </div>
+                </div>
+                <div className="space-y-1">
+                  <Label htmlFor="or-edit-bottom-note" className="text-xs">Bottom Footer Note</Label>
+                  <textarea
+                    id="or-edit-bottom-note"
+                    rows={3}
+                    className="w-full rounded-lg border border-input bg-transparent px-2.5 py-1.5 text-sm outline-none transition-colors placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 dark:bg-input/30"
+                    value={orFooterNote}
+                    onChange={(e) => setOrFooterNote(e.target.value)}
+                    placeholder="e.g. After receiving the items, if there are any complaints, report immediately. No return, No exchange after 7 days. / Merry Christmas!"
+                  />
+                </div>
+                <DialogFooter className="flex flex-wrap items-center justify-between gap-2 pt-2">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      setOrCompanyName('ACTIVE PRO');
+                      setOrCompanyTagline('Bicycle Parts, Accessories & Wholesale Distribution');
+                      setOrShowLogo(true);
+                      setOrDocSubtitle('DELIVERY DOCUMENT');
+                      setOrDocTitle('DELIVERY RECEIPT');
+                      setOrFooterHeading('PACKING LIST / ACKNOWLEDGEMENT');
+                      setOrRemarks('');
+                      setOrNote('');
+                      setOrFooterNote('');
+                    }}
+                  >
+                    Reset Defaults
+                  </Button>
+                  <div className="flex items-center gap-2">
+                    <Button type="button" variant="outline" onClick={() => setIsOrEditorOpen(false)}>
+                      Cancel
+                    </Button>
+                    <Button type="submit">Save OR Content</Button>
+                  </div>
+                </DialogFooter>
+              </form>
+            </DialogContent>
+          </Dialog>
+        )}
 
         {hasAdminRole(profile) && (
           <Dialog open={isOrEditorOpen} onOpenChange={setIsOrEditorOpen}>
@@ -1073,13 +1861,20 @@ export function Orders() {
 
         <ITILIncidentConsole
           open={isIncidentsDialogOpen}
-          onClose={() => setIsIncidentsDialogOpen(false)}
+          onClose={handleCloseIncidents}
           incidents={incidents}
-          onRefresh={() => setIncidents(getLocalIncidents())}
+          onRefresh={handleRefreshIncidents}
           profile={profile}
         />
 
-        <Dialog open={isOrderDetailsOpen} onOpenChange={setIsOrderDetailsOpen}>
+        {showOrderDetails && (
+        <Dialog
+          open={isOrderDetailsOpen}
+          onOpenChange={(open) => {
+            setIsOrderDetailsOpen(open);
+            if (!open) clearOrderParam();
+          }}
+        >
           <DialogContent className="sm:max-w-5xl w-[95vw] max-h-[90vh] overflow-y-auto">
             <DialogHeader>
               <DialogTitle className="flex items-center justify-between pr-8">
@@ -1108,6 +1903,7 @@ export function Orders() {
                   };
                 });
                 setIsOrderDetailsOpen(false);
+                clearOrderParam();
                 setReceiptItems(enrichedItems);
                 setReceiptOrder(selectedOrder);
               }}><FileText className="size-4" />View Delivery Receipt</Button>
@@ -1115,6 +1911,7 @@ export function Orders() {
                 <Button variant="outline" className="self-start" onClick={() => {
                   if (selectedOrder) {
                     setIsOrderDetailsOpen(false);
+                    clearOrderParam();
                     handleStartEditPendingOrder(selectedOrder);
                   }
                 }}>
@@ -1320,7 +2117,9 @@ export function Orders() {
             </div>
           </DialogContent>
         </Dialog>
+        )}
 
+        {showDispatchDialog && (
         <Dialog open={isDispatchDialogOpen} onOpenChange={(open) => {
           if (isUploading) return;
           if (!open) { setPhotoFile(null); setPhotoPreview(null); }
@@ -1429,8 +2228,10 @@ export function Orders() {
             </DialogFooter>
           </DialogContent>
         </Dialog>
+        )}
 
         {/* Edit Pending Order Dialog (Client Feedback Page 19) */}
+        {showEditPendingDialog && (
         <Dialog open={!!editingPendingOrder} onOpenChange={(open) => {
           if (!open && !isSavingEditOrder) setEditingPendingOrder(null);
         }}>
@@ -1487,26 +2288,16 @@ export function Orders() {
                 </div>
                 {isAddDropdownOpen && (
                   <div className="max-h-48 overflow-y-auto rounded-lg border divide-y bg-background shadow-xs">
-                    {products
-                      .filter(p => !p.hasVariations && p.variantEnabled !== false && (!editAddSearch.trim() || `${p.name} ${p.sku}`.toLowerCase().includes(editAddSearch.trim().toLowerCase())))
-                      .sort((a, b) => {
-                        const stockA = inventory.filter(i => i.productId === a.id).reduce((s, i) => s + Math.max(0, Number(i.quantity) || 0), 0);
-                        const stockB = inventory.filter(i => i.productId === b.id).reduce((s, i) => s + Math.max(0, Number(i.quantity) || 0), 0);
-                        if ((stockA > 0) !== (stockB > 0)) return stockB > 0 ? 1 : -1;
-                        return (a.name || '').localeCompare(b.name || '');
-                      })
-                      .slice(0, 50)
-                      .map(p => {
-                        const prodInvs = inventory.filter(i => i.productId === p.id);
-                        const bestInv = prodInvs.filter(i => Number(i.quantity) > 0).sort((a, b) => Number(b.quantity) - Number(a.quantity))[0] || prodInvs[0];
-                        const totalStock = prodInvs.reduce((sum, i) => sum + Math.max(0, Number(i.quantity) || 0), 0);
+                    {editAddProducts.map(p => {
+                        const bestInv = editProductInventoryIndex.bestInvByProduct.get(p.id);
+                        const totalStock = editProductInventoryIndex.stockByProduct.get(p.id) ?? 0;
                         const defaultPrice = Number(p.basePrice || p.mmPrice || p.wholesalePrice || 0);
                         return (
                           <div key={p.id} className="flex items-center justify-between gap-3 px-3 py-2 hover:bg-muted/40 text-xs">
                             <div className="min-w-0 flex-1">
                               <p className="font-semibold truncate">{p.name}</p>
                               <p className="text-[10px] text-muted-foreground">
-                                <span className="font-mono">{p.sku}</span> ·{' '}
+                                <span className="font-mono">{p.sku}</span>{p.hasVariations ? ' · Original' : ''} ·{' '}
                                 <span className={totalStock <= 0 ? 'text-destructive font-semibold' : ''}>
                                   {totalStock > 0 ? `${totalStock} available` : 'Out of stock'}
                                 </span>
@@ -1569,7 +2360,7 @@ export function Orders() {
                           </div>
                         );
                       })}
-                    {products.filter(p => !p.hasVariations && p.variantEnabled !== false && (!editAddSearch.trim() || `${p.name} ${p.sku}`.toLowerCase().includes(editAddSearch.trim().toLowerCase()))).length === 0 && (
+                    {editAddProducts.length === 0 && (
                       <div className="p-3 text-center text-xs text-muted-foreground">No matching products found.</div>
                     )}
                   </div>
@@ -1684,6 +2475,7 @@ export function Orders() {
             </DialogFooter>
           </DialogContent>
         </Dialog>
+        )}
 
       </div >
 
@@ -1752,340 +2544,7 @@ export function Orders() {
         </div>
       </div>
 
-      {/* Mobile Card View */}
-      <div className="lg:hidden space-y-3">
-        <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border bg-card p-2.5">
-          <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground px-1">Sort by</span>
-          <div className="flex flex-wrap gap-1.5 flex-1">
-            {ORDER_SORT_COLUMNS.map(col => {
-              const active = orderViewMode === 'all' && sortKey === col.key;
-              return (
-                <button
-                  key={col.key}
-                  type="button"
-                  onClick={() => toggleSort(col.key)}
-                  className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-xs font-medium transition-colors ${
-                    active
-                      ? 'border-primary/40 bg-primary/10 text-foreground font-semibold'
-                      : 'border-border bg-background text-muted-foreground hover:text-foreground'
-                  }`}
-                >
-                  <span>{col.label}</span>
-                  {active ? (sortDirection === 'asc' ? <ChevronUp className="size-3" /> : <ChevronDown className="size-3" />) : <ArrowUpDown className="size-3 opacity-40" />}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-        {displayOrders.map(order => {
-          const deadlineDate = typeof order.deliveryDeadline?.toDate === 'function' ? order.deliveryDeadline.toDate() : order.deliveryDeadline ? new Date(order.deliveryDeadline) : null;
-          const isOverdue = deadlineDate && deadlineDate < new Date() && !['delivered', 'completed', 'cancelled', 'escalated'].includes(order.status);
-          return (
-            <div
-              key={order.id}
-              draggable
-              onDragStart={(e) => handleDragStart(e, order.id)}
-              onDragOver={(e) => handleDragOver(e, order.id)}
-              onDrop={(e) => handleDrop(e, order.id)}
-              onDragEnd={handleDragEnd}
-              className={`bg-card border border-border rounded-xl p-4 space-y-3 transition-colors ${
-                draggedOrderId === order.id ? 'opacity-30 bg-muted/70' : ''
-              } ${
-                dragOverOrderId === order.id ? 'border-t-2 border-blue-500 bg-blue-50/20 dark:bg-blue-950/20' : ''
-              }`}
-            >
-              <div className="flex items-start justify-between gap-2">
-                <div className="flex items-start gap-2 min-w-0">
-                  <div className="pt-0.5 cursor-grab active:cursor-grabbing text-zinc-400 hover:text-zinc-800" title="Drag to reorder">
-                    <DotsSixVertical className="w-4 h-4 shrink-0" />
-                  </div>
-                  <div className="min-w-0">
-                    <p className="text-xs font-mono text-zinc-400">{order.orderNumber}</p>
-                    <p className="text-sm font-bold text-zinc-900 dark:text-white mt-0.5">{order.clientName}</p>
-                  <p className="text-[10px] text-zinc-400 uppercase font-bold tracking-tighter">
-                    {order.deliveryRegion}{order.deliveryCity ? ` • ${order.deliveryCity}` : ''}
-                  </p>
-                </div>
-                </div>
-                <Badge variant="outline" className={`shrink-0 gap-1.5 h-6 capitalize text-[10px] font-bold ${order.status === 'delivered' || order.status === 'completed' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
-                  order.status === 'out_for_delivery' ? 'bg-blue-50 text-blue-700 border-blue-200' :
-                    order.status === 'cancelled' ? 'bg-red-50 text-red-700 border-red-200' :
-                      order.status === 'escalated' ? 'bg-purple-50 text-purple-700 border-purple-200' :
-                        'bg-amber-50 text-amber-700 border-amber-200'
-                  }`}>
-                  {getStatusIcon(order.status)}
-                  {order.status.replace('_', ' ')}
-                </Badge>
-              </div>
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className={`text-[10px] font-bold ${isOverdue ? 'text-red-500' : 'text-zinc-500'}`}>
-                    {deadlineDate ? deadlineDate.toLocaleDateString() : 'N/A'}
-                    {isOverdue && <span className="ml-1 uppercase text-[8px] animate-bounce bg-red-100 px-1 rounded">SLA Breach</span>}
-                  </p>
-                </div>
-                <span className="font-black text-sm">₱{order.totalAmount.toLocaleString()}</span>
-              </div>
-              <div className="flex items-center justify-end gap-1 border-t border-border pt-2">
-                <Button size="icon" variant="ghost" className="h-7 w-7 text-muted-foreground hover:text-foreground" onClick={() => handleViewDetails(order)} title="View Details">
-                  <Eye className="w-4 h-4" />
-                </Button>
-                {revertButton(order)}
-                {canManageOrders && (
-                  <>
-                    {order.status === 'pending' && (
-                      <>
-                        <Button size="icon" variant="ghost" className="h-7 w-7 text-amber-600 hover:bg-amber-50" onClick={() => handleStartEditPendingOrder(order)} title="Edit Pending Order">
-                          <Pencil className="w-4 h-4" />
-                        </Button>
-                        <Button size="icon" variant="ghost" className="h-7 w-7 text-zinc-400 hover:text-zinc-900" onClick={() => updateOrderStatus(order, 'preparing')} title="Move to Preparing">
-                          <ChevronRight className="w-4 h-4" />
-                        </Button>
-                      </>
-                    )}
-                    {order.status === 'preparing' && (
-                      <Button size="icon" variant="ghost" className="h-7 w-7 text-blue-500 hover:bg-blue-50" onClick={() => updateOrderStatus(order, 'out_for_delivery')} title="Dispatch Order">
-                        <Camera className="w-4 h-4" />
-                      </Button>
-                    )}
-                    {order.status === 'out_for_delivery' && (
-                      <Button size="icon" variant="ghost" className="h-7 w-7 text-emerald-500 hover:bg-emerald-50" onClick={() => updateOrderStatus(order, 'delivered')} title="Confirm Delivery">
-                        <CheckCircle2 className="w-4 h-4" />
-                      </Button>
-                    )}
-                    {order.status === 'delivered' && <Button size="sm" variant="outline" onClick={() => updateOrderStatus(order, 'completed')}>Complete</Button>}
-                    {order.status !== 'delivered' && order.status !== 'completed' && order.status !== 'cancelled' && order.status !== 'escalated' && (
-                      <>
-                        <Button
-                          size="icon"
-                          variant="ghost"
-                          className="h-7 w-7 text-amber-500 hover:bg-amber-50"
-                          onClick={() => {
-                            if (window.confirm(`Escalate order ${order.orderNumber}? Reserved stock will be replenished to inventory.`)) {
-                              updateOrderStatus(order, 'escalated');
-                            }
-                          }}
-                          title="Escalate Order (Restores Stock)"
-                        >
-                          <AlertTriangle className="w-4 h-4" />
-                        </Button>
-                        <Button
-                          size="icon"
-                          variant="ghost"
-                          className="h-7 w-7 text-red-500 hover:bg-red-50"
-                          onClick={() => {
-                            if (window.confirm(`Cancel order ${order.orderNumber}? Deducted stock will be restored to inventory.`)) {
-                              updateOrderStatus(order, 'cancelled');
-                            }
-                          }}
-                          title="Cancel Order (Restores Stock)"
-                        >
-                          <XCircle className="w-4 h-4" />
-                        </Button>
-                      </>
-                    )}
-                  </>
-                )}
-                {order.photoValidationUrl && (
-                  <Button size="icon" variant="ghost" className="h-7 w-7 text-blue-600 hover:text-blue-700 hover:bg-blue-50" title="View Dispatch Photo Proof" onClick={() => window.open(order.photoValidationUrl)}>
-                    <ImageIcon className="w-4 h-4" />
-                  </Button>
-                )}
-              </div>
-            </div>
-          );
-        })}
-        {displayOrders.length === 0 && (
-          <div className="flex flex-col items-center gap-2 py-12 text-zinc-400">
-            <ShoppingCart className="w-8 h-8 opacity-20" />
-            <p className="text-xs font-medium italic">
-              {orderViewMode === 'fifo_queue'
-                ? 'No pending orders currently in the FIFO fulfillment queue.'
-                : 'No orders match your search criteria.'}
-            </p>
-          </div>
-        )}
-      </div>
-
-      {/* Desktop Table View */}
-      <div className="hidden lg:block bg-card border border-border rounded-xl overflow-hidden">
-        <div className="overflow-x-auto w-full">
-          <Table>
-            <TableHeader className="bg-muted/50">
-              <TableRow>
-                <TableHead className="w-9 px-2 text-center"><span className="sr-only">Reorder</span></TableHead>
-                {ORDER_SORT_COLUMNS.map(col => {
-                  const active = orderViewMode === 'all' && sortKey === col.key;
-                  const justifyClass = col.align === 'right' ? 'justify-end' : col.align === 'center' ? 'justify-center' : 'justify-start';
-                  return (
-                    <TableHead
-                      key={col.key}
-                      aria-sort={active ? (sortDirection === 'asc' ? 'ascending' : 'descending') : 'none'}
-                      className={`text-[10px] font-bold uppercase tracking-widest p-0 ${col.headClass}`}
-                    >
-                      <button
-                        type="button"
-                        onClick={() => toggleSort(col.key)}
-                        className={`flex w-full items-center gap-1 px-2 py-2.5 hover:bg-muted/80 hover:text-foreground transition-colors cursor-pointer ${justifyClass} ${active ? 'text-foreground' : ''}`}
-                      >
-                        <span>{col.label}</span>
-                        {active ? (
-                          sortDirection === 'asc' ? <ChevronUp className="size-3.5 shrink-0" /> : <ChevronDown className="size-3.5 shrink-0" />
-                        ) : (
-                          <ArrowUpDown className="size-3 shrink-0 opacity-40" />
-                        )}
-                      </button>
-                    </TableHead>
-                  );
-                })}
-                <TableHead className="text-[10px] font-bold uppercase tracking-widest text-center min-w-35">Actions</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {displayOrders.map(order => {
-                const deadlineDate = typeof order.deliveryDeadline?.toDate === 'function' ? order.deliveryDeadline.toDate() : order.deliveryDeadline ? new Date(order.deliveryDeadline) : null;
-                const isOverdue = deadlineDate && deadlineDate < new Date() && !['delivered', 'completed', 'cancelled', 'escalated'].includes(order.status);
-                return (
-                  <TableRow
-                    key={order.id}
-                    draggable
-                    onDragStart={(e) => handleDragStart(e, order.id)}
-                    onDragOver={(e) => handleDragOver(e, order.id)}
-                    onDrop={(e) => handleDrop(e, order.id)}
-                    onDragEnd={handleDragEnd}
-                    className={`group transition-colors select-none ${
-                      draggedOrderId === order.id ? 'opacity-30 bg-muted/70' : ''
-                    } ${
-                      dragOverOrderId === order.id ? 'border-t-2 border-blue-500 bg-blue-50/20 dark:bg-blue-950/20' : ''
-                    }`}
-                  >
-                    <TableCell className="w-9 px-2 py-3 text-center cursor-grab active:cursor-grabbing text-zinc-400 hover:text-zinc-800 dark:hover:text-zinc-100">
-                      <div className="flex items-center justify-center p-1 rounded hover:bg-muted" title="Drag to reorder row">
-                        <DotsSixVertical className="w-4 h-4" />
-                      </div>
-                    </TableCell>
-                    <TableCell className="font-mono text-xs text-zinc-400 font-medium">
-                      {order.orderNumber}
-                    </TableCell>
-                    <TableCell>
-                      <div className="flex flex-col">
-                        <span className="text-xs font-bold text-zinc-900 dark:text-white">{order.clientName}</span>
-                        <span className="text-[10px] text-zinc-400 uppercase font-bold tracking-tighter">
-                          {order.deliveryRegion}{order.deliveryCity ? ` • ${order.deliveryCity}` : ''}
-                        </span>
-                      </div>
-                    </TableCell>
-                    <TableCell>
-                      <Badge variant="outline" className={`gap-1.5 h-6 capitalize text-[10px] font-bold ${order.status === 'delivered' || order.status === 'completed' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
-                        order.status === 'out_for_delivery' ? 'bg-blue-50 text-blue-700 border-blue-200' :
-                          order.status === 'cancelled' ? 'bg-red-50 text-red-700 border-red-200' :
-                            order.status === 'escalated' ? 'bg-purple-50 text-purple-700 border-purple-200' :
-                              'bg-amber-50 text-amber-700 border-amber-200'
-                        }`}>
-                        {getStatusIcon(order.status)}
-                        {order.status.replace('_', ' ')}
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="text-center">
-                      <div className={`text-[10px] font-bold ${isOverdue ? 'text-red-500' : 'text-zinc-500'}`}>
-                        {deadlineDate ? deadlineDate.toLocaleDateString() : 'N/A'}
-                        {isOverdue && <span className="ml-1 uppercase text-[8px] animate-bounce bg-red-100 px-1 rounded">SLA Breach</span>}
-                      </div>
-                    </TableCell>
-                    <TableCell className="text-right font-black text-xs">
-                      ₱{order.totalAmount.toLocaleString()}
-                    </TableCell>
-                    <TableCell className="text-center">
-                      <div className="flex items-center justify-center gap-1">
-                        <Button
-                          size="icon"
-                          variant="ghost"
-                          className="h-7 w-7 text-muted-foreground hover:text-foreground"
-                          onClick={() => handleViewDetails(order)}
-                          title="View Details"
-                        >
-                          <Eye className="w-4 h-4" />
-                        </Button>
-                        {revertButton(order)}
-                        {canManageOrders && (
-                          <>
-                            {order.status === 'pending' && (
-                              <>
-                                <Button size="icon" variant="ghost" className="h-7 w-7 text-amber-600 hover:bg-amber-50" onClick={() => handleStartEditPendingOrder(order)} title="Edit Pending Order">
-                                  <Pencil className="w-4 h-4" />
-                                </Button>
-                                <Button size="icon" variant="ghost" className="h-7 w-7 text-zinc-400 hover:text-zinc-900" onClick={() => updateOrderStatus(order, 'preparing')} title="Move to Preparing">
-                                  <ChevronRight className="w-4 h-4" />
-                                </Button>
-                              </>
-                            )}
-                            {order.status === 'preparing' && (
-                              <Button size="icon" variant="ghost" className="h-7 w-7 text-blue-500 hover:bg-blue-50" onClick={() => updateOrderStatus(order, 'out_for_delivery')} title="Dispatch Order">
-                                <Camera className="w-4 h-4" />
-                              </Button>
-                            )}
-                            {order.status === 'out_for_delivery' && (
-                              <Button size="icon" variant="ghost" className="h-7 w-7 text-emerald-500 hover:bg-emerald-50" onClick={() => updateOrderStatus(order, 'delivered')} title="Confirm Delivery">
-                                <CheckCircle2 className="w-4 h-4" />
-                              </Button>
-                            )}
-                            {order.status === 'delivered' && <Button size="sm" variant="outline" onClick={() => updateOrderStatus(order, 'completed')}>Complete</Button>}
-                            {order.status !== 'delivered' && order.status !== 'completed' && order.status !== 'cancelled' && order.status !== 'escalated' && (
-                              <>
-                                <Button
-                                  size="icon"
-                                  variant="ghost"
-                                  className="h-7 w-7 text-amber-500 hover:bg-amber-50"
-                                  onClick={() => {
-                                    if (window.confirm(`Escalate order ${order.orderNumber}? Reserved stock will be replenished to inventory.`)) {
-                                      updateOrderStatus(order, 'escalated');
-                                    }
-                                  }}
-                                  title="Escalate Order (Restores Stock)"
-                                >
-                                  <AlertTriangle className="w-4 h-4" />
-                                </Button>
-                                <Button
-                                  size="icon"
-                                  variant="ghost"
-                                  className="h-7 w-7 text-red-500 hover:bg-red-50"
-                                  onClick={() => {
-                                    if (window.confirm(`Cancel order ${order.orderNumber}? Deducted stock will be restored to inventory.`)) {
-                                      updateOrderStatus(order, 'cancelled');
-                                    }
-                                  }}
-                                  title="Cancel Order (Restores Stock)"
-                                >
-                                  <XCircle className="w-4 h-4" />
-                                </Button>
-                              </>
-                            )}
-                          </>
-                        )}
-                        {order.photoValidationUrl && (
-                          <Button size="icon" variant="ghost" className="h-7 w-7 text-blue-600 hover:text-blue-700 hover:bg-blue-50" title="View Dispatch Photo Proof" onClick={() => window.open(order.photoValidationUrl)}>
-                            <ImageIcon className="w-4 h-4" />
-                          </Button>
-                        )}
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                );
-              })}
-              {filteredOrders.length === 0 && (
-                <TableRow>
-                  <TableCell colSpan={7} className="text-center py-12">
-                    <div className="flex flex-col items-center gap-2 text-zinc-400">
-                      <ShoppingCart className="w-8 h-8 opacity-20" />
-                      <p className="text-xs font-medium italic">No orders match your search criteria.</p>
-                    </div>
-                  </TableCell>
-                </TableRow>
-              )}
-            </TableBody>
-          </Table>
-        </div>
-      </div>
+      {ordersListContent}
     </div >
   );
 }

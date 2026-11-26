@@ -10,6 +10,7 @@
 
 import { Request, Response, NextFunction } from 'express';
 import { AppError } from './errorHandler';
+import crypto from 'crypto';
 import { env } from '../config/env';
 
 export type UserRole = 'cmo' | 'admin' | 'secretary' | 'field_agent';
@@ -29,35 +30,77 @@ declare global {
   }
 }
 
-/**
- * Extracts and sets the user role from request headers or auth payload.
- * When API_SECRET is configured in environment, privilege elevation to 'admin' or 'cmo'
- * requires a matching 'x-api-key' or 'x-api-secret' header.
- */
-export function extractUserRole(req: Request, _res: Response, next: NextFunction): void {
-  const apiSecret = env.API_SECRET;
-  const providedSecret = (req.headers['x-api-key'] || req.headers['x-api-secret'] || req.headers['authorization']?.replace(/^Bearer\s+/i, '')) as string | undefined;
+function readSingleHeader(value: string | string[] | undefined): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
 
-  const headerRole = req.headers['x-user-role'] as string | undefined;
+function extractBearerToken(authorizationHeader: string | undefined): string | undefined {
+  if (!authorizationHeader) return undefined;
+  const match = /^Bearer\s+(.+)$/i.exec(authorizationHeader);
+  return match?.[1]?.trim() || undefined;
+}
+
+function secretsMatchConstantTime(provided: string, expected: string): boolean {
+  const providedDigest = crypto.createHash('sha256').update(provided, 'utf8').digest();
+  const expectedDigest = crypto.createHash('sha256').update(expected, 'utf8').digest();
+  return crypto.timingSafeEqual(providedDigest, expectedDigest);
+}
+
+const ELEVATED_ROLES: ReadonlySet<UserRole> = new Set(['cmo', 'admin', 'secretary']);
+
+const ROLE_SECRET_ENV_KEYS: Record<Exclude<UserRole, 'field_agent'>, string> = {
+  admin: 'API_SECRET_ADMIN',
+  cmo: 'API_SECRET_CMO',
+  secretary: 'API_SECRET_SECRETARY',
+};
+
+function getExpectedSecretForRole(role: Exclude<UserRole, 'field_agent'>): string | undefined {
+  const roleSpecific = process.env[ROLE_SECRET_ENV_KEYS[role]]?.trim();
+  if (roleSpecific) return roleSpecific;
+  return env.API_SECRET?.trim() || undefined;
+}
+
+/**
+ * Resolves an authenticated user role from HTTP/WebSocket request headers.
+ * Always fails closed to `'field_agent'` when credentials are missing or invalid.
+ */
+export function resolveUserRoleFromHeaders(
+  headers: Record<string, string | string[] | undefined>
+): UserRole {
+  const providedSecret =
+    readSingleHeader(headers['x-api-key']) ??
+    readSingleHeader(headers['x-api-secret']) ??
+    extractBearerToken(readSingleHeader(headers['authorization']));
+
+  const headerRole = readSingleHeader(headers['x-user-role']);
   if (headerRole) {
-    const normalized = headerRole.toLowerCase().trim() as UserRole;
-    if (['cmo', 'admin', 'secretary', 'field_agent'].includes(normalized)) {
-      if (apiSecret && (normalized === 'admin' || normalized === 'cmo')) {
-        if (providedSecret === apiSecret) {
-          req.userRole = normalized;
-          return next();
-        }
-        // Elevation secret rejected; keep as least-privileged field_agent
-        req.userRole = 'field_agent';
-        return next();
+    const normalized = headerRole.toLowerCase() as UserRole;
+    if (ELEVATED_ROLES.has(normalized)) {
+      const elevated = normalized as Exclude<UserRole, 'field_agent'>;
+      const expectedSecret = getExpectedSecretForRole(elevated);
+      if (expectedSecret && providedSecret && secretsMatchConstantTime(providedSecret, expectedSecret)) {
+        return elevated;
       }
-      req.userRole = normalized;
-      return next();
+      // Elevation secret missing or invalid; fail closed to least-privileged role
+      return 'field_agent';
+    }
+    if (normalized === 'field_agent') {
+      return 'field_agent';
     }
   }
 
-  // Fallback to least-privileged role when no valid role header is provided (NFR-04 security hardening)
-  req.userRole = 'field_agent';
+  return 'field_agent';
+}
+
+/**
+ * Extracts and sets the user role from request headers.
+ * Privilege elevation to 'cmo', 'admin', or 'secretary' ALWAYS requires a configured
+ * non-empty role secret (API_SECRET_<ROLE> or fallback API_SECRET) and a matching token.
+ */
+export function extractUserRole(req: Request, _res: Response, next: NextFunction): void {
+  req.userRole = resolveUserRoleFromHeaders(req.headers);
   next();
 }
 

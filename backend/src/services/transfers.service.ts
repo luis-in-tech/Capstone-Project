@@ -41,7 +41,9 @@ const auditLogStore: StockAuditEntry[] = [];
  * Initiates one or more internal warehouse transport requests.
  */
 export async function initiateTransfers(payload: InitiateTransferPayload): Promise<TransferDto[]> {
-  const { sourceWarehouseId, destinationWarehouseId, items, initiatedBy, notes } = payload;
+  const { items, initiatedBy, notes } = payload;
+  const sourceWarehouseId = payload.sourceWarehouseId?.trim();
+  const destinationWarehouseId = payload.destinationWarehouseId?.trim();
 
   if (!sourceWarehouseId || !destinationWarehouseId) {
     throw new AppError(400, 'VALIDATION_ERROR', 'Source and destination warehouses are required.');
@@ -55,15 +57,18 @@ export async function initiateTransfers(payload: InitiateTransferPayload): Promi
     throw new AppError(400, 'VALIDATION_ERROR', 'At least one product item must be specified for transfer.');
   }
 
-  const createdTransfers: TransferDto[] = [];
+  const stagedTransfers: TransferDto[] = [];
   const now = new Date().toISOString();
 
   for (const item of items) {
-    if (!item.productId || typeof item.productId !== 'string') {
+    if (!item.productId || typeof item.productId !== 'string' || item.productId.trim().length === 0) {
       throw new AppError(400, 'VALIDATION_ERROR', 'Each transfer item must have a valid productId.');
     }
     if (!Number.isFinite(item.quantity) || item.quantity <= 0) {
       throw new AppError(400, 'INVALID_QUANTITY', `Quantity for product ${item.productId} must be greater than zero.`);
+    }
+    if (!Number.isInteger(item.quantity)) {
+      throw new AppError(400, 'INVALID_QUANTITY', `Quantity for product ${item.productId} must be a whole integer.`);
     }
 
     const transferId = `tfr_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
@@ -71,7 +76,7 @@ export async function initiateTransfers(payload: InitiateTransferPayload): Promi
       id: transferId,
       sourceWarehouseId,
       destinationWarehouseId,
-      productId: item.productId,
+      productId: item.productId.trim(),
       quantity: item.quantity,
       status: 'pending',
       initiatedBy: initiatedBy || 'system',
@@ -80,11 +85,14 @@ export async function initiateTransfers(payload: InitiateTransferPayload): Promi
       updatedAt: now,
     };
 
-    transfersStore.set(transferId, transfer);
-    createdTransfers.push(transfer);
+    stagedTransfers.push(transfer);
   }
 
-  return createdTransfers;
+  for (const transfer of stagedTransfers) {
+    transfersStore.set(transfer.id, transfer);
+  }
+
+  return stagedTransfers;
 }
 
 /**
@@ -280,5 +288,5 @@ export async function getTransferAuditLogs(transferId?: string): Promise<StockAu
   if (transferId) {
     return auditLogStore.filter(a => a.transferId === transferId);
   }
-  return auditLogStore;
+  return [...auditLogStore];
 }

@@ -40,18 +40,18 @@ function getFriendlyMessage(rawMessage: string, statusCode: number | null, conte
 
   // Missing column in existing table
   if (lower.includes('could not find the') && lower.includes('column')) {
-    return `Database column missing: ${rawMessage}. Please run the migration script in your Supabase SQL Editor.`;
+    return `A required database column is missing for "${context}". Please contact an administrator to update the database schema.`;
   }
 
   // Missing table / relation not found
   if (
     statusCode === 404 ||
-    lower.includes('relation') && lower.includes('does not exist') ||
+    (lower.includes('relation') && lower.includes('does not exist')) ||
     lower.includes('could not find the table') ||
     lower.includes('schema cache') ||
     lower.includes('not found in the schema')
   ) {
-    return `The "${context}" feature requires a database table that hasn't been set up yet. Please run the migration script (supabase/migrations/create_tables.sql) in your Supabase SQL Editor.`;
+    return `The "${context}" feature is not configured in the database yet. Please contact your administrator.`;
   }
 
   // Permission / RLS policy denied
@@ -88,8 +88,8 @@ function getFriendlyMessage(rawMessage: string, statusCode: number | null, conte
     return 'This record is referenced by other data and cannot be modified.';
   }
 
-  // Fallback: return original message (it's not a sensitive DB internal)
-  return rawMessage;
+  // Fallback: never expose raw database/SQL internals to the UI
+  return `An unexpected database error occurred while processing "${context}". Please try again.`;
 }
 
 export function handleSupabaseError(error: unknown, operation: OperationType, context: string) {

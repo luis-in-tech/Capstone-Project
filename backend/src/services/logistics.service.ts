@@ -203,7 +203,8 @@ export function optimizeStopSequence2Opt(depot: LocationCoord, stops: DeliverySt
 }
 
 export function selectBestFeasibleVehicle(unitsRequired: number, fleet: VehicleSpec[] = STANDARD_FLEET): VehicleSpec {
-  const sortedFleet = [...fleet].sort((a, b) => a.capacity - b.capacity);
+  const effectiveFleet = fleet.length > 0 ? fleet : STANDARD_FLEET;
+  const sortedFleet = [...effectiveFleet].sort((a, b) => a.capacity - b.capacity);
   for (const vehicle of sortedFleet) {
     if (vehicle.capacity >= unitsRequired) {
       return vehicle;
@@ -229,8 +230,12 @@ export function solveCapacityConstrainedVRP(
   regionLabel = 'Consolidated Run'
 ): OptimizedRouteDto[] {
   if (orders.length === 0) return [];
+  const effectiveFleet = fleet.length > 0 ? fleet : STANDARD_FLEET;
 
-  const maxVehicleCapacity = Math.max(...fleet.map((v) => v.capacity));
+  const maxVehicleCapacity = Math.max(...effectiveFleet.map((v) => v.capacity));
+  if (!Number.isFinite(maxVehicleCapacity) || maxVehicleCapacity <= 0) {
+    throw new AppError(400, 'VALIDATION_ERROR', 'Fleet must define at least one vehicle with positive capacity.');
+  }
 
   const stops: DeliveryStopDto[] = [];
   for (const order of orders) {
@@ -405,8 +410,11 @@ export function optimizeRoutes(
   depot: LocationCoord = DEFAULT_DEPOT,
   fleet: VehicleSpec[] = STANDARD_FLEET
 ): OptimizationResultDto {
-  const pendingOrders = orders.filter((o) => !o.status || o.status === 'pending');
-  const targetOrders = pendingOrders.length > 0 ? pendingOrders : orders;
+  const activeOrders = orders.filter(
+    (o) => !o.status || !['delivered', 'completed', 'cancelled'].includes(o.status)
+  );
+  const pendingOrders = activeOrders.filter((o) => !o.status || o.status === 'pending');
+  const targetOrders = pendingOrders.length > 0 ? pendingOrders : activeOrders;
 
   if (targetOrders.length === 0) {
     return {
@@ -476,8 +484,14 @@ const dispatchTripsStore: Map<string, DispatchTripDto> = new Map();
 const trafficIncidentsStore: Map<string, TrafficIncidentDto> = new Map();
 
 export async function createDispatchTrip(payload: DispatchTripPayload): Promise<DispatchTripDto> {
-  if (!payload.vehicleName || !payload.driver || !payload.plate) {
+  if (!payload.vehicleName?.trim() || !payload.driver?.trim() || !payload.plate?.trim()) {
     throw new AppError(400, 'VALIDATION_ERROR', 'Vehicle name, driver, and license plate are required.');
+  }
+
+  for (const s of payload.stops || []) {
+    if (typeof s.units !== 'number' || !Number.isFinite(s.units) || s.units <= 0) {
+      throw new AppError(400, 'VALIDATION_ERROR', 'Each delivery stop must have a positive finite unit count.');
+    }
   }
 
   const tripId = `trip_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
@@ -493,15 +507,19 @@ export async function createDispatchTrip(payload: DispatchTripPayload): Promise<
     stopSequence: s.stopSequence || idx + 1,
   }));
 
+  const computedStopUnits = stops.reduce((sum, s) => sum + s.units, 0);
   const trip: DispatchTripDto = {
     id: tripId,
     vehicleId: payload.vehicleId,
-    vehicleName: payload.vehicleName,
-    plate: payload.plate,
-    driver: payload.driver,
-    region: payload.region,
-    totalUnits: payload.totalUnits || stops.reduce((sum, s) => sum + s.units, 0),
-    savingsPhp: payload.savingsPhp || 0,
+    vehicleName: payload.vehicleName.trim(),
+    plate: payload.plate.trim(),
+    driver: payload.driver.trim(),
+    region: payload.region?.trim() || 'Metro Manila',
+    totalUnits:
+      typeof payload.totalUnits === 'number' && Number.isFinite(payload.totalUnits) && payload.totalUnits > 0
+        ? payload.totalUnits
+        : computedStopUnits,
+    savingsPhp: Math.max(0, Number.isFinite(payload.savingsPhp) ? (payload.savingsPhp ?? 0) : 0),
     status: 'in_transit',
     dispatchedAt: now,
     dispatchedBy: payload.dispatchedBy,
@@ -519,24 +537,33 @@ export async function listDispatchTrips(): Promise<DispatchTripDto[]> {
 }
 
 export async function createTrafficIncident(payload: CreateTrafficIncidentPayload): Promise<TrafficIncidentDto> {
-  if (!payload.corridor || !payload.delayMinutes || !payload.reporter) {
-    throw new AppError(400, 'VALIDATION_ERROR', 'Corridor, delayMinutes, and reporter name are required.');
+  if (
+    !payload.corridor?.trim() ||
+    typeof payload.delayMinutes !== 'number' ||
+    !Number.isFinite(payload.delayMinutes) ||
+    payload.delayMinutes <= 0 ||
+    !payload.reporter?.trim()
+  ) {
+    throw new AppError(400, 'VALIDATION_ERROR', 'Corridor, positive delayMinutes, and reporter name are required.');
   }
 
   const id = `inc_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
   let bypass = payload.bypassRoute;
-  let timeSaved = payload.timeSavedMinutes || 20;
+  let timeSaved =
+    typeof payload.timeSavedMinutes === 'number' && Number.isFinite(payload.timeSavedMinutes) && payload.timeSavedMinutes >= 0
+      ? payload.timeSavedMinutes
+      : Math.max(1, Math.min(20, payload.delayMinutes));
 
   if (!bypass) {
     if (payload.corridor.includes('C-5')) {
       bypass = 'Divert via BGC Lawton Ave shortcut';
-      timeSaved = Math.min(19, payload.delayMinutes);
+      timeSaved = Math.max(1, Math.min(19, payload.delayMinutes));
     } else if (payload.corridor.includes('SLEX')) {
       bypass = 'Take Skyway Stage 3 elevated bypass';
-      timeSaved = Math.min(34, payload.delayMinutes);
+      timeSaved = Math.max(1, Math.min(34, payload.delayMinutes));
     } else {
       bypass = 'Take C-5 Highway & Katipunan bypass';
-      timeSaved = Math.min(28, payload.delayMinutes);
+      timeSaved = Math.max(1, Math.min(28, payload.delayMinutes));
     }
   }
 

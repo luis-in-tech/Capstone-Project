@@ -16,7 +16,7 @@
 
 import { Request, Response, NextFunction } from 'express';
 import path from 'path';
-import { FRONTEND_ROOT, BACKEND_ROOT, isPathSafe } from '../config/paths';
+import { FRONTEND_ROOT, BACKEND_ROOT, isPathSafe, resolveCanonicalPath } from '../config/paths';
 import { ApiError } from '../types/api.types';
 
 // Extend Express Request to carry the validated absolute path
@@ -45,9 +45,25 @@ function buildForbiddenResponse(detail: string): ApiError {
 }
 
 function validateSinglePath(rawPath: string): string | null {
-  if (!rawPath || typeof rawPath !== 'string') return null;
+  if (!rawPath || typeof rawPath !== 'string' || /[\x00-\x1f]/.test(rawPath)) return null;
   const absolute = path.resolve(FRONTEND_ROOT, rawPath);
-  return isPathSafe(absolute) ? absolute : null;
+  const relFromRoot = path.relative(FRONTEND_ROOT, absolute);
+  if (relFromRoot.includes(':')) return null;
+  if (!isPathSafe(absolute)) return null;
+  // Never permit file endpoints (read/write/mkdir/rename/delete) to operate on FRONTEND_ROOT itself
+  let canonicalTarget: string;
+  try {
+    canonicalTarget = resolveCanonicalPath(absolute);
+  } catch {
+    return null;
+  }
+  const canonicalRoot = resolveCanonicalPath(FRONTEND_ROOT);
+  const isRoot =
+    process.platform === 'win32'
+      ? canonicalTarget.toLowerCase() === canonicalRoot.toLowerCase()
+      : canonicalTarget === canonicalRoot;
+  if (isRoot) return null;
+  return absolute;
 }
 
 // ─── Middleware ───────────────────────────────────────────────────────────────
@@ -58,11 +74,11 @@ function validateSinglePath(rawPath: string): string | null {
  */
 export function validatePath(req: Request, res: Response, next: NextFunction): void {
   // Accept `path` from query params (GET/DELETE) or request body (POST/PUT)
-  const rawPath: string | undefined =
-    (req.query['path'] as string | undefined) ??
-    (req.body as Record<string, unknown>)?.['path'] as string | undefined;
+  const rawQueryPath = req.query['path'];
+  const rawBodyPath = (req.body as Record<string, unknown> | undefined)?.['path'];
+  const rawPath: unknown = rawQueryPath !== undefined ? rawQueryPath : rawBodyPath;
 
-  if (!rawPath) {
+  if (typeof rawPath !== 'string' || rawPath.length === 0) {
     res.status(400).json({
       success: false,
       error: { code: 'MISSING_PATH', message: 'A "path" parameter is required.' },
@@ -92,11 +108,11 @@ export function validatePath(req: Request, res: Response, next: NextFunction): v
  * Attaches safePath (old) and safeNewPath (new) to the request.
  */
 export function validateRenamePaths(req: Request, res: Response, next: NextFunction): void {
-  const body = req.body as Record<string, unknown>;
-  const rawOld = body['oldPath'] as string | undefined;
-  const rawNew = body['newPath'] as string | undefined;
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const rawOld = body['oldPath'];
+  const rawNew = body['newPath'];
 
-  if (!rawOld || !rawNew) {
+  if (typeof rawOld !== 'string' || typeof rawNew !== 'string' || !rawOld || !rawNew) {
     res.status(400).json({
       success: false,
       error: { code: 'MISSING_PATHS', message: 'Both "oldPath" and "newPath" are required.' },

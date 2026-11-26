@@ -35,9 +35,13 @@ export async function createSession(data: {
   notes?: string;
   frontendRootPath?: string;
 }): Promise<AgentSession> {
+  const name = data.name?.trim();
+  if (!name) {
+    throw new AppError(400, 'VALIDATION_ERROR', 'Session name is required.');
+  }
   return prisma.agentSession.create({
     data: {
-      name:             data.name,
+      name,
       notes:            data.notes ?? null,
       // Default to the server-configured FRONTEND_ROOT if not explicitly provided
       frontendRootPath: data.frontendRootPath ?? FRONTEND_ROOT,
@@ -127,14 +131,16 @@ export async function listActions(
   page = 1,
   pageSize = 50
 ): Promise<{ actions: ActionLog[]; total: number }> {
-  const skip = (page - 1) * pageSize;
+  const safePage = Number.isFinite(page) ? Math.max(1, Math.floor(page)) : 1;
+  const safePageSize = Number.isFinite(pageSize) ? Math.min(200, Math.max(1, Math.floor(pageSize))) : 50;
+  const skip = (safePage - 1) * safePageSize;
 
   const [actions, total] = await prisma.$transaction([
     prisma.actionLog.findMany({
       where:   { sessionId },
       orderBy: { createdAt: 'desc' },
       skip,
-      take:    pageSize,
+      take:    safePageSize,
     }),
     prisma.actionLog.count({ where: { sessionId } }),
   ]);

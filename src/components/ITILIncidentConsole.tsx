@@ -1,15 +1,8 @@
-import React, { useState } from 'react';
+import { useState, useRef } from 'react';
+import { hasAdminRole } from '../lib/staffPermissions';
 import {
   ShieldWarningIcon as ShieldAlert,
-  WarningIcon as AlertTriangle,
-  ClockIcon as Clock,
-  CheckCircleIcon as CheckCircle2,
   DownloadIcon as Download,
-  WarningCircleIcon as AlertCircle,
-  PackageIcon as Package,
-  CalendarIcon as Calendar,
-  UserIcon as User,
-  MapPinIcon as MapPin,
   CheckIcon as Check,
 } from '@phosphor-icons/react';
 import {
@@ -48,6 +41,8 @@ export function ITILIncidentConsole({
   const [selectedIncident, setSelectedIncident] = useState<ITILIncident | null>(null);
   const [resolutionNotes, setResolutionNotes] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const resolveLockRef = useRef(false);
+  const canResolve = hasAdminRole(profile ?? null);
 
   const filtered = incidents.filter((inc) => {
     if (filter === 'active') return inc.status !== 'RESOLVED' && inc.status !== 'CLOSED';
@@ -57,21 +52,26 @@ export function ITILIncidentConsole({
   });
 
   const totalActive = incidents.filter((i) => i.status !== 'RESOLVED' && i.status !== 'CLOSED').length;
-  const totalBreaches = incidents.filter((i) => i.incidentType === 'SLA_BREACH' && i.status !== 'RESOLVED').length;
-  const totalDefects = incidents.filter((i) => i.incidentType === 'DEFECTIVE_ASSET' && i.status !== 'RESOLVED').length;
+  const totalBreaches = incidents.filter((i) => i.incidentType === 'SLA_BREACH' && i.status !== 'RESOLVED' && i.status !== 'CLOSED').length;
+  const totalDefects = incidents.filter((i) => i.incidentType === 'DEFECTIVE_ASSET' && i.status !== 'RESOLVED' && i.status !== 'CLOSED').length;
 
   const handleResolve = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedIncident) return;
+    if (!selectedIncident || !canResolve || resolveLockRef.current || isSubmitting) return;
 
+    resolveLockRef.current = true;
     setIsSubmitting(true);
     try {
       const resolverName = profile?.displayName || profile?.email || 'Authorized Staff';
-      await resolveITILIncident(
+      const updated = await resolveITILIncident(
         selectedIncident.id,
         resolutionNotes.trim() || 'Remediated and verified under ITIL 4 protocol.',
         resolverName
       );
+      if (!updated) {
+        toast.error('Failed to persist incident resolution.');
+        return;
+      }
       toast.success(`Incident ${selectedIncident.ticketNumber} resolved.`);
       setSelectedIncident(null);
       setResolutionNotes('');
@@ -80,6 +80,7 @@ export function ITILIncidentConsole({
       toast.error('Failed to resolve incident.');
     } finally {
       setIsSubmitting(false);
+      resolveLockRef.current = false;
     }
   };
 
@@ -90,7 +91,7 @@ export function ITILIncidentConsole({
       case 'HIGH':
         return <Badge className="bg-amber-500 hover:bg-amber-600 text-white text-[10px] font-black uppercase">High</Badge>;
       case 'MEDIUM':
-        return <Badge variant="outline" className="border-amber-300 text-amber-700 bg-amber-50 text-[10px] font-bold uppercase">Medium</Badge>;
+        return <Badge variant="outline" className="border-amber-500/40 text-amber-700 dark:text-amber-300 bg-amber-500/10 text-[10px] font-bold uppercase">Medium</Badge>;
       default:
         return <Badge variant="outline" className="text-[10px] font-medium uppercase">Low</Badge>;
     }
@@ -100,16 +101,17 @@ export function ITILIncidentConsole({
     switch (status) {
       case 'RESOLVED':
       case 'CLOSED':
-        return <Badge variant="outline" className="border-emerald-300 text-emerald-700 bg-emerald-50 text-[10px] font-bold">Resolved</Badge>;
+        return <Badge variant="outline" className="border-emerald-500/40 text-emerald-700 dark:text-emerald-300 bg-emerald-500/10 text-[10px] font-bold">Resolved</Badge>;
       case 'ESCALATED':
-        return <Badge variant="outline" className="border-purple-300 text-purple-700 bg-purple-50 text-[10px] font-bold animate-pulse">Escalated</Badge>;
+        return <Badge variant="outline" className="border-purple-500/40 text-purple-700 dark:text-purple-300 bg-purple-500/10 text-[10px] font-bold animate-pulse">Escalated</Badge>;
       default:
-        return <Badge variant="outline" className="border-blue-300 text-blue-700 bg-blue-50 text-[10px] font-bold">Open</Badge>;
+        return <Badge variant="outline" className="border-blue-500/40 text-blue-700 dark:text-blue-300 bg-blue-500/10 text-[10px] font-bold">Open</Badge>;
     }
   };
 
   return (
-    <Dialog open={open} onOpenChange={(val) => !val && onClose()}>
+    <>
+    <Dialog open={open} onOpenChange={(val) => { if (!val && !isSubmitting) onClose(); }}>
       <DialogContent className="sm:max-w-5xl w-[95vw] max-h-[92vh] overflow-y-auto">
         <DialogHeader>
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 pr-6">
@@ -245,18 +247,24 @@ export function ITILIncidentConsole({
                   <TableCell>{getStatusBadge(inc.status)}</TableCell>
                   <TableCell className="text-right">
                     {inc.status !== 'RESOLVED' && inc.status !== 'CLOSED' ? (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="text-xs h-7 text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50 dark:hover:bg-emerald-950/40"
-                        onClick={() => {
-                          setSelectedIncident(inc);
-                          setResolutionNotes('');
-                        }}
-                      >
-                        <Check className="size-3.5 mr-1" />
-                        Resolve
-                      </Button>
+                      canResolve ? (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="text-xs h-7 text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50 dark:hover:bg-emerald-950/40"
+                          onClick={() => {
+                            setSelectedIncident(inc);
+                            setResolutionNotes('');
+                          }}
+                        >
+                          <Check className="size-3.5 mr-1" />
+                          Resolve
+                        </Button>
+                      ) : (
+                        <span className="text-[10px] font-medium text-muted-foreground italic">
+                          Requires Admin/Manager
+                        </span>
+                      )
                     ) : (
                       <span className="text-[10px] font-medium text-muted-foreground italic">
                         Resolved
@@ -276,66 +284,68 @@ export function ITILIncidentConsole({
           </Table>
         </div>
 
-        {/* Resolution Dialog */}
-        {selectedIncident && (
-          <Dialog open={!!selectedIncident} onOpenChange={() => setSelectedIncident(null)}>
-            <DialogContent className="sm:max-w-md">
-              <form onSubmit={handleResolve}>
-                <DialogHeader>
-                  <DialogTitle className="text-base font-bold">
-                    Resolve Incident {selectedIncident.ticketNumber}
-                  </DialogTitle>
-                  <DialogDescription className="text-xs">
-                    Log formal resolution notes into the immutable ITIL audit trail.
-                  </DialogDescription>
-                </DialogHeader>
-
-                <div className="space-y-4 py-4 text-xs">
-                  <div className="p-3 rounded-lg bg-muted space-y-1">
-                    <p className="font-semibold text-foreground">Incident Summary:</p>
-                    <p className="text-muted-foreground">{selectedIncident.description}</p>
-                    {selectedIncident.daysOverdue && (
-                      <p className="text-red-600 font-bold">Delay: {selectedIncident.daysOverdue} day(s) overdue</p>
-                    )}
-                  </div>
-
-                  <div className="space-y-1.5">
-                    <Label htmlFor="resolution-input" className="text-xs font-semibold">
-                      Corrective Action / Resolution Notes *
-                    </Label>
-                    <Input
-                      id="resolution-input"
-                      value={resolutionNotes}
-                      onChange={(e) => setResolutionNotes(e.target.value)}
-                      placeholder="e.g., Courier expedited, client notified, stock replaced."
-                      required
-                    />
-                  </div>
-                </div>
-
-                <DialogFooter>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    className="text-xs"
-                    onClick={() => setSelectedIncident(null)}
-                    disabled={isSubmitting}
-                  >
-                    Cancel
-                  </Button>
-                  <Button
-                    type="submit"
-                    className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold"
-                    disabled={isSubmitting || !resolutionNotes.trim()}
-                  >
-                    Confirm Resolution
-                  </Button>
-                </DialogFooter>
-              </form>
-            </DialogContent>
-          </Dialog>
-        )}
       </DialogContent>
     </Dialog>
+
+    {/* Resolution Dialog rendered as a sibling so modals never nest */}
+    {selectedIncident && (
+      <Dialog open={!!selectedIncident} onOpenChange={(val) => { if (!val && !isSubmitting) setSelectedIncident(null); }}>
+        <DialogContent className="sm:max-w-md">
+          <form onSubmit={handleResolve}>
+            <DialogHeader>
+              <DialogTitle className="text-base font-bold">
+                Resolve Incident {selectedIncident.ticketNumber}
+              </DialogTitle>
+              <DialogDescription className="text-xs">
+                Log formal resolution notes into the immutable ITIL audit trail.
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="space-y-4 py-4 text-xs">
+              <div className="p-3 rounded-lg bg-muted space-y-1">
+                <p className="font-semibold text-foreground">Incident Summary:</p>
+                <p className="text-muted-foreground">{selectedIncident.description}</p>
+                {selectedIncident.daysOverdue && (
+                  <p className="text-red-600 font-bold">Delay: {selectedIncident.daysOverdue} day(s) overdue</p>
+                )}
+              </div>
+
+              <div className="space-y-1.5">
+                <Label htmlFor="resolution-input" className="text-xs font-semibold">
+                  Corrective Action / Resolution Notes *
+                </Label>
+                <Input
+                  id="resolution-input"
+                  value={resolutionNotes}
+                  onChange={(e) => setResolutionNotes(e.target.value)}
+                  placeholder="e.g., Courier expedited, client notified, stock replaced."
+                  required
+                />
+              </div>
+            </div>
+
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                className="text-xs"
+                onClick={() => setSelectedIncident(null)}
+                disabled={isSubmitting}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="submit"
+                className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold"
+                disabled={isSubmitting || !resolutionNotes.trim()}
+              >
+                Confirm Resolution
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+    )}
+    </>
   );
 }
